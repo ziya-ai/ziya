@@ -127,10 +127,11 @@ export async function getTaskRun(
 }
 
 export async function cancelTaskRun(
-  projectId: string, runId: string,
+  projectId: string, runId: string, opts: { force?: boolean } = {},
 ): Promise<TaskRun> {
   const res = await fetch(
-    `${runsBase(projectId)}/${encodeURIComponent(runId)}/cancel`,
+    `${runsBase(projectId)}/${encodeURIComponent(runId)}/cancel`
+      + (opts.force ? '?force=true' : ''),
     { method: 'POST', headers: projectHeaders() },
   );
   if (!res.ok) throw new Error(`cancelTaskRun ${runId} failed: ${res.status}`);

@@ -199,9 +199,12 @@ That second point is why a gate cannot just be a flag on pause. A manual
 pause lasts seconds and `reconcile_stale_runs` correctly reads a paused run
 at startup as one whose executor died with the server. An ask lasts as long
 as a human takes — hours, days — so the restart is *expected* to outlive it,
-and reconciling it to `failed` would discard a run that had done all its work
+and reconciling it as a crash would discard a run that had done all its work
 and was one answer from finishing. On a release sweep that means the commits
-are made and the tag is not.
+are made and the tag is not. Both cases now reconcile to `held` (see
+*Restarts and sibling servers*); they differ in `held_reason` —
+`awaiting_human_input` keeps the question on the record, `server_restart`
+names the block the executor was inside.
 
 **Timeouts are deliberately absent.** An auto-approving checkpoint is worse
 than no checkpoint, because it presents as oversight while providing none.
@@ -575,9 +578,61 @@ interrupted.  When cancellation is observed, the executor stops
 scheduling new work, seals partial results, and transitions the run
 to `status: cancelled`.  Partial artifacts are preserved.
 
-Hard cancel (interrupting a mid-stream LLM invocation) is deferred;
-it requires plumbing `asyncio.CancelledError` through
-`StreamingToolExecutor` and is not needed for any committed use case.
+Hard cancel (interrupting a mid-stream invocation) exists as
+`POST /task-runs/{id}/cancel?force=true`.  It became necessary once
+runs were observed sitting `running` for hours with `cancel_requested`
+set: the in-flight Task never returned to a boundary (a hung
+`npm run build` under a long shell grant, in the GFX Stage 2 case), so
+the flag was never read.  The launch path keeps each run's
+`asyncio.Task` in `app/agents/live_runs.py`; force cancels it, the
+coroutine's `CancelledError` handler calls
+`TaskRunStorage.mark_aborted`, and the run is recorded as `held` with
+reason `user_abort` at the innermost running block — the same record a
+credential fault or a server restart writes, so the recovery banner's
+resume-from-block applies with no special case and the interrupted
+block is simply redone.  `live_runs.abort` records intent before
+cancelling so the handler can tell a force-stop from an event-loop
+shutdown (which must leave the record to the startup reconciler).
+When the coroutine lives in another process, or does not unwind within
+the bounded wait, the endpoint writes the hold directly; `mark_aborted`
+is idempotent so the two writers cannot clobber each other.
+
+Whether the cancel is *soft* (set the flag, the executor unwinds) or
+*forced* (write `cancelled` directly) is decided by
+`TaskRunStorage.executor_alive`, not by a process-local registry:
+`TaskRunStorage` is constructed per request, so an in-memory "runs I am
+executing" set is always empty on the endpoint's instance.  Before that
+was fixed every cancel took the force path and overwrote a live run's
+status underneath its executor.
+
+### Restarts and sibling servers
+
+A run is executed by a fire-and-forget coroutine, so a server that dies
+leaves the run's on-disk row at `running` with nothing behind it.
+`reconcile_stale_runs` sweeps those rows at the next startup — but it
+must first answer "is anyone still executing this?", because several
+`ziya` processes routinely share one `~/.ziya` (different ports,
+different projects).  On 2026-09-16 a freshly started `--port 7575`
+server swept a healthy in-flight GFX Stage 2 run owned by the `:6969`
+server to `failed`; the executor kept working for another hour, blind,
+because `record_activity` refuses to write to a terminal run.
+
+Liveness is a per-run advisory `flock` on `task_runs/<run_id>.lock`,
+taken in `mark_active` for the life of `_run` and released in its
+`finally`.  The kernel drops the lock when the holder dies, so a crash
+leaves the file unlocked and the row reconciles as before, while a
+sibling's live run is skipped.  No PID heuristics, no timestamps.
+
+What reconciliation writes is `held`, not `failed`: a restart is an
+infrastructure fault, not a verdict on the work.  `held_reason` is
+`server_restart` and `held_at_block_id` is the innermost `running` block
+(latest `started_at` — a group and the leaf it is executing are both
+running; the leaf is where a resume should land).  That is exactly the
+shape `mark_held` writes for a credential or throttling fault, so the
+recovery banner, Retry / Continue and `bankedIterationPrefix` apply
+without a special case.  Reconciling to `failed` left `block_states` at
+`running`/`queued`, so `firstFailedBlock` found nothing and the only
+visible control was Restart, which discards every banked block.
 
 ### Partial outcomes
 
@@ -733,6 +788,37 @@ the failed iterations via the query endpoint and the model writes
 prose over them.  The task-card system does not own a bespoke
 summarization path; it owns the queryable substrate that a chat turn
 can draw from.
+
+#### Timestamps are epoch milliseconds
+
+Every timestamp on a run record and its nested states — `created_at`,
+`updated_at`, `started_at`, `completed_at`, `last_activity_at`, block
+and iteration `*_at`, `ProgressNote.at`, `pending_ask.opened_at`,
+`ask_answers.*.answered_at`, `Artifact.created_at` — is an integer of
+epoch **milliseconds** (`schema_version: 2`).  The `BaseStorage` fields
+always were; the executor-side fields were `time.time()` seconds until
+2026-09, which made a record unreadable by eye (a naive
+`fromtimestamp(started_at)` gave the year 58680) and left
+`completed_at - created_at` a latent hazard that nothing had yet
+computed.
+
+The type is `app.utils.run_time.EpochMs`: a validator coerces any
+populated value below `1e11` from seconds, so a stray `time.time()`
+still lands as ms.  Writers use `now_ms()`.  Records written before the
+change are upgraded in memory by `normalize_run_record` /
+`normalize_artifact` at every storage read, keyed on the absence of
+`schema_version`; there is no mass rewrite, because another live server
+may be mid-write on the same directory.  A record becomes v2 on disk the
+next time any writer persists it.
+
+The WebSocket stream still carries the server clock in **seconds**
+(`ts`, `at`); `useTaskRunStream` converts once at the boundary so the
+tile's "prefer the fresher of REST vs live" comparison sees ms on both
+sides.  `formatLastActivity` takes ms.
+
+Rollout note: new code reads old records; old code cannot read new
+ones.  Every `ziya` process sharing a `~/.ziya` must be restarted
+together when this lands.
 
 ### Self-improvement
 

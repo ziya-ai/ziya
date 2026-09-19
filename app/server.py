@@ -635,8 +635,10 @@ async def lifespan(app: FastAPI):
     # crashes) mid-flight, the on-disk status stays "running" forever
     # and the cancel button is a no-op because no live executor exists
     # to honor the cancel flag.  At startup, sweep every project's
-    # task_runs/ directory and mark stranded "running"/"queued" rows
-    # as "failed" with a clear error so the UI can surface the truth.
+    # task_runs/ directory and mark stranded "running"/"queued"/"paused"
+    # rows "held" (reason "server_restart") with the block they stopped
+    # in, so the recovery banner can offer resume-from-block.  Rows whose
+    # executor lock is held by a live sibling server are left alone.
     try:
         from pathlib import Path as _Path
         from app.storage.task_runs import TaskRunStorage
@@ -662,7 +664,7 @@ async def lifespan(app: FastAPI):
                 except Exception as e:
                     logger.warning(f"Reconciliation failed for {project_dir.name}: {e}")
             if total_reconciled:
-                logger.info(f"Task-run reconciliation: {total_reconciled} total marked failed")
+                logger.info(f"Task-run reconciliation: {total_reconciled} total marked held")
     except Exception as e:
         logger.warning(f"Task-run reconciliation skipped: {e}")
 

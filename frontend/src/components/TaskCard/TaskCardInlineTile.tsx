@@ -36,7 +36,7 @@ import { RunRecoveryBanner } from './RunRecoveryBanner';
 import {
   blockLabel, findBlockInRun, resolveBlockStatus,
 } from './runMapModel';
-import { deriveRunControls, heldLabel } from './runControls';
+import { deriveRunControls, heldLabel, canForceAbort } from './runControls';
 import { RUN_STATUS_FILL, RUN_STATUS_FG } from './runStatusVocabulary';
 import {
   attemptSummary, firstFailedBlock, isPartial, progressCounts, progressPhrase,
@@ -45,7 +45,7 @@ import {
 import { bankedIterationPrefix, recoveryTarget } from './recoveryTarget';
 import FailureClusters from './FailureClusters';
 import { analyzeFailures } from '../../utils/iterationClusters';
-import { formatLastActivity } from './liveActivity';
+import { formatLastActivity, HUNG_AFTER_S, isHung } from './liveActivity';
 import { awaitsUser, decideAutoCollapse } from './autoCollapse';
 import { TaskMarkdown } from './TaskMarkdown';
 import { countUnsigned, useCardSignatureStatus } from './useCardSignatureStatus';
@@ -240,7 +240,7 @@ const ProgressTrail: React.FC<{ notes: ProgressNote[] }> = ({ notes }) => {
             <span className="tc-trail__at">
               {(() => {
                 try {
-                  const d = new Date(n.at * 1000);
+                  const d = new Date(n.at);
                   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString();
                 } catch { return ''; }
               })()}
@@ -677,6 +677,13 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
   const activity = (isLive && lastActivityTs != null)
     ? formatLastActivity(lastActivityTs)
     : null;
+  // Force-stop: the lever for a run stuck INSIDE a block, where the
+  // soft cancel flag is never read.  Offered once cancel has been asked
+  // for and not landed, or once the run has been silent long enough to
+  // look hung.  Re-evaluated on the same 5s tick that moves the age
+  // label, so the button appears without a refetch.
+  const hung = isLive && lastActivityTs != null && isHung(lastActivityTs);
+  const forceAbort = canForceAbort(run, hung);
 
   /**
    * Epoch ms of the last interaction anywhere inside this tile, or null
@@ -748,6 +755,20 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
       await cancelTaskRun(projectId, run.id);
       // Hook will observe the run_completed event and refetch;
       // prompt a refresh in case the WS is slow to deliver.
+      refresh();
+    } catch (e) {
+      setCancelError(String(e));
+    }
+  }, [projectId, run, refresh]);
+
+  const handleForceAbort = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!projectId || !run) return;
+    try {
+      // The server cancels the run's coroutine in place and records it
+      // as held at the interrupted block; the recovery banner then
+      // offers resume from there.
+      await cancelTaskRun(projectId, run.id, { force: true });
       refresh();
     } catch (e) {
       setCancelError(String(e));
@@ -1234,10 +1255,29 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             </button>
           </Tooltip>
         )}
-        {controls.canCancel && (
+        {controls.canCancel && !forceAbort && (
           <Tooltip title="Cancel run">
             <button className="tc-tile__cancel" onClick={handleCancel}>
               <StopOutlined />
+            </button>
+          </Tooltip>
+        )}
+        {forceAbort && (
+          <Tooltip
+            title={run?.cancel_requested
+              ? 'Cancel was requested but the run has not reached a block '
+                + 'boundary. Force stop interrupts the in-flight block now '
+                + 'and holds the run there so it can be resumed.'
+              : `No activity for over ${Math.round(HUNG_AFTER_S / 60)} minutes. `
+                + 'Force stop interrupts the in-flight block now and holds '
+                + 'the run there so it can be resumed.'}
+          >
+            <button
+              className="tc-tile__cancel tc-tile__cancel--force"
+              onClick={handleForceAbort}
+            >
+              <StopOutlined />
+              <span>Force stop</span>
             </button>
           </Tooltip>
         )}

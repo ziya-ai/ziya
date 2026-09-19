@@ -110,6 +110,9 @@ def display_status(status: str, has_open_ask: bool) -> str:
     when what is wanted is an answer.  So a held run with an open Ask is
     displayed as ``awaiting_input``.  Every other status passes through;
     in particular a genuine infrastructure hold (no open Ask) stays
+    ``held`` — including a run the reconciler swept because its executor
+    died with the server (``held_reason == "server_restart"``), which is
+    exactly the fix-the-environment case the word is for.
     ``held``.  Mirrored client-side by ``displayStatus`` in
     frontend/.../runStatusVocabulary.ts, which applies the same rule to
     the open chat's bindings.
