@@ -305,6 +305,16 @@ export function describeGate(chain: HoldChain): string | null {
       return 'Lost connection to the provider endpoint — resume once reachable.';
     case 'transient_service_error':
       return 'Provider returned a transient service error — resume to retry.';
+    case 'server_restart':
+      // Written by TaskRunStorage.reconcile_stale_runs: the executor died
+      // with the server, not with the work.  Completed blocks and banked
+      // iterations are on disk; the user only needs to resume.
+      return 'The server restarted while this ran — completed work is kept; resume from the held block.';
+    case 'user_abort':
+      // Written by TaskRunStorage.mark_aborted on a force-stop: the user
+      // interrupted a block that was not coming back to a boundary.  The
+      // interrupted block is redone; everything before it is replayed.
+      return 'Force-stopped mid-block — completed work is kept; resume to redo the interrupted block.';
     default:
       return `Stopped on ${chain.kind.replace(/_/g, ' ')}.`;
   }

@@ -148,25 +148,46 @@ async def delete_task_run(project_id: str, run_id: str):
 
 
 @router.post("/{run_id}/cancel", response_model=TaskRun)
-async def cancel_task_run(project_id: str, run_id: str):
+async def cancel_task_run(
+    project_id: str, run_id: str,
+    force: bool = Query(
+        False,
+        description=(
+            "Interrupt the run in place instead of waiting for the next "
+            "block boundary.  The run is recorded as held (user_abort) at "
+            "the interrupted block so it can be resumed from there."
+        ),
+    ),
+):
     """Cancel a running task run.
 
-    Two paths:
+    Three paths:
 
-    * **Soft-cancel (live executor).** When the run's executor is alive
-      in *this* process, set ``cancel_requested`` and return.  The
+    * **Soft-cancel (live executor).** When some live process holds the
+      run's executor lock, set ``cancel_requested`` and return.  The
       block executor honors the flag at the next iteration / sibling
       boundary and any in-flight Task invocation completes normally.
       This is the design/task-cards.md §Cancellation path.
 
     * **Force-cancel (zombie run).** When on-disk status is ``running``
-      but no live executor exists for this run in this process, the
-      run is a zombie left over from a prior server lifetime: the
-      executor coroutine was killed by the restart and no flag-watcher
-      will ever see ``cancel_requested``.  Mark the run ``cancelled``
-      directly so the UI reflects reality.  The startup reconciler
-      catches most of these; this branch handles a zombie that arrived
-      *during* this server's lifetime (e.g. crash without restart).
+      but nobody holds its lock, the run is a zombie: its executor died
+      and no flag-watcher will ever see ``cancel_requested``.  Mark the
+      run ``cancelled`` directly so the UI reflects reality.
+
+    * **Force-stop (``?force=true``).** Soft-cancel is honored only at
+      block boundaries, so a run stuck INSIDE a block -- a hung tool
+      call, a stalled model stream -- never sees the flag.  When the
+      coroutine lives in this process, cancel it and give it a bounded
+      moment to record the hold itself; otherwise (sibling process, or
+      it did not unwind in time) record the hold directly.  Either way
+      the run ends ``held`` at the interrupted block, which is the
+      record the recovery banner turns into "resume from here".
+
+    Liveness is ``executor_alive`` (the per-directory flock), not
+    ``is_active``: ``_get_storage`` builds a fresh TaskRunStorage per
+    request, so the process-local ``_active_runs`` set the launch path
+    populates is never the one this endpoint sees.  With ``is_active``
+    every cancel took the force path and overwrote a live run's status.
     """
     storage = _get_storage(project_id)
     run = storage.get(run_id)
@@ -180,17 +201,26 @@ async def cancel_task_run(project_id: str, run_id: str):
     if run.status in TERMINAL_RUN_STATUSES:
         # Idempotent: already terminal, return unchanged.
         return run
-    # Live executor: standard soft-cancel path.
-    if storage.is_active(run_id):
+    if force:
+        from ..agents import live_runs
+        await live_runs.abort(run_id)
+        fresh = storage.get(run_id)
+        if fresh is not None and fresh.status in TERMINAL_RUN_STATUSES:
+            return fresh
+        # Coroutine elsewhere, still unwinding, or a zombie: write the
+        # hold here.  mark_aborted is idempotent against the coroutine.
+        return storage.mark_aborted(run_id) or run
+    # Live executor (this process or a sibling): soft-cancel path.
+    if storage.executor_alive(run_id):
         return storage.request_cancel(run_id)
     # No live executor: force the terminal state directly so the UI
     # cancel button is not silently a no-op.
-    import time as _time
+    from ..utils.run_time import now_ms
     run.status = "cancelled"  # type: ignore[assignment]
     run.cancel_requested = True
     if run.completed_at is None:
-        run.completed_at = _time.time()
-    run.updated_at = int(_time.time() * 1000)
+        run.completed_at = now_ms()
+    run.updated_at = now_ms()
     storage._write_json(storage._run_file(run_id), run.model_dump())
     return run
 
@@ -547,11 +577,11 @@ async def resume_run_from_block(
     run = storage.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Task run not found")
-    if storage.is_active(run_id) or run.status in ("running", "paused"):
-        # NOTE: is_active() is effectively always False here — _active_runs
-        # is a per-instance set and _get_storage builds a fresh storage per
-        # request — so the on-disk status check is what actually gates this.
-        # Resuming a live run would double-execute its remaining blocks.
+    if storage.executor_alive(run_id) or run.status in ("running", "paused"):
+        # Either signal refuses: a held lock means a live executor even if
+        # the row lags, and a live row means the reconciler has not yet
+        # ruled on it.  Resuming a live run would double-execute its
+        # remaining blocks.
         raise HTTPException(
             status_code=409,
             detail=f"Run is still {run.status}; cancel it before resuming.",
@@ -824,7 +854,7 @@ async def resume_run_from_iteration(
     run = storage.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Task run not found")
-    if storage.is_active(run_id) or run.status in ("running", "paused"):
+    if storage.executor_alive(run_id) or run.status in ("running", "paused"):
         raise HTTPException(
             status_code=409,
             detail=f"Run is still {run.status}; cancel it before resuming.",

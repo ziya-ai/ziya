@@ -109,4 +109,11 @@ class TestPauseResume:
         assert n >= 1
         swept = storage.get(run.id)
         assert swept is not None
-        assert swept.status == "failed"
+        # A restart is an infrastructure fault, not a verdict on the work:
+        # the row reconciles to "held" so the recovery banner (which keys
+        # on held + held_at_block_id) can offer resume-from-block instead
+        # of leaving Restart as the only visible control.
+        assert swept.status == "held"
+        assert swept.held_reason == "server_restart"
+        # The stale pause flag would otherwise survive onto a terminal row.
+        assert swept.pause_requested is False

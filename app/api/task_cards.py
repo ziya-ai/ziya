@@ -27,6 +27,7 @@ from ..agents.block_executor import (
     execute_block, ExecutionContext, BlockExecutionCancelled,
 )
 from ..agents import task_run_stream_relay as _relay
+from ..agents import live_runs as _live_runs
 from ..utils.paths import get_ziya_home, get_project_dir
 from ..utils.logging_utils import logger
 
@@ -984,6 +985,24 @@ async def _launch_run_for_card(
                 run_storage.update_status(run_id, _st, error=str(e))
                 await _emit_run(_st, error=str(e))
                 logger.warning(f"❌ Task run failed: {run_id[:8]}: {e}")
+        except asyncio.CancelledError:
+            # Two things cancel this coroutine and they must be told
+            # apart: a force-stop (live_runs.abort, because the run was
+            # stuck inside a block where cancel_requested is never read)
+            # and the event loop shutting down.  Only the first is a
+            # verdict on the run; the second is the startup reconciler's
+            # job.  CancelledError is a BaseException, so the broad
+            # handler below never saw it and the run stayed ``running``
+            # on disk with no executor behind it.
+            if _live_runs.consume_abort(run_id):
+                # No-op if the endpoint already recorded the hold after
+                # its bounded wait; it emits nothing, so this is the one
+                # place the run_completed event comes from.
+                _aborted = run_storage.mark_aborted(run_id)
+                if _aborted is not None and _aborted.status == "held":
+                    await _emit_run("held", error=_aborted.error or "force-stopped")
+                logger.info(f"🛑 Task run force-stopped: {run_id[:8]}")
+            raise
         except Exception as e:  # Broad: background task must not bubble
             _st = _terminal("failed")
             run_storage.update_status(run_id, _st, error=str(e))
@@ -992,8 +1011,13 @@ async def _launch_run_for_card(
         finally:
             # Always drop from the active-runs set, even on error.
             run_storage.mark_inactive(run_id)
+            _live_runs.unregister(run_id)
 
-    asyncio.create_task(_run(run.id, root_block, project_root))
+    # Keep the handle.  It is the only in-process lever that can
+    # interrupt a run stuck inside a block; see app/agents/live_runs.py.
+    _live_runs.register(
+        run.id, asyncio.create_task(_run(run.id, root_block, project_root)),
+    )
     logger.info(f"🚀 Task card launched: {card.name} → run {run.id[:8]} (task scheduled)")
     return run
 

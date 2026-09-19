@@ -690,6 +690,23 @@ async def execute_task_block(
         model_override=(scope_model_name or scope_model_tier) if not scope_model_id_override else None,
         endpoint_override=scope_model_endpoint,
     )
+    # Resolved model facts for this task.  Emitted on ``task_started`` and
+    # recorded on the Artifact so the run UI can show which model a block
+    # actually ran on — a tier resolves per endpoint, and an inheriting
+    # block's model is only known here.  ``context_limit`` mirrors the
+    # effective_limit computation in StreamingToolExecutor._handle_usage_event
+    # so the recorded ceiling is the one context notices were measured against.
+    _mc = executor.model_config or {}
+    _base_limit = _mc.get("token_limit")
+    model_used = {
+        "model": _mc.get("name"),
+        "model_id": str(executor.model_id) if executor.model_id else None,
+        "endpoint": executor.endpoint,
+        "context_limit": (
+            _mc.get("extended_context_limit", _base_limit)
+            if _mc.get("supports_extended_context") else _base_limit
+        ),
+    }
 
     # Resolve which tools this task may call.  We do NOT filter here and
     # hand the result to the executor: ``stream_with_tools`` re-derives its
@@ -718,7 +735,8 @@ async def execute_task_block(
         logger.warning(f"Task executor: MCP tool load failed, proceeding without: {e}")
     logger.info(
         f"📋 TASK_EXEC: {block.name!r} tools_ready ({len(tools)} tools) — "
-        f"starting stream via model={state.get('current_model', '?')}"
+        f"starting stream via model={model_used['model']!r} "
+        f"({model_used['endpoint']}, limit={model_used['context_limit']})"
     )
 
     # Activate the task-scoped writable allowlist for the duration of
@@ -885,6 +903,7 @@ async def execute_task_block(
         "block_id": block.id,
         "block_name": block.name,
         "tools_count": len(tools),
+        **model_used,
         "cwd": effective_root,
         "ts": time.time(),
     })
@@ -1256,6 +1275,7 @@ async def execute_task_block(
         self_assessment=self_assessment,
         failed=assessment_failed,
         signature=assessment_signature,
+        **model_used,
     )
     await _emit({
         "type": "task_finished",

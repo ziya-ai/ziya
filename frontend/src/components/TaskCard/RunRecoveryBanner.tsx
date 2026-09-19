@@ -86,7 +86,9 @@ export const RunRecoveryBanner: React.FC<Props> = ({
     <div className="tc-recover" role="region" aria-label="Resume this run">
       <div className="tc-recover__head">
         {target.reason === 'held'
-          ? 'This run stopped on an infrastructure fault — it can be continued'
+          ? (run.held_reason === 'user_abort'
+            ? 'This run was force-stopped mid-block — it can be continued from the interrupted block'
+            : 'This run stopped on an infrastructure fault — it can be continued')
           : 'This run can be continued without starting over'}
       </div>
 

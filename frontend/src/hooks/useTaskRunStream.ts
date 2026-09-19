@@ -864,7 +864,10 @@ export function useTaskRunStream(
 
     // Live-progress surface: every event is proof of life; a
     // task_progress event additionally carries a display note.
-    const lastActivityTs = typeof e.ts === 'number' ? e.ts : Date.now() / 1000;
+    // The wire carries the server clock in SECONDS; everything past this
+    // line is epoch ms, matching run.last_activity_at (record schema 2)
+    // which the tile compares this against.
+    const lastActivityTs = typeof e.ts === 'number' ? e.ts * 1000 : Date.now();
     // block_status: per-block lifecycle transition for the run map
     // (running / done / failed / cancelled / skipped).  Last-write-wins.
     let blockStatuses = prev.blockStatuses;

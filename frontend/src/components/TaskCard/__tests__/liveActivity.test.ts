@@ -2,32 +2,34 @@ import { formatLastActivity, STALE_AFTER_S } from '../liveActivity';
 import { accumulateLive, LiveTaskState } from '../../../hooks/useTaskRunStream';
 
 const NOW_MS = 1_800_000_000_000; // fixed clock
-const nowS = NOW_MS / 1000;
+// Every timestamp the tile handles is epoch MILLISECONDS (run record
+// schema 2).  The helper takes ms too; a seconds offset is scaled here.
+const ago = (s: number) => NOW_MS - s * 1000;
 
 describe('formatLastActivity', () => {
   it('reads "active now" under 10s', () => {
-    expect(formatLastActivity(nowS - 3, NOW_MS)).toEqual({ label: 'active now', stale: false });
+    expect(formatLastActivity(ago(3), NOW_MS)).toEqual({ label: 'active now', stale: false });
   });
 
   it('formats seconds under a minute', () => {
-    expect(formatLastActivity(nowS - 42, NOW_MS)).toEqual({ label: '42s ago', stale: false });
+    expect(formatLastActivity(ago(42), NOW_MS)).toEqual({ label: '42s ago', stale: false });
   });
 
   it('formats minutes under an hour', () => {
-    expect(formatLastActivity(nowS - 300, NOW_MS)).toEqual({ label: '5m ago', stale: true });
+    expect(formatLastActivity(ago(300), NOW_MS)).toEqual({ label: '5m ago', stale: true });
   });
 
   it('formats hours', () => {
-    expect(formatLastActivity(nowS - 7200, NOW_MS)).toEqual({ label: '2h ago', stale: true });
+    expect(formatLastActivity(ago(7200), NOW_MS)).toEqual({ label: '2h ago', stale: true });
   });
 
   it('flags stale exactly at the threshold', () => {
-    expect(formatLastActivity(nowS - STALE_AFTER_S, NOW_MS).stale).toBe(true);
-    expect(formatLastActivity(nowS - (STALE_AFTER_S - 1), NOW_MS).stale).toBe(false);
+    expect(formatLastActivity(ago(STALE_AFTER_S), NOW_MS).stale).toBe(true);
+    expect(formatLastActivity(ago(STALE_AFTER_S - 1), NOW_MS).stale).toBe(false);
   });
 
   it('clamps future timestamps to zero age', () => {
-    expect(formatLastActivity(nowS + 100, NOW_MS)).toEqual({ label: 'active now', stale: false });
+    expect(formatLastActivity(ago(-100), NOW_MS)).toEqual({ label: 'active now', stale: false });
   });
 });
 
@@ -40,7 +42,7 @@ describe('formatLastActivity', () => {
  */
 describe('formatLastActivity coarse buckets', () => {
   const H = 3600, D = 86400;
-  const ago = (s: number) => formatLastActivity(nowS - s, NOW_MS).label;
+  const ago = (s: number) => formatLastActivity(NOW_MS - s * 1000, NOW_MS).label;
 
   it('still reads in hours just below the day boundary', () => {
     expect(ago(22.9 * H)).toBe('23h ago');
@@ -79,7 +81,7 @@ describe('formatLastActivity coarse buckets', () => {
     // The unit changes how the age reads; it must not change the
     // judgement the running-tile surface keys on.
     for (const s of [2 * H, 2 * D, 2 * 7 * D, 60 * D, 400 * D]) {
-      expect(formatLastActivity(nowS - s, NOW_MS).stale).toBe(true);
+      expect(formatLastActivity(NOW_MS - s * 1000, NOW_MS).stale).toBe(true);
     }
   });
 });
@@ -98,10 +100,13 @@ describe('accumulateLive task_progress handling', () => {
   it('captures the note from a task_progress event', () => {
     const out = apply(EMPTY, {
       type: 'task_progress', block_id: 'b1',
-      note: 'ran run_shell_command: git status', ts: 123.0,
+      note: 'ran run_shell_command: git status', ts: 123_000,
     });
     expect(out.progressNote).toBe('ran run_shell_command: git status');
-    expect(out.lastActivityTs).toBe(123.0);
+    // The wire carries the server clock in epoch MS (every emitter is
+    // `now_ms()`), the same unit as run.last_activity_at (record schema
+    // 2), so the hook passes it through unconverted.
+    expect(out.lastActivityTs).toBe(123_000);
   });
 
   it('any event updates lastActivityTs but not the note', () => {
@@ -110,14 +115,28 @@ describe('accumulateLive task_progress handling', () => {
       type: 'task_text_delta', block_id: 'b1', content: 'hi',
     });
     expect(out.progressNote).toBe('ran x');       // preserved
-    expect(out.lastActivityTs).toBeGreaterThan(0); // fell back to now
+    // Fell back to the client clock — which must also be ms, or a run
+    // record stamped in ms would always out-rank the live stream.
+    expect(out.lastActivityTs).toBeGreaterThan(1e11);
   });
 
   it('later task_progress overwrites the note (last-write-wins)', () => {
-    let s = apply(EMPTY, { type: 'task_progress', block_id: 'b1', note: 'ran a', ts: 1 });
-    s = apply(s, { type: 'task_progress', block_id: 'b1', note: 'ran b', ts: 2 });
+    let s = apply(EMPTY, { type: 'task_progress', block_id: 'b1', note: 'ran a', ts: 1_000 });
+    s = apply(s, { type: 'task_progress', block_id: 'b1', note: 'ran b', ts: 2_000 });
     expect(s.progressNote).toBe('ran b');
-    expect(s.lastActivityTs).toBe(2);
+    expect(s.lastActivityTs).toBe(2_000);
+  });
+
+  it('a live ts is comparable with a run record last_activity_at (ms)', () => {
+    // The seam the unit change exists for: before schema 2 the run side
+    // was seconds and this comparison silently preferred whichever unit
+    // happened to be larger.  A wire event 5s after the record must win.
+    const recordMs = 1_789_601_617_000;
+    const out = apply(EMPTY, {
+      type: 'task_progress', block_id: 'b1', note: 'newer', ts: recordMs + 5_000,
+    });
+    expect(out.lastActivityTs!).toBeGreaterThan(recordMs);
+    expect(out.lastActivityTs! - recordMs).toBe(5_000);
   });
 
   it('empty or non-string note is ignored', () => {
@@ -127,7 +146,8 @@ describe('accumulateLive task_progress handling', () => {
   });
 
   it('event ts is preferred over wall clock when present', () => {
-    const out = apply(EMPTY, { type: 'task_tool_call', block_id: 'b1', tool_name: 't', ts: 555.5 });
-    expect(out.lastActivityTs).toBe(555.5);
+    const out = apply(EMPTY, { type: 'task_tool_call', block_id: 'b1', tool_name: 't', ts: 555_500 });
+    // Wire ms passes through unchanged.
+    expect(out.lastActivityTs).toBe(555_500);
   });
 });

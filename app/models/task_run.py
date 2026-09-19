@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Literal, List, Dict, Any
 
 from .task_card import Artifact
+from ..utils.run_time import EpochMs, RUN_RECORD_SCHEMA_VERSION
 
 
 RunStatus = Literal[
@@ -37,7 +38,9 @@ RunStatus = Literal[
     # user-initiated stop the user is expected to end within a session,
     # whereas an ask may sit open for hours or days — which is precisely why
     # it needs its own restart handling in
-    # TaskRunStorage.reconcile_stale_runs, where "paused" becomes "failed".
+    # TaskRunStorage.reconcile_stale_runs: both become "held", but an ask
+    # is held for "awaiting_human_input" with its question kept on the
+    # record, whereas a paused run is held for "server_restart".
     "awaiting_input",
     "done",        # finished successfully with an artifact
     # Stopped after real progress: at least one block completed AND
@@ -151,7 +154,7 @@ class ProgressNote(BaseModel):
     show the richer kind without discarding the other.
     """
     note: str
-    at: float
+    at: EpochMs
     source: Optional[str] = None
 
 
@@ -197,6 +200,9 @@ class IterationSummary(BaseModel):
     # run_outcome._iteration_statuses, partialOutcome.progressCounts,
     # iterationClusters.analyzeFailures, and the tile's iterCounts.
     replayed: bool = False
+    # Model the iteration's task ran on (Artifact.model), so a loop
+    # whose iterations ran on different tiers can be told apart.
+    model: Optional[str] = None
 
 
 class SupersededBlockState(BaseModel):
@@ -221,8 +227,8 @@ class SupersededBlockState(BaseModel):
     # labelled ("attempt 1: failed — timeout").
     attempt: int = 1
     status: BlockStatus = "queued"
-    started_at: Optional[float] = None
-    completed_at: Optional[float] = None
+    started_at: Optional[EpochMs] = None
+    completed_at: Optional[EpochMs] = None
     artifact: Optional[Artifact] = None
     error: Optional[str] = None
     # Displaced by the same overwrite that displaces the status, so it
@@ -254,8 +260,8 @@ class AttemptRecord(BaseModel):
     resume_kind: Optional[ResumeKind] = None
     resumed_from_block_id: Optional[str] = None
     resume_from_iteration: Optional[int] = None
-    started_at: Optional[float] = None
-    completed_at: Optional[float] = None
+    started_at: Optional[EpochMs] = None
+    completed_at: Optional[EpochMs] = None
     # Terminal status THIS attempt reached.  Left None while it is the
     # live attempt: the run's own ``status`` is the live answer, and
     # duplicating it would create two sources of truth for one fact.
@@ -286,8 +292,8 @@ class TaskRunBlockState(BaseModel):
     block_id: str
     block_type: str
     status: BlockStatus = "queued"
-    started_at: Optional[float] = None
-    completed_at: Optional[float] = None
+    started_at: Optional[EpochMs] = None
+    completed_at: Optional[EpochMs] = None
     artifact: Optional[Artifact] = None
     error: Optional[str] = None
     # For Repeat blocks: one summary per iteration.  Empty for Task
@@ -338,8 +344,8 @@ class TaskRun(BaseModel):
     # load the "interactive" default — i.e. today's behaviour.
     launch_context: LaunchContext = "interactive"
     status: RunStatus = "queued"
-    started_at: Optional[float] = None
-    completed_at: Optional[float] = None
+    started_at: Optional[EpochMs] = None
+    completed_at: Optional[EpochMs] = None
     error: Optional[str] = None
     # Populated only when ``status == "held"``: the classified fault
     # kind (e.g. "authentication_error") and the block the run stopped
@@ -426,13 +432,13 @@ class TaskRun(BaseModel):
     total_tool_calls: int = 0
 
     # Live-progress surface ("what is it up to right now").
-    # last_activity_at: wall-clock seconds of the most recent executor
+    # last_activity_at: wall-clock epoch ms of the most recent executor
     # event (tool call / text delta), throttled to ~one disk write per
     # 5s.  progress_note: short human-readable line derived from the
     # most recent tool invocation (e.g. "ran run_shell_command: git
     # status").  Both are readable via GET /task-runs/{id} so REST
     # pollers can distinguish "slow but alive" from "hung".
-    last_activity_at: Optional[float] = None
+    last_activity_at: Optional[EpochMs] = None
     progress_note: Optional[str] = None
     # Bounded trail of the notes above, oldest first.  Exists because the
     # single ``progress_note`` slot is destroyed on every update, so a
@@ -547,10 +553,22 @@ class TaskRun(BaseModel):
     # ``has_artifact`` are present — see the retention cap.
     resume_iteration_artifacts: Dict[int, Any] = Field(default_factory=dict)
 
+    # Every timestamp on this record and its nested states is integer
+    # epoch MILLISECONDS (schema 2).  Records written before 2026-09 left
+    # the executor-side fields in seconds; TaskRunStorage upgrades those
+    # on read via app.utils.run_time.normalize_run_record, keyed on this
+    # field being absent.
+    schema_version: int = RUN_RECORD_SCHEMA_VERSION
     created_at: int = 0
     updated_at: int = 0
 
 
+    # Every timestamp on this record and its nested states is integer
+    # epoch MILLISECONDS (schema 2).  Records written before 2026-09 left
+    # the executor-side fields in seconds; TaskRunStorage upgrades those
+    # on read via app.utils.run_time.normalize_run_record, keyed on this
+    # field being absent.
+    schema_version: int = RUN_RECORD_SCHEMA_VERSION
 class TaskRunCreate(BaseModel):
     """Internal — constructed by the launch endpoint, not user-facing."""
     card_id: str
