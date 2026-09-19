@@ -171,10 +171,11 @@ class TaskCardLaunchTool(BaseMCPTool):
 
         from app.api.task_cards import _launch_run_for_card
         from app.context import get_conversation_id_or_none
+        chat_id = get_conversation_id_or_none()
         try:
             run = await _launch_run_for_card(
                 project_id=project_id, card_id=card_id,
-                source_conversation_id=get_conversation_id_or_none(),
+                source_conversation_id=chat_id,
                 parameter_overrides=kwargs.get("parameter_overrides") or {},
             )
         except Exception as e:  # noqa: BLE001
@@ -183,14 +184,41 @@ class TaskCardLaunchTool(BaseMCPTool):
 
         run_id = getattr(run, "id", None)
         status = getattr(run, "status", None)
+
+        # Bind the run into the launching conversation.  The chat renders
+        # task monitors from TaskBindings, not from runs — every human
+        # launch path (tile Run button, /goal, the bindings endpoint)
+        # records one, and without it a model-launched run executes
+        # invisibly.  Same unanchored binding task_card_stage uses; the
+        # frontend re-fetches bindings on this tool's result.
+        binding_id = None
+        if chat_id and run_id:
+            try:
+                from app.storage.task_bindings import TaskBindingStorage
+                from app.utils.paths import get_project_dir
+                binding = TaskBindingStorage(
+                    get_project_dir(project_id)
+                ).create(chat_id=chat_id, card_id=card_id, run_id=run_id,
+                         anchor_message_id=None)
+                binding_id = binding.id
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"task_card_launch: binding failed: {e}")
+
         logger.info(
             f"🚀 task_card_launch: card {card_id[:8]} '{card.name}' "
-            f"→ run {str(run_id)[:8]} ({status})")
+            f"→ run {str(run_id)[:8]} ({status})"
+            + (f", bound to chat {chat_id[:8]}" if binding_id
+               else ", no conversation binding"))
+        where = ("Its monitor tile is in this conversation."
+                 if binding_id else
+                 "No conversation context was available to bind it; "
+                 "find it under the project's task runs.")
         return {
             "success": True, "launched": True,
             "card_id": card_id, "name": card.name,
             "run_id": run_id, "status": str(status) if status else None,
+            "binding_id": binding_id,
             "message": (f"Launched '{card.name}' as run {run_id}.  It is "
-                        "executing in the background; poll the task-run "
-                        "views for status and the final artifact."),
+                        f"executing in the background.  {where}  Poll the "
+                        "task-run views for status and the final artifact."),
         }
