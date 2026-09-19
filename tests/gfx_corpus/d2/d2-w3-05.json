@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "# only comments and whitespace\n\n#   another comment\n\n# nothing parseable at all\n",
+ "intent": "Degenerate empty: comments/whitespace only, zero nodes"
+}
