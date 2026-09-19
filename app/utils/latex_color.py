@@ -447,13 +447,20 @@ _CONTRAST_FLOOR = 3.0
 _TEXT_CONTRAST_FLOOR = 4.5
 
 
-def _name_to_rgb(name: str) -> tuple[int, int, int] | None:
+def _name_to_rgb(name: str,
+                 defs: dict[str, tuple[int, int, int]] | None = None
+                 ) -> tuple[int, int, int] | None:
     n = name.strip().lower()
     if n in _BASE_RGB:
         return _BASE_RGB[n]
     hexv = _SVG_HEX.get(n)
     if hexv is not None:
         return (int(hexv[0:2], 16), int(hexv[2:4], 16), int(hexv[4:6], 16))
+    # A body-level ``\definecolor`` name (D-467) becomes resolvable once the
+    # caller threads the collected map in.  Base/svgnames names take precedence
+    # so a rare author redefinition of a stock name never shifts the stock hue.
+    if defs is not None and n in defs:
+        return defs[n]
     return None
 
 
@@ -469,14 +476,17 @@ _EXPR_RE = re.compile(
     r"\s*blue\s*,\s*(\d+)\s*\}?")
 
 
-def _resolve_xcolor_rgb(expr: str) -> tuple[int, int, int] | None:
+def _resolve_xcolor_rgb(expr: str,
+                        defs: dict[str, tuple[int, int, int]] | None = None
+                        ) -> tuple[int, int, int] | None:
     """Resolve a subset of xcolor colour expressions to RGB, else None.
 
     Handles the ``{rgb,255:red,R;green,G;blue,B}`` extended expression the
     earlier passes emit, a base/svgnames colour NAME, ``NAME!P`` (blend with
-    white) and ``NAME!P!NAME2`` (blend NAME with NAME2).  Any other form -- a
-    ``\\definecolor`` name, a nested/multi-step blend, ``none`` -- returns None
-    so the author's text is left untouched.
+    white) and ``NAME!P!NAME2`` (blend NAME with NAME2).  When ``defs`` (the
+    body's ``\\definecolor`` map, D-467) is supplied, a definecolor name also
+    resolves.  Any other form -- an unknown name, a nested/multi-step blend,
+    ``none`` -- returns None so the author's text is left untouched.
     """
     t = expr.strip()
     m = _EXPR_RE.fullmatch(t)
@@ -484,7 +494,7 @@ def _resolve_xcolor_rgb(expr: str) -> tuple[int, int, int] | None:
         vals = tuple(max(0, min(255, int(x))) for x in m.groups())
         return vals  # type: ignore[return-value]
     parts = t.split("!")
-    base = _name_to_rgb(parts[0])
+    base = _name_to_rgb(parts[0], defs)
     if base is None:
         return None
     if len(parts) == 1:
@@ -496,7 +506,7 @@ def _resolve_xcolor_rgb(expr: str) -> tuple[int, int, int] | None:
     if len(parts) == 2:
         return _mix_rgb(base, (255, 255, 255), pct)
     if len(parts) == 3:
-        other = _name_to_rgb(parts[2])
+        other = _name_to_rgb(parts[2], defs)
         if other is None:
             return None
         return _mix_rgb(base, other, pct)
@@ -561,38 +571,281 @@ _CLAMP_OPT_RE = re.compile(rf"(?<![A-Za-z])((?:draw|color)\s*=\s*){_COLOUR_VALUE
 # a bare colour as a whole option inside a [...] list: promote to color={...}.
 _CLAMP_BARE_RE = re.compile(rf"([\[,]\s*)({_COLOUR_BARE})(?=\s*[,\]])")
 
+#: A node LABEL carrier inside a single statement: a ``node`` (``\node`` or a
+#: path-attached ``node``) that terminates in a brace group with visible text.
+#: When a coloured option belongs to such a statement the colour also paints
+#: the label text, so it must clear the 4.5:1 TEXT floor, not the 3:1 graphical
+#: floor (D-233: ``\draw[...,blue!60!black] ... node{thick blue}`` and
+#: ``\node[blue]{$\sin x$}`` lifted only to 3.12/3.15:1 leave the LABEL under
+#: the text floor while the stroke passes).
+_NODE_LABEL_RE = re.compile(r"\bnode\b[^;]*?\{[^{}]*?\S[^{}]*?\}")
+
+
+def _enclosing_is_bracket(text: str, pos: int) -> bool:
+    """True iff the innermost still-open group enclosing ``pos`` is a ``[``.
+
+    The bare-colour clamp keys off ``,``/``[`` delimiters, which also separate
+    the items of a ``\\foreach ... in {red,blue,green}`` VALUE LIST -- a brace
+    group, not an option list.  Rewriting ``blue`` there to ``color={rgb,...}``
+    corrupts the loop value and aborts the whole render (D-233 tikz-w2-11: the
+    lifted token becomes a bare option key pgfkeys rejects).  Distinguishing a
+    ``[...]`` option list from a ``{...}`` value list needs the enclosing
+    delimiter, which a lookbehind cannot see; this scan supplies it.  Normalised
+    ``{rgb,...}`` values nested inside an option list balance out, so a genuine
+    option-list colour still reports a bracket.
+    """
+    stack: list[str] = []
+    for ch in text[:pos]:
+        if ch in "[{":
+            stack.append(ch)
+        elif ch == "]":
+            if stack and stack[-1] == "[":
+                stack.pop()
+        elif ch == "}":
+            if stack and stack[-1] == "{":
+                stack.pop()
+    return bool(stack) and stack[-1] == "["
+
+
+def _statement_has_label(text: str, pos: int) -> bool:
+    """True iff the TikZ statement containing ``pos`` carries a node label.
+
+    A statement runs between the surrounding ``;`` terminators.  When it holds
+    a ``node ... {label}``, an option colour in that statement also paints the
+    label glyphs, so it must satisfy the small-text floor rather than the
+    graphical floor (D-233)."""
+    start = text.rfind(";", 0, pos) + 1
+    end = text.find(";", pos)
+    if end == -1:
+        end = len(text)
+    return _NODE_LABEL_RE.search(text[start:end]) is not None
+
+
+# --------------------------------------------------------------------------
+# \definecolor resolution and effective backdrop (D-467 / D-051 / D-331).
+#
+# The clamp above measures every author colour against the theme PAGE.  Two
+# real gaps follow from that:
+#   * a colour introduced by ``\definecolor{palestroke}{HTML}{CCCCCC}`` and used
+#     as ``draw=palestroke`` / ``\textcolor{ink333}`` is an opaque NAME the
+#     resolver could not read, so it was neither measured nor lifted (D-467).
+#   * text/strokes frequently sit on an author-drawn opaque BACKDROP -- a
+#     ``\fill[plate] ... rectangle`` (D-051), a ``\fill[fill=white]`` card
+#     (D-331), a ``\pagecolor``, or a tikz-cd ``cells={nodes={fill=...}}`` --
+#     not on the page, so a page-relative verdict is simply measuring the wrong
+#     backdrop (it under-lifts a colour that is invisible on the fill, and
+#     OVER-lifts a colour that was legible on the fill, making it worse).
+#
+# ``_collect_definecolors`` reads the body's ``\definecolor`` declarations into
+# a name->RGB map so the resolver can see them.  ``_effective_surface`` detects
+# a single unambiguous author backdrop and returns it in place of the page.
+# When no backdrop is found the page is returned, so a body without one clamps
+# EXACTLY as before -- the existing contract (and every G-03 test) is untouched.
+# --------------------------------------------------------------------------
+
+_DEFINECOLOR_COLLECT_RE = re.compile(
+    r"\\definecolor\s*\{([^{}]+)\}\s*\{(HTML|RGB|rgb|gray|Gray)\}\s*\{([^{}]*)\}")
+
+
+def _definecolor_value_to_rgb(model: str, val: str) -> tuple[int, int, int] | None:
+    """Resolve one ``\\definecolor`` value by model, else None."""
+    model_l = model.lower()
+    v = val.strip()
+    try:
+        if model_l == "html":
+            h = _expand_hex(v)
+            if len(h) != 6:
+                return None
+            return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+        parts = [p.strip() for p in v.split(",")]
+        if model == "RGB":
+            if len(parts) < 3:
+                return None
+            return tuple(max(0, min(255, int(round(float(p))))) for p in parts[:3])  # type: ignore[return-value]
+        if model_l == "rgb":
+            if len(parts) < 3:
+                return None
+            return tuple(max(0, min(255, int(round(float(p) * 255)))) for p in parts[:3])  # type: ignore[return-value]
+        if model_l == "gray":
+            g = max(0, min(255, int(round(float(parts[0]) * 255))))
+            return (g, g, g)
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def _collect_definecolors(body: str) -> dict[str, tuple[int, int, int]]:
+    """Map lowercase ``\\definecolor`` names -> RGB for the resolver (D-467)."""
+    defs: dict[str, tuple[int, int, int]] = {}
+    for m in _DEFINECOLOR_COLLECT_RE.finditer(body):
+        rgb = _definecolor_value_to_rgb(m.group(2), m.group(3))
+        if rgb is not None:
+            defs[m.group(1).strip().lower()] = rgb
+    return defs
+
+
+_PAGECOLOR_RE = re.compile(r"\\pagecolor(?!\s*\[)\s*\{([^{}]*)\}")
+#: a tikz-cd (or tikz) ``... nodes = { ... fill = C ... }`` cell fill.
+_CELL_FILL_RE = re.compile(
+    r"nodes\s*=\s*\{[^{}]*?(?<![A-Za-z])fill\s*=\s*(\{[^{}]*\}|[A-Za-z][\w!]*)")
+#: a ``\fill[<opts>] (...) rectangle`` background rectangle.
+_FILL_RECT_RE = re.compile(r"\\fill\s*\[([^\]]*)\][^;]*?\brectangle\b")
+
+
+def _fill_opt_colour(opts: str) -> str | None:
+    """The fill colour of a ``\\fill[...]`` option list: ``fill=C`` or bare C."""
+    m = re.search(r"(?<![A-Za-z])fill\s*=\s*(\{[^{}]*\}|[A-Za-z][\w!]*)", opts)
+    if m:
+        return m.group(1)
+    for tok in opts.split(","):
+        tok = tok.strip()
+        if re.fullmatch(r"[A-Za-z][\w!]*", tok):
+            return tok
+    return None
+
+
+def _effective_surface(body: str, page: tuple[int, int, int],
+                       defs: dict[str, tuple[int, int, int]]
+                       ) -> tuple[int, int, int]:
+    """A single unambiguous author backdrop, else the page (D-051/D-331/D-467).
+
+    Priority: an explicit ``\\pagecolor``; a tikz-cd/tikz ``nodes={fill=...}``
+    cell fill; or a SOLE ``\\fill[...] ... rectangle`` background.  Anything
+    ambiguous (several fill rectangles, per-node style fills only) falls back to
+    the page, so behaviour is unchanged for every body that lacks one.
+    """
+    m = _PAGECOLOR_RE.search(body)
+    if m:
+        rgb = _resolve_xcolor_rgb(m.group(1).strip(), defs)
+        if rgb is not None:
+            return rgb
+    m = _CELL_FILL_RE.search(body)
+    if m:
+        rgb = _resolve_xcolor_rgb(m.group(1).strip(), defs)
+        if rgb is not None:
+            return rgb
+    rects = _FILL_RECT_RE.findall(body)
+    if len(rects) == 1:
+        col = _fill_opt_colour(rects[0])
+        if col:
+            rgb = _resolve_xcolor_rgb(col.strip(), defs)
+            if rgb is not None:
+                return rgb
+    return page
+
+
+def detect_dark_plate(body: str) -> tuple[int, int, int] | None:
+    """RGB of a SOLE author DARK background plate, else None (D-357).
+
+    A model commonly emits a self-contained "card" whose background is one
+    ``\\fill[<colour>] ... rectangle`` in a dark colour, with light ink drawn on
+    top -- but the plate rectangle does not always cover the full drawing bbox,
+    so leads/grounds spilling past it onto the WHITE light-page render are still
+    in that light ink and vanish (circuitikz-w4-*: #5FD4E4 on #FFFFFF = 1.75:1).
+    ``build_document`` uses this on the LIGHT page to match the page surface to
+    the detected plate, so the whole cropped canvas is the plate and off-plate
+    ink stays legible; None means the page stays white and the render is
+    byte-identical.
+
+    Deliberately the SAME ``sole \\fill[...] rectangle`` heuristic that
+    ``_effective_surface`` already commits to as the ink backdrop -- extended to
+    the page only when that backdrop is DARK (luminance below the mid point the
+    clamp uses), which is the exact condition under which light ink is designed
+    for the plate and illegible off it.  A body with no such plate, several
+    plates, or a light plate returns None.  Advisory: any internal fault
+    degrades to None (plain white page) rather than raising.
+    """
+    try:
+        defs = _collect_definecolors(body)
+        rects = _FILL_RECT_RE.findall(body)
+        if len(rects) != 1:
+            return None
+        col = _fill_opt_colour(rects[0])
+        if not col:
+            return None
+        rgb = _resolve_xcolor_rgb(col.strip(), defs)
+        if rgb is None:
+            return None
+        if _rel_luminance(rgb) >= 0.18:    # a light/mid plate is not this case
+            return None
+        return rgb
+    except Exception:                      # pragma: no cover - defensive
+        return None
+
+
+def _enclosing_open_index(text: str, pos: int) -> int:
+    """Index of the innermost still-open ``[`` enclosing ``pos``, else -1."""
+    stack: list[tuple[str, int]] = []
+    for i, ch in enumerate(text[:pos]):
+        if ch in "[{":
+            stack.append((ch, i))
+        elif ch == "]":
+            if stack and stack[-1][0] == "[":
+                stack.pop()
+        elif ch == "}":
+            if stack and stack[-1][0] == "{":
+                stack.pop()
+    return stack[-1][1] if stack and stack[-1][0] == "[" else -1
+
+
+_FILL_CMD_BEFORE_RE = re.compile(r"\\(fill|shade|pagecolor)\s*$")
+
+
+def _bare_option_is_fill(text: str, pos: int) -> bool:
+    """True iff the ``[...]`` option enclosing ``pos`` belongs to ``\\fill``/``\\shade``.
+
+    A ``\\fill[plate]`` bare colour is a region, not ink (the "fill is not
+    clamped" contract), and is also the detected backdrop itself -- so the
+    light-theme backdrop clamp must leave it alone rather than recolour the
+    background.  The dark path keeps clamping it (circuitikz-w1-15's opaque
+    plate relies on that lift), so this gate is applied only on the light path.
+    """
+    idx = _enclosing_open_index(text, pos)
+    if idx < 0:
+        return False
+    return _FILL_CMD_BEFORE_RE.search(text[:idx]) is not None
+
 
 def _clamp_body_colours(body: str, theme: str,
                         applied: list[str]) -> str:
     """Contrast-clamp author stroke/ink colours to the themed surface (D-003)."""
-    surface = _THEME_SURFACE_RGB.get(theme)
-    if surface is None:
+    page = _THEME_SURFACE_RGB.get(theme)
+    if page is None:
         return body
-    # Scope decision (D-003; re-affirmed for D-245/246/247): clamp only the DARK
-    # surface.  The two HIGH-severity clusters this defect names -- author
-    # dark-mix strokes vanishing on the dark page, and near-black author ink on
-    # the dark page -- are dark-theme only, and clamping there is pure gain:
-    # dark was already unreadable, light is the surface authors targeted and is
-    # left byte-identical.
+    # Resolve author \definecolor names (D-467) and the effective backdrop the
+    # ink actually sits on (D-051/D-331).  When no backdrop is present, surface
+    # == page and every branch below reduces to the original page-relative
+    # behaviour, so existing renders are byte-identical.
+    defs = _collect_definecolors(body)
+    surface = _effective_surface(body, page, defs)
+    backdrop = surface != page
+    # Scope decision (D-003; re-affirmed for D-245/246/247; extended for
+    # D-051/D-331/D-467).  Two independent gates below:
     #
-    # A symmetric LIGHT clamp was evaluated for the light-only remainders of
-    # D-245 (hardcoded pale palette), D-246 (low-opacity/tint ink) and D-247
-    # (recycled pale categorical fills) and DELIBERATELY REJECTED here: a
-    # page-relative light clamp cannot distinguish an illegible pale stroke
-    # (``lightgray`` 1.84:1, ``black!15`` 1.41:1) from an intentional mid-tone
-    # decorative stroke (the very ``#00AAFF`` at ~2.5:1 the guard tests in
-    # test_latex_g02/g04 protect), and it inverts a bare ``white`` stroke -- a
-    # legitimate white-over-fill pattern -- to black because it cannot see the
-    # local fill backdrop.  Both are exactly the "alter unrelated authored-for
-    # output" the repair contract forbids without render verification, which
-    # this stage does not perform.  The light-only sub-clusters therefore remain
-    # for a definecolor-aware / local-backdrop-aware follow-up that can be
-    # render-verified.
-    if _rel_luminance(surface) >= 0.18:
-        return body
+    #   * the TEXT-INK macro clamp (\color / \textcolor) runs in BOTH themes
+    #     against the 4.5:1 small-text floor (D-033): an illegible label is a
+    #     bug on either page, and it is contrast-gated so an already-legible
+    #     label (``\color{Navy}`` = 16:1 on white, g03) is byte-identical.
+    #   * the STROKE/FILL-option clamp (draw= / color= / bare option) runs on
+    #     the DARK page as before -- AND, now, on EITHER page when a resolvable
+    #     author BACKDROP is detected (``\fill[plate] ... rectangle`` D-051,
+    #     ``\pagecolor``, a tikz-cd cell fill).  On the bare page a symmetric
+    #     light stroke clamp stays DELIBERATELY REJECTED (a page-relative light
+    #     clamp cannot tell an illegible pale stroke from an intentional
+    #     decorative one, and g02/g04 protect that passthrough); but on a
+    #     KNOWN author backdrop that ambiguity is gone -- a dark stroke on a
+    #     detected dark plate is unambiguously invisible -- so the clamp is
+    #     safe there in both themes.
+    #
+    # Every measurement uses ``surface`` (the backdrop when detected, else the
+    # page) so a colour legible on its real backdrop is never lifted -- this is
+    # what stops the D-331 OVER-lift of ``\color{black!80}`` sitting on a white
+    # card.  When no backdrop is present surface == page and behaviour is the
+    # original page-relative clamp, so every G-03/G-04 body is byte-identical.
+    dark_theme = _rel_luminance(page) < 0.18
 
     def _clamped_expr(value: str, floor: float = _CONTRAST_FLOOR) -> str | None:
-        rgb = _resolve_xcolor_rgb(value)
+        rgb = _resolve_xcolor_rgb(value, defs)
         if rgb is None:
             return None
         new = _clamp_rgb_to_surface(rgb, surface, floor)
@@ -609,43 +862,224 @@ def _clamp_body_colours(body: str, theme: str,
         expr = _clamped_expr(arg, _TEXT_CONTRAST_FLOOR)
         if expr is None:
             return m.group(0)
-        ratio = _contrast_ratio(_resolve_xcolor_rgb(arg), surface)  # type: ignore[arg-type]
+        ratio = _contrast_ratio(_resolve_xcolor_rgb(arg, defs), surface)  # type: ignore[arg-type]
+        where = "backdrop" if backdrop else f"{theme} surface"
         applied.append(
             f"{macro}{{{arg}}} -> {macro}{{{expr}}} "
             f"(text ink {ratio:.2f}:1 below {_TEXT_CONTRAST_FLOOR:g}:1 on the "
-            f"{theme} surface; lifted to the text floor)")
+            f"{where}; lifted to the text floor)")
         return f"{macro}{{{expr}}}"
 
+    # Text-ink macro clamps run in BOTH themes (see note above).  Note that an
+    # EXPLICIT-model form (``\textcolor[HTML]{336699}``) is deliberately NOT
+    # clamped: test_latex_g04 encodes the contract that an author writing an
+    # explicit xcolor model is "speaking xcolor" and must pass through verbatim.
     body = _CLAMP_MACRO_RE.sub(_macro_sub, body)
+
+    # The stroke/fill-option clamps run on the dark page, or on either page when
+    # a resolvable author backdrop was detected.
+    if not (dark_theme or backdrop):
+        return body
 
     def _opt_sub(m: re.Match) -> str:
         key, value = m.group(1), m.group(2)
-        expr = _clamped_expr(value)
+        # A colour on a statement that also carries a node label paints the
+        # label glyphs too, so it must clear the 4.5:1 text floor (D-233).
+        texty = _statement_has_label(body, m.start(2))
+        floor = _TEXT_CONTRAST_FLOOR if texty else _CONTRAST_FLOOR
+        expr = _clamped_expr(value, floor)
         if expr is None:
             return m.group(0)
-        ratio = _contrast_ratio(_resolve_xcolor_rgb(value), surface)  # type: ignore[arg-type]
+        ratio = _contrast_ratio(_resolve_xcolor_rgb(value, defs), surface)  # type: ignore[arg-type]
+        where = "backdrop" if backdrop else f"{theme} surface"
         applied.append(
             f"{key}{value} -> {key}{{{expr}}} "
-            f"(contrast {ratio:.2f}:1 below {_CONTRAST_FLOOR:g}:1 on the "
-            f"{theme} surface; lifted to the floor)")
+            f"(contrast {ratio:.2f}:1 below {floor:g}:1 on the "
+            f"{where}; lifted to the "
+            f"{'text' if texty else 'graphical'} floor)")
         return f"{key}{{{expr}}}"
 
     body = _CLAMP_OPT_RE.sub(_opt_sub, body)
 
     def _bare_sub(m: re.Match) -> str:
+        # The delimiters this regex keys off also separate a \foreach value
+        # list; only lift when the token really sits inside a [...] option
+        # list, never inside a {...} value list (D-233 tikz-w2-11 abort).
+        if not _enclosing_is_bracket(body, m.start(2)):
+            return m.group(0)
+        # When a DISTINCT author backdrop is detected, leave its ``\fill`` /
+        # ``\shade`` bare colour alone in BOTH themes: it is a region (not ink)
+        # and is the reference surface itself, so recolouring it would repaint
+        # the background AND desync it from the surface the inks are measured
+        # against (D-051: the #16324A plate must stay put while its labels are
+        # lifted to clear it).  A backdrop that equals the page (circuitikz-w1-15
+        # plate black!88 == #1F1F1F) sets backdrop=False, so that spec's
+        # established plate lift is untouched.
+        if backdrop and _bare_option_is_fill(body, m.start(2)):
+            return m.group(0)
         pre, value = m.group(1), m.group(2)
-        expr = _clamped_expr(value)
+        texty = _statement_has_label(body, m.start(2))
+        floor = _TEXT_CONTRAST_FLOOR if texty else _CONTRAST_FLOOR
+        expr = _clamped_expr(value, floor)
         if expr is None:
             return m.group(0)
-        ratio = _contrast_ratio(_resolve_xcolor_rgb(value), surface)  # type: ignore[arg-type]
+        ratio = _contrast_ratio(_resolve_xcolor_rgb(value, defs), surface)  # type: ignore[arg-type]
+        where = "backdrop" if backdrop else f"{theme} surface"
         applied.append(
             f"{value} -> color={{{expr}}} "
-            f"(bare stroke colour, contrast {ratio:.2f}:1 below "
-            f"{_CONTRAST_FLOOR:g}:1 on the {theme} surface; lifted to the floor)")
+            f"(bare {'label' if texty else 'stroke'} colour, contrast "
+            f"{ratio:.2f}:1 below {floor:g}:1 on the {where}; "
+            f"lifted to the {'text' if texty else 'graphical'} floor)")
         return f"{pre}color={{{expr}}}"
 
     body = _CLAMP_BARE_RE.sub(_bare_sub, body)
     return body
+
+
+# --------------------------------------------------------------------------
+# Categorical \foreach palette clamp (D-238).
+#
+# A model builds a many-series legend by looping a literal colour list:
+# ``\foreach \c in {red,blue,green,...,cyan!60,magenta!60,...}``.  The bare/opt
+# clamps above DELIBERATELY skip a ``{...}`` value list (rewriting a token there
+# to ``color={rgb,...}`` injects a comma and corrupts the loop -- the exact
+# D-233/D-488 abort the _enclosing_is_bracket guard exists to prevent), so these
+# series colours are never lifted and a whole categorical palette can sit under
+# the floor: on the LIGHT page the recycled ``!60`` tints blend toward WHITE
+# (``cyan!60`` = 60% cyan + 40% white = #66FFFF = 1.21:1) and the saturated
+# primaries are pale too (``cyan`` #00FFFF = 1.25:1); on the DARK page the
+# saturated author primaries fall below the floor instead.
+#
+# The correct engine behaviour (repair contract): a palette that recycles by
+# tinting must tint toward the OPPOSITE of the surface -- ``NAME!p!black`` on
+# the light page, ``NAME!p!white`` on the dark one -- which is MONOTONIC in
+# contrast and legible on the surface the renderer was actually given.  This
+# pass rewrites each below-floor item to that comma-free three-part blend, so
+# the loop's item count and structure are byte-identical (no injected comma)
+# and only the pixels change.  It fires ONLY on a list whose EVERY item already
+# resolves to a colour, so a numeric/coordinate ``\foreach \x in {0,1,2}`` list
+# is never touched, and only on items that FAIL the floor, so a palette already
+# legible on the active surface is byte-identical.
+_FOREACH_LIST_RE = re.compile(r"(\\foreach\b[^{]*?\bin\s*)\{([^{}]*)\}")
+
+#: The default ink ``build_document`` bakes per theme (black on the white page,
+#: #EDEDED on the dark page).  Used to tell whether uncoloured text/strokes are
+#: legible on a detected author plate (D-358).
+_THEME_DEFAULT_INK: dict[str, tuple[int, int, int]] = {
+    "light": (0, 0, 0),
+    "dark": (0xED, 0xED, 0xED),
+}
+#: A sole author plate ``\fill[...] ... rectangle ... ;`` captured through its
+#: terminating ``;`` so a default-ink ``\color`` can be injected right after it.
+_FILL_RECT_STMT_RE = re.compile(r"\\fill\s*\[([^\]]*)\][^;]*?\brectangle\b[^;]*;")
+
+
+def _plate_default_ink(body: str, theme: str, applied: list[str]) -> str:
+    """Set an on-plate default ink when the baked page ink is illegible on it.
+
+    The step-8 clamp lifts author colour TOKENS against the effective backdrop,
+    but an element with NO explicit colour draws in the page-relative default
+    ink ``build_document`` bakes -- and on a whole-picture author plate that ink
+    can be illegible (circuitikz-w4-05: the baked black light-page ink on the
+    #16324A plate = 1.59:1, so an uncoloured ``\\node{...}`` label vanishes).
+    When a SINGLE author ``\\fill[...] ... rectangle`` backdrop is detected and
+    the theme's baked default ink fails the text floor against it, inject a
+    plate-legible ``\\color`` right after that fill so subsequent uncoloured
+    ink is chosen for the PLATE, not the page.  An explicit per-element colour
+    still wins, and when the baked ink already clears the plate this is a no-op
+    (byte-identical) -- so the dark render, where #EDEDED clears the dark plate,
+    is untouched.
+    """
+    page = _THEME_SURFACE_RGB.get(theme)
+    default_ink = _THEME_DEFAULT_INK.get(theme)
+    if page is None or default_ink is None:
+        return body
+    defs = _collect_definecolors(body)
+    surface = _effective_surface(body, page, defs)
+    if surface == page:
+        return body
+    rects = _FILL_RECT_RE.findall(body)
+    if len(rects) != 1 or _fill_opt_colour(rects[0]) is None:
+        return body  # backdrop came from \pagecolor / cell fill, not a plate
+    # Only a DARK plate: a light plate on which the baked dark-page ink fails is
+    # the pale-fill case _pale_fill_label_ink already owns (D-234/D-331), and
+    # blanket-injecting a default ink there would double-handle it and disturb a
+    # node that carries its own explicit colour.  A dark plate under the black
+    # light-page ink (w4-05) is the gap this pass exists to close.
+    if _rel_luminance(surface) >= 0.18:
+        return body
+    if _contrast_ratio(default_ink, surface) >= _TEXT_CONTRAST_FLOOR:
+        return body  # baked ink already legible on the plate
+    ink = _clamp_rgb_to_surface(default_ink, surface, _TEXT_CONTRAST_FLOOR)
+    if ink is None:
+        return body
+    expr = _rgb_to_expr(ink)
+
+    injected = False
+
+    def _sub(m: re.Match) -> str:
+        nonlocal injected
+        if injected:
+            return m.group(0)
+        injected = True
+        applied.append(
+            f"plate default ink -> \\color{{{expr}}} "
+            f"(baked {theme} ink {_contrast_ratio(default_ink, surface):.2f}:1 "
+            f"below {_TEXT_CONTRAST_FLOOR:g}:1 on the author plate; uncoloured "
+            f"ink re-inked for the plate)")
+        return m.group(0) + f"\n\\color{{{expr}}}"
+
+    return _FILL_RECT_STMT_RE.sub(_sub, body, count=1)
+
+
+def _clamp_foreach_palette(body: str, theme: str, applied: list[str]) -> str:
+    surface = _THEME_SURFACE_RGB.get(theme)
+    if surface is None:
+        return body
+    dark = _rel_luminance(surface) < 0.18
+    endpoint = (255, 255, 255) if dark else (0, 0, 0)
+    endpoint_name = "white" if dark else "black"
+    defs = _collect_definecolors(body)
+
+    def _fix_item(tok: str) -> str:
+        raw = tok.strip()
+        if not raw:
+            return tok
+        rgb = _resolve_xcolor_rgb(raw, defs)
+        if rgb is None or _contrast_ratio(rgb, surface) >= _CONTRAST_FLOOR:
+            return tok
+        m = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)(?:!(\d+))?", raw)
+        if not m:
+            return tok
+        base_name = m.group(1)
+        base_rgb = _name_to_rgb(base_name, defs)
+        if base_rgb is None:
+            return tok
+        author_p = int(m.group(2)) if m.group(2) else 100
+        # Keep the author's saturation first (only flip the implicit blend
+        # partner to the surface-opposite); if that still fails, search downward
+        # for the strongest tint that clears the floor.
+        for p in [author_p] + list(range(90, -1, -10)):
+            if _contrast_ratio(_mix_rgb(base_rgb, endpoint, p), surface) >= _CONTRAST_FLOOR:
+                new = f"{base_name}!{p}!{endpoint_name}"
+                applied.append(
+                    f"foreach palette {raw} -> {new} "
+                    f"(series colour {_contrast_ratio(rgb, surface):.2f}:1 below "
+                    f"{_CONTRAST_FLOOR:g}:1 on the {theme} surface; re-tinted "
+                    f"toward {endpoint_name})")
+                return tok.replace(raw, new, 1)
+        return tok
+
+    def _sub(m: re.Match) -> str:
+        head, inner = m.group(1), m.group(2)
+        items = inner.split(",")
+        nonempty = [it.strip() for it in items if it.strip()]
+        # Only a pure colour list -- never a numeric/coordinate foreach list.
+        if not nonempty or any(_resolve_xcolor_rgb(it, defs) is None for it in nonempty):
+            return m.group(0)
+        return f"{head}{{{','.join(_fix_item(it) for it in items)}}}"
+
+    return _FOREACH_LIST_RE.sub(_sub, body)
 
 
 # --------------------------------------------------------------------------
@@ -686,6 +1120,16 @@ _OPT_BLOCK_RE = re.compile(r"\[([^\[\]]*)\]")
 _FILL_VALUE_RE = re.compile(rf"(?<![A-Za-z])fill\s*=\s*{_COLOUR_VALUE}")
 #: an explicit ``text=`` key already present in the block (author intent).
 _TEXT_KEY_PRESENT_RE = re.compile(r"(?<![A-Za-z])text\s*=")
+#: a ``NAME/.style={...}`` definition inside a top-level options block.  A pale
+#: fill inside ONE style must inject its label ink into THAT style only -- a
+#: block-level injection leaks ``text=black`` onto every node that inherits an
+#: UNfilled sibling style, blacking out its label on the dark page (D-234
+#: tikz-w1-06: the ``base`` style has no fill, but the shared block-level
+#: injection blacked out the ``monitor`` node that uses it).  The value capture
+#: is simple-brace only; a style whose value itself nests braces (an arrow tip
+#: ``-{Stealth}``) is left to the block path, which is harmless for the
+#: no-fill styles that shape is used on.
+_STYLE_DEF_RE = re.compile(r"([A-Za-z@][\w@ ]*/\.style\s*=\s*)\{([^{}]*)\}")
 
 
 def _pale_fill_label_ink(body: str, theme: str, applied: list[str]) -> str:
@@ -693,25 +1137,52 @@ def _pale_fill_label_ink(body: str, theme: str, applied: list[str]) -> str:
     if theme != "dark":
         return body
 
+    def _fill_needs_dark_ink(fill_tok: str):
+        """(fill_rgb, black_ratio) when a pale fill washes out the light ink."""
+        fill_rgb = _resolve_xcolor_rgb(fill_tok)
+        if fill_rgb is None:
+            return None                    # \definecolor name / gradient: skip
+        if _contrast_ratio(_DARK_DEFAULT_INK, fill_rgb) >= _CONTRAST_FLOOR:
+            return None                    # dark/mid fill: light default ink ok
+        return fill_rgb, _contrast_ratio((0, 0, 0), fill_rgb)
+
+    def _style_sub(sm: re.Match) -> str:
+        head, val = sm.group(1), sm.group(2)
+        if _TEXT_KEY_PRESENT_RE.search(val):
+            return sm.group(0)             # this style already sets its ink
+        fm = _FILL_VALUE_RE.search(val)
+        if fm is None:
+            return sm.group(0)             # unfilled style: keep light ink
+        need = _fill_needs_dark_ink(fm.group(1))
+        if need is None:
+            return sm.group(0)
+        _, black_ratio = need
+        applied.append(
+            f"{head.strip()} fill={fm.group(1)} + default light ink -> added "
+            f"text=black to THIS style only (pale fill washes the light "
+            f"default ink out; black label ink is {black_ratio:.2f}:1)")
+        return head + "{" + val + ",text=black}"
+
     def _block_sub(m: re.Match) -> str:
         block = m.group(1)
+        # A style-DEFINITION block must inject per style, never block-wide: a
+        # block-wide text=black leaks onto nodes that inherit an unfilled
+        # sibling style (D-234 tikz-w1-06).
+        if "/.style" in block:
+            return "[" + _STYLE_DEF_RE.sub(_style_sub, block) + "]"
         if _TEXT_KEY_PRESENT_RE.search(block):
             return m.group(0)              # author chose the label ink already
         fm = _FILL_VALUE_RE.search(block)
         if fm is None:
             return m.group(0)
-        fill_rgb = _resolve_xcolor_rgb(fm.group(1))
-        if fill_rgb is None:
-            return m.group(0)              # \definecolor name / gradient: skip
-        default_ratio = _contrast_ratio(_DARK_DEFAULT_INK, fill_rgb)
-        if default_ratio >= _CONTRAST_FLOOR:
-            return m.group(0)              # dark/mid fill: light default ink ok
-        black_ratio = _contrast_ratio((0, 0, 0), fill_rgb)
+        need = _fill_needs_dark_ink(fm.group(1))
+        if need is None:
+            return m.group(0)
+        _, black_ratio = need
         applied.append(
             f"fill={fm.group(1)} + default light ink -> added text=black "
-            f"(dark-page default ink #EDEDED is {default_ratio:.2f}:1 below "
-            f"{_CONTRAST_FLOOR:g}:1 on this pale fill; black label ink is "
-            f"{black_ratio:.2f}:1)")
+            f"(dark-page default ink #EDEDED is below {_CONTRAST_FLOOR:g}:1 on "
+            f"this pale fill; black label ink is {black_ratio:.2f}:1)")
         return "[" + block + ",text=black]"
 
     return _OPT_BLOCK_RE.sub(_block_sub, body)
@@ -964,6 +1435,26 @@ def _normalize(body: str, theme: str = "light") -> tuple[str, tuple[str, ...]]:
     # a colour already legible in the active theme is left exactly as authored,
     # which is why the light and dark renders never regress each other.
     body = _clamp_body_colours(body, theme, applied)
+
+    # 8b. Categorical \foreach palette clamp (D-238).  The step-8 clamp
+    # deliberately leaves ``\foreach ... in {red,blue,...}`` value lists alone
+    # (rewriting a token there would inject a comma and abort the loop).  This
+    # pass re-tints only the below-floor items of an all-colour foreach list
+    # toward the surface-opposite endpoint using a comma-free NAME!p!black /
+    # NAME!p!white blend, so the list structure is preserved and a categorical
+    # palette stays legible on the surface the renderer was given.  Runs in both
+    # themes; a palette already legible on the active surface is byte-identical.
+    body = _clamp_foreach_palette(body, theme, applied)
+
+    # 8c. On-plate default ink (D-358).  The step-8 clamp lifts author colour
+    # tokens against a detected plate, but an UNCOLOURED element still draws in
+    # the page-relative baked ink, which can be illegible on the plate
+    # (circuitikz-w4-05: black light-page ink on the #16324A plate = 1.59:1).
+    # Inject a plate-legible default \color right after a sole author plate fill
+    # so uncoloured ink is chosen for the plate.  No-op when the baked ink is
+    # already legible (dark #EDEDED on the plate), so the dark render is
+    # byte-identical.
+    body = _plate_default_ink(body, theme, applied)
 
     # 9. Dark-theme pale-fill label ink (D-234).  Runs after the clamp so it
     # sees fills in resolved form (``fill={rgb,...}`` / ``fill=green!20``).

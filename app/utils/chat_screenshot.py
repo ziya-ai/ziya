@@ -78,6 +78,18 @@ SETTLE_MS = 1200
 _MATH_HINT = re.compile(r"(\$\$|\\\(|\\\[|```\s*(?:math|latex)|\\begin\{)")
 _INLINE_MATH_HINT = re.compile(r"\$(?=\S)[^$\n]{1,200}(?<=\S)\$")
 
+# Strong embedded-diagram signal.  An assistant message can embed a fenced
+# ``mermaid`` diagram; the mermaid plugin mounts ASYNCHRONOUSLY (lazy chunk +
+# layout), so the message text (which includes the diagram's own source in the
+# transient "Specification" panel) is present well before the rendered ``svg``
+# exists.  Without a gate, the render predicate passes on that early text and
+# the screenshot catches the source panel instead of the diagram (D-327,
+# chat-message-w1-12: an intermittent embedded-mermaid capture race).  Used
+# only to decide whether to REQUIRE a rendered diagram ``svg`` in the wait
+# predicate; a false negative merely weakens the wait, it cannot corrupt the
+# screenshot.
+_MERMAID_HINT = re.compile(r"```+\s*mermaid\b", re.IGNORECASE)
+
 
 def expects_math(definition: str) -> bool:
     """True when the document plausibly contains math that must typeset.
@@ -89,6 +101,18 @@ def expects_math(definition: str) -> bool:
     if _MATH_HINT.search(definition):
         return True
     return bool(_INLINE_MATH_HINT.search(definition))
+
+
+def expects_mermaid(definition: str) -> bool:
+    """True when the document embeds a fenced ``mermaid`` diagram.
+
+    Drives the wait predicate only: when true, the predicate additionally
+    requires the rendered diagram ``svg`` to exist before it reports the
+    message rendered, so the capture cannot fire while the async mermaid
+    plugin is still showing its source ("Specification") panel.  A false
+    negative merely weakens the wait; it cannot corrupt the screenshot.
+    """
+    return bool(_MERMAID_HINT.search(definition or ""))
 
 
 def derive_locators(definition: str, limit: int = 4) -> list[str]:
@@ -169,19 +193,42 @@ def build_presence_predicate(locators: list[str], role: str) -> str:
 
 
 def build_rendered_predicate(locators: list[str], role: str,
-                             require_math: bool) -> str:
-    """The deferred mount completed and, when math was requested, typeset.
+                             require_math: bool,
+                             require_mermaid: bool = False) -> str:
+    """The deferred mount completed and, when requested, math typeset and any
+    embedded mermaid diagram rendered.
 
-    The math gate is emitted CONDITIONALLY rather than as a runtime
-    ``if (false)`` branch.  A dead branch works at runtime but leaves the
-    ``.katex`` selector present in the predicate for every document, so
-    "this prose render does not wait on math" becomes unassertable -- the
-    only way to check it would be to execute the JS.  Emitting only the
+    Each gate is emitted CONDITIONALLY rather than as a runtime ``if (false)``
+    branch.  A dead branch works at runtime but leaves the ``.katex`` /
+    diagram-``svg`` selector present in the predicate for every document, so
+    "this prose render does not wait on math/mermaid" becomes unassertable --
+    the only way to check it would be to execute the JS.  Emitting only the
     clause that applies keeps the contract statically inspectable.
+
+    The mermaid gate closes an embedded-diagram capture race (D-327): the
+    mermaid plugin mounts asynchronously, and until its ``svg`` exists the
+    message shows the transient source ("Specification") panel whose text
+    already satisfies the presence check.  Each ``[data-visualization-type=
+    "mermaid"]`` container must therefore hold a rendered ``svg`` before the
+    message reads as rendered -- a container still showing a plugin error card
+    counts as settled (like a KaTeX error, the picture is the finding), so a
+    genuinely broken diagram does not hang the wait.
     """
     math_gate = (
         "        if (!el.querySelector('.katex')) return false;\n"
         if require_math else ""
+    )
+    mermaid_gate = (
+        "        {\n"
+        "            const vizList = el.querySelectorAll("
+        "'[data-visualization-type=\"mermaid\"]');\n"
+        "            for (const v of vizList) {\n"
+        "                if (v.querySelector('svg')) continue;\n"
+        "                if (v.querySelector('[data-diagram-error]')) continue;\n"
+        "                return false;\n"
+        "            }\n"
+        "        }\n"
+        if require_mermaid else ""
     )
     return f"""() => {{
         const el = {build_locator_js(locators, role)};
@@ -189,7 +236,7 @@ def build_rendered_predicate(locators: list[str], role: str,
         const t = (el.innerText || '').trim();
         if (!t || t === '\u2026') return false;
         if (el.querySelector('.message-placeholder')) return false;
-{math_gate}        return true;
+{math_gate}{mermaid_gate}        return true;
     }}"""
 
 
@@ -469,11 +516,13 @@ async def render_chat_message(
 
     locators = derive_locators(definition)
     require_math = expects_math(definition)
+    require_mermaid = expects_mermaid(definition)
     diag: dict[str, Any] = {
         "project_id": project_id,
         "chat_id": chat_id,
         "locators": locators,
         "require_math": require_math,
+        "require_mermaid": require_mermaid,
         "rendered_confirmed": False,
     }
     console: list[str] = []
@@ -551,16 +600,19 @@ async def render_chat_message(
         # screenshot of a failed render is exactly what the caller needs.
         try:
             await page.wait_for_function(
-                build_rendered_predicate(locators, role, require_math),
+                build_rendered_predicate(
+                    locators, role, require_math, require_mermaid
+                ),
                 timeout=timeout_ms,
             )
             diag["rendered_confirmed"] = True
         except Exception:
             diag["render_wait_timeout"] = True
             logger.warning(
-                "chat-message render did not confirm (math expected=%s); "
-                "screenshotting anyway so the defect is visible",
-                require_math,
+                "chat-message render did not confirm (math expected=%s, "
+                "mermaid expected=%s); screenshotting anyway so the defect "
+                "is visible",
+                require_math, require_mermaid,
             )
 
         await page.wait_for_timeout(SETTLE_MS)

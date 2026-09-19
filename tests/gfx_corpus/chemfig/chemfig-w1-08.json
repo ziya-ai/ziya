@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{H-[:-30]\\lewis{2:6:,O}-[:30]H}",
+ "intent": "Lone pairs via \\lewis (chemfig's own bundled Lewis module, loaded by the profile's extra_preamble) on the oxygen of water."
+}
