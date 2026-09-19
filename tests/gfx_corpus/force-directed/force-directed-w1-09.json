@@ -1,0 +1,85 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "type": "force-directed",
+  "data": {
+   "nodes": [
+    {
+     "id": "sensor-a",
+     "group": 0,
+     "size": 10
+    },
+    {
+     "id": "sensor-b",
+     "group": 0,
+     "size": 10
+    },
+    {
+     "id": "sensor-c",
+     "group": 0,
+     "size": 10
+    },
+    {
+     "id": "collector",
+     "group": 1,
+     "size": 18
+    },
+    {
+     "id": "stream",
+     "group": 2,
+     "size": 14
+    },
+    {
+     "id": "warehouse",
+     "group": 3,
+     "size": 20
+    },
+    {
+     "id": "dashboard",
+     "group": 4,
+     "size": 14
+    },
+    {
+     "id": "alerting",
+     "group": 5,
+     "size": 14
+    }
+   ],
+   "links": [
+    {
+     "source": "sensor-a",
+     "target": "collector"
+    },
+    {
+     "source": "sensor-b",
+     "target": "collector"
+    },
+    {
+     "source": "sensor-c",
+     "target": "collector"
+    },
+    {
+     "source": "collector",
+     "target": "stream"
+    },
+    {
+     "source": "stream",
+     "target": "warehouse"
+    },
+    {
+     "source": "stream",
+     "target": "alerting"
+    },
+    {
+     "source": "warehouse",
+     "target": "dashboard"
+    },
+    {
+     "source": "alerting",
+     "target": "dashboard"
+    }
+   ]
+  }
+ },
+ "intent": "data.{nodes,links} nested container form, which the plugin docblock lists as an accepted spec shape alongside the flat form. Same graph content as the baseline family so any difference is purely the container shape."
+}

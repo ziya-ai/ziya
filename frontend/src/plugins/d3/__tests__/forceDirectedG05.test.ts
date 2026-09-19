@@ -210,9 +210,12 @@ describe('D-021 — node labels truncated and haloed', () => {
       definition: JSON.stringify({ nodes: [{ id: 'A' }], links: [] }),
     });
     const longNode = { id: 'X'.repeat(50) };
+    // Middle truncation (D-396): the label is capped at FORCE_MAX_LABEL_CHARS and
+    // carries an ellipsis, but keeps a head AND a tail (so distinct long labels
+    // sharing a prefix stay distinguishable) — the ellipsis is no longer at the end.
     const truncated = rec.texts.some((fn) => {
       const out = String(fn(longNode));
-      return out.length <= FORCE_MAX_LABEL_CHARS && out.endsWith('\u2026');
+      return out.length <= FORCE_MAX_LABEL_CHARS && out.includes('\u2026');
     });
     expect(truncated).toBe(true);
   });
