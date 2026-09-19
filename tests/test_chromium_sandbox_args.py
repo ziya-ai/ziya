@@ -63,6 +63,20 @@ class TestChromiumLaunchArgs(unittest.TestCase):
             self.assertIn("--use-angle=swiftshader", args)
             self.assertIn("--enable-unsafe-swiftshader", args)
 
+    def test_webgl_survives_gpu_process_crashes(self):
+        # D-237 follow-up: SwiftShader is only the GPU process's FIRST life.
+        # Chromium's default crash fallback relaunches the GPU process with
+        # --use-gl=disabled after the third crash (permanent for the browser
+        # lifetime), and its per-origin 3D-API blocklist hides WebGL after
+        # repeated context losses. A long-lived server hit both: day-old
+        # renderers showed only the grey "WebGL is not supported" panel.
+        # Both valves must be off in BOTH sandbox modes. The behavioural
+        # half of this invariant is tests/test_headless_webgl_survives_gpu_crash.py.
+        for kwargs in ({}, {"no_sandbox": True}):
+            args = build_chromium_launch_args(**kwargs)
+            self.assertIn("--disable-gpu-process-crash-limit", args)
+            self.assertIn("--disable-domain-blocking-for-3d-apis", args)
+
     def test_software_webgl_flags_not_neutralised_by_disable_gpu(self):
         # The combined invariant that is the actual D-045 fix: the SwiftShader
         # flags are only effective when --disable-gpu is absent. Assert both
