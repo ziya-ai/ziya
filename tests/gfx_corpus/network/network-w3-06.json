@@ -1,0 +1,116 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 380,
+  "nodes": [
+   {
+    "id": 1,
+    "label": "hub 1",
+    "group": "core",
+    "size": 22,
+    "x": 300,
+    "y": 110
+   },
+   {
+    "id": 2,
+    "label": "svc 2",
+    "group": "svc",
+    "size": 14,
+    "x": 140,
+    "y": 90
+   },
+   {
+    "id": 3,
+    "label": "svc 3",
+    "group": "svc",
+    "size": 14,
+    "x": 460,
+    "y": 90
+   },
+   {
+    "id": 4,
+    "label": "db 4",
+    "group": "data",
+    "size": 18,
+    "x": 200,
+    "y": 260
+   },
+   {
+    "id": 5,
+    "label": "db 5",
+    "group": "data",
+    "size": 18,
+    "x": 400,
+    "y": 260
+   },
+   {
+    "id": 6,
+    "label": "edge 6",
+    "group": "other",
+    "size": 9,
+    "x": 80,
+    "y": 320
+   }
+  ],
+  "edges": [
+   {
+    "source": 1,
+    "target": 2,
+    "weight": 6
+   },
+   {
+    "source": 1,
+    "target": 3,
+    "weight": 4
+   },
+   {
+    "source": 1,
+    "target": 4,
+    "weight": 2
+   },
+   {
+    "source": 4,
+    "target": 5,
+    "weight": 1
+   },
+   {
+    "source": 2,
+    "target": 6,
+    "weight": 8
+   }
+  ],
+  "groups": [
+   {
+    "id": "modem_board",
+    "label": "board one",
+    "members": [
+     1,
+     2,
+     3
+    ]
+   },
+   {
+    "id": "data_board",
+    "label": "board two",
+    "members": [
+     4,
+     5
+    ]
+   }
+  ],
+  "style": {
+   "labelColor": "#7e7e7e",
+   "linkColor": "#7e7e7e",
+   "fontSize": 13,
+   "nodeColors": {
+    "core": "#4e79a7",
+    "svc": "#59a14f",
+    "data": "#b07aa1",
+    "other": "#e15759"
+   }
+  }
+ },
+ "intent": "seven features at once: groups, per-node size, per-link weight, style.nodeColors by group, fontSize, `edges` alias, numeric ids"
+}

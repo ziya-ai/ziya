@@ -1,0 +1,82 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 340,
+  "nodes": [
+   {
+    "id": "dup",
+    "label": "dup #1",
+    "x": 120,
+    "y": 90
+   },
+   {
+    "id": "dup",
+    "label": "dup #2",
+    "x": 300,
+    "y": 90
+   },
+   {
+    "id": "self",
+    "label": "self loop",
+    "x": 480,
+    "y": 90
+   },
+   {
+    "id": "c1",
+    "label": "cycle A",
+    "x": 150,
+    "y": 250
+   },
+   {
+    "id": "c2",
+    "label": "cycle B",
+    "x": 320,
+    "y": 250
+   },
+   {
+    "id": "c3",
+    "label": "cycle C",
+    "x": 490,
+    "y": 250
+   }
+  ],
+  "links": [
+   {
+    "source": "self",
+    "target": "self",
+    "weight": 3
+   },
+   {
+    "source": "dup",
+    "target": "dup"
+   },
+   {
+    "source": "dup",
+    "target": "self"
+   },
+   {
+    "source": "c1",
+    "target": "c2"
+   },
+   {
+    "source": "c2",
+    "target": "c3"
+   },
+   {
+    "source": "c3",
+    "target": "c1"
+   },
+   {
+    "source": "c1",
+    "target": "c1"
+   }
+  ],
+  "style": {
+   "labelColor": "#7e7e7e",
+   "linkColor": "#7e7e7e"
+  }
+ },
+ "intent": "duplicate node ids, self-referencing edges (source==target), and a 3-cycle; explicit coords so geometry is not confounded"
+}

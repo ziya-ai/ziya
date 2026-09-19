@@ -59,10 +59,54 @@ export function replaceUnquotedSemicolons(body: string): string {
 }
 
 /**
+ * Insert a missing element/member separator between a value-CLOSER and a
+ * following value-OPENER, OUTSIDE string literals (D-442 network-w4-06: a
+ * `nodes` array element `{...}` followed only by whitespace then the next
+ * `{...}` with no comma between them). Scans char-by-char tracking quote state;
+ * when a `}` or `]` is emitted and the next non-whitespace char is a `{` or `[`,
+ * a comma is inserted immediately after the closer. A pair already separated by
+ * a `,`/`:`/other token never triggers, so a well-formed body is byte-identical;
+ * strings are copied verbatim so a value literally containing `}{` or `][` is
+ * never rewritten. Pure/testable.
+ */
+export function insertMissingItemCommas(body: string): string {
+    let out = '';
+    let inStr = false;
+    let quote = '';
+    let esc = false;
+    for (let i = 0; i < body.length; i++) {
+        const ch = body[i];
+        if (inStr) {
+            out += ch;
+            if (esc) { esc = false; }
+            else if (ch === '\\') { esc = true; }
+            else if (ch === quote) { inStr = false; }
+            continue;
+        }
+        if (ch === '"' || ch === "'") {
+            inStr = true; quote = ch; out += ch;
+            continue;
+        }
+        out += ch;
+        if (ch === '}' || ch === ']') {
+            // Look ahead past whitespace for a value opener; if found, the two
+            // adjacent values dropped their separator.
+            let j = i + 1;
+            while (j < body.length && /\s/.test(body[j])) j++;
+            if (j < body.length && (body[j] === '{' || body[j] === '[')) {
+                out += ',';
+            }
+        }
+    }
+    return out;
+}
+
+/**
  * Tolerant parse of a JSON-ish `definition` object string (D-208). Tries strict
  * `JSON.parse` first (fast path, byte-identical to the old behaviour), then
  * JSON5 (trailing commas, unquoted keys, single quotes, comments), then JSON5
- * with unquoted semicolons folded to commas — after stripping a markdown fence,
+ * with unquoted semicolons folded to commas, then with missing element/member
+ * separators inserted too (D-442) — after stripping a markdown fence,
  * normalising smart quotes and slicing to the outermost {...} (so leading prose
  * / trailing `;` are ignored). Returns the parsed object, or `undefined` when
  * unrecoverable. Pure/DOM-free for unit testing.
@@ -83,7 +127,13 @@ export function lenientParseNetworkObject(raw: any): any {
     } catch (_e2) { /* fall through */ }
     try {
         return JSON5.parse(replaceUnquotedSemicolons(body));
-    } catch (_e3) {
+    } catch (_e3) { /* fall through */ }
+    try {
+        // Missing comma between adjacent array elements / object members
+        // (D-442), combined with the semicolon fold so a spec that slips BOTH
+        // (network-w4-06) still recovers.
+        return JSON5.parse(insertMissingItemCommas(replaceUnquotedSemicolons(body)));
+    } catch (_e4) {
         return undefined;
     }
 }
@@ -610,6 +660,298 @@ export function computeGridLayout(nodes: any[], width: number, height: number): 
     return nodes;
 }
 
+/**
+ * Spread exact- or near-coincident node positions apart deterministically
+ * (D-447).
+ *
+ * WHY: when nodes carry explicit x/y the force simulation (and its
+ * `forceCollide`) is BYPASSED (`needsLayout` is false). Authored coordinates
+ * that coincide — network-w3-05 places five nodes at (180,120) — are then drawn
+ * one on top of another as a single disc with five labels mashed together, and
+ * near-coincident pairs overprint their labels. This runs a light de-collision
+ * pass ONLY on the explicit-coordinate path: each node that lands within
+ * `minSep` of an already-placed node is nudged onto a deterministic golden-angle
+ * spiral around its authored position until it clears the separation, so the
+ * layout stays close to what the author intended while no two discs coincide.
+ * Non-finite coordinates are recentered first. Mutates x/y in place and returns
+ * the array. Pure/DOM-free. Exported for regression testing.
+ */
+export function decollideCoincidentNodes(
+    nodes: any[],
+    width: number,
+    height: number,
+    minSep = 24,
+    defaultRadius: number = NETWORK_DEFAULT_NODE_SIZE,
+): any[] {
+    if (!Array.isArray(nodes)) return [];
+    const w = Number.isFinite(width) && width > 0 ? width : 600;
+    const h = Number.isFinite(height) && height > 0 ? height : 400;
+    const sep = Number.isFinite(minSep) && minSep > 0 ? minSep : 24;
+    const placed: Array<{ x: number; y: number }> = [];
+    const GOLDEN = Math.PI * (3 - Math.sqrt(5)); // ~2.399 rad
+    for (const n of nodes) {
+        if (!n || typeof n !== 'object') continue;
+        void defaultRadius; // reserved for future radius-aware separation
+        let bx = Number(n.x);
+        let by = Number(n.y);
+        if (!Number.isFinite(bx)) bx = w / 2;
+        if (!Number.isFinite(by)) by = h / 2;
+        let x = bx;
+        let y = by;
+        let attempt = 0;
+        const tooClose = () => placed.some(p => Math.hypot(p.x - x, p.y - y) < sep);
+        while (attempt < 128 && tooClose()) {
+            const ring = 1 + Math.floor(attempt / 6);
+            const ang = attempt * GOLDEN;
+            const rad = sep * ring;
+            x = bx + rad * Math.cos(ang);
+            y = by + rad * Math.sin(ang);
+            attempt++;
+        }
+        n.x = x;
+        n.y = y;
+        placed.push({ x, y });
+    }
+    return nodes;
+}
+
+/**
+ * Scale a set of node positions to FIT inside the viewport (shrink + centre)
+ * instead of clamping every ejected node onto the perimeter (D-440).
+ *
+ * WHY: for `safeNodes.length <= NETWORK_FORCE_LAYOUT_MAX_NODES` the force branch
+ * runs with no bounding force strong enough for a dense or undersized canvas, so
+ * the graph is ejected off the viewBox; `clampNodePositionsToViewport` then pins
+ * every ejected node onto the canvas PERIMETER, stacking discs coincident with
+ * most edges and labels lost (network-w2-06 60 nodes / w2-09 40 nodes on 80x60).
+ * A uniform scale about the layout's bounding-box centre maps the WHOLE graph
+ * back into `[0,w]x[0,h]` preserving relative spacing, so the interior is filled
+ * rather than the rim.
+ *
+ * It is a NO-OP for a layout that already fits and sits inside the viewport
+ * (grids, sensible authored coordinates), so an intentional layout is never
+ * rescaled; a layout that fits but was translated off-canvas is only recentred
+ * (scale 1); only an over-large layout is scaled down. Mutates x/y in place and
+ * returns the array. Pure/DOM-free. Exported for regression testing.
+ */
+export function fitNodePositionsToViewport(
+    nodes: any[],
+    width: number,
+    height: number,
+    padding = 8,
+    defaultRadius: number = NETWORK_DEFAULT_NODE_SIZE,
+): any[] {
+    if (!Array.isArray(nodes)) return [];
+    const w = Number.isFinite(width) && width > 0 ? width : 600;
+    const h = Number.isFinite(height) && height > 0 ? height : 400;
+    const pad = Number.isFinite(padding) && padding >= 0 ? padding : 8;
+    const pts = nodes.filter(
+        (n: any) => n && typeof n === 'object'
+            && Number.isFinite(Number(n.x)) && Number.isFinite(Number(n.y)),
+    );
+    if (pts.length < 2) return nodes;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, maxR = defaultRadius;
+    for (const n of pts) {
+        const x = Number(n.x), y = Number(n.y);
+        const r = Number.isFinite(Number(n.size)) && Number(n.size) > 0 ? Number(n.size) : defaultRadius;
+        if (r > maxR) maxR = r;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+    }
+    const bboxW = maxX - minX;
+    const bboxH = maxY - minY;
+    const availW = Math.max(1, w - 2 * (pad + maxR));
+    const availH = Math.max(1, h - 2 * (pad + maxR));
+    const fits = bboxW <= availW && bboxH <= availH;
+    const insideViewport = (minX - maxR) >= 0 && (minY - maxR) >= 0
+        && (maxX + maxR) <= w && (maxY + maxR) <= h;
+    if (fits && insideViewport) return nodes; // well-behaved layout: untouched
+    const scale = fits ? 1 : Math.min(availW / (bboxW || 1), availH / (bboxH || 1));
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    for (const n of pts) {
+        n.x = w / 2 + (Number(n.x) - cx) * scale;
+        n.y = h / 2 + (Number(n.y) - cy) * scale;
+    }
+    return nodes;
+}
+
+/**
+ * Smallest centre-to-centre distance between any two positioned nodes, or
+ * `Infinity` when fewer than two nodes carry finite coordinates. O(n^2), used to
+ * derive an anti-overprint font cap. Pure/DOM-free. Exported for testing.
+ */
+export function minNearestNeighborGap(nodes: any[]): number {
+    if (!Array.isArray(nodes)) return Infinity;
+    const pts = nodes
+        .filter((n: any) => n && typeof n === 'object'
+            && Number.isFinite(Number(n.x)) && Number.isFinite(Number(n.y)))
+        .map((n: any) => ({ x: Number(n.x), y: Number(n.y) }));
+    if (pts.length < 2) return Infinity;
+    let min = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+        for (let j = i + 1; j < pts.length; j++) {
+            const d = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
+            if (d < min) min = d;
+        }
+    }
+    return min;
+}
+
+/**
+ * Cap the label font so a label is never taller than the inter-node gap (D-446;
+ * also the tall/wide-extreme half of D-441).
+ *
+ * WHY: `effectiveNetworkFontSize` boosts the nominal size by `1/downscale` to
+ * clear the on-screen legibility floor after the responsive downscale, but on an
+ * extreme-aspect canvas the downscale is dominated by one axis and the boosted
+ * font (e.g. ~60 viewBox units on a 200x3000 canvas whose node pitch is only 50)
+ * exceeds the node spacing, so every label overprints its neighbour and hides
+ * the discs and edges. Clamping to `0.85 * minGap` keeps labels within the gap.
+ * It never ENLARGES a font and never drops below a small floor, so a comfortably
+ * spaced graph (gap >> font) is returned unchanged. Pure/DOM-free. Exported for
+ * testing.
+ */
+export function capFontToNodeSpacing(fontSizePx: number, minGap: number, floorPx = 6): number {
+    const font = Number.isFinite(Number(fontSizePx)) && Number(fontSizePx) > 0 ? Number(fontSizePx) : 12;
+    if (!Number.isFinite(minGap) || minGap <= 0) return font;
+    return Math.max(floorPx, Math.min(font, minGap * 0.85));
+}
+
+/**
+ * Effective label-halo stroke width, returning 0 (halo suppressed) when the
+ * background-coloured halo would ERASE the graph (D-441).
+ *
+ * WHY: labels carry a canvas-coloured halo painted under the glyph so they stay
+ * legible over circles/the edge fan at moderate density (D-200). But when labels
+ * are far wider than the node spacing AND there are enough of them to tile —
+ * network-w2-07 packs 90 nodes at ~33px pitch across a 3000x200 strip, fonts
+ * boosted for the 15:1 downscale — those halos merge into a SOLID band of
+ * background colour that paints over every circle and edge, so the diagram reads
+ * as a blank surface in both themes. Suppression requires BOTH a high node count
+ * (`nodeCount >= bandMinNodes`, so a handful of near neighbours — the D-200 case
+ * — keep their halo) AND a halo-padded label footprint wider than the tightest
+ * gap (adjacent halos would merge). Otherwise the normal ~0.18*font halo is used,
+ * preserving D-200. Pure/DOM-free. Exported for testing.
+ */
+export function labelHaloWidth(
+    fontSizePx: number,
+    minGap: number,
+    longestLabelChars: number,
+    nodeCount = 0,
+    bandMinNodes = 30,
+    edgeCount = 0,
+): number {
+    const font = Number.isFinite(Number(fontSizePx)) && Number(fontSizePx) > 0 ? Number(fontSizePx) : 12;
+    let base = Math.max(2, font * 0.18);
+    const chars = Number.isFinite(Number(longestLabelChars)) && Number(longestLabelChars) > 0
+        ? Number(longestLabelChars) : 0;
+    const count = Number.isFinite(Number(nodeCount)) ? Number(nodeCount) : 0;
+    const edges = Number.isFinite(Number(edgeCount)) && Number(edgeCount) > 0 ? Number(edgeCount) : 0;
+    // Dense edge mesh: on a near-complete graph the low-opacity link fan lays
+    // ~40% ink over the interior and buries the interior node labels, which the
+    // thin 0.18*font halo cannot rescue (D-449 K25: 25 nodes / 300 edges, mean
+    // degree 24). Widen the canvas-coloured halo to 0.35*font so each glyph
+    // punches a clean patch through the mesh. Gated on mean degree so ordinary
+    // sparse graphs (the D-200 case) keep the thin halo and are unchanged. The
+    // widen happens BEFORE the band-merge suppression below, so a dense-mesh
+    // graph that would also tile into a band is still suppressed (return 0),
+    // never widened into a solid band.
+    const meanDegree = count > 1 && edges > 0 ? (2 * edges) / count : 0;
+    if (meanDegree >= 8) base = Math.max(base, font * 0.35);
+    if (!Number.isFinite(minGap) || minGap <= 0 || chars <= 0) return base;
+    if (count < bandMinNodes) return base; // too few labels to tile into a band (D-200 kept)
+    const estLabelWidth = chars * 0.55 * font;
+    // The halo-padded label footprint. When it spans more than the tightest
+    // node gap the halos of adjacent labels MERGE into a continuous band of
+    // background colour that paints over the circles and edges (D-441 w2-07:
+    // even 2-char labels boosted for a 15:1 downscale tile at the 33px pitch).
+    // Suppress the halo then so the topology shows through the overlapping
+    // labels; a comfortably-spaced graph keeps the D-200 halo.
+    if (estLabelWidth + 2 * base > minGap) return 0;
+    return base;
+}
+
+/**
+ * Vertical offset (dy) of a node's label baseline from the node centre, dropping
+ * the label BELOW the node when there is not enough headroom to show it above
+ * without clipping the top of the viewBox (D-443).
+ *
+ * WHY: the label dy was hardcoded to `-(size) - 5`, with no clamp against the
+ * viewBox top, so any node whose centre sits within (size + 5 + glyph-ascent) of
+ * y=0 lost the upper part of its label — the authored top row in w2-02/w2-12 and
+ * the grid hub in w2-03 (baseline y = 25 - 26 - 5 < 0, the sole caption entirely
+ * clipped). When the label would clip above y=0 it is placed below the node
+ * instead (`size + font`), keeping it fully visible. Pure/DOM-free. Exported for
+ * testing.
+ */
+export function nodeLabelDy(node: any, fontSizePx: number, defaultRadius: number = NETWORK_DEFAULT_NODE_SIZE): number {
+    const size = Number.isFinite(Number(node?.size)) && Number(node.size) > 0 ? Number(node.size) : defaultRadius;
+    const font = Number.isFinite(Number(fontSizePx)) && Number(fontSizePx) > 0 ? Number(fontSizePx) : 12;
+    const y = Number.isFinite(Number(node?.y)) ? Number(node.y) : 0;
+    const above = -(size) - 5;
+    const ascent = font * 0.8; // glyph rise above the baseline
+    if (y + above - ascent >= 0) return above; // whole label fits above the node
+    return size + font; // no headroom: drop the label below the node
+}
+
+/**
+ * Baseline y of a group's caption, placed ABOVE the group rect's top edge so it
+ * never overprints the topmost member node's label (D-445).
+ *
+ * WHY: the caption was drawn at `rect.y + fontSizePx + 2`, which coincides with
+ * the topmost member's label baseline (`node.y - size - 5`), so every group
+ * caption printed on top of its top-left member's label into an unreadable
+ * composite (2/2 captions in w1-11, 30/30 in w2-13). Placing the caption 4px
+ * above the rect's top border separates it from the member labels (which sit at
+ * or below the rect top); a clamp keeps the caption's own ascenders from
+ * clipping above y=0. Pure/DOM-free. Exported for testing.
+ */
+export function groupCaptionY(rectY: number, fontSizePx: number): number {
+    const font = Number.isFinite(Number(fontSizePx)) && Number(fontSizePx) > 0 ? Number(fontSizePx) : 12;
+    const ry = Number.isFinite(Number(rectY)) ? Number(rectY) : 0;
+    const ascent = font * 0.8;
+    return Math.max(ry - 4, ascent);
+}
+
+/**
+ * SVG path for a self-referencing edge (source === target), drawn as a teardrop
+ * loop leaving and returning to the TOP of the node (D-448).
+ *
+ * WHY: links were drawn as straight <line> elements with x1/y1 from source and
+ * x2/y2 from target. A self-loop (source === target) yields x1==x2, y1==y2 — a
+ * zero-length, invisible line, so authored self-edges (network-w3-04: self->self
+ * weight 3, c1->c1) simply vanished with no warning. A self-edge cannot be a
+ * straight segment; it must be an arc. This returns a cubic-bezier loop whose two
+ * endpoints coincide at the node's top edge and whose control points push it up
+ * and out, so the loop sits above the node and is clamped so its apex never
+ * clips above y=0. Pure/DOM-free. Exported for testing.
+ */
+export function selfLoopPath(
+    cx: number,
+    cy: number,
+    nodeRadius: number,
+    loopScale = 1.6,
+): string {
+    const x = Number.isFinite(Number(cx)) ? Number(cx) : 0;
+    const y = Number.isFinite(Number(cy)) ? Number(cy) : 0;
+    const r = Number.isFinite(Number(nodeRadius)) && Number(nodeRadius) > 0
+        ? Number(nodeRadius) : NETWORK_DEFAULT_NODE_SIZE;
+    const scale = Number.isFinite(Number(loopScale)) && Number(loopScale) > 0 ? Number(loopScale) : 1.6;
+    const loop = r * scale;               // how far the loop bulges out/up
+    const anchorY = y - r;                // top edge of the node
+    // Push the loop apex up by ~2*loop; clamp so it never clips above y=0.
+    let apexY = anchorY - 2 * loop;
+    if (apexY < 0) apexY = 0;
+    // Two cubic control points spread symmetrically left/right of the anchor
+    // form a teardrop that leaves and returns to the same top-edge point.
+    const c1x = x - loop;
+    const c2x = x + loop;
+    return `M ${x} ${anchorY} C ${c1x} ${apexY}, ${c2x} ${apexY}, ${x} ${anchorY}`;
+}
+
 export interface NetworkColors {
     /** Effective canvas the foreground is resolved against. */
     effectiveBg: string;
@@ -885,13 +1227,43 @@ export const networkDiagramPlugin: D3RenderPlugin = {
                     .stop();
                 const ticks = Math.min(300, Math.max(50, safeNodes.length * 4));
                 for (let i = 0; i < ticks; i++) sim.tick();
+            } else if (!needsLayout) {
+                // Explicit authored coordinates bypass the force sim (and its
+                // forceCollide), so coincident/near-coincident authored nodes
+                // would stack into one disc with mashed labels (D-447 w3-05).
+                // Spread exact/near duplicates apart deterministically, close to
+                // their authored positions.
+                decollideCoincidentNodes(safeNodes, width, height);
             }
+
+            // Scale a force layout that was ejected off-canvas back INTO the
+            // viewport (shrink + centre) BEFORE clamping, so a dense/undersized
+            // graph is spread across the interior instead of being pinned into a
+            // coincident perimeter band (D-440 w2-06/w2-09). No-op for a layout
+            // that already fits inside the view (grids, authored coords), so an
+            // intentional layout is never rescaled.
+            fitNodePositionsToViewport(safeNodes, width, height);
 
             // Clamp every node inside the viewport so disconnected/ejected nodes
             // (repelled off-canvas with no link to pull them back) and a large
             // hub whose radius overhangs the edge are never silently clipped by
             // the SVG viewBox (Issue 31: catastrophic silent data loss).
             clampNodePositionsToViewport(safeNodes, width, height);
+
+            // Anti-overprint label sizing, computed from the FINAL node positions
+            // (post layout/fit/clamp): cap the label font to the node spacing so
+            // a boosted font on an extreme-aspect canvas cannot mash labels over
+            // the discs/edges (D-446 tall w2-08), and suppress the background
+            // halo when labels are so much wider than the gap that the halo tiles
+            // into a solid band erasing the topology (D-441 wide w2-07).
+            const minGap = minNearestNeighborGap(safeNodes);
+            const labelFontPx = capFontToNodeSpacing(fontSizePx, minGap);
+            let longestLabelChars = 0;
+            for (const n of safeNodes) {
+                const len = String((n as any).label ?? (n as any).id ?? '').length;
+                if (len > longestLabelChars) longestLabelChars = Math.min(NETWORK_MAX_LABEL_CHARS, len);
+            }
+            const haloWidth = labelHaloWidth(labelFontPx, minGap, longestLabelChars, safeNodes.length, 30, safeLinks.length);
 
             // Draw group containers AFTER node positions are known so each group's
             // dashed rect is derived from its OWN members' positions (D-202), not a
@@ -920,34 +1292,53 @@ export const networkDiagramPlugin: D3RenderPlugin = {
                     .attr('stroke-dasharray', '5,5');
                 boards.append('text')
                     .attr('x', (gr: any) => gr.rect.x + 4)
-                    .attr('y', (gr: any) => gr.rect.y + fontSizePx + 2)
+                    // Caption ABOVE the rect top edge so it never overprints the
+                    // topmost member node's label (D-445).
+                    .attr('y', (gr: any) => groupCaptionY(gr.rect.y, labelFontPx))
                     .text((gr: any) => String(gr.group.label ?? gr.group.id ?? ''))
                     .attr('fill', netColors.labelColor)
-                    .attr('font-size', fontSizePx);
+                    .attr('font-size', labelFontPx);
             }
 
-            // Draw links
+            // Draw links. A self-referencing edge (source === target) cannot be a
+            // straight <line> — x1==x2, y1==y2 collapses to a zero-length invisible
+            // segment (D-448). Split the edges: normal edges stay <line>, self-loops
+            // are drawn as teardrop-arc <path>s so an authored self-edge is visible.
+            const endpointNode = (l: any, key: 'source' | 'target'): any =>
+                typeof l[key] === 'object' ? l[key] : safeNodes.find((n: any) => n.id === l[key]);
+            const isSelfLoop = (l: any): boolean => {
+                const s = typeof l.source === 'object' ? l.source?.id : l.source;
+                const t = typeof l.target === 'object' ? l.target?.id : l.target;
+                return s !== undefined && s !== null && String(s) === String(t);
+            };
+            const straightLinks = safeLinks.filter((l: any) => !isSelfLoop(l));
+            const selfLinks = safeLinks.filter((l: any) => isSelfLoop(l));
+
             svg.selectAll('.link')
-                .data(safeLinks)
+                .data(straightLinks)
                 .enter()
                 .append('line')
                 .attr('class', 'link')
-                .attr('x1', (l: any) => {
-                    const n = typeof l.source === 'object' ? l.source : safeNodes.find((n: any) => n.id === l.source);
-                    return n?.x ?? 0;
+                .attr('x1', (l: any) => endpointNode(l, 'source')?.x ?? 0)
+                .attr('y1', (l: any) => endpointNode(l, 'source')?.y ?? 0)
+                .attr('x2', (l: any) => endpointNode(l, 'target')?.x ?? 0)
+                .attr('y2', (l: any) => endpointNode(l, 'target')?.y ?? 0)
+                .attr('stroke', () => netColors.linkColor)
+                .attr('stroke-opacity', () => netColors.linkOpacity)
+                .attr('stroke-width', (l: any) => l.weight || 1);
+
+            // Self-loops: a small teardrop arc leaving/returning to the node's top
+            // edge, using the same theme-resolved link colour and opacity (D-448).
+            svg.selectAll('.self-link')
+                .data(selfLinks)
+                .enter()
+                .append('path')
+                .attr('class', 'link self-link')
+                .attr('d', (l: any) => {
+                    const n = endpointNode(l, 'source');
+                    return selfLoopPath(n?.x ?? 0, n?.y ?? 0, n?.size || NETWORK_DEFAULT_NODE_SIZE);
                 })
-                .attr('y1', (l: any) => {
-                    const n = typeof l.source === 'object' ? l.source : safeNodes.find((n: any) => n.id === l.source);
-                    return n?.y ?? 0;
-                })
-                .attr('x2', (l: any) => {
-                    const n = typeof l.target === 'object' ? l.target : safeNodes.find((n: any) => n.id === l.target);
-                    return n?.x ?? 0;
-                })
-                .attr('y2', (l: any) => {
-                    const n = typeof l.target === 'object' ? l.target : safeNodes.find((n: any) => n.id === l.target);
-                    return n?.y ?? 0;
-                })
+                .attr('fill', 'none')
                 .attr('stroke', () => netColors.linkColor)
                 .attr('stroke-opacity', () => netColors.linkOpacity)
                 .attr('stroke-width', (l: any) => l.weight || 1);
@@ -992,12 +1383,13 @@ export const networkDiagramPlugin: D3RenderPlugin = {
                 .attr('stroke', netColors.nodeStroke)
                 .attr('stroke-width', 1.5);
 
-            const haloWidth = Math.max(2, fontSizePx * 0.18);
             const labelNodes = nodeGroups.append('text')
-                .attr('dy', (d: any) => -(d.size || 10) - 5)
+                // Drop a label below its node when there is no headroom to show
+                // it above without clipping the viewBox top (D-443).
+                .attr('dy', (d: any) => nodeLabelDy(d, labelFontPx))
                 .attr('text-anchor', 'middle')
                 .attr('fill', () => netColors.labelColor)
-                .attr('font-size', fontSizePx)
+                .attr('font-size', labelFontPx)
                 // Paint a canvas-coloured halo UNDER the glyph fill so a label
                 // stays legible where it overlaps a neighbouring circle or the
                 // edge fan at high node count (D-200). paint-order:stroke draws
