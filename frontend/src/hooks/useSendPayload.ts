@@ -45,6 +45,11 @@ export interface SendPayloadOptions {
     isStreamingToCurrentConversation?: boolean;
     /** Pass setReasoningContentMap for models that emit reasoning tokens. */
     includeReasoning?: boolean;
+    /**
+     * Reattach to the server-side turn already running for this
+     * conversation rather than submitting a new one.  See ChatTurnReattachWatcher.
+     */
+    reattach?: boolean;
 }
 
 export interface SendPayloadHandle {
@@ -114,6 +119,7 @@ export function useSendPayload(): SendPayloadHandle {
             undefined, // throttlingRecoveryDataRef
             pj.currentProject ?? null,
             resolvedModelPin,
+            options.reattach ?? false,
         );
     }, []); // stable — reads from ref.current
 
