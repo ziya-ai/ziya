@@ -47,6 +47,40 @@ def diff_body_hash(body: str) -> str:
     return format(h, '08x')
 
 
+def reader_reason(validation_result: Dict[str, Any]) -> str:
+    """A one-line, human-addressed reason a diff was refused.
+
+    Built from the validator's structured fields, never from model_feedback:
+    that text opens with "Please provide a corrected diff", an instruction to
+    the model that was being shown verbatim in the chat notice. The zero-hunk
+    early-exit paths carry no structured code, so those are recognised by the
+    validator's own fixed phrases (pipeline_validator.py) and reworded.
+    """
+    failed = list(validation_result.get("failed_hunks") or [])
+    total = validation_result.get("total_hunks") or 0
+    if failed:
+        details = validation_result.get("hunk_details") or {}
+        kinds: List[str] = []
+        for hunk_id in failed:
+            err = (details.get(str(hunk_id)) or {}).get("error_details")
+            kind = err.get("error") if isinstance(err, dict) else (str(err) if err else "")
+            kind = str(kind or "").strip()
+            if kind and kind != "unknown error" and kind not in kinds:
+                kinds.append(kind)
+        noun = "hunk" if len(failed) == 1 else "hunks"
+        ids = ", ".join(str(h) for h in failed)
+        base = f"{noun} {ids} of {total} did not match the current file"
+        return f"{base} ({'; '.join(kinds)[:120]})" if kinds else base
+    feedback = str(validation_result.get("model_feedback") or "")
+    if "does not exist" in feedback:
+        return "the target file does not exist"
+    if "Could not extract file path" in feedback:
+        return "the diff has no usable file header"
+    if "codebase directory not configured" in feedback:
+        return "no project directory is configured for validation"
+    return "the diff could not be parsed into hunks"
+
+
 class DiffValidationHook:
     """
     Hook that validates diffs and manages context automatically.
@@ -239,9 +273,6 @@ class DiffValidationHook:
             
             if has_failures:
                 
-                reason_first_line = str(
-                    validation_result["model_feedback"] or ""
-                ).strip().splitlines()[:1]
                 # Record this failure
                 self.failed_diff_details.append({
                     "diff_number": diff_number,
@@ -253,7 +284,7 @@ class DiffValidationHook:
                 self.last_rejected.append({
                     "file_path": file_path,
                     "body_hash": diff_info["body_hash"],
-                    "reason": (reason_first_line[0] if reason_first_line else "")[:200],
+                    "reason": reader_reason(validation_result),
                 })
                 
                 # Always inject current file content on failure — even if the file

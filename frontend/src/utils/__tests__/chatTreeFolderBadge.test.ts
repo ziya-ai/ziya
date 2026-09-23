@@ -124,4 +124,16 @@ describe('MUIChatHistory consumes the folder-row helpers (seam)', () => {
     expect(src).toMatch(/handleCreateSubfolder = async \(parentFolderId: string \| null\)/);
     expect(src).toMatch(/setExpandedNodes\(prev => withParentExpanded\(prev\.map\(String\), parentFolderId\)\)/);
   });
+
+  it('moves the target-folder pointer synchronously when a conversation row is clicked', () => {
+    // Regression: clicking a root conversation after a foldered one left the
+    // folder highlighted.  The row must set the pointer from the node it
+    // holds, in the same handler as the navigation, rather than relying on
+    // loadConversation's deferred setCurrentFolderId in ChatContext.
+    const convBranch = src.match(
+      /if \(nodeId\.startsWith\('conv-'\)\) \{([\s\S]*?)handleConversationClick\(nodeId\.substring\(5\)\);/,
+    );
+    expect(convBranch).not.toBeNull();
+    expect(convBranch![1]).toMatch(/setCurrentFolderId\(node\.conversation\?\.folderId \?\? null\)/);
+  });
 });

@@ -24,7 +24,8 @@ class PrecisionPromptSystem:
                       chat_history: List[Dict[str, Any]] = None,
                       system_prompt_addition: str = "",
                       conv_start_ts: float = None,
-                      conversation_id: str = None) -> List:
+                      conversation_id: str = None,
+                      skill_catalog_names: "set[str] | None" = None) -> List:
         """
         Drop-in replacement for the original build_messages function.
         
@@ -229,7 +230,7 @@ class PrecisionPromptSystem:
             if messages and messages[0]["role"] == "system":
                 try:
                     from app.utils.skill_catalog_prompt import get_skill_catalog_section
-                    catalog_section = get_skill_catalog_section()
+                    catalog_section = get_skill_catalog_section(skill_catalog_names)
                     if catalog_section:
                         messages[0]["content"] += catalog_section
                 except (ImportError, RuntimeError, OSError) as e:

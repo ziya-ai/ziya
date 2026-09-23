@@ -1543,18 +1543,42 @@ def get_accurate_token_count(file_path: str) -> int:
         # Read file and count tokens
         content = read_file_content(file_path)
         if content:
-            token_count = len(encoding.encode(content))
-            
-            # Skip files with excessive token counts (>50k tokens)
-            if token_count > 50000:
-                logger.debug(f"File has excessive tokens {file_path}: {token_count} tokens")
-                return 0
-            
-            return token_count
+            # No size ceiling.  A large file still goes into the prompt in
+            # full, and returning 0 here made /api/accurate-token-count report
+            # it as a valid zero rather than an error (a 373 KB tsx counted as
+            # nothing while the provider billed ~97k tokens for it).
+            raw = len(encoding.encode(content))
+            return _calibrate_accurate_count(file_path, len(content), raw)
         return 0
     except Exception as e:
         logger.debug(f"Error counting tokens in {file_path}: {e}")
         return 0
+
+
+def _calibrate_accurate_count(file_path: str, char_count: int, tiktoken_count: int) -> int:
+    """Scale a cl100k tiktoken count to the current model's learned density.
+
+    tiktoken's cl100k_base is not the tokenizer of any model Ziya sends to;
+    on fable-5.1 it under-counts source by ~40% (manager.py: 29.7k cl100k vs
+    49.2k billed).  The calibrator already learns chars/token per model and
+    file type from real usage events, and the tree estimate uses it — but
+    this "accurate" path bypassed it, and the gauge prefers this path
+    whenever it is non-zero.  Route through the same learned ratio, never
+    reporting less than tiktoken.  The learned ratio is measured on prompt
+    text (with line-number prefixes), so applying it to raw file chars still
+    under-counts by the prefix share; that residual is the context-estimate
+    endpoint's job, not this function's.
+    """
+    try:
+        from app.utils.token_calibrator import get_token_calibrator
+        _, ext = os.path.splitext(file_path.lower())
+        ratio, source = get_token_calibrator().get_display_ratio(ext)
+    except Exception as e:
+        logger.debug(f"Calibrated ratio unavailable for {file_path}: {e}")
+        return tiktoken_count
+    if source == 'fallback' or ratio <= 0:
+        return tiktoken_count
+    return max(tiktoken_count, int(char_count / ratio))
 
 def get_scan_progress(directory=None):
     """Get current scan progress.

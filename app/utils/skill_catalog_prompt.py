@@ -11,12 +11,17 @@ import os
 from app.utils.logging_utils import logger
 
 
-def get_skill_catalog_section() -> str:
+def get_skill_catalog_section(allowed_names: "set[str] | None" = None) -> str:
     """
     Build the skill catalog block for the system prompt.
 
     Returns an empty string if the skills builtin category is disabled
     or there are no model-discoverable skills.
+
+    ``allowed_names`` is the bench's ondemand set (design/capabilities-hub.md):
+    when given, only skills whose NAME is in it are listed, so a skill placed
+    ``off`` is offered nowhere.  None keeps the legacy unfiltered catalog.
+    Matching is by name because bench keys are ``skill:<name>``.
     """
     # Check if skills builtin category is enabled
     try:
@@ -36,6 +41,8 @@ def get_skill_catalog_section() -> str:
     # Build compact catalog — one line per skill
     rows = []
     for skill in skills:
+        if allowed_names is not None and skill.get("name") not in allowed_names:
+            continue
         sid = skill.get("id", "")
         desc = skill.get("catalog_description") or skill.get("description", "")
         rows.append(f"  • {sid} — {desc}")
@@ -53,6 +60,8 @@ def get_skill_catalog_section() -> str:
             workspace, TokenService(), load_body=False,
         ):
             if ds.visibility != "model_discoverable":
+                continue
+            if allowed_names is not None and ds.name not in allowed_names:
                 continue
             rows.append(f"  • {ds.name} — {ds.description}")
     except Exception as e:
