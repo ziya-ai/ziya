@@ -159,3 +159,66 @@ describe('D-017 regression: <details> body containing inline `code` (w3-06)', ()
         expect(out).not.toContain('<summary>');
     });
 });
+
+describe('regression: raw HTML inside a <details> widget is preserved, not escaped', () => {
+    // A styled error widget: <span>s in the summary, a styled <div> body.
+    // normalizeDetailsBlocks used to escape every tag inside the widget into
+    // literal "&lt;span&gt;" text and drop the details/summary attributes.
+    const src =
+        '<details style="margin: 16px 0; background: #FFF2F0;">\n' +
+        '<summary style="cursor: pointer; font-weight: bold; color: #CF1322;">\n' +
+        '<span>:x:</span>\n<span>Error Details</span>\n' +
+        '<span style="font-weight: normal; opacity: 0.7;">(Click to expand)</span>\n' +
+        '</summary>\n' +
+        '<div style="white-space: pre-wrap; font-family: monospace; color: #8C1F1F;">\n' +
+        'Error: An error occurred (AccessDeniedException) when calling the InvokeModel operation: ' +
+        'User: arn:aws:sts::123456789012:assumed-role/Foo/bar is not authorized to perform: bedrock:InvokeModel\n' +
+        '</div>\n</details>';
+
+    it('keeps summary and body tags as real HTML', () => {
+        const out = normalizeDetailsBlocks(src);
+        // Positive: the widget was actually rewritten (one blank-line-free block).
+        expect(out).toMatch(/^<details[^>]*>.*<\/details>$/s);
+        expect(out).not.toMatch(/\n[ \t]*\n/);
+        // No escaped tag soup anywhere in the output.
+        expect(out).not.toContain('&lt;span');
+        expect(out).not.toContain('&lt;div');
+        expect(out).not.toContain('&lt;/');
+        // The tags themselves survive.
+        expect(out).toContain('<span>Error Details</span>');
+        expect(out).toContain('<span style="font-weight: normal; opacity: 0.7;">(Click to expand)</span>');
+        expect(out).toMatch(/<div style="white-space: pre-wrap;[^"]*">\s*Error: An error occurred/);
+    });
+
+    it('keeps the details/summary attributes so the widget styling is not lost', () => {
+        const out = normalizeDetailsBlocks(src);
+        expect(out).toMatch(/^<details style="margin: 16px 0; background: #FFF2F0;">/);
+        expect(out).toContain('<summary style="cursor: pointer; font-weight: bold; color: #CF1322;">');
+    });
+
+    it('does not wrap a block-level body element in an invalid <p>', () => {
+        const out = normalizeDetailsBlocks(src);
+        expect(out).not.toContain('<p><div');
+        expect(out).toContain('</div></details>');
+    });
+
+    it('still renders through the DOMPurify boundary with tags intact', () => {
+        const clean = sanitizeModelHtml(normalizeDetailsBlocks(src));
+        expect(clean).toContain('<summary');
+        expect(clean).toContain('<span>Error Details</span>');
+        expect(clean).toContain('bedrock:InvokeModel');
+        expect(clean).not.toContain('&lt;span');
+    });
+
+    it('still escapes literal angle-bracket text that is not a tag', () => {
+        const out = normalizeDetailsBlocks('<details><summary>s</summary>\n\na < b and b > c\n\n</details>');
+        expect(out).toContain('a &lt; b and b &gt; c');
+    });
+
+    it('does not misread * or _ inside a tag attribute as emphasis', () => {
+        const out = normalizeDetailsBlocks(
+            '<details><summary>s</summary>\n\n<span style="font-family: a_b, c_d">x</span>\n\n</details>');
+        expect(out).toContain('<span style="font-family: a_b, c_d">x</span>');
+        expect(out).not.toContain('<em>');
+    });
+});

@@ -42,7 +42,13 @@ function escapeHtml(s: string): string {
  * Render a single line of inline markdown for an embedded footnote/definition/
  * summary body, collapsing to one line so the surrounding raw-HTML block stays
  * one marked token.  Handles inline code, bold, italic and links; inline code
- * spans are protected so their contents are not re-parsed.  Anything else is
+ * spans are protected so their contents are not re-parsed.  Raw HTML tags
+ * already present in the source (`<span>`, a styled `<div>`, ...) are passed
+ * through verbatim rather than escaped — the caller's output is rendered via
+ * the raw-HTML token path, where DOMPurify is the authoritative boundary, so
+ * escaping them here only turned legitimate markup into literal angle-bracket
+ * text (a `<details>` error widget whose summary held `<span>` icons and whose
+ * body was a styled `<div>` rendered as raw tag soup).  Anything else is
  * emitted as escaped text.
  */
 function inlineToHtml(md: string): string {
@@ -55,6 +61,14 @@ function inlineToHtml(md: string): string {
     let s = trimmed.replace(/`([^`]+)`/g, (_m, code: string) => {
         codeSpans.push(`<code>${escapeHtml(code)}</code>`);
         return `\u0000CODE${codeSpans.length - 1}\u0000`;
+    });
+
+    // Protect raw HTML tags so they survive escaping and so `*`/`_` inside
+    // attribute values (style, href, ...) are not misread as emphasis.
+    const htmlTags: string[] = [];
+    s = s.replace(/<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^<>]*)?\/?>/g, (tag: string) => {
+        htmlTags.push(tag);
+        return `\u0000TAG${htmlTags.length - 1}\u0000`;
     });
 
     s = escapeHtml(s);
@@ -70,9 +84,19 @@ function inlineToHtml(md: string): string {
     s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>');
     s = s.replace(/(^|[^_])_([^_\s][^_]*?)_(?!_)/g, '$1<em>$2</em>');
 
-    // Restore code spans.
+    // Restore raw tags, then code spans.
+    s = s.replace(/\u0000TAG(\d+)\u0000/g, (_m, i: string) => htmlTags[Number(i)]);
     s = s.replace(/\u0000CODE(\d+)\u0000/g, (_m, i: string) => codeSpans[Number(i)]);
     return s;
+}
+
+/**
+ * True when a rendered inline fragment already begins with a block-level tag,
+ * in which case wrapping it in `<p>` would be invalid (the browser auto-closes
+ * the `<p>` at the `<div>`, splitting the widget body).
+ */
+function startsWithBlockTag(html: string): boolean {
+    return /^<(?:div|p|ul|ol|dl|pre|table|blockquote|section|h[1-6])\b/i.test(html);
 }
 
 /**
@@ -177,20 +201,23 @@ export function normalizeDetailsBlocks(segment: string): string {
     return segment.replace(detailsRe, (_whole, attrs: string, inner: string) => {
         let summaryHtml = '';
         let rest = inner;
-        const sumMatch = inner.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/i);
+        const sumMatch = inner.match(/<summary\b([^>]*)>([\s\S]*?)<\/summary>/i);
         if (sumMatch) {
-            summaryHtml = `<summary>${inlineToHtml(sumMatch[1])}</summary>`;
+            summaryHtml = `<summary${sumMatch[1]}>${inlineToHtml(sumMatch[2])}</summary>`;
             rest = inner.slice(0, sumMatch.index) + inner.slice((sumMatch.index || 0) + sumMatch[0].length);
         }
-        // Body: split on blank lines into paragraphs, render each inline.
+        // Body: split on blank lines into paragraphs, render each inline.  A
+        // paragraph that is already a block element (e.g. a styled <div>) is
+        // emitted as-is instead of being wrapped in an invalid <p>.
         const bodyHtml = rest
             .split(/\n[ \t]*\n/)
             .map((p) => inlineToHtml(p))
             .filter((p) => p !== '')
-            .map((p) => `<p>${p}</p>`)
+            .map((p) => (startsWithBlockTag(p) ? p : `<p>${p}</p>`))
             .join('');
-        const safeAttrs = /\bopen\b/i.test(attrs) ? ' open' : '';
-        return `<details${safeAttrs}>${summaryHtml}${bodyHtml}</details>`;
+        // Attributes (open, style, class, ...) are passed through; the renderer's
+        // DOMPurify allowlist decides which survive.
+        return `<details${attrs}>${summaryHtml}${bodyHtml}</details>`;
     });
 }
 
