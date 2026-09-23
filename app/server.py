@@ -63,11 +63,14 @@ from app.utils.conversation_exporter import export_conversation_for_paste
 
 # Session management API routers
 from app.api import projects, contexts, skills, chats, tokens, task_cards, task_runs, task_bindings
+from app.api import bench as bench_api
 from app.api import delegates as delegates_api
 from app.api import memory as memory_api
 from app.api import beads as beads_api
+from app.api import handoff as handoff_api
 from app.api import backlog as backlog_api
 from app.api import commands as commands_api
+from app.api import consent as consent_api
 from app.utils.paths import get_ziya_home
 from app.utils.logging_utils import logger as app_logger
 
@@ -287,7 +290,7 @@ def _inject_task_results(processed_chat_history: List, conversation_id: str) -> 
             processed_chat_history.insert(idx, synth)
 
 
-def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False, system_prompt_addition: str = "", model_override: Optional[str] = None) -> List:
+def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False, system_prompt_addition: str = "", model_override: Optional[str] = None, skill_catalog_names: "set | None" = None) -> List:
     """
     Build messages for streaming using the extended prompt template.
     This centralizes message construction to avoid duplication.
@@ -322,6 +325,24 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
                             f"file(s) into context: {_added}")
     except Exception as e:
         logger.warning(f"Model-pinned file merge failed (non-fatal): {e}")
+
+    # Handoff prelude, split for prompt caching (design/conversation-handoff.md,
+    # app/utils/handoff_prelude.split_handoff_prelude).  The STABLE part — a
+    # continuation's inherited document + predecessor ids — joins the system
+    # prompt here.  The VOLATILE part (live open beads, the living draft the
+    # model merges into every turn, the pressure nudge) is held and appended
+    # to the final user message after assembly, below: providers put the
+    # cache marker on the system block, so anything that changes per turn
+    # inside it re-bills the whole prefix.  Same choke-point rationale as the
+    # model-pinned merge above.  No-op (one JSON read) for every other
+    # conversation.
+    _handoff_turn_part = ""
+    try:
+        from app.utils.handoff_prelude import split_handoff_prelude, join_prelude
+        _handoff_sys_part, _handoff_turn_part = split_handoff_prelude(conversation_id)
+        system_prompt_addition = join_prelude(system_prompt_addition, _handoff_sys_part)
+    except Exception as e:
+        logger.warning(f"Handoff prelude injection failed (non-fatal): {e}")
 
     # SDO-183: Strip hidden characters from user input before it reaches the model.
     # This prevents Unicode tag smuggling attacks where invisible instructions
@@ -465,11 +486,45 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         chat_history=processed_chat_history,
         system_prompt_addition=system_prompt_addition,
         conv_start_ts=conv_start_ts,
-        conversation_id=conversation_id
+        conversation_id=conversation_id,
+        skill_catalog_names=skill_catalog_names,
     )
 
     logger.debug(f"🎯 PRECISION_SYSTEM: Built {len(messages)} messages with {len(files)} files preserved")
     
+    # Context pressure for the handoff nudge (design/conversation-handoff.md).
+    # Measured on what was actually assembled and cached in-process for the
+    # NEXT turn's prelude — one turn stale, never written to the chat record.
+    # A chars/4 estimate: a 70% threshold does not justify a tokenizer pass
+    # over the whole context every turn.
+    try:
+        from app.agents.models import ModelManager
+        from app.utils.handoff_prelude import estimate_messages_tokens, record_context_pressure
+        _mcfg = ModelManager.get_model_config(
+            model_info.get("endpoint"), model_info.get("model_name")) or {}
+        # Same ceiling the frontend bar uses (TokenCountDisplay: the user's
+        # Max Input Tokens setting first, static token_limit as fallback).
+        # Against token_limit alone a 1M-context model never nudges while the
+        # bar sits at 90% of the user's configured 200k.
+        _limit = (ModelManager.get_model_settings().get("max_input_tokens")
+                  or _mcfg.get("token_limit"))
+        if _limit:
+            record_context_pressure(conversation_id,
+                                    estimate_messages_tokens(messages), int(_limit))
+    except Exception as e:
+        logger.debug(f"Context-pressure measurement skipped: {e}")
+
+    # Volatile handoff part → final user message (see the split above).  Must
+    # run before the image injection below, which re-wraps that message's
+    # content into blocks; the appender handles both shapes regardless.
+    if _handoff_turn_part:
+        try:
+            from app.utils.handoff_prelude import append_handoff_turn_prelude
+            if append_handoff_turn_prelude(messages, _handoff_turn_part):
+                logger.debug("⇢ handoff turn prelude appended to final user message")
+        except Exception as e:
+            logger.warning(f"Handoff turn prelude append failed (non-fatal): {e}")
+
     # Inject image content blocks for raster image files selected in the
     # file context tree.  These can't go in the system prompt (text-only),
     # so we append them to the last user message as multi-modal blocks.
@@ -1189,7 +1244,25 @@ async def task_run_stream_websocket(websocket: WebSocket, run_id: str):
     logger.debug(f"📡 TASK_RUN: WebSocket connected for {run_id[:8]}")
 
     from app.agents.task_run_stream_relay import connect, disconnect
-    await connect(run_id, websocket)
+    # Locate the run's on-disk event journal so a server that did not
+    # launch this run can tail the executor's events instead of sitting
+    # silent.  Optional: an old client that omits project_id still gets
+    # this process's in-memory history.
+    journal = None
+    alive = None
+    project_id = websocket.query_params.get("project_id")
+    if project_id:
+        try:
+            from app.storage.projects import ProjectStorage
+            from app.storage.task_runs import TaskRunStorage
+            from app.utils.paths import get_ziya_home, get_project_dir
+            if ProjectStorage(get_ziya_home()).get(project_id):
+                _rs = TaskRunStorage(get_project_dir(project_id))
+                journal = _rs.journal_path(run_id)
+                alive = lambda: _rs.executor_alive(run_id)  # noqa: E731
+        except Exception as e:  # noqa: BLE001 — fall back to in-memory only
+            logger.debug(f"📡 TASK_RUN: journal lookup failed for {run_id[:8]}: {e}")
+    await connect(run_id, websocket, journal=journal, alive=alive)
 
     try:
         while True:
@@ -1572,12 +1645,15 @@ app.include_router(export_router)
 app.include_router(projects.router)
 app.include_router(contexts.router)
 app.include_router(skills.router)
+app.include_router(bench_api.router)
 app.include_router(chats.router)
 app.include_router(tokens.router)
 app.include_router(delegates_api.router)
 app.include_router(memory_api.router)
 app.include_router(beads_api.router)
+app.include_router(handoff_api.router)
 app.include_router(backlog_api.router)
+app.include_router(consent_api.router)
 app.include_router(task_cards.router)
 app.include_router(task_runs.router)
 app.include_router(task_bindings.router)
@@ -1789,7 +1865,24 @@ async def stream_chunks(body):
         files = body.get("config", {}).get("files", [])
         conversation_id = body.get("conversation_id")
         project_root = body.get("config", {}).get("project_root") or body.get("project_root")
-        
+
+        # Server-side skill assembly (design/capabilities-hub.md, slice 3).
+        # Prompt text, modelOverrides and preferredToolIds come from the SAME
+        # bench resolution GET /bench returns, so what the hub shows as
+        # "always" is what the model receives.  The client's fields stay as
+        # the fallback for one release (see bench_prompt.merge_bench_prompt).
+        # Off the event loop: prompt_inputs walks the skill roots on disk.
+        _bench_catalog_names = None
+        try:
+            from app.utils.bench_prompt import resolve_bench_prompt, merge_bench_prompt
+            from app.context import get_project_root_or_none as _gpr
+            _bench = await asyncio.to_thread(
+                resolve_bench_prompt, project_root or _gpr(), conversation_id)
+            system_prompt_addition, model_overrides, preferred_tool_ids, _bench_catalog_names = (
+                merge_bench_prompt(_bench, system_prompt_addition, model_overrides, preferred_tool_ids))
+        except Exception as e:  # noqa: BLE001 -- never fail a turn over skill assembly
+            logger.warning(f"Bench prompt assembly failed (using client values): {e}")
+
         # Set conversation_id in the request-scoped ContextVar so
         # retrieval-feedback hooks (deep in memory_prompt and tools)
         # can record which conversation loaded each memory without
@@ -1820,7 +1913,14 @@ async def stream_chunks(body):
                 
                 # Get current model state
                 state = ModelManager.get_state()
-                current_region = state.get('aws_region', 'us-east-1')
+                # _state['aws_region'] is None until the model has been
+                # (re)initialized in this process; the key exists, so a
+                # .get() default never applies. Passing None into boto3
+                # raises NoRegionError for any user without a profile region
+                # or AWS_DEFAULT_REGION (botocore does not read AWS_REGION).
+                # Fall back to the same resolution the rest of the app uses.
+                from app.utils.aws_utils import get_current_region
+                current_region = state.get('aws_region') or get_current_region()
                 # ModelManager._state['aws_profile'] can legitimately still be
                 # None here (it's only set when a profile lookup succeeds at
                 # init time, which can race CLI --profile propagation). Fall
@@ -1844,6 +1944,7 @@ async def stream_chunks(body):
                     conversation_id, use_langchain_format=True,
                     system_prompt_addition=system_prompt_addition,
                     model_override=pinned_model,
+                    skill_catalog_names=_bench_catalog_names,
                 )
                 logger.debug(f"🔍 DIRECT_STREAMING_PATH: Built {len(messages)} messages with full context")
                 
@@ -1958,6 +2059,10 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'continuation_failed':
                         # chatApi marks the response incomplete and disables
                         # Apply for any diff left by a failed continuation.
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    elif chunk.get('type') in ('consent_opened', 'consent_answered'):
+                        # Consent runtime: the frontend renders a ConsentPanel
+                        # at the tool block and answers via /api/consent.
                         yield f"data: {json.dumps(chunk)}\n\n"
                     elif chunk.get('type') == 'heartbeat':
                         # Pass through heartbeat messages
@@ -2115,6 +2220,8 @@ async def stream_chunks(body):
                             elif retry_chunk.get('type') == 'throttling_error':
                                 yield f"data: {json.dumps(retry_chunk)}\n\n"
                             elif retry_chunk.get('type') in ('continuation_rewind', 'continuation_failed'):
+                                yield f"data: {json.dumps(retry_chunk)}\n\n"
+                            elif retry_chunk.get('type') in ('consent_opened', 'consent_answered'):
                                 yield f"data: {json.dumps(retry_chunk)}\n\n"
                             elif retry_chunk.get('type') == 'feedback_delivered':
                                 # Same confirmation contract as the main loop above.
