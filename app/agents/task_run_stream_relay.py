@@ -19,12 +19,23 @@ On-the-fly collapse:
     TaskCard/eventLog.ts).  Replay sends the collapsed entries
     directly — the frontend already handles task_text_delta_run.
 
+Cross-process observation:
+    The history buffer is process-local.  The process executing a run
+    also appends every raw event to an on-disk journal
+    (``task_runs/<run_id>/events.jsonl``, see ``open_journal``).  A
+    sibling server whose relay has never seen the run tails that
+    journal into its own buffer when a client connects, so a run can
+    be observed in detail from any server, not just the one that
+    launched it.  Persisted storage remains the source of truth.
+
 Modeled on app/agents/delegate_stream_relay.py.
 """
 
 import asyncio
+import json
 from collections import deque
-from typing import Any, Deque, Dict, List
+from pathlib import Path
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
 
@@ -41,6 +52,17 @@ _history: Dict[str, Deque[Dict[str, Any]]] = {}
 # run_id (shouldn't happen for terminated runs, but defensive).
 _drop_tasks: Dict[str, asyncio.Task] = {}
 _lock = asyncio.Lock()
+# run_id → open append-mode journal file.  Only the process that is
+# executing the run holds one (see open_journal / close_journal).
+_journals: Dict[str, Any] = {}
+# run_id → background task tailing a sibling process's journal into
+# this process's history buffer.
+_tail_tasks: Dict[str, asyncio.Task] = {}
+# run_id → byte offset already ingested from the journal.  Survives a
+# tail stopping and restarting so events are never ingested twice.
+_tail_offsets: Dict[str, int] = {}
+# Poll cadence for the journal tail.
+_TAIL_INTERVAL_SECONDS = 0.5
 
 # Cap chosen to comfortably hold a multi-hour run's lifecycle
 # events plus collapsed text-delta runs.  At ~200 bytes per dict
@@ -110,13 +132,149 @@ async def _drop_after_grace(run_id: str, delay: float) -> None:
         return
     _history.pop(run_id, None)
     _drop_tasks.pop(run_id, None)
+    _tail_offsets.pop(run_id, None)
     logger.debug(
         f"📡 TASK_RUN_RELAY: dropped history for {run_id[:8]} after grace"
     )
 
 
-async def connect(run_id: str, ws: Any) -> None:
+# ---- on-disk journal (writer side: the executing process) -----------
+
+def open_journal(run_id: str, path: Path) -> None:
+    """Start appending ``run_id``'s events to ``path``.
+
+    Called once by the launch path before the first event is emitted.
+    Line-buffered so each event is on disk as soon as it is written;
+    a tailing sibling never sees a torn line.  Failure to open is
+    logged and ignored — live observation must never block a run.
+    """
+    if run_id in _journals:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _journals[run_id] = open(path, "a", encoding="utf-8", buffering=1)
+    except OSError as exc:
+        logger.warning(
+            f"📡 TASK_RUN_RELAY: could not open journal for {run_id[:8]}: {exc}"
+        )
+
+
+def close_journal(run_id: str) -> None:
+    """Stop journaling ``run_id`` and release the file handle."""
+    fh = _journals.pop(run_id, None)
+    if fh is None:
+        return
+    try:
+        fh.close()
+    except OSError:
+        pass
+
+
+def _journal(run_id: str, event: Dict[str, Any]) -> None:
+    """Append one raw event line if this process journals ``run_id``."""
+    fh = _journals.get(run_id)
+    if fh is None:
+        return
+    try:
+        fh.write(json.dumps(event, default=str) + "\n")
+    except Exception as exc:  # noqa: BLE001 — never stall the executor
+        logger.debug(f"task_run_stream_relay journal write failed: {exc}")
+
+
+# ---- on-disk journal (reader side: a sibling process) ----------------
+
+def _read_journal_from(path: Path, offset: int) -> Tuple[List[Dict[str, Any]], int]:
+    """Return complete event lines written after ``offset`` and the new
+    offset.  A trailing partial line (writer mid-write) is left for the
+    next read."""
+    with open(path, "rb") as fh:
+        fh.seek(offset)
+        data = fh.read()
+    if not data:
+        return [], offset
+    end = data.rfind(b"\n")
+    if end < 0:
+        return [], offset
+    chunk = data[: end + 1]
+    events: List[Dict[str, Any]] = []
+    for line in chunk.splitlines():
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            events.append(parsed)
+    return events, offset + len(chunk)
+
+
+async def _tail_journal(
+    run_id: str, path: Path, alive: Optional[Callable[[], bool]],
+) -> None:
+    """Feed a sibling process's journal through ``push`` until the run
+    terminates, its executor is gone, or nobody here is listening.
+
+    Each ingested event goes through the normal ``push`` path so it
+    lands in this process's history buffer (for later connectors) and
+    fans out to the sockets attached here.  ``_journals`` has no entry
+    for the run in this process, so nothing is written back."""
+    try:
+        while True:
+            try:
+                events, new_offset = _read_journal_from(
+                    path, _tail_offsets.get(run_id, 0)
+                )
+            except OSError:
+                events, new_offset = [], _tail_offsets.get(run_id, 0)
+            _tail_offsets[run_id] = new_offset
+            for event in events:
+                await push(run_id, event)
+                if event.get("type") in _TERMINAL_EVENT_TYPES:
+                    return
+            if not has_clients(run_id):
+                return
+            if not events and alive is not None and not alive():
+                # Executor died without a terminal event (crash / kill).
+                # The reconciler will mark the row; nothing more to tail.
+                return
+            await asyncio.sleep(_TAIL_INTERVAL_SECONDS)
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:  # noqa: BLE001 — observation is best-effort
+        logger.debug(f"task_run_stream_relay tail failed (non-fatal): {exc}")
+    finally:
+        _tail_tasks.pop(run_id, None)
+
+
+def _maybe_start_tail(
+    run_id: str, journal: Optional[Path], alive: Optional[Callable[[], bool]],
+) -> None:
+    """Start tailing ``journal`` unless this process is the executor
+    (it writes the journal — its buffer is already authoritative) or a
+    tail is already running."""
+    if journal is None or run_id in _journals:
+        return
+    existing = _tail_tasks.get(run_id)
+    if existing is not None and not existing.done():
+        return
+    if not journal.exists():
+        return
+    _tail_tasks[run_id] = asyncio.create_task(_tail_journal(run_id, journal, alive))
+    logger.info(f"📡 TASK_RUN_RELAY: tailing journal for {run_id[:8]}")
+
+
+async def connect(
+    run_id: str, ws: Any,
+    journal: Optional[Path] = None,
+    alive: Optional[Callable[[], bool]] = None,
+) -> None:
     """Register a WebSocket for a task run's event stream.
+
+    ``journal``/``alive`` locate the run's on-disk event journal and its
+    executor-liveness probe.  When this process is not executing the run,
+    a tail of that journal is started after registration so the socket
+    receives the run's events even though they were emitted elsewhere.
 
     Registration and history-snapshot happen under ONE lock hold, and the
     snapshot deep-copies every folded delta entry.  Both halves matter:
@@ -164,6 +322,10 @@ async def connect(run_id: str, ws: Any) -> None:
         except Exception as exc:
             logger.debug(f"task_run_stream_relay.connect replay failed (non-fatal): {exc}")
             return
+    # After registration + replay: anything the tail ingests from here
+    # on reaches this socket through the live fanout, and anything already
+    # ingested was in the snapshot above.  No gap, no duplication.
+    _maybe_start_tail(run_id, journal, alive)
 
 
 async def disconnect(run_id: str, ws: Any) -> None:
@@ -206,6 +368,7 @@ async def push(run_id: str, event: Dict[str, Any]) -> None:
     # unresponsive socket stall every push for the whole server.
     async with _lock:
         _record(run_id, event)
+        _journal(run_id, event)
         conns = list(_active_connections.get(run_id, ()))
 
     # If this event terminates the run, schedule a delayed drop.
