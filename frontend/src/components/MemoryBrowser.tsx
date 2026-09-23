@@ -17,6 +17,7 @@ import {
 import { useTheme } from '../context/ThemeContext'; 
 import * as api from '../api/memoryApi';
 import type { MemoryItem, MemoryProposal, MindMapNode, MemoryStatus, ReviewSummary } from '../api/memoryApi';
+import { toLayoutPx } from '../utils/uiScale';
 
 const { LAYER_COLORS, LAYER_LABELS, LAYER_ICONS } = api;
 
@@ -227,8 +228,10 @@ const KnowledgeGraph: React.FC<{
       if (!node) return;
       const svgRect = svgRef.current?.getBoundingClientRect();
       if (!svgRect) return;
-      node.x = e.clientX - svgRect.left;
-      node.y = e.clientY - svgRect.top;
+      // clientX/Y and the rect are both viewport px; the SVG's coordinate
+      // space is layout px, so the offset must be un-zoomed (uiScale.ts).
+      node.x = toLayoutPx(e.clientX - svgRect.left);
+      node.y = toLayoutPx(e.clientY - svgRect.top);
     };
     const handleUp = () => {
       if (dragRef.current) {

@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { ConversationGraphView } from './GraphView';
+import { toLayoutPx } from '../../utils/uiScale';
 import './GraphPanel.css';
 
 interface Props {
@@ -19,7 +20,8 @@ export function GraphPanel({ projectId, chatId, onClose }: Props) {
     const startW = width;
 
     const move = (ev: MouseEvent) => {
-      const newW = Math.max(300, Math.min(800, startW + (startX - ev.clientX)));
+      // Pointer delta is viewport px; width is a layout length (uiScale.ts).
+      const newW = Math.max(300, Math.min(800, startW + toLayoutPx(startX - ev.clientX)));
       setWidth(newW);
     };
     const up = () => {

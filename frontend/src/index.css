@@ -10,6 +10,13 @@
   position: relative;
 }
 /* Base styles with improved streaming visibility */
+/* Percentages are exempt from CSS `zoom` (viewport units are not), so the
+   document fills the real viewport regardless of the UI zoom applied to body
+   by utils/uiScale.ts. */
+html, body {
+  height: 100%;
+}
+
 body {
   font-family: Arial, sans-serif;
   margin: 0;
@@ -17,7 +24,6 @@ body {
   background-color: #ffffff;
   --model-display-height: 35px;
   overflow: hidden;
-  height: 100vh;
   overscroll-behavior: none;
   position: fixed;
   width: 100%;
@@ -218,6 +224,13 @@ body.dark .chat-container:has(> .ephemeral-chat-banner) {
 }
 
 :root {
+  /* UI zoom factor applied to <body> for narrow viewports (utils/uiScale.ts).
+     CSS `zoom` pre-multiplies vh/vw, so structural layout must use these
+     corrected lengths instead of raw 100vh / 100vw. */
+  --ui-zoom: 1;
+  --viewport-height: calc(100vh / var(--ui-zoom));
+  --viewport-width: calc(100vw / var(--ui-zoom));
+
   --folder-panel-width: 30vw;
   --header-height: 60px;
   --input-max-height: 200px;
@@ -305,7 +318,7 @@ body.dark a:active {
   transition: none;
   border: none;
   background-color: inherit;
-  height: calc(100vh - var(--header-height));
+  height: calc(var(--viewport-height) - var(--header-height));
   display: flex;
   flex-direction: row;
 }
@@ -316,14 +329,14 @@ body.dark a:active {
 
 /* Chat Container */
 .chat-container {
-  height: calc(100vh - var(--header-height) - 30px);
+  height: calc(var(--viewport-height) - var(--header-height) - 30px);
   overflow-y: auto;
   overflow-x: hidden !important;
   contain: size layout;
   max-width: 100%;
   position: relative;
   left: var(--folder-panel-width);
-  width: calc(100vw - var(--folder-panel-width));
+  width: calc(var(--viewport-width) - var(--folder-panel-width));
   padding: 0;
   border: 1px solid #ccc;
   border-radius: 6px;
@@ -362,7 +375,7 @@ body.dark a:active {
 
 .panel-collapsed .chat-container {
   left: 0;
-  width: 100vw;
+  width: var(--viewport-width);
 }
 
 .dark .panel-toggle::before {
@@ -384,7 +397,7 @@ body.dark a:active {
 .panel-toggle {
   position: fixed;
   left: var(--folder-panel-width);
-  top: calc(var(--header-height) + 50vh);
+  top: calc(var(--header-height) + var(--viewport-height) / 2);
   z-index: 3;
   transform: translateY(-50%);
   transition: none;
@@ -405,8 +418,8 @@ body.dark a:active {
   content: '';
   position: absolute;
   left: -2px;
-  top: calc(var(--header-height) +50vh);
-  bottom: -100vh;
+  top: calc(var(--header-height) + var(--viewport-height) / 2);
+  bottom: calc(-1 * var(--viewport-height));
   width: 2px;
   background-color: #d9d9d9;
   z-index: 2;
@@ -702,7 +715,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   bottom: 0;
   width: var(--folder-panel-width);
   box-sizing: border-box;
-  height: calc(100vh - var(--header-height));
+  height: calc(var(--viewport-height) - var(--header-height));
   overflow: hidden;
   padding: 20px 5px 20px 10px;
   transition: none; /* Remove transitions that cause reflows */
@@ -719,7 +732,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   position: fixed !important;
   left: 0 !important;
   width: var(--folder-panel-width) !important;
-  height: calc(100vh - var(--header-height)) !important;
+  height: calc(var(--viewport-height) - var(--header-height)) !important;
   z-index: 2 !important;
 }
 

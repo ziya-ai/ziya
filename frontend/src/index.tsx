@@ -20,6 +20,7 @@ import { ServerStatusProvider } from './context/ServerStatusContext';
 import { AppProviders } from './components/AppProviders';
 
 import { lazyWithRetry } from './utils/lazyWithRetry';
+import { initUiZoom } from './utils/uiScale';
 // Lazy-load the render harness — only needed for headless diagram export
 const DiagramRenderPage = lazyWithRetry(() => import('./components/DiagramRenderPage'));
 // Stage-1 feasibility spike route — proves the real MarkdownRenderer mounts
@@ -176,6 +177,11 @@ try {
 } catch (e) {
     // No enterprise plugin present - this is fine
 }
+
+// Narrow viewports (< 1300 CSS px, typically OS display scaling) get a
+// browser-like CSS zoom step so the layout fits without Cmd-minus.  Decided
+// once, before first render; headless export routes are exempt.  See uiScale.ts.
+initUiZoom();
 
 const root = ReactDOM.createRoot(
     document.getElementById('root') as HTMLElement

@@ -34,6 +34,7 @@ import {
 } from './deckRunIndex';
 import { PROPOSED_TAG } from '../TaskCardLaunchButton';
 import { CalleeHoldPanel } from './CalleeHoldPanel';
+import { layoutViewportHeight, layoutViewportWidth, toLayoutPx } from '../../utils/uiScale';
 
 // Client-only pin set, mirroring the conversation sidebar's
 // ZIYA_PINNED_FOLDERS pattern (see MUIChatHistory.tsx). Task Cards have no
@@ -85,10 +86,12 @@ const DIALOG_DEFAULT_WIDTH = 1000;
 // height, so the viewport cap has to leave room for this.
 const DIALOG_CHROME_HEIGHT = 220;
 
+// Dialog geometry is in layout px; window.inner* is unzoomed viewport px and
+// pointer deltas likewise — all go through uiScale.ts conversions.
 const clampDialogWidth = (w: number): number =>
-  Math.max(DIALOG_MIN_WIDTH, Math.min(window.innerWidth - 32, w));
+  Math.max(DIALOG_MIN_WIDTH, Math.min(layoutViewportWidth() - 32, w));
 const clampDialogHeight = (h: number): number =>
-  Math.max(DIALOG_MIN_HEIGHT, Math.min(window.innerHeight - DIALOG_CHROME_HEIGHT, h));
+  Math.max(DIALOG_MIN_HEIGHT, Math.min(layoutViewportHeight() - DIALOG_CHROME_HEIGHT, h));
 
 function loadDialogSize(): { width: number; height: number } {
   // Default height matches the previous hard-coded 70vh body.
@@ -221,7 +224,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     const onMove = (e: MouseEvent) => {
       if (!dragRef.current) return;
       const { startX, startWidth } = dragRef.current;
-      setSidebarWidth(clampSidebarWidth(startWidth + (e.clientX - startX)));
+      setSidebarWidth(clampSidebarWidth(startWidth + toLayoutPx(e.clientX - startX)));
     };
     const onUp = () => {
       dragRef.current = null;
@@ -273,7 +276,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   const resetDialogSize = useCallback(() => {
     setDialogSize({
       width: clampDialogWidth(DIALOG_DEFAULT_WIDTH),
-      height: clampDialogHeight(Math.round(window.innerHeight * 0.7)),
+      height: clampDialogHeight(Math.round(layoutViewportHeight() * 0.7)),
     });
   }, []);
 
@@ -283,8 +286,8 @@ export const TaskCardsLibrary: React.FC<Props> = ({
       const d = dialogDragRef.current;
       if (!d) return;
       setDialogSize({
-        width: clampDialogWidth(d.startWidth + (e.clientX - d.startX) * 2),
-        height: clampDialogHeight(d.startHeight + (e.clientY - d.startY)),
+        width: clampDialogWidth(d.startWidth + toLayoutPx(e.clientX - d.startX) * 2),
+        height: clampDialogHeight(d.startHeight + toLayoutPx(e.clientY - d.startY)),
       });
     };
     const onUp = () => {
