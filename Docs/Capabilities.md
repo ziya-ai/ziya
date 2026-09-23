@@ -222,8 +222,10 @@ Also called: MCP resources, MCP prompts, resource fetching, prompt templates, se
 Also called: server lifecycle, runtime enable/disable, hot restart, toggle server, MCP hot reload; internally `set_server_enabled` / `restart_server` behind a lifecycle lock.
 
 **MCP startup diagnostics.** When a server fails to start, Ziya tries to tell you *where*. Each client records the furthest startup stage it reached (config → preflight → spawn → handshake → ready), captures a readable tail of the server's log, and detects dependency-mismatch hints from stderr, so the GUI can attribute a failure to the user's config, their machine, or the server itself. Preflight checks (for example, a command that is not on `PATH`) produce a stored diagnostic without even spawning the process. This is maturity 3: hint detection is signature-based, so a novel failure mode falls back to a raw log tail rather than a specific explanation.
+
+The same diagnostics are also reachable *by the model*, not just the GUI. The `mcp_server_status` builtin tool (category `mcp_diagnostics`, enabled by default; `ZIYA_ENABLE_MCP_DIAGNOSTICS=false` to disable) reads the running manager and returns, per server, the connected/quarantined flags, the furthest startup stage, any preflight/startup failure diagnostic, tool/resource/prompt counts, and a bounded tail of the log buffer — the same fields the Logs tab consumes through the MCP status route. Called with no arguments it reports every configured server (including ones that failed to start and never produced a client); `server_name` narrows it to one, and `log_lines` bounds the per-server tail (`0` for the whole buffer). It is read-only — it never starts, stops, or mutates a server — so when a user asks Ziya *in chat* why their MCP server failed to start, the model can self-inspect instead of asking the user to paste their Logs tab.
 <!-- cap: mcp-startup-diagnostics -->
-Also called: startup stages, preflight check, server log tail, failure attribution, connection troubleshooting; internally `startup_stage` with stderr capture.
+Also called: startup stages, preflight check, server log tail, failure attribution, connection troubleshooting, model self-inspection, mcp_server_status; internally `startup_stage` with stderr capture, surfaced to the model via `McpServerStatusTool`.
 
 ---
 
@@ -1272,6 +1274,40 @@ iteration is free.
 A held run keeps its `held` chip when the tile is collapsed to its one-line
 receipt, so a run waiting on you is distinguishable from a finished one — but
 the receipt carries no buttons, so expand the tile to reach Step and Resume.
+
+The Inspect drawer's three tabs (Live output, Tool calls, Events) box each
+iteration separately, and when a Task's instructions use `{{…}}` placeholders
+the iteration is headed by a **template bindings** box listing what each one
+expanded to for that pass — `{{item}}` → which roster entry, `{{previous.summary}}`
+→ the text the model actually received, `{{var.NAME}}` → the run-scoped value.
+Only placeholders the author wrote are listed; a placeholder the engine left
+literal (a typo, or `{{index}}` outside a loop) is shown as *unresolved* rather
+than dropped. The `{{item}}` value is also promoted into the collapsed iteration
+row as a chip so a long for_each can be scanned without opening every section.
+Long values collapse behind "show all"; the server caps each at 2,000
+characters on the wire. The data is a `task_bindings` event emitted at task
+dispatch, so it replays with the rest of the trace on reload.
+
+The same resolution is kept for the record. Each templated task's artifact —
+and each loop iteration's artifact, one entry per body task — carries a
+`template_resolutions` list (`TemplateResolution`: authored and resolved name,
+the bindings, the instructions as sent). Focusing an iteration dot in the run
+map opens the block detail panel headed by **Resolved for iteration #N**: the
+card may say `Wave 3 ({{item}})`, this says `Wave 3 (graphviz)`, lists the
+bindings, and shows the instructions the model actually received; the authored
+**Configuration** collapses beneath it as provenance. A focused bare Task shows
+its own resolution as *Resolved for this run*; a focused loop block with no
+iteration selected deliberately shows none, since its block-level artifact is
+the last iteration's and one item's values must not stand in for the loop.
+The resolved name is also lifted onto the always-retained `IterationSummary`
+(`resolved_name`), so past the 50-pass artifact retention cap — where the full
+resolution is gone — the dot tooltip still reads `#57 · Wave 3 (eng-57) passed`
+and the panel shows a name-only *Resolved for iteration #57* header that says
+the full bindings were not retained.
+Executor-generated prose — the `sequence stopped: step 2/4 (…) failed` decision
+line, a raising child's summary, per-stage evidence labels — renders the
+block's name against the same bindings, so those sentences name the item
+rather than quoting the template.
 
 #### When a finished tile folds itself away
 
