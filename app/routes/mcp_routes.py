@@ -25,6 +25,58 @@ router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 from app.config.env_registry import ziya_env
 
 
+def _build_shell_server_config(env: dict, enabled: bool = True) -> dict:
+    """Assemble the in-memory config every shell-config route hands to
+    ``restart_server``.
+
+    ``workspace_scoped`` must be set explicitly. Without it the manager falls
+    back to keyword auto-detection over the script path, which matches only by
+    accident (a checkout under a directory named "workspace") — on a pip
+    install the shell server silently became global-scoped after any config
+    save and ran commands in the server's cwd instead of the project.
+    """
+    import sys as _sys
+    _shell_script = str(Path(__file__).resolve().parent.parent / "mcp_servers" / "shell_server.py")
+    return {
+        "command": _sys.executable,
+        "args": ["-u", _shell_script],
+        "workspace_scoped": True,
+        "enabled": enabled,
+        "builtin": True,
+        "description": "Provides shell command execution",
+        "env": dict(env),
+    }
+
+
+def _carry_file_signature(new_env: dict, file_env: dict) -> dict:
+    """Copy the on-disk ZIYA_SCOPE_SIG into *new_env* when it still applies.
+
+    A signature covers an escalation delta, not a raw field list. If the env
+    being spawned has the same delta as the signed file (a reorder, or an edit
+    to a non-privileged field like the timeout), the file's signature is valid
+    for it and dropping it would clamp the subprocess to the floor for no
+    reason — while the modal, which reads the file, kept saying "authorized".
+    A changed delta gets no signature: the subprocess then fails closed with
+    an accurate "no signature accompanied the escalated values" notice.
+    The subprocess re-verifies either way; this never widens anything.
+    """
+    out = dict(new_env)
+    out.pop("ZIYA_SCOPE_SIG", None)
+    sig = (file_env or {}).get("ZIYA_SCOPE_SIG")
+    if not sig:
+        return out
+    try:
+        from app.config import scope_canonical as sc
+        new_delta = sc.compute_delta(sc.parse_env_scope(out))
+        file_delta = sc.compute_delta(sc.parse_env_scope(file_env))
+    except Exception as e:  # noqa: BLE001 — conservative: no sig on error
+        logger.warning(f"signature carry-forward check failed: {e}")
+        return out
+    if new_delta and new_delta == file_delta:
+        out["ZIYA_SCOPE_SIG"] = sig
+    return out
+
+
 def _compute_signature_status(server_env: dict) -> dict:
     """Report the escalation-signature state of a shell env block (ASR F-004).
 
@@ -746,10 +798,7 @@ async def restart_shell_server():
         if not mcp_manager or not mcp_manager.is_initialized:
             return {"success": False, "message": "MCP manager not initialized"}
         from app.config.shell_config import _read_mcp_config
-        import sys as _sys
-        _shell_script = str(Path(__file__).resolve().parent.parent / "mcp_servers" / "shell_server.py")
         file_env = _read_mcp_config().get("mcpServers", {}).get("shell", {}).get("env", {})
-        existing = dict(mcp_manager.server_configs.get("shell", {}))
         # Restart means "re-read the signed config from disk" (per the button's
         # contract). Rebuild env from the file ONLY — do not layer stale
         # in-memory keys on top, or an in-memory-only escalation would be
@@ -758,14 +807,7 @@ async def restart_shell_server():
         # and task-level escalations are re-applied at spawn from os.environ
         # via ESCALATION_ENV_KEYS, so a file-only rebuild drops nothing needed.
         file_only_env = dict(file_env)
-        shell_cfg = {
-            "command": _sys.executable,
-            "args": ["-u", _shell_script],
-            "enabled": True,
-            "builtin": True,
-            "description": "Provides shell command execution",
-            "env": file_only_env,
-        }
+        shell_cfg = _build_shell_server_config(file_only_env)
         mcp_manager.server_configs["shell"] = shell_cfg
         ok = await mcp_manager.restart_server("shell", shell_cfg)
         mcp_manager.invalidate_tools_cache()
@@ -847,20 +889,11 @@ async def apply_session_grant():
             }
 
         from app.config.shell_config import _read_mcp_config
-        import sys as _sys
-        _shell_script = str(Path(__file__).resolve().parent.parent / "mcp_servers" / "shell_server.py")
         # Same file-only env rebuild as /restart: the grant rides the manager's
         # separate _session_grants forwarding path (applied at spawn), NOT the
         # config env, so durable config semantics are unchanged.
         file_env = _read_mcp_config().get("mcpServers", {}).get("shell", {}).get("env", {})
-        shell_cfg = {
-            "command": _sys.executable,
-            "args": ["-u", _shell_script],
-            "enabled": True,
-            "builtin": True,
-            "description": "Provides shell command execution",
-            "env": dict(file_env),
-        }
+        shell_cfg = _build_shell_server_config(file_env)
         mcp_manager.server_configs["shell"] = shell_cfg
         ok = await mcp_manager.restart_server("shell", shell_cfg)
         mcp_manager.invalidate_tools_cache()
@@ -1000,26 +1033,18 @@ async def update_shell_config(config: ShellConfig):
         
         # Create new shell server configuration
         import sys
-        # Resolve via __file__ to avoid picking up a different `app` package on sys.path
         _shell_script = str(Path(__file__).resolve().parent.parent / "mcp_servers" / "shell_server.py")
-        
-        new_shell_config = {
-            "command": sys.executable,
-            "args": ["-u", _shell_script],
-            "enabled": config.enabled,
-            "builtin": True,  # Preserve builtin flag
-            "description": "Provides shell command execution",
-            "env": {
-                "ALLOW_COMMANDS": ",".join(config.allowedCommands),
-                "GIT_OPERATIONS_ENABLED": "true" if config.gitOperationsEnabled else "false",
-                "SAFE_GIT_OPERATIONS": ",".join(config.safeGitOperations),
-                "COMMAND_TIMEOUT": str(config.timeout),
-                "SAFE_WRITE_PATHS": ",".join(config.safeWritePaths),
-                "ALLOWED_WRITE_PATTERNS": ",".join(config.allowedWritePatterns),
-                "ALLOWED_INTERPRETERS": ",".join(config.allowedInterpreters),
-                "ALWAYS_BLOCKED_COMMANDS": ",".join(config.alwaysBlocked),
-            }
+        new_env = {
+            "ALLOW_COMMANDS": ",".join(config.allowedCommands),
+            "GIT_OPERATIONS_ENABLED": "true" if config.gitOperationsEnabled else "false",
+            "SAFE_GIT_OPERATIONS": ",".join(config.safeGitOperations),
+            "COMMAND_TIMEOUT": str(config.timeout),
+            "SAFE_WRITE_PATHS": ",".join(config.safeWritePaths),
+            "ALLOWED_WRITE_PATTERNS": ",".join(config.allowedWritePatterns),
+            "ALLOWED_INTERPRETERS": ",".join(config.allowedInterpreters),
+            "ALWAYS_BLOCKED_COMMANDS": ",".join(config.alwaysBlocked),
         }
+        new_shell_config = _build_shell_server_config(new_env, enabled=config.enabled)
         
         # Handle persistence to config file if requested
         if config.persist:
@@ -1126,6 +1151,16 @@ async def update_shell_config(config: ShellConfig):
         else:
             persist_message = ""
         
+        # The in-memory env was built from the request and so carried no
+        # signature even when the file's ZIYA_SCOPE_SIG still covered exactly
+        # this escalation; the subprocess then clamped to the floor while the
+        # modal (which reads the file) reported "authorized". Carry the file's
+        # signature forward when the delta is unchanged. Read the file AFTER
+        # the persist block so a save that voided the sig is honoured.
+        from app.config.shell_config import _read_mcp_config as _read_cfg
+        _file_env_now = _read_cfg().get("mcpServers", {}).get("shell", {}).get("env", {})
+        new_shell_config["env"] = _carry_file_signature(new_shell_config["env"], _file_env_now)
+
         if config.enabled:
             # Update the server configuration in MCP manager before restarting
             mcp_manager.server_configs["shell"] = new_shell_config
