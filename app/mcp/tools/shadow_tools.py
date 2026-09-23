@@ -472,7 +472,8 @@ class ShadowReleaseTool(BaseMCPTool):
                 rec = _LEASES.get(key)
             if rec is None:
                 return {"ok": True, "released": False, "note": "no lease was held here"}
-            client.control_release(session, rec["lease_id"], provenance=_provenance(kwargs))
+            client.control_release(session, rec["lease_id"], str(conv or ""),
+                                   provenance=_provenance(kwargs))
             _forget_lease(key)
             return {"ok": True, "released": True, "session_id": entry.session_id}
         except Exception as e:  # noqa: BLE001

@@ -46,6 +46,15 @@ def _now() -> float:
     return time.monotonic()
 
 
+def _lease_ref(lease_id: str) -> str:
+    """Journal-safe reference to a lease.  The raw id is a bearer capability
+    (send_line accepts it alone) and the journal is readable by every
+    same-UID chat, so only a hash prefix is recorded — enough to correlate
+    records, useless for forging a request."""
+    import hashlib
+    return hashlib.sha256(str(lease_id).encode()).hexdigest()[:10]
+
+
 def _peer_uid(conn: socket.socket) -> Optional[int]:
     """UID of the process on the other end of a Unix socket, or None.
 
@@ -486,7 +495,7 @@ class ShadowSocketServer:
                     "control_disabled": "session ceiling permits no control lease",
                 }.get(err, err))
         self.journal.meta("control_acquire", {
-            "lease_id": lease.lease_id, "conversation_id": conv, "mode": "line",
+            "lease_ref": _lease_ref(lease.lease_id), "conversation_id": conv, "mode": "line",
             "restriction": lease.restriction, "policy": policy_set,
             "granted": lease.granted, "provenance": req.get("provenance") or {}})
         if self.on_control is not None:
@@ -512,11 +521,19 @@ class ShadowSocketServer:
 
     def _op_control_release(self, req: Dict[str, Any]) -> Dict[str, Any]:
         lease_id = str(req.get("lease_id") or "")
+        conv = req.get("conversation_id")
         with self._lease_lock:
+            # Only the holder may release over the socket (§6.1): a lease id
+            # alone must not let another same-UID caller tear down a chat's
+            # control.  Shadow-side teardown uses revoke_lease(), not this op.
+            ls = self._leases.current(_now())
+            if ls is None or ls.lease_id != lease_id or (
+                    conv is not None and ls.conversation_id != conv) or conv is None:
+                return _err("no_lease", "no live lease matches this id/conversation")
             ok = self._leases.release(lease_id)
         if ok:
             self.journal.meta("control_release", {
-                "lease_id": lease_id, "provenance": req.get("provenance") or {}})
+                "lease_ref": _lease_ref(lease_id), "provenance": req.get("provenance") or {}})
             if self.on_control is not None:
                 try:
                     self.on_control(None)
@@ -554,7 +571,7 @@ class ShadowSocketServer:
             if expected_lease_id is not None and ls.lease_id != expected_lease_id:
                 return None
             self._leases.grant(ls.lease_id)
-        self.journal.meta("control_grant", {"lease_id": ls.lease_id,
+        self.journal.meta("control_grant", {"lease_ref": _lease_ref(ls.lease_id),
                                              "conversation_id": ls.conversation_id})
         return ls.lease_id
 
@@ -657,6 +674,8 @@ class ShadowSocketServer:
         lease_id = str(req.get("lease_id") or "")
         with self._lease_lock:
             ls = self._leases.current(_now())
+            # The lease id is the capability: it reaches only the acquirer's
+            # socket reply and is never journaled in the clear (see _lease_ref).
             if ls is None or ls.lease_id != lease_id:
                 return _err("no_lease", "no live lease matches this id")
             if not ls.granted:
@@ -670,12 +689,12 @@ class ShadowSocketServer:
             from app.shadow.policy import resolve_policy
             verdict, reason = resolve_policy(policy_set, restriction).decide(text)
         except Exception as e:  # noqa: BLE001
-            self.journal.meta("control_denied", {"lease_id": lease_id,
+            self.journal.meta("control_denied", {"lease_ref": _lease_ref(lease_id),
                               "text": text[:200], "reason": f"policy error: {e}"})
             return _err("policy_error", str(e))
         from app.shadow.policy import RUN, CONFIRM, DENY
         if verdict == DENY:
-            self.journal.meta("control_denied", {"lease_id": lease_id,
+            self.journal.meta("control_denied", {"lease_ref": _lease_ref(lease_id),
                               "text": text[:200], "reason": reason})
             return _err("command_denied", reason)
         if verdict == CONFIRM:
@@ -683,18 +702,18 @@ class ShadowSocketServer:
             # With no terminal to ask (headless), refuse — never type a
             # not-allowed command without a human's confirm.
             if self.on_confirm is None or self.entry.headless:
-                self.journal.meta("control_confirm_required", {"lease_id": lease_id,
+                self.journal.meta("control_confirm_required", {"lease_ref": _lease_ref(lease_id),
                                   "text": text[:200], "reason": reason})
                 return _err("confirm_required", reason)
             with self._confirm_lock:
                 if self._confirm is not None:
                     return _err("confirm_pending",
                                 "another command is awaiting confirmation at the terminal")
-                slot = {"text": text, "reason": reason, "lease_id": lease_id,
+                slot = {"text": text, "reason": reason, "lease_ref": _lease_ref(lease_id),
                         "confirm_id": secrets.token_hex(4),
                         "event": threading.Event(), "decision": None}
                 self._confirm = slot
-            self.journal.meta("control_confirm_request", {"lease_id": lease_id,
+            self.journal.meta("control_confirm_request", {"lease_ref": _lease_ref(lease_id),
                               "conversation_id": ls.conversation_id,
                               "text": text[:200], "reason": reason})
             try:
@@ -709,7 +728,7 @@ class ShadowSocketServer:
             finally:
                 with self._confirm_lock:
                     self._confirm = None
-            self.journal.meta("control_confirm", {"lease_id": lease_id, "text": text[:200],
+            self.journal.meta("control_confirm", {"lease_ref": _lease_ref(lease_id), "text": text[:200],
                               "outcome": outcome})
             if outcome == "timeout" and self.on_confirm_timeout is not None:
                 # The banner is still on screen and the frontend is still in
@@ -728,7 +747,7 @@ class ShadowSocketServer:
             with self._lease_lock:
                 ls2 = self._leases.current(_now())
                 if ls2 is None or ls2.lease_id != lease_id or not ls2.granted:
-                    self.journal.meta("control_denied", {"lease_id": lease_id,
+                    self.journal.meta("control_denied", {"lease_ref": _lease_ref(lease_id),
                                       "text": text[:200],
                                       "reason": "lease ended during confirmation"})
                     return _err("no_lease", "lease ended while awaiting confirmation")
@@ -737,7 +756,7 @@ class ShadowSocketServer:
             return _err("no_child", "session has no writable child (headless core not wired)")
         result = self.on_send_line(text)
         if "error" in result:
-            self.journal.meta("control_send_blocked", {"lease_id": lease_id,
+            self.journal.meta("control_send_blocked", {"lease_ref": _lease_ref(lease_id),
                               "reason": result["error"]})
             return _err(result["error"], {
                 "altscreen_active": "child is in a full-screen program; input refused",
@@ -746,7 +765,7 @@ class ShadowSocketServer:
                 "terminal_busy": f"the human is using the terminal ({result.get('detail', 'busy')}); "
                                  "try again shortly",
             }.get(result["error"], result["error"]))
-        self.journal.meta("control_send", {"lease_id": lease_id,
+        self.journal.meta("control_send", {"lease_ref": _lease_ref(lease_id),
                           "conversation_id": ls.conversation_id, "text": text[:500],
                           "restriction": restriction, "policy": policy_set})
         return {"ok": True, "sent_at_seq": result.get("sent_at_seq"),
