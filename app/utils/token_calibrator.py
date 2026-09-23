@@ -137,6 +137,7 @@ class TokenCalibrator:
                     # Load nested structure
                     self.stats_by_model_and_type = defaultdict(dict, data.get('stats_by_model_and_type', {}))
                     self.global_by_model = data.get('global_by_model', {})
+                    self._load_samples(data)
                     self.document_cache = data.get('document_cache', {})
                     self.global_fallback = data.get('global_fallback', 4.1)
                     
@@ -214,13 +215,14 @@ class TokenCalibrator:
                 data = {
                     'stats_by_model_and_type': dict(self.stats_by_model_and_type),
                     'global_by_model': self.global_by_model,
+                    'samples': self._samples_for_disk(),
                     'document_cache': self.document_cache,
                     'global_fallback': self.global_fallback,
                     'baseline_overhead_tokens': merged_baselines,
                     'baselines_measured': list(merged_measured),
                     'baseline_tool_counts': merged_tool_counts,
                     'last_updated': time.time(),
-                    'version': '1.0'
+                    'version': '1.1'
                 }
                 
                 with open(temp_file, 'w') as f:
@@ -356,47 +358,17 @@ class TokenCalibrator:
                              f"Valid range: [{self.MIN_CHARS_PER_TOKEN}, {self.MAX_CHARS_PER_TOKEN}]")
                 return
             
-            # Record sample for EACH file type encountered
-            # This is GENERIC - learns whatever file types appear
-            for file_path, content in file_contents.items():
-                # Extract file extension (handle files with no extension)
-                ext = Path(file_path).suffix.lower()
-                if not ext:
-                    # Try to infer from filename patterns
-                    if 'Makefile' in file_path or 'Dockerfile' in file_path:
-                        ext = '.makefile'
-                    elif 'README' in file_path:
-                        ext = '.txt'
-                    else:
-                        ext = '.unknown'
-                
-                # Estimate this file's contribution to total tokens
-                file_chars = len(content)
-                estimated_file_tokens = int((file_chars / total_chars) * actual_tokens)
-                
-                # Skip if we got a nonsensical result
-                if estimated_file_tokens == 0:
-                    continue
-                
-                sample = CalibrationSample(
-                    file_path=file_path,
-                    content_length=file_chars,
-                    actual_tokens=estimated_file_tokens,
-                    file_type=ext,
-                    model_id=model_id or 'unknown',
-                    model_family=model_family
-                )
-                
-                # Store under model_family -> file_type (GENERIC!)
-                self.samples_by_model_and_type[model_family][ext].append(sample)
-                
-                # Keep only recent samples (last 100 per model+type)
-                if len(self.samples_by_model_and_type[model_family][ext]) > 100:
-                    self.samples_by_model_and_type[model_family][ext] = \
-                        self.samples_by_model_and_type[model_family][ext][-100:]
-            
-            # Recalculate statistics
-            self._recalculate_stats(model_family)
+            # Record under the model's own bucket AND its family bucket.
+            # Lookups prefer the model bucket -- fable-5.1 and Sonnet 4 differ
+            # by ~30% on the same source, and one 'claude' bucket averaged
+            # them -- and fall back to the family for file types this model
+            # has not been seen with yet.
+            model_key = self._normalize_model_key(model_id)
+            buckets = [model_family] if not model_key or model_key == model_family else [model_key, model_family]
+            for bucket in buckets:
+                self._append_samples(bucket, file_contents, total_chars, actual_tokens,
+                                     model_id or 'unknown', model_family)
+                self._recalculate_stats(bucket)
             
             logger.info(f"📊 CALIBRATION: {model_family} now has {sum(len(s) for s in self.samples_by_model_and_type[model_family].values())} total samples")
             self.has_unsaved_data = True
@@ -445,6 +417,112 @@ class TokenCalibrator:
         else:
             return 'default'
     
+    # Region / inference-profile prefixes Bedrock puts in front of a model id.
+    # The model behind "us." and "global." has one tokenizer, so both must
+    # land in one bucket.
+    _MODEL_KEY_PREFIXES = ('us.', 'eu.', 'apac.', 'global.', 'us-gov.', 'jp.', 'au.')
+
+    def _normalize_model_key(self, model_id: Optional[str]) -> Optional[str]:
+        """Bucket key for one specific model: lower-cased, region-stripped id."""
+        if not model_id or model_id == 'unknown':
+            return None
+        key = str(model_id).strip().lower()
+        for prefix in self._MODEL_KEY_PREFIXES:
+            if key.startswith(prefix):
+                key = key[len(prefix):]
+                break
+        return key or None
+
+    def _get_current_model_key(self) -> Optional[str]:
+        """Bucket key for this process's current model, or None when unknown.
+
+        Same lazy-import rule as _get_current_model_family: ModelManager is
+        consulted only when app.agents.models is already loaded, so the
+        directory-scan thread never pays the cold import.
+        """
+        try:
+            import sys
+            _mm_mod = sys.modules.get('app.agents.models')
+            if _mm_mod is None:
+                return None
+            model_id = _mm_mod.ModelManager.get_model_id()
+            if isinstance(model_id, dict):
+                model_id = next(iter(model_id.values()), None)
+            return self._normalize_model_key(model_id)
+        except Exception as e:
+            logger.debug(f"Could not determine model key: {e}")
+            return None
+
+    def _append_samples(self, bucket: str, file_contents: Dict[str, str], total_chars: int,
+                        actual_tokens: int, model_id: str, model_family: str) -> None:
+        """Attribute a batch's tokens to its files by char share; append per type."""
+        for file_path, content in file_contents.items():
+            ext = Path(file_path).suffix.lower()
+            if not ext:
+                if 'Makefile' in file_path or 'Dockerfile' in file_path:
+                    ext = '.makefile'
+                elif 'README' in file_path:
+                    ext = '.txt'
+                else:
+                    ext = '.unknown'
+            file_chars = len(content)
+            estimated_file_tokens = int((file_chars / total_chars) * actual_tokens)
+            if estimated_file_tokens == 0:
+                continue
+            samples = self.samples_by_model_and_type[bucket][ext]
+            samples.append(CalibrationSample(
+                file_path=file_path, content_length=file_chars,
+                actual_tokens=estimated_file_tokens, file_type=ext,
+                model_id=model_id, model_family=model_family))
+            # Keep only the most recent 100 per bucket+type
+            if len(samples) > 100:
+                del samples[:-100]
+
+    def _samples_for_disk(self) -> Dict[str, Dict[str, List[List[int]]]]:
+        """Compact (chars, tokens) pairs per bucket/type.  No file paths [CWE-200]."""
+        return {
+            bucket: {ext: [[s.content_length, s.actual_tokens] for s in samples]
+                     for ext, samples in types.items() if samples}
+            for bucket, types in self.samples_by_model_and_type.items()
+        }
+
+    def _load_samples(self, data: Dict[str, Any]) -> None:
+        """Rebuild the sample windows so learning continues across restarts.
+
+        Only stats used to be persisted; the samples behind them were
+        per-process, so the first sample after a restart replaced a
+        100-sample statistic with a 1-sample one and every restart forgot
+        what had been learned.  Files written before samples were persisted
+        (version 1.0) are migrated by seeding each stored statistic with
+        sample_count copies of its median: central tendency is preserved,
+        spread collapses until real samples arrive.
+        """
+        raw = data.get('samples')
+        if isinstance(raw, dict):
+            for bucket, types in raw.items():
+                for ext, pairs in (types or {}).items():
+                    for pair in pairs or []:
+                        try:
+                            chars, toks = int(pair[0]), int(pair[1])
+                        except (TypeError, ValueError, IndexError):
+                            continue
+                        if chars > 0 and toks > 0:
+                            self.samples_by_model_and_type[bucket][ext].append(CalibrationSample(
+                                file_path='', content_length=chars, actual_tokens=toks,
+                                file_type=ext, model_id='', model_family=bucket))
+            return
+        for bucket, types in self.stats_by_model_and_type.items():
+            for ext, stats in types.items():
+                n = min(int(stats.get('sample_count', 0) or 0), 100)
+                median = stats.get('median') or stats.get('p50') or stats.get('mean')
+                if n <= 0 or not median or median <= 0:
+                    continue
+                self.samples_by_model_and_type[bucket][ext].extend(
+                    CalibrationSample(file_path='', content_length=int(median * 1000),
+                                      actual_tokens=1000, file_type=ext,
+                                      model_id='', model_family=bucket)
+                    for _ in range(n))
+
     def _get_current_model_family(self) -> str:
         """Get the current model family being used."""
         try:
@@ -571,7 +649,8 @@ class TokenCalibrator:
         self, 
         content: str, 
         file_path: Optional[str] = None,
-        model_family: Optional[str] = None
+        model_family: Optional[str] = None,
+        model_id: Optional[str] = None,
     ) -> int:
         """
         Estimate tokens using calibrated data.
@@ -610,6 +689,18 @@ class TokenCalibrator:
         file_type = None
         if file_path:
             file_type = Path(file_path).suffix.lower() or '.unknown'
+        
+        # Tier 0: Calibrated data for this exact model + file type.  Falls
+        # through to the family bucket for types this model has not seen.
+        model_key = self._normalize_model_key(model_id) or self._get_current_model_key()
+        if file_type and model_key and model_key != model_family:
+            stats = self.stats_by_model_and_type.get(model_key, {}).get(file_type)
+            if stats and stats.get('sample_count', 0) > 0:
+                chars_per_token = max(stats['p95'], self.MIN_CHARS_PER_TOKEN)
+                estimated = int(content_length / chars_per_token)
+                logger.debug(f"📊 [{model_key}] Calibrated {file_type}: {estimated:,} tokens "
+                           f"(ratio: {chars_per_token:.2f}, {stats['sample_count']} samples)")
+                return estimated
         
         # Tier 1: Calibrated model+type specific (BEST)
         if file_type and model_family in self.stats_by_model_and_type:
@@ -885,6 +976,13 @@ class TokenCalibrator:
     
     def _get_chars_per_token(self, model_family: str, file_type: Optional[str]) -> float:
         """Get chars_per_token ratio from learned data or defaults."""
+        # Learned data for this exact model + file type
+        model_key = self._get_current_model_key()
+        if file_type and model_key:
+            stats = self.stats_by_model_and_type.get(model_key, {}).get(file_type)
+            if stats and stats.get('sample_count', 0) > 0:
+                return stats['p95']
+
         # Try learned data for specific file type
         if file_type and model_family in self.stats_by_model_and_type:
             if file_type in self.stats_by_model_and_type[model_family]:
@@ -905,7 +1003,8 @@ class TokenCalibrator:
         return 4.0
 
     def get_display_ratio(
-        self, file_type: Optional[str] = None, model_family: Optional[str] = None
+        self, file_type: Optional[str] = None, model_family: Optional[str] = None,
+        model_id: Optional[str] = None,
     ) -> Tuple[float, str]:
         """Return (chars_per_token, source) for size-based display estimation.
 
@@ -918,9 +1017,10 @@ class TokenCalibrator:
         This keeps the fast tree-scan path (estimate_tokens_fast) fast.
 
         source is one of:
-          'learned_type' — mean of learned samples for this model+type
+          'learned_model_type' — mean of learned samples for this exact model+type
+          'learned_type' — mean of learned samples for this model FAMILY+type
           'release_type' — baked-in default for this model+type
-          'global'       — model-wide global ratio (learned median)
+          'global'       — model-wide or family-wide global ratio (learned median)
           'fallback'     — ultimate 4.1 default
         The caller uses source to decide whether to also apply the legacy
         FILE_TYPE_MULTIPLIER: only for non-type-specific tiers, to avoid
@@ -928,8 +1028,17 @@ class TokenCalibrator:
         """
         if not model_family:
             model_family = self._get_current_model_family()
+        model_key = self._normalize_model_key(model_id) or self._get_current_model_key()
 
-        # Tier 1: learned mean for this model+type
+        # Tier 0: learned mean for this exact model+type
+        if file_type and model_key:
+            stats = self.stats_by_model_and_type.get(model_key, {}).get(file_type)
+            if stats and stats.get('sample_count', 0) > 0:
+                ratio = stats.get('mean') or stats.get('p50') or self.global_fallback
+                return max(self.MIN_CHARS_PER_TOKEN,
+                           min(ratio, self.MAX_CHARS_PER_TOKEN)), 'learned_model_type'
+
+        # Tier 1: learned mean for this model family+type
         if file_type and model_family in self.stats_by_model_and_type:
             stats = self.stats_by_model_and_type[model_family].get(file_type)
             if stats and stats.get('sample_count', 0) > 0:
@@ -942,7 +1051,12 @@ class TokenCalibrator:
             if file_type in self.release_defaults[model_family]:
                 return self.release_defaults[model_family][file_type], 'release_type'
 
-        # Tier 3: model-wide global (learned median)
+        # Tier 3: model-wide global (learned median), then family-wide
+        if model_key and model_key in self.global_by_model:
+            return max(self.MIN_CHARS_PER_TOKEN,
+                       min(self.global_by_model[model_key],
+                           self.MAX_CHARS_PER_TOKEN)), 'global'
+
         if model_family in self.global_by_model:
             return max(self.MIN_CHARS_PER_TOKEN,
                        min(self.global_by_model[model_family],

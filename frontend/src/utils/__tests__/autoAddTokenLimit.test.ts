@@ -45,15 +45,29 @@ describe('filterByAutoAddTokenLimit', () => {
     expect(r.skipped).toEqual([]);
   });
 
-  it('never blocks files with unknown (zero) token counts', () => {
+  it('allows a measured zero (empty or binary — nothing is sent)', () => {
     const r = filterByAutoAddTokenLimit(['unknown.bin'], 100, getTokens);
     expect(r.allowed).toEqual(['unknown.bin']);
+    expect(r.unmeasured).toEqual([]);
   });
 
-  it('never blocks files whose counter returns NaN', () => {
+  it('allows unmeasurable-by-design files: null and the tool-backed -1 marker', () => {
+    expect(filterByAutoAddTokenLimit(['doc.pdf'], 100, () => null).allowed).toEqual(['doc.pdf']);
+    expect(filterByAutoAddTokenLimit(['doc.pdf'], 100, () => -1).allowed).toEqual(['doc.pdf']);
+  });
+
+  it('HOLDS BACK files that were never measured (undefined / NaN) instead of waving them through', () => {
+    // The pre-fix contract allowed anything non-finite: an auto-add whose
+    // accurate count had not arrived, and had no tree node, was let in
+    // unmeasured — the exact path that pinned 31 files worth ~880k tokens.
+    const u = filterByAutoAddTokenLimit(['public/app/big.py'], 100, () => undefined);
+    expect(u.allowed).toEqual([]);
+    expect(u.skipped).toEqual([]);
+    expect(u.unmeasured).toEqual(['public/app/big.py']);
+
     const r = filterByAutoAddTokenLimit(['x.ts'], 100, () => NaN);
-    expect(r.allowed).toEqual(['x.ts']);
-    expect(r.skipped).toEqual([]);
+    expect(r.allowed).toEqual([]);
+    expect(r.unmeasured).toEqual(['x.ts']);
   });
 
   it('limit of 0 disables filtering entirely', () => {

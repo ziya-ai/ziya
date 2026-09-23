@@ -38,9 +38,26 @@ describe('filterByAggregateAutoAddBudget', () => {
     expect(r.skipped).toEqual([{ path: 'a.ts', tokens: 4000 }]);
   });
 
-  it('never blocks files whose size is unknown (0), matching per-file filter contract', () => {
+  it('allows a measured zero and it consumes no budget', () => {
     const r = filterByAggregateAutoAddBudget(['unknown.bin'], 9999, 10000, getTokens);
     expect(r.allowed).toEqual(['unknown.bin']);
+    expect(r.unmeasured).toEqual([]);
+  });
+
+  it('allows unmeasurable (null) files without consuming budget', () => {
+    const m = (p: string) => (p === 'doc.pdf' ? null : counts[p]);
+    const r = filterByAggregateAutoAddBudget(['doc.pdf', 'a.ts'], 6000, 10000, m);
+    expect(r.allowed).toEqual(['doc.pdf', 'a.ts']); // a.ts still fits: null spent nothing
+  });
+
+  it('HOLDS BACK unmeasured (undefined) files and does not let them ride under the budget', () => {
+    // Pre-fix: unmeasured files were allowed AND did not count toward the
+    // running total, so a session could auto-add 880k tokens while the
+    // budget tracker believed ~0 had been spent.
+    const m = (p: string) => (p === 'ghost.py' ? undefined : counts[p]);
+    const r = filterByAggregateAutoAddBudget(['ghost.py', 'a.ts'], 0, 10000, m);
+    expect(r.allowed).toEqual(['a.ts']);
+    expect(r.unmeasured).toEqual(['ghost.py']);
   });
 
   it('budget <= 0 disables the check entirely', () => {
