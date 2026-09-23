@@ -17,6 +17,7 @@ import { notifyRunStatusChanged } from './taskRunEvents';
 import {
   emptyLagStats, foldSample, formatLagStats, isLagProbeEnabled, LAG_LOG_EVERY,
 } from './streamLagProbe';
+import { bindingsFromEvent, mergeBindings, type TemplateBinding } from '../components/TaskCard/eventLog';
 
 // The run's FINAL word: nothing can supersede one of these for this run
 // object.  Governs the recency exemption in shouldAcceptFetchedRun and
@@ -99,6 +100,13 @@ export interface LiveTaskState {
     durationMs?: number;
     tokens?: number;
     signature?: string;
+    /**
+     * What each ``{{placeholder}}`` in the iteration's task
+     * instructions expanded to, from ``task_bindings`` events.  Absent
+     * until the first such event; absent for good when the
+     * instructions hold no placeholder.
+     */
+    bindings?: TemplateBinding[];
   }>;
   /**
    * Resolved run-scoped variables surfaced by State blocks via the
@@ -158,7 +166,7 @@ export interface LiveTaskState {
  */
 const TASK_SCOPED_EVENTS: ReadonlySet<string> = new Set([
   'task_started', 'task_text_delta', 'task_text_delta_run',
-  'task_tool_call', 'task_progress', 'task_finished',
+  'task_tool_call', 'task_progress', 'task_finished', 'task_bindings',
 ]);
 
 const EMPTY_LIVE: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {}, blockStatuses: {} };
@@ -472,7 +480,10 @@ export function useTaskRunStream(
     const openSocket = () => {
       if (disposed || !mountedRef.current) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.host}/ws/task-runs/${encodeURIComponent(runId)}`;
+      // project_id lets a server that did not launch this run locate its
+      // on-disk event journal and tail it (see task_run_stream_relay.py).
+      const url = `${protocol}//${window.location.host}/ws/task-runs/${encodeURIComponent(runId)}`
+        + `?project_id=${encodeURIComponent(projectId)}`;
       let ws: WebSocket;
       try {
         ws = new WebSocket(url);
@@ -905,6 +916,7 @@ export function useTaskRunStream(
  ): LiveTaskState['iterations'][number] {
    let streamText = it.streamText;
    let toolCalls = it.toolCalls;
+   let bindings = it.bindings;
    // Both the live raw delta and the relay's collapsed replay entry
    // carry block-scoped text in ``content``; the per-iteration bucket
    // needs the replayed form too or a reloaded run shows empty
@@ -925,10 +937,14 @@ export function useTaskRunStream(
        result_preview: typeof e.result_preview === 'string' ? e.result_preview : undefined,
        ts: typeof e.ts === 'number' ? e.ts : undefined,
      }];
+   } else if (type === 'task_bindings') {
+     const got = bindingsFromEvent(e);
+     if (got.length) bindings = mergeBindings(bindings, got);
    }
    return {
      ...it,
      streamText, toolCalls,
+     ...(bindings ? { bindings } : {}),
      events: [...it.events, e as any],
    };
  }

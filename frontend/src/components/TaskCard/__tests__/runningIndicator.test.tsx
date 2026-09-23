@@ -369,6 +369,59 @@ describe('reduced motion leaves the static cues in charge', () => {
     expect(block).toContain('.tc-map__icon--running');
     expect(block).toContain('.tc-map__dot--running');
     expect(block).toContain('.tc-tile--running');
+    expect(block).toContain('.tc-map__tag--running::before');
     expect(block).toMatch(/animation\s*:\s*none/);
+  });
+});
+
+describe('the non-loop "running" chip pulses like a loop\'s live dot', () => {
+  // Under a Parallel block a plain task's chip sat beside a sibling
+  // loop's ringing iteration dot and read as the less-alive of the two,
+  // although both were running.  The chip therefore carries the SAME
+  // pulsing dot, so "running" looks identical whichever block type is
+  // doing it.
+  it('draws a dot on the chip with the same keyframes as the strip dot', () => {
+    const body = ruleBody(/\.tc-map__tag--running::before/);
+    expect(body).not.toBe('');
+    expect(body).toMatch(/content\s*:\s*['"]{2}/);
+    expect(body).toMatch(/border-radius\s*:\s*50%/);
+    expect(body).toMatch(/animation\s*:\s*tc-map-ring\b/);
+    // Same hue as .tc-map__dot--running, not a second blue.
+    const strip = ruleBody(/\.tc-map__dot--running/);
+    const chipBg = body.match(/background\s*:\s*(#[0-9a-f]{6})/i);
+    const stripBg = strip.match(/background\s*:\s*(#[0-9a-f]{6})/i);
+    expect(chipBg).not.toBeNull();
+    expect(stripBg).not.toBeNull();
+    expect(chipBg![1].toLowerCase()).toBe(stripBg![1].toLowerCase());
+  });
+
+  it('lays the chip out as a flex row so the dot sits beside the text', () => {
+    // A pseudo-element on an inline span would wrap/baseline-misalign;
+    // the chip must become a flex container for the dot to sit level.
+    const body = ruleBody(/\.tc-map__tag--running/);
+    expect(body).toMatch(/display\s*:\s*inline-flex/);
+    expect(body).toMatch(/align-items\s*:\s*center/);
+  });
+
+  it('keeps the chip text as the cue that survives reduced motion', () => {
+    // The dot is additive.  Removing the text would make the chip
+    // motion-only, which the reduced-motion block above deliberately
+    // rules out.
+    const root = container('group', 'g', 'G', [
+      container('parallel', 'p', 'Fan out', [
+        container('repeat', 'r', 'Loop', [task('t', 'Body')]),
+        task('solo', 'Solo'),
+      ]),
+    ]);
+    const { container: el } = renderMap(root, run('running', {
+      r: blockState('r', 'running', []),
+      solo: blockState('solo', 'running'),
+    }));
+    const chip = el.querySelector('.tc-map__tag--running');
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toBe('running');
+    // …and the loop row next to it still has its strip dot: both
+    // siblings are in flight and both now carry a pulsing dot.
+    expect(el.querySelector('.tc-map__dot--running')).not.toBeNull();
   });
 });

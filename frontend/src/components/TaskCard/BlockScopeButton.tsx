@@ -50,6 +50,7 @@ export const BlockScopeButton: React.FC<Props> = ({ scope, onChange, title, labe
       tools: payload.tools,
       skills: payload.skills,
       shell_commands: payload.shellCommands,
+      shell_timeout_secs: payload.shellTimeoutSecs,
     });
   };
 
@@ -99,6 +100,7 @@ export const BlockScopeButton: React.FC<Props> = ({ scope, onChange, title, labe
         tools={effective.tools}
         skills={effective.skills}
         shellCommands={effective.shell_commands ?? []}
+        shellTimeoutSecs={effective.shell_timeout_secs}
         onClose={() => setOpen(false)}
         onSave={onSave}
       />

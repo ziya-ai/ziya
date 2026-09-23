@@ -28,6 +28,79 @@ export interface RawEvent {
 }
 
 /**
+ * One ``{{placeholder}}`` from a task's instructions and what it
+ * expanded to for one iteration.  Carried by the ``task_bindings``
+ * event the block executor emits at task dispatch
+ * (app/agents/block_executor.py ``_emit_task_bindings``).
+ *
+ * ``resolved: false`` means the model saw the braces literally — an
+ * unknown head such as a typo, or a loop-scoped placeholder outside a
+ * loop.  A KNOWN placeholder with no data yet (``previous.summary`` on
+ * iteration 0) is resolved with value "", matching the renderer.
+ */
+export interface TemplateBinding {
+  placeholder: string;
+  value: string | null;
+  resolved: boolean;
+  /** Set when the server clipped ``value``; ``length`` is the full size. */
+  truncated?: boolean;
+  length?: number | null;
+}
+
+function isTemplateBinding(v: unknown): v is TemplateBinding {
+  if (!v || typeof v !== 'object') return false;
+  const b = v as { placeholder?: unknown; resolved?: unknown; value?: unknown };
+  return typeof b.placeholder === 'string'
+    && typeof b.resolved === 'boolean'
+    && (b.value === null || b.value === undefined || typeof b.value === 'string');
+}
+
+/** The bindings payload of a ``task_bindings`` event, or [] for anything else. */
+export function bindingsFromEvent(evt: unknown): TemplateBinding[] {
+  if (!evt || typeof evt !== 'object') return [];
+  const e = evt as { type?: unknown; bindings?: unknown };
+  if (e.type !== 'task_bindings' || !Array.isArray(e.bindings)) return [];
+  return e.bindings.filter(isTemplateBinding).map(b => ({
+    ...b, value: b.value ?? null,
+  }));
+}
+
+/**
+ * Merge a newer set of bindings over an existing one, keyed by
+ * placeholder.  An iteration whose body is a group of several tasks
+ * emits one ``task_bindings`` per task; they render against the same
+ * iteration bindings, so a shared placeholder carries the same value
+ * and later entries simply confirm earlier ones.  Where they do
+ * differ (``previous_sibling`` inside a body group) the later task's
+ * value wins — it is the most recent thing the model was told.
+ * Order is first-appearance, so the header stays stable as tasks
+ * add to it.
+ */
+export function mergeBindings(
+  existing: ReadonlyArray<TemplateBinding> | undefined,
+  incoming: ReadonlyArray<TemplateBinding>,
+): TemplateBinding[] {
+  if (!existing || existing.length === 0) return [...incoming];
+  if (incoming.length === 0) return [...existing];
+  const out = [...existing];
+  for (const b of incoming) {
+    const i = out.findIndex(x => x.placeholder === b.placeholder);
+    if (i < 0) out.push(b); else out[i] = b;
+  }
+  return out;
+}
+
+/** Bindings reported across a slice of events (an Events-tab bucket). */
+export function collectBindings(events: ReadonlyArray<RawEvent>): TemplateBinding[] {
+  let acc: TemplateBinding[] = [];
+  for (const evt of events) {
+    const got = bindingsFromEvent(evt);
+    if (got.length) acc = mergeBindings(acc, got);
+  }
+  return acc;
+}
+
+/**
  * A collapsed run of adjacent ``task_text_delta`` events for the
  * same block.  Surfaces aggregate stats (count, char total) so the
  * timeline stays scannable.  ``rawEvents`` retained for opt-in

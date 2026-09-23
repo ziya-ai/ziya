@@ -34,7 +34,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from ..models.task_card import Artifact, ArtifactPart
+from ..models.task_card import Artifact, ArtifactPart, TemplateResolution
 
 
 # Two placeholder shapes:
@@ -91,6 +91,13 @@ class IterationBindings:
     # a task can stamp evidence it writes with the run that produced it —
     # the ledger scripts need this to append rather than overwrite.
     run_id: Optional[str] = None
+    # Resolutions recorded by the tasks dispatched under this iteration,
+    # appended by the block executor as each one renders and copied onto
+    # the iteration's artifact when the body completes.  Lives on the
+    # bindings rather than the context because a parallel fan-out has
+    # N iterations in flight under one context, and these are the one
+    # object that is already private to each of them.
+    resolutions: List[TemplateResolution] = field(default_factory=list)
 
 
 def _part_name(part: Any) -> str:
@@ -426,6 +433,50 @@ def render(template: str, bindings: IterationBindings) -> str:
         return m.group(0) if value is None else value
 
     return _PLACEHOLDER_RE.sub(_sub, template)
+
+
+def list_placeholders(template: Optional[str]) -> List[str]:
+    """Distinct ``{{...}}`` placeholder expressions in ``template``, in
+    first-appearance order.  ``{{ item }}`` and ``{{item}}`` are the same
+    placeholder (``item``).  Empty when there is nothing to substitute.
+    """
+    if not template or "{{" not in template:
+        return []
+    seen: List[str] = []
+    for m in _PLACEHOLDER_RE.finditer(template):
+        name = m.group(1)
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def resolve_placeholders(
+    template: Optional[str], bindings: IterationBindings,
+) -> List[Dict[str, Any]]:
+    """Each distinct placeholder in ``template`` paired with the value
+    ``render`` substitutes for it against ``bindings``.
+
+    Entries are ``{"placeholder": str, "value": Optional[str],
+    "resolved": bool}`` in first-appearance order.  ``resolved`` is False
+    exactly when ``render`` leaves the placeholder literal (unknown
+    head), and then ``value`` is None.  A known placeholder with no data
+    on this iteration (``previous.summary`` on iteration 0) is resolved
+    with value "" -- the same line ``_resolve`` draws, so this never
+    disagrees with what the model was actually handed.
+
+    Observability companion to ``render``: the block executor emits the
+    result so the run inspector can head an iteration with what its
+    instructions expanded to, without re-deriving the substitution rules.
+    """
+    out: List[Dict[str, Any]] = []
+    for name in list_placeholders(template):
+        value = _resolve(name, bindings)
+        out.append({
+            "placeholder": name,
+            "value": value,
+            "resolved": value is not None,
+        })
+    return out
 
 
 def parse_for_each_source(

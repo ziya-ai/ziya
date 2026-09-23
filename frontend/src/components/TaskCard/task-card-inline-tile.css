@@ -188,6 +188,87 @@
   padding: 0 10px 8px 10px;
 }
 
+/* Resolved template bindings for an iteration.  Purple is its own hue
+ * on purpose: blue/green/red are spoken for by status, and a binding is
+ * metadata about the instructions, not a verdict on the work. */
+.tc-tile__iter-binding-chip {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(168, 85, 247, 0.12);
+  color: #7e22ce;
+  font-size: 11px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tc-tile__iter-binding-chip-key {
+  opacity: 0.7;
+}
+.tc-tile__iter-bindings {
+  border-left: 3px solid #a855f7;
+  background: rgba(168, 85, 247, 0.07);
+  border-radius: 0 4px 4px 0;
+  padding: 8px 10px;
+  margin: 8px 0 10px 0;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+.tc-tile__iter-bindings-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7e22ce;
+}
+.tc-tile__iter-bindings-count {
+  opacity: 0.6;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.tc-tile__iter-bindings-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.tc-tile__iter-bindings-table td {
+  padding: 2px 0;
+  vertical-align: top;
+}
+.tc-tile__iter-bindings-key {
+  padding-right: 12px !important;
+  color: #7e22ce;
+  white-space: nowrap;
+}
+.tc-tile__iter-bindings-value {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tc-tile__iter-bindings-value--unresolved {
+  color: #b45309;
+  font-style: italic;
+}
+.tc-tile__iter-bindings-value--empty {
+  color: var(--tc-muted, #888);
+  font-style: italic;
+}
+.tc-tile__iter-bindings-more {
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--tc-muted, #888);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
 /* Tool calls */
 .tc-tile__inspector-tools {
   list-style: none;
@@ -1498,8 +1579,40 @@ body:not(.dark) .tc-recover__alt strong { color: #9a6700; }
   border: 1px solid rgba(88,166,255,0.5);
   background: rgba(88,166,255,0.16);
   border-radius: 3px; padding: 1px 5px; line-height: 1.4;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+/* The chip carries the same pulsing dot as a loop row's in-flight
+ * iteration.  Under a Parallel block a plain task's static chip sat
+ * next to a sibling loop's ringing dot and read as the less-alive of
+ * the two, although both were running.  Same keyframes, same size, so
+ * "running" looks identical whichever block type is doing it; the text
+ * stays as the cue that survives reduced motion. */
+.tc-map__tag--running::before {
+  content: ''; flex: none;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #58a6ff;
+  animation: tc-map-ring 1.4s ease-in-out infinite;
 }
 .tc-map__dots { margin-left: auto; display: inline-flex; gap: 3px; align-items: center; flex: none; }
+/* A nested loop's pass history: one bracketed strip per pass, stacked,
+ * right-aligned like the single strip it replaces.  The current pass is
+ * full-strength; earlier ones are the record and read slightly quieter. */
+.tc-map__passes {
+  margin-left: auto; display: inline-flex; flex-direction: column;
+  align-items: flex-end; gap: 2px; flex: none;
+}
+.tc-map__passes .tc-map__dots { margin-left: 0; }
+.tc-map__pass { display: inline-flex; align-items: center; gap: 4px; opacity: 0.72; }
+.tc-map__pass--current { opacity: 1; }
+.tc-map__pass-label { font-size: 10px; color: #7d8590; min-width: 42px; text-align: right; }
+.tc-map__pass-bracket { font-size: 11px; color: #7d8590; line-height: 1; }
+.tc-map__pass--more { opacity: 1; }
+.tc-map__pass-toggle {
+  background: none; border: none; padding: 0 2px; cursor: pointer;
+  font-size: 10px; color: #7d8590; line-height: 1.4;
+}
+.tc-map__pass-toggle:hover,
+.tc-map__pass-toggle:focus-visible { color: #58a6ff; }
 .tc-map__dot {
   width: 8px; height: 8px; border-radius: 50%;
   display: inline-block; border: none; padding: 0;
@@ -1693,6 +1806,29 @@ body:not(.dark) .tc-map__tag { color: #57606a; }
 .tc-detail__status--failed { color: #f85149; }
 .tc-detail__status--skipped, .tc-detail__status--queued { color: #7d8590; }
 .tc-detail__status--cancelled { color: #d29922; }
+/* ── Resolved template fields for a focused iteration ──────────────
+ * Same blue family as .tc-detail (it is the same block, seen through
+ * one iteration), one step more saturated so it reads as the current
+ * instance while the authored configuration below reads as the source. */
+.tc-detail__resolution {
+  margin: 4px 0 8px;
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.tc-detail__resolution-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 5px 8px;
+  background: rgba(88, 166, 255, 0.12);
+  border-bottom: 1px solid rgba(88, 166, 255, 0.35);
+  font-size: 11px;
+}
+.tc-detail__resolution-head strong { font-size: 12px; }
+.tc-detail__resolution-head span { opacity: 0.7; }
+.tc-detail__resolution-task { padding: 4px 8px 6px; }
+.tc-detail__resolution-task + .tc-detail__resolution-task {
+  border-top: 1px dashed rgba(88, 166, 255, 0.3);
+}
 .tc-detail__section { margin: 4px 0; }
 .tc-detail__section > summary {
   cursor: pointer; font-size: 11px; opacity: 0.75; user-select: none;
@@ -1915,7 +2051,8 @@ body:not(.dark) .tc-tile__iter--failed .tc-tile__iter-status { color: #cf222e; }
 @media (prefers-reduced-motion: reduce) {
   .tc-tile--running,
   .tc-map__icon--running,
-  .tc-map__dot--running { animation: none; }
+  .tc-map__dot--running,
+  .tc-map__tag--running::before { animation: none; }
 }
 
 /* ── Inspector completion footer ────────────────────────────────────

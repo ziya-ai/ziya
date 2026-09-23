@@ -22,6 +22,7 @@
 * No nested modal.  All controls live on the rows you're looking at.
  */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { formatShellTimeout, parseShellTimeout } from './shellTimeout';
 import {
  Dialog, DialogTitle, DialogContent, DialogActions,
  Button, Checkbox, IconButton, Typography, Box, Tooltip,
@@ -64,6 +65,8 @@ export interface PermissionsSavePayload {
   tools: string[];
   skills: string[];
   shellCommands: string[];
+  /** Null when the field was left blank — unset, inherit the ceiling. */
+  shellTimeoutSecs: number | null;
 }
 
 interface Props {
@@ -80,6 +83,8 @@ interface Props {
    * first-token grant (e.g. "pytest") or, with "re:" prefix, a regex
    * against the full command line. */
   shellCommands?: string[];
+  /** Initial per-task shell timeout in seconds; undefined/null = unset. */
+  shellTimeoutSecs?: number | null;
   /** Single combined save: parent applies all four pieces in one
    *  state update so no field clobbers another via stale closures. */
   onSave: (payload: PermissionsSavePayload) => void;
@@ -204,7 +209,7 @@ function parentOf(p: string): string | null {
 // ── Component ────────────────────────────────────────────────
 
 export const PermissionsDialog: React.FC<Props> = ({
-open, title = 'Permissions', entries, tools, skills, shellCommands,
+open, title = 'Permissions', entries, tools, skills, shellCommands, shellTimeoutSecs,
 onClose, onSave,
 }) => {
 const { folders, checkedKeys } = useFolderContext();
@@ -227,6 +232,7 @@ const { folders, checkedKeys } = useFolderContext();
  // Shell tab state.  Stored as a single textarea — one grant per
  // line — to keep the editing UX simple.  Persisted as ``string[]``.
  const [shellGrantsText, setShellGrantsText] = useState<string>('');
+ const [shellTimeoutText, setShellTimeoutText] = useState<string>('');
 
  // Currently displayed directory.  '' = project root; null = above
  // project root (filesystem-level browsing via lazy fetch).
@@ -245,7 +251,8 @@ const { folders, checkedKeys } = useFolderContext();
    setSelectedTools(new Set(tools ?? []));
    setSelectedSkills(new Set(skills ?? []));
    setShellGrantsText((shellCommands ?? []).join('\n'));
- }, [open, entries, tools, skills, shellCommands]);
+   setShellTimeoutText(formatShellTimeout(shellTimeoutSecs));
+ }, [open, entries, tools, skills, shellCommands, shellTimeoutSecs]);
 
  // Lazy-load the MCP tool catalog when the Tools tab is first opened.
  useEffect(() => {
@@ -448,6 +455,7 @@ const { folders, checkedKeys } = useFolderContext();
      tools: Array.from(selectedTools).sort(),
      skills: Array.from(selectedSkills).sort(),
      shellCommands: shellGrants,
+     shellTimeoutSecs: parseShellTimeout(shellTimeoutText),
    });
    onClose();
  };
@@ -801,6 +809,38 @@ const { folders, checkedKeys } = useFolderContext();
                return `${live.length} grant${live.length === 1 ? '' : 's'} active for this task.`;
              })()}
            </Typography>
+          <Box sx={{ mt: 3 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Shell timeout.  One command may run for at most this many
+              seconds before it is killed; the base ceiling is 300.  A
+              production build or a full test sweep needs more, and a
+              command killed at the ceiling surfaces as an opaque timeout
+              the model will usually retry — spending the same minutes
+              again.  Blank inherits.
+            </Typography>
+            <Box
+              component="input"
+              type="number"
+              min={1}
+              step={1}
+              aria-label="Shell timeout (seconds)"
+              value={shellTimeoutText}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setShellTimeoutText(e.target.value)
+              }
+              placeholder="300"
+              sx={{
+                width: 140, p: 1, border: 1, borderColor: 'divider',
+                borderRadius: 1, fontFamily: 'ui-monospace, monospace',
+                fontSize: 13, bgcolor: 'background.paper',
+                color: 'text.primary', outline: 'none',
+                '&:focus': { borderColor: 'primary.main' },
+              }}
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+              seconds
+            </Typography>
+          </Box>
          </Box>
        )}
       </DialogContent>

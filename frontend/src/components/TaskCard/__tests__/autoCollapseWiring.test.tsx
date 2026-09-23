@@ -146,6 +146,64 @@ describe('a manual expand pins the tile open', () => {
   });
 });
 
+describe('a user-launched attempt stays open across the tile remount', () => {
+  // Retry / Continue create a new run AND a new binding; lineage
+  // collapse supersedes the old binding and Conversation.tsx keys tiles
+  // by binding.id, so the attempt renders in a FRESH tile whose refs are
+  // empty.  Every per-instance rule (engagement, manual expand) is blind
+  // to the click that launched it, and a continue that finishes in a
+  // second folded the tile away under the user.
+
+  it('imports both halves of the registry', () => {
+    expect(TILE).toMatch(/import\s*\{[^}]*markUserLaunched[^}]*\}\s*from\s*'\.\/autoCollapse'/);
+    expect(TILE).toMatch(/import\s*\{[^}]*takeUserLaunched[^}]*\}\s*from\s*'\.\/autoCollapse'/);
+  });
+
+  it('registers the new run from the block-level resume handler', () => {
+    const fn = TILE.match(
+      /const handleResumeFrom = useCallback\(async \([\s\S]*?\}, \[[^\]]*\]\);/,
+    );
+    expect(fn).not.toBeNull();
+    expect(fn![0]).toMatch(/markUserLaunched\(res\.run\.id\)/);
+    // Before the binding event: the tile that event mounts is the one
+    // that claims the entry, so it must already be there.
+    const mark = fn![0].indexOf('markUserLaunched(res.run.id)');
+    const evt = fn![0].indexOf('TASK_BINDING_EVENT');
+    expect(mark).toBeGreaterThan(-1);
+    expect(evt).toBeGreaterThan(mark);
+  });
+
+  it('registers the new run from the mid-loop resume handler too', () => {
+    // The two handlers are one user-facing idea at two granularities; a
+    // pin that only worked for block-level resume would be a divergence
+    // the user could see and not explain.
+    const fn = TILE.match(
+      /const handleResumeIteration = useCallback\(async \([\s\S]*?\}, \[[^\]]*\]\);/,
+    );
+    expect(fn).not.toBeNull();
+    expect(fn![0]).toMatch(/markUserLaunched\(res\.run\.id\)/);
+  });
+
+  it('claims the launch on mount keyed to the binding run, and pins', () => {
+    const eff = TILE.match(
+      /useEffect\(\(\) => \{\s*if \(takeUserLaunched\(binding\.run_id\)\) \{[\s\S]*?\}, \[binding\.run_id\]\);/,
+    );
+    expect(eff).not.toBeNull();
+    expect(eff![0]).toMatch(/manuallyExpandedRef\.current = true/);
+    // Refs do not re-run effects: without the tick the collapse effect
+    // could keep a timer it armed in the same commit.
+    expect(eff![0]).toMatch(/setCollapseTick\(t => t \+ 1\)/);
+  });
+
+  it('claims against the BINDING run id, not the shown run id', () => {
+    // The OLD tile switches its shownRunId to the new attempt before it
+    // unmounts; if the claim were keyed on that, the doomed instance
+    // would consume the entry and the fresh tile would find nothing.
+    expect(TILE).not.toMatch(/takeUserLaunched\(shownRunId\)/);
+    expect(TILE).not.toMatch(/takeUserLaunched\(run\?\.id\)/);
+  });
+});
+
 describe('receipt distinguishes waiting-on-user from finished', () => {
   it('gates the held chip on awaitsUser, not controls.isHeld', () => {
     // The inverted guard this change fixes: controls.isHeld is false for

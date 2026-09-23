@@ -148,7 +148,7 @@ def stage_evidence(
     summary = getattr(artifact, "summary", "") or ""
     if len(summary) > STAGE_SUMMARY_CAP:
         summary = summary[:STAGE_SUMMARY_CAP] + " […]"
-    return {
+    entry: Dict[str, Any] = {
         "index": index,
         "label": str(label or ""),
         "status": status or (
@@ -157,6 +157,64 @@ def stage_evidence(
         "self_assessment": getattr(artifact, "self_assessment", None),
         "outputs": len(getattr(artifact, "outputs", None) or []),
     }
+    # Tool-call count, recorded for LEAF artifacts only.  Only
+    # task_executor fills ``tool_calls``; a container artifact (one that
+    # carries its own ``stages``) always reads 0 there, and flagging every
+    # group as "ran no tools" would drown the real signal.  GFX Stage 2
+    # run 3068d3d0: the stage "Rebuild the frontend bundle" was recorded
+    # PASSED with zero tool calls -- the agent described a build it never
+    # ran.  A judge or until-evaluator that can see the count can tell a
+    # claim from a measurement.
+    if not getattr(artifact, "stages", None):
+        entry["tool_calls"] = int(getattr(artifact, "tool_calls", 0) or 0)
+    return entry
+
+
+# Bounds for the digest carried on IterationSummary.  A loop body is a
+# handful of blocks, so the cap is generous for real cards and only
+# defends the run file against a pathological one; the label cap keeps a
+# first-line-of-instructions label from dragging prose into the summary.
+STAGE_DIGEST_CAP = 32
+STAGE_DIGEST_LABEL_CAP = 60
+
+
+def stage_digest(
+    stages: Optional[List[Dict[str, Any]]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Compact per-stage record for ``IterationSummary.stages``.
+
+    ``{index, label, status, tool_calls}`` per stage -- no summary, no
+    self-assessment.  Exists because a loop body's blocks have no
+    durable per-block state (``_mark_block_status`` skips them while a
+    binding frame is active), so after a reload the run map could only
+    paint them ``queued``.  GFX Stage 2 run 3068d3d0 showed a ``done``
+    loop over four never-run children as four bare queued rows; the
+    stages that would have said "passed with zero tool calls" existed
+    only in the per-iteration artifact file the map never reads.  The
+    digest rides in the run record so the map can match a body block to
+    ``latest_iteration.stages[index]``.
+
+    ``index`` is the block's POSITION in the loop body, as recorded by
+    ``_execute_sequence`` -- including a ``skipped`` entry for a sibling
+    an ``on_failure=stop`` never reached.  Returns None for a leaf (no
+    stages), so the summary omits the key rather than carrying ``[]``.
+    """
+    if not stages:
+        return None
+    out: List[Dict[str, Any]] = []
+    for s in stages[:STAGE_DIGEST_CAP]:
+        label = str(s.get("label") or "")
+        if len(label) > STAGE_DIGEST_LABEL_CAP:
+            label = label[:STAGE_DIGEST_LABEL_CAP] + "…"
+        entry: Dict[str, Any] = {
+            "index": s.get("index"),
+            "label": label,
+            "status": s.get("status") or "passed",
+        }
+        if "tool_calls" in s:
+            entry["tool_calls"] = s["tool_calls"]
+        out.append(entry)
+    return out
 
 
 def stage_counts(stages: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -204,9 +262,15 @@ def render_stages_for_judge(stages: List[Dict[str, Any]]) -> str:
                       f"{sa.get('objective_met', '?')}")
             if sa.get("rationale"):
                 sa_txt += f" — {str(sa['rationale'])[:200]}"
+        # Present only on leaf stages (see stage_evidence).  A passed
+        # stage that ran no tool did nothing observable; say so where the
+        # reader will see it, before the agent's own summary.
+        tools_txt = ""
+        if s.get("tool_calls") == 0:
+            tools_txt = " [NO TOOL CALLS — nothing was executed]"
         lines.append(
             f"  {tag}{st.upper()} {s.get('label') or ''}: "
-            f"{s.get('summary') or '(no summary)'}{sa_txt}"
+            f"{s.get('summary') or '(no summary)'}{tools_txt}{sa_txt}"
         )
     if passed_elided:
         lines.append(f"  … {passed_elided} more passed stage(s) not listed")
@@ -246,6 +310,44 @@ def render_outputs_for_judge(outputs: List[Any]) -> str:
     if n_data:
         parts.append(f"{n_data} data")
     return "; ".join(parts)
+
+
+# Cap on the serialized data parts shown to an evaluator.  Enough for a
+# counts object or a short roster; a large payload is truncated rather
+# than allowed to crowd out the condition it is evidence for.
+JUDGE_DATA_CHARS_CAP = 1500
+
+
+def render_data_parts_for_judge(outputs: List[Any]) -> str:
+    """The contents of ``data`` parts, serialized, for a condition judge.
+
+    ``render_outputs_for_judge`` only COUNTS data parts, which is right
+    for the self-improve judge (it asks whether deliverables exist).  An
+    until-condition judge needs the values: a condition such as "no
+    defect has status still-broken" is checkable only if the body emitted
+    ``{"still_broken": 0}`` and the judge can read it.  Without this the
+    judge saw the agent's summary alone, and a summary is a claim.
+    """
+    payloads: List[str] = []
+    for p in outputs or []:
+        pt = getattr(p, "part_type", None) or (
+            p.get("part_type") if isinstance(p, dict) else None)
+        if pt != "data":
+            continue
+        data = getattr(p, "data", None) if not isinstance(p, dict) else p.get("data")
+        if data is None:
+            continue
+        try:
+            payloads.append(json.dumps(data, sort_keys=True, ensure_ascii=False,
+                                       default=str))
+        except (TypeError, ValueError):
+            payloads.append(str(data))
+    if not payloads:
+        return "(none)"
+    text = "\n".join(payloads)
+    if len(text) > JUDGE_DATA_CHARS_CAP:
+        text = text[:JUDGE_DATA_CHARS_CAP] + " […truncated]"
+    return text
 
 
 # ── Canonicalization ────────────────────────────────────────────

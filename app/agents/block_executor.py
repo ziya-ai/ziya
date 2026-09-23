@@ -31,11 +31,14 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
-from ..models.task_card import Artifact, ArtifactPart, Block, TaskScope, merge_scopes
+from ..models.task_card import (
+    Artifact, ArtifactPart, Block, TaskScope, TemplateResolution, merge_scopes,
+)
 from ..models.task_run import IterationStatus, IterationSummary, TaskRunBlockState
 from ..context import (
     set_task_iteration_context,
     reset_task_iteration_context,
+    get_task_iteration_context,
     set_task_service_tier,
     reset_task_service_tier,
     get_task_service_tier,
@@ -533,6 +536,34 @@ async def _emit(ctx: "ExecutionContext", event: Dict[str, Any]) -> None:
     await _relay.safe_push(ctx.run_id, event)
 
 
+def _pass_key(ctx: "ExecutionContext") -> Optional[str]:
+    """Dotted indices of the enclosing loop frames, or None at top level.
+
+    Read where ``_record_iteration`` is called — after the loop's OWN
+    frame has been popped (serial) or was never pushed onto ``ctx``
+    (parallel, which binds on a copy) — so the stack holds exactly the
+    outer passes this iteration ran under.
+    """
+    if not ctx.binding_stack:
+        return None
+    return ".".join(str(b.index) for b in ctx.binding_stack)
+
+
+def _begin_loop_pass(block: Block, ctx: "ExecutionContext") -> None:
+    """Start a fresh artifact-retention budget for a NESTED loop's pass.
+
+    A loop inside another loop's body runs once per outer iteration.  Its
+    summaries and artifacts are KEPT across passes, distinguished by
+    ``IterationSummary.pass_key`` (see there) — but the pass-retention
+    cap is per pass, or a loop's 51st cumulative pass would start
+    keeping nothing.  Gated on an active binding frame, i.e. genuinely
+    nested; a top-level loop runs once per run.
+    """
+    if ctx.storage is None or not block.id or not ctx.binding_stack:
+        return
+    ctx.pass_counts.pop(block.id, None)
+
+
 def _is_step_boundary(block: Block) -> bool:
     """True if holding before ``block`` should cost a step credit.
 
@@ -754,6 +785,7 @@ async def _execute_block_dispatch(block: Block, ctx: ExecutionContext) -> Artifa
     try:
         if block.block_type == "task":
             effective = _apply_templating_to_task(block, ctx)
+            resolution = await _emit_task_bindings(block, ctx)
             merged_scope = ctx.effective_scope()
             if merged_scope is not effective.scope:
                 effective = effective.model_copy(update={"scope": merged_scope})
@@ -763,6 +795,11 @@ async def _execute_block_dispatch(block: Block, ctx: ExecutionContext) -> Artifa
                 project_id=ctx.project_id,
                 run_id=ctx.run_id,
             )
+            # The task's own record.  Inside a loop the iteration
+            # artifact is re-stamped with every body task's resolution
+            # once the body completes (see _attach_resolutions).
+            if resolution is not None:
+                artifact.template_resolutions = [resolution]
         elif block.block_type == "repeat":
             artifact = await _maybe_self_improve(block, ctx, _execute_repeat)
         elif block.block_type == "parallel":
@@ -826,7 +863,26 @@ def _call_failure(summary: str) -> Artifact:
     return Artifact(summary=summary, failed=True, created_at=now_ms())
 
 
-def _sequence_child_failure(child: Block, exc: Exception) -> Artifact:
+def _block_label(child: Block, ctx: Optional[ExecutionContext] = None) -> str:
+    """A block's display label for executor-generated prose.
+
+    The card definition is the fallback chain name -> id -> type, but a
+    name authored as "Wave 3 ({{item}})" must read "Wave 3 (graphviz)"
+    in a decision line — the sentence describes what this iteration did,
+    and the bindings are in hand at every site that writes one.  Rendered
+    under the same guard as the task's instructions so a loop-scoped
+    placeholder outside a loop stays literal there too.
+    """
+    label = child.name or child.id or child.block_type
+    if ctx is not None and "{{" in label and _templating_active(child, ctx):
+        label = task_templating.render(label, _task_bindings(ctx))
+    return label
+
+
+def _sequence_child_failure(
+    child: Block, exc: Exception,
+    ctx: Optional[ExecutionContext] = None,
+) -> Artifact:
     """A failed artifact standing in for a sibling that raised.
 
     ``on_failure`` is documented in terms of "the first child whose
@@ -853,7 +909,7 @@ def _sequence_child_failure(child: Block, exc: Exception) -> Artifact:
     so what this adds is the sequence-level view, not the record.
     """
     err = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-    label = child.name or child.id or child.block_type
+    label = _block_label(child, ctx)
     logger.warning(
         "⛔ SEQUENCE: child %s raised %s -- converted to a failed "
         "artifact so on_failure governs: %s",
@@ -1309,6 +1365,168 @@ def _references_sequence_placeholder(instructions: Optional[str]) -> bool:
     return bool(_SEQUENCE_PLACEHOLDER_RE.search(instructions))
 
 
+def _templating_active(block: Block, ctx: ExecutionContext) -> bool:
+    """Whether a task's instructions are rendered at all on this dispatch.
+
+    Rendering happens when a Repeat/Until is active (iteration bindings),
+    run-scoped State variables or overrides exist, prose givens are
+    present, a prior sibling or completed block can be referenced, or the
+    instructions name a prior block's result.  Otherwise the text is
+    handed over verbatim -- which is what keeps a loop-scoped
+    ``{{index}}`` literal outside a loop (see _SEQUENCE_PLACEHOLDER_RE).
+    Shared by the renderer and the bindings emitter so the two can never
+    disagree about whether substitution took place.
+    """
+    sibling_prev = ctx.sibling_stack[-1] if ctx.sibling_stack else None
+    return bool(
+        ctx.binding_stack or ctx.variables or ctx.overrides
+        or ctx.context_notes or sibling_prev is not None
+        or ctx.artifact_registry
+        or _references_sequence_placeholder(block.instructions)
+    )
+
+
+def _task_bindings(ctx: ExecutionContext) -> task_templating.IterationBindings:
+    """The bindings a task renders against: the innermost iteration
+    bindings (or defaults outside a loop) with run-scoped variables,
+    the prior sibling, the completed-block registry and the run id
+    attached.  Never mutates the stacked binding."""
+    sibling_prev = ctx.sibling_stack[-1] if ctx.sibling_stack else None
+    base = ctx.binding_stack[-1] if ctx.binding_stack else task_templating.IterationBindings()
+    # Merge run-scoped variables with launch-time overrides (overrides
+    # win).  Empty merge leaves the binding untouched.
+    merged = {**ctx.variables, **ctx.overrides}
+    _updates = {}
+    if merged:
+        _updates["variables"] = merged
+    if sibling_prev is not None:
+        _updates["previous_sibling"] = sibling_prev
+    if ctx.artifact_registry:
+        _updates["sibling_artifacts"] = ctx.artifact_registry
+    if ctx.run_id:
+        _updates["run_id"] = ctx.run_id
+    return replace(base, **_updates) if _updates else base
+
+
+# Per-placeholder cap on the value carried by a ``task_bindings`` event.
+# ``{{previous.summary}}`` and ``{{all.summaries}}`` routinely run to
+# thousands of characters; the inspector header needs enough to
+# recognise the value, not the whole text.
+_BINDING_VALUE_CAP = 2000
+
+
+# Cap on the rendered instructions carried by a TemplateResolution.  The
+# authored text is on the card; this is only for reading what one
+# iteration was told, so a long brief is clipped rather than duplicated
+# in full into every iteration artifact.
+_RESOLVED_INSTRUCTIONS_CAP = 6000
+
+
+def _task_resolution(block: Block, ctx: ExecutionContext) -> Optional[Dict[str, Any]]:
+    """What each ``{{...}}`` in a task's name or instructions expanded
+    to on this dispatch, plus the rendered name and instructions.
+
+    None when neither field holds a placeholder — the common case, which
+    must cost nothing.  ``resolved`` is False for any placeholder the
+    model saw literally: an unknown head, or every placeholder when
+    rendering was skipped for this dispatch (``{{index}}`` outside a
+    loop).  The same guard and bindings as the renderer, so this can
+    never report a value the model was not given.
+    """
+    name_text = block.name or ""
+    instr_text = block.instructions or ""
+    names = task_templating.list_placeholders(name_text + "\n" + instr_text)
+    if not names:
+        return None
+    resolved_name: Optional[str] = None
+    rendered: Optional[str] = None
+    if _templating_active(block, ctx):
+        bindings = _task_bindings(ctx)
+        entries = task_templating.resolve_placeholders(
+            name_text + "\n" + instr_text, bindings,
+        )
+        if "{{" in name_text:
+            resolved_name = task_templating.render(name_text, bindings)
+        if instr_text:
+            rendered = task_templating.render(instr_text, bindings)
+    else:
+        entries = [
+            {"placeholder": n, "value": None, "resolved": False} for n in names
+        ]
+    for entry in entries:
+        value = entry.get("value")
+        if isinstance(value, str) and len(value) > _BINDING_VALUE_CAP:
+            entry["length"] = len(value)
+            entry["truncated"] = True
+            entry["value"] = value[:_BINDING_VALUE_CAP]
+    truncated = rendered is not None and len(rendered) > _RESOLVED_INSTRUCTIONS_CAP
+    return {
+        "task_block_id": block.id or "",
+        "authored_name": block.name or None,
+        "resolved_name": resolved_name,
+        "bindings": entries,
+        "resolved_instructions": (
+            rendered[:_RESOLVED_INSTRUCTIONS_CAP] if truncated else rendered
+        ),
+        "instructions_truncated": truncated,
+    }
+
+
+async def _emit_task_bindings(
+    block: Block, ctx: ExecutionContext,
+) -> Optional[TemplateResolution]:
+    """Report a task's template resolution: live, and for the record.
+
+    Live: a ``task_bindings`` event, emitted before the task runs so the
+    run inspector can head the iteration with the resolved values (which
+    file ``{{item}}`` was, what ``{{previous.summary}}`` said) instead of
+    the literal template.  Tagged with the iteration owner's
+    block_id/index exactly like the streaming deltas (see task_executor's
+    ``delta_block_id``), so the frontend routes it into the same
+    iteration bucket; a bare task is tagged with its own id.
+
+    Record: the same resolution is appended to the enclosing iteration's
+    bindings, from where _attach_resolutions copies it onto the
+    iteration artifact — the durable form the run map reads after the
+    relay's ring buffer is gone.  Returned so the task's own artifact
+    can carry it too.  None, and nothing emitted, when the task holds
+    no placeholder.
+    """
+    rec = _task_resolution(block, ctx)
+    if rec is None:
+        return None
+    iter_ctx = get_task_iteration_context()
+    in_iteration = bool(iter_ctx and iter_ctx.get("block_id"))
+    event: Dict[str, Any] = {
+        "type": "task_bindings",
+        "block_id": iter_ctx["block_id"] if in_iteration else block.id,
+        "task_block_id": block.id,
+        "bindings": rec["bindings"],
+        "resolved_name": rec["resolved_name"],
+        "ts": time.time(),
+    }
+    if in_iteration and iter_ctx.get("index") is not None:
+        event["index"] = iter_ctx["index"]
+    await _emit(ctx, event)
+    resolution = TemplateResolution.model_validate(rec)
+    if ctx.binding_stack:
+        ctx.binding_stack[-1].resolutions.append(resolution)
+    return resolution
+
+
+def _attach_resolutions(
+    artifact: Artifact, bindings: task_templating.IterationBindings,
+) -> None:
+    """Stamp an iteration artifact with every body task's resolution.
+
+    Overwrites rather than extends: the sequence's last task already
+    carries its own single entry, and the iteration's record is the
+    full list.  No-op when nothing in the body was templated.
+    """
+    if bindings.resolutions:
+        artifact.template_resolutions = list(bindings.resolutions)
+
+
 def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
     """Return a shallow copy of the task block with instructions rendered
     against the innermost active iteration bindings, then prepended with
@@ -1320,28 +1538,9 @@ def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
     neither applies or nothing changed."""
     if not block.instructions:
         return block
-    sibling_prev = ctx.sibling_stack[-1] if ctx.sibling_stack else None
-    if (not ctx.binding_stack and not ctx.variables and not ctx.overrides
-            and not ctx.context_notes and sibling_prev is None
-            and not ctx.artifact_registry
-            and not _references_sequence_placeholder(block.instructions)):
+    if not _templating_active(block, ctx):
         return block
-    base = ctx.binding_stack[-1] if ctx.binding_stack else task_templating.IterationBindings()
-    # Merge run-scoped variables with launch-time overrides (overrides
-    # win) and attach without mutating the stacked binding.  Empty merge
-    # leaves the binding untouched.
-    merged = {**ctx.variables, **ctx.overrides}
-    # Attach merged vars and the prior-sibling artifact for templating.
-    _updates = {}
-    if merged:
-        _updates["variables"] = merged
-    if sibling_prev is not None:
-        _updates["previous_sibling"] = sibling_prev
-    if ctx.artifact_registry:
-        _updates["sibling_artifacts"] = ctx.artifact_registry
-    if ctx.run_id:
-        _updates["run_id"] = ctx.run_id
-    bindings = replace(base, **_updates) if _updates else base
+    bindings = _task_bindings(ctx)
     rendered = task_templating.render(block.instructions, bindings)
     # Assemble preambles, prose givens first (the conversational
     # baseline), then the auto iteration-context (loop-only).  Both are
@@ -1458,16 +1657,16 @@ async def _execute_sequence(
                 # caught at all.
                 if getattr(exc, "infra_kind", ""):
                     raise
-                last = _sequence_child_failure(child, exc)
+                last = _sequence_child_failure(child, exc, ctx)
             acc_outputs.extend(last.outputs or [])
             acc_decisions.extend(last.decisions or [])
             stages.append(stage_evidence(
-                child.name or child.id or child.block_type, last, index=i))
+                _block_label(child, ctx), last, index=i))
             # Make this sibling's result visible to the next sibling.
             ctx.sibling_stack[-1] = last
             if on_failure == "stop" and last.failed and i < len(blocks) - 1:
                 skipped = len(blocks) - 1 - i
-                label = child.name or child.id or child.block_type
+                label = _block_label(child, ctx)
                 acc_decisions.append(
                     f"sequence stopped: step {i + 1}/{len(blocks)} "
                     f"({label}) failed; {skipped} remaining step(s) "
@@ -1636,6 +1835,7 @@ async def _execute_repeat(
                 return str(item)[:80]
         return f"#{i}"
 
+    _begin_loop_pass(block, ctx)
     # Persist the roster size for for_each loops before announcing the
     # block: the run map renders loop progress as "n/m", and for_each is
     # the one mode whose denominator exists only at run time (count is
@@ -1754,6 +1954,7 @@ async def _execute_repeat(
         # Seal timing if the body didn't.
         if not artifact.duration_ms:
             artifact.duration_ms = int((time.time() - iter_start) * 1000)
+        _attach_resolutions(artifact, bindings)
         await _record_iteration(block, ctx, index, artifact, item_key=item_key)
         iter_outcomes[index] = "failed" if artifact.failed else "passed"
         iter_stages[index] = stage_evidence(
@@ -2494,6 +2695,7 @@ async def _record_iteration(
         return
     status: IterationStatus = "failed" if artifact.failed else "passed"
     signature = _derive_signature(artifact) if artifact.failed else None
+    pass_key = _pass_key(ctx)
     # Retention: always persist failures; cap passes per block.
     keep_full = True
     if status == "passed":
@@ -2501,7 +2703,17 @@ async def _record_iteration(
         keep_full = prev < PASS_ARTIFACT_RETENTION_CAP
         ctx.pass_counts[block.id] = prev + 1
     if keep_full:
-        ctx.storage.write_iteration_artifact(ctx.run_id, block.id, index, artifact)
+        ctx.storage.write_iteration_artifact(
+            ctx.run_id, block.id, index, artifact, pass_key=pass_key,
+        )
+    from ..utils.self_improve import stage_digest
+    # Lifted onto the summary so it outlives the artifact (see
+    # IterationSummary.resolved_name).
+    resolved_name = next(
+        (r.resolved_name for r in (artifact.template_resolutions or [])
+         if r.resolved_name),
+        None,
+    )
     summary = IterationSummary(
         index=index,
         status=status,
@@ -2510,7 +2722,10 @@ async def _record_iteration(
         tokens=artifact.tokens,
         has_artifact=keep_full,
         item_key=item_key,
+        pass_key=pass_key,
         model=artifact.model,
+        stages=stage_digest(getattr(artifact, "stages", None)),
+        resolved_name=resolved_name,
     )
     ctx.storage.append_iteration_summary(ctx.run_id, block.id, summary)
 
@@ -2561,12 +2776,17 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     decisions: List[str] = []
     stages: List[Dict[str, Any]] = []
     signatures: List[str] = []  # for convergence backstop
+    # Set only by layer 3.  Read after the loop: with an explicit
+    # condition, leaving the loop any other way -- until_max, the stall
+    # breaker -- means the block did not do what it was asked to do.
+    condition_satisfied = False
     # Stall-breaker state.  Unlike ``signatures`` these are maintained even
     # when an explicit condition is set, which is the case the breaker exists
     # for.
     stall_streak = 0
     prev_sig: Optional[str] = None
 
+    _begin_loop_pass(block, ctx)
     await _emit(ctx, {
         "type": "block_started",
         "block_id": block.id, "block_type": "until",
@@ -2642,6 +2862,7 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         finally:
             ctx.binding_stack.pop()
             reset_task_iteration_context(iter_ctx_token)
+        _attach_resolutions(artifact, bindings)
         await _record_iteration(block, ctx, i, artifact)
         await _emit(ctx, {
             "type": "iteration_completed",
@@ -2764,8 +2985,27 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
             logger.warning(f"until condition eval failed (continuing): {e}")
             satisfied = False
         if satisfied:
+            condition_satisfied = True
             decisions.append(f"until condition satisfied at iter {i}")
             break
+
+    # Exhaustion is a verdict on the GOAL, not on the last body pass.
+    # GFX Stage 2 run 3068d3d0: condition "every defect verified or
+    # wont-fix", until_max=3, evaluator said no three times, the loop
+    # fell out of the for and returned the body's clean ``failed=False``
+    # -- so the run went ``done`` with 93 unverified defects and nothing
+    # on the artifact saying the condition was unmet.  Only an explicit
+    # model-evaluated condition is judged here; the no-condition goal
+    # path keeps until_max as a safety net, per the docstring above.
+    condition_failed = bool(
+        condition and mode == "model" and not condition_satisfied
+        and last_artifact is not None
+    )
+    if condition_failed:
+        decisions.append(
+            f"until condition not satisfied after {len(stages)} iteration(s) "
+            f"(until_max={n_max}); the goal was not reached"
+        )
 
     elapsed_ms = int((time.time() - start) * 1000)
     await _emit(ctx, {
@@ -2777,7 +3017,7 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         outputs=outputs, duration_ms=elapsed_ms,
         stages=stages,
         created_at=now_ms(),
-        failed=bool(last_artifact and last_artifact.failed),
+        failed=bool(last_artifact and last_artifact.failed) or condition_failed,
     )
 
 
@@ -2849,24 +3089,6 @@ async def _execute_state(block: Block, ctx: ExecutionContext) -> Artifact:
         created_at=now_ms(),
     )
 
-# How often the wait-loop re-reads the record.  Coarser than the pause
-# loop's 0.4s on purpose: a human answer arrives on a scale of minutes, so
-# polling faster only rewrites nothing more often.
-_ASK_POLL_SECONDS = 0.5
-
-
-def _recorded_ask_answer(
-    ctx: "ExecutionContext", block_id: str,
-) -> Optional[Dict[str, Any]]:
-    """The human answer already on record for this Ask block, if any."""
-    if ctx.storage is None or not block_id:
-        return None
-    run = ctx.storage.get(ctx.run_id)
-    if run is None:
-        return None
-    return (getattr(run, "ask_answers", None) or {}).get(block_id)
-
-
 async def _execute_ask(block: Block, ctx: ExecutionContext) -> Artifact:
     """Hold the run at this boundary until a human answers.
 
@@ -2879,10 +3101,26 @@ async def _execute_ask(block: Block, ctx: ExecutionContext) -> Artifact:
 
     Introduces no new hold point: an Ask sits at an ordinary block boundary,
     which a sequence has already passed _wait_if_paused to reach.
+
+    The mailbox itself is the shared ``ConsentLedger`` (app/utils/
+    consent_ledger.py): this function is the task-run adapter over it, and
+    the chat tool-consent gate is the other.  The ledger's task-run store
+    projects onto the run record's ``pending_ask`` / ``ask_answers`` exactly
+    as before, so the reconciler and the answer endpoint are unchanged.
     """
-    recorded = _recorded_ask_answer(ctx, block.id)
+    from ..utils.consent_ledger import (
+        ConsentCancelled, ConsentLedger, TaskRunConsentStore, run_request_id,
+    )
+    recorded: Optional[Dict[str, Any]] = None
+    ledger: Optional[ConsentLedger] = None
+    request_id = run_request_id(ctx.run_id or "", block.id or "")
+    if ctx.storage is not None and block.id:
+        ledger = ConsentLedger(TaskRunConsentStore(ctx.storage))
+        existing = ledger.get(request_id)
+        if existing is not None and existing.settled:
+            recorded = existing.answer
     if recorded is None:
-        if ctx.storage is None:
+        if ledger is None:
             raise TaskExecutorError(
                 f"ask block {block.id!r} cannot hold for a human: this run "
                 f"has no storage, so the question could not be persisted "
@@ -2890,23 +3128,24 @@ async def _execute_ask(block: Block, ctx: ExecutionContext) -> Artifact:
             )
         question = (block.ask_question or "").strip()
         choices = [str(c) for c in (block.ask_choices or [])]
-        ctx.storage.open_ask(ctx.run_id, block.id, question, choices)
+        ledger.open(
+            request_id, {"kind": "question", "text": question, "choices": choices},
+            owner_id=ctx.run_id,
+        )
         await _emit(ctx, {
             "type": "ask_opened", "block_id": block.id,
             "question": question, "choices": choices, "at": time.time(),
         })
         try:
-            while recorded is None:
-                if ctx.cancel_requested():
-                    raise BlockExecutionCancelled()
-                await asyncio.sleep(_ASK_POLL_SECONDS)
-                recorded = _recorded_ask_answer(ctx, block.id)
+            recorded = await ledger.await_answer(request_id, ctx.cancel_requested)
+        except ConsentCancelled:
+            raise BlockExecutionCancelled()
         finally:
             # Clears the open question either way.  close_ask deliberately
             # does not walk the status back to running unless it is still
             # awaiting_input, so a cancelled run is never briefly reported
             # as live on its way out.
-            ctx.storage.close_ask(ctx.run_id)
+            ledger.close(request_id)
         await _emit(ctx, {
             "type": "ask_answered", "block_id": block.id,
             "decision": recorded.get("decision"), "at": time.time(),

@@ -376,10 +376,12 @@ export async function listIterations(
 
 export async function getIterationArtifact(
   projectId: string, runId: string, blockId: string, index: number,
+  passKey?: string | null,
 ): Promise<Artifact> {
+  const q = passKey ? `?pass_key=${encodeURIComponent(passKey)}` : '';
   const res = await fetch(
     `${runsBase(projectId)}/${encodeURIComponent(runId)}` +
-    `/iterations/${encodeURIComponent(blockId)}/${index}`,
+    `/iterations/${encodeURIComponent(blockId)}/${index}${q}`,
     { headers: projectHeaders() },
   );
   if (!res.ok) throw new Error(`getIterationArtifact failed: ${res.status}`);

@@ -235,6 +235,54 @@ class ArtifactPart(BaseModel):
     data: Optional[Dict[str, Any]] = None
 
 
+class TemplateBinding(BaseModel):
+    """One ``{{placeholder}}`` and what it expanded to on one dispatch.
+
+    ``resolved`` is False exactly when the renderer left the placeholder
+    literal (unknown head, or rendering skipped for that dispatch), and
+    then ``value`` is None.  A known placeholder with no data on this
+    iteration resolves to "" — the same line task_templating draws.
+    """
+    model_config = {"extra": "allow"}
+
+    placeholder: str
+    value: Optional[str] = None
+    resolved: bool = True
+    # Set when the executor clipped ``value``; ``length`` is the full size.
+    truncated: bool = False
+    length: Optional[int] = None
+
+
+class TemplateResolution(BaseModel):
+    """A task's authored template fields and their resolution for ONE
+    dispatch — what the model was actually handed, as opposed to what
+    the card says.
+
+    Recorded by the block executor at task dispatch and carried on the
+    task's artifact; a loop iteration's artifact carries one entry per
+    task dispatched in its body.  This is what lets the run map show
+    "Wave 3 (graphviz)" for a focused iteration when the card only ever
+    says "Wave 3 ({{item}})" — the definition has N expansions, so the
+    resolved form has to be recorded per iteration or it is gone.
+
+    Only present when the task's name or instructions contain a
+    placeholder; the common untemplated task records nothing.
+    """
+    model_config = {"extra": "allow"}
+
+    task_block_id: str = ""
+    # Name as authored / as rendered.  ``resolved_name`` is None when the
+    # name holds no placeholder or rendering was skipped.
+    authored_name: Optional[str] = None
+    resolved_name: Optional[str] = None
+    # Every distinct placeholder in the name or instructions.
+    bindings: List[TemplateBinding] = []
+    # Instructions as rendered (before the executor's auto-context
+    # preambles).  None when rendering was skipped for this dispatch.
+    resolved_instructions: Optional[str] = None
+    instructions_truncated: bool = False
+
+
 class Artifact(BaseModel):
     """Durable output of a completed task block."""
     model_config = {"extra": "allow"}
@@ -286,6 +334,12 @@ class Artifact(BaseModel):
     model_id: Optional[str] = None
     endpoint: Optional[str] = None
     context_limit: Optional[int] = None
+    # What each templated field of the producing task(s) expanded to on
+    # this dispatch — see TemplateResolution.  One entry for a task's own
+    # artifact; one per body task on a loop iteration's artifact.  Empty
+    # when nothing was templated, and on records written before the
+    # field existed.
+    template_resolutions: List[TemplateResolution] = []
 
 
 # ── The recursive Block type ──────────────────────────────

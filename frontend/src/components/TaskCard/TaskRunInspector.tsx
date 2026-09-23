@@ -12,7 +12,8 @@
  import React, { useEffect, useState } from 'react';
 import type { LiveTaskState } from '../../hooks/useTaskRunStream';
 import type { IterationsResponse, RunStatus } from '../../types/task_run';
- import { collapseEventRuns, bucketEventsByIteration, type DeltaRun, type DisplayEvent, type EventBucket, type RawEvent } from './eventLog';
+ import { collapseEventRuns, bucketEventsByIteration, collectBindings, type DeltaRun, type DisplayEvent, type EventBucket, type RawEvent } from './eventLog';
+ import { BindingChip, IterationBindingsBox } from './IterationBindings';
  import { truncatePreview } from './previewText';
  import { TaskMarkdown } from './TaskMarkdown';
  import { stripTaskMetaTags } from './completionCheck';
@@ -240,8 +241,10 @@ const IterationSectionsView: React.FC<{
               {typeof it.tokens === 'number' && (
                 <span className="tc-tile__inspector-iter-tokens">{it.tokens.toLocaleString()} tok</span>
               )}
+              <BindingChip bindings={it.bindings} />
             </summary>
             <div className="tc-tile__inspector-iter-body">
+              <IterationBindingsBox bindings={it.bindings} />
               <TaskMarkdown
                 markdown={stripTaskMetaTags(it.streamText)}
                 enableCodeApply={false}
@@ -328,8 +331,10 @@ const ToolCallsTab: React.FC<{
                 <span className="tc-tile__inspector-iter-tokens">
                   {it.toolCalls.length} call{it.toolCalls.length === 1 ? '' : 's'}
                 </span>
+                <BindingChip bindings={it.bindings} />
               </summary>
               <div className="tc-tile__inspector-iter-body">
+                <IterationBindingsBox bindings={it.bindings} />
                 <ToolCallList
                   calls={it.toolCalls}
                   scope={`iter-${iterI}`}
@@ -568,6 +573,10 @@ const EventsTab: React.FC<{
         const statusClass = bucket.status
           ? `tc-tile__inspector-iter-status tc-tile__inspector-iter-status--${bucket.status}`
           : '';
+        // The Events tab buckets raw events itself rather than reading
+        // live.iterations, so it derives the bindings from the slice the
+        // same way the reducer does for the other two tabs.
+        const bindings = collectBindings(bucket.events);
         return (
           <details
             key={`iter-${bucket.index}-${bucket.blockId ?? 'noblock'}`}
@@ -580,8 +589,10 @@ const EventsTab: React.FC<{
               <span className="tc-tile__inspector-iter-tokens">
                 {bucket.events.length} event{bucket.events.length === 1 ? '' : 's'}
               </span>
+              <BindingChip bindings={bindings} />
             </summary>
             <div className="tc-tile__inspector-iter-body">
+              <IterationBindingsBox bindings={bindings} />
               {renderBucketBody(display, offset)}
             </div>
           </details>
