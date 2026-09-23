@@ -478,6 +478,18 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
         );
     }
 
+    // The persistent-signature banner reads the on-disk config only (the
+    // server computes signatureStatus from the file by design), so it knows
+    // nothing about a session-only request. When the user has engaged the
+    // session path — staged, or already applied — the persistent banner
+    // would either compete with it (two "To activate" commands for the same
+    // delta) or state something false ("running at the default floor" while
+    // a grant is live). The session banners own the modal in that case and
+    // carry a one-line note about the unsigned persistent extras instead.
+    const persistentUnsigned =
+        !!config.signatureStatus?.hasEscalation && !config.signatureStatus?.authorized;
+    const sessionPathEngaged = sessionStaged || !!config.sessionGrant?.active;
+
     return (
         <Modal
             title="Shell Command Configuration"
@@ -542,7 +554,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                     style={{ marginBottom: 16 }}
                 />
 
-                {config.signatureStatus?.hasEscalation && !config.signatureStatus?.authorized && (
+                {persistentUnsigned && !sessionPathEngaged && (
                     <Alert
                         type="warning"
                         showIcon
@@ -557,7 +569,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                     floor. Editing a privileged field voids any prior
                                     approval until you re-sign.
                                 </div>
-                                {Object.entries(config.signatureStatus.pendingDelta).map(([field, vals]) => (
+                                {Object.entries(config.signatureStatus?.pendingDelta ?? {}).map(([field, vals]) => (
                                     <div key={field} style={{ fontFamily: 'monospace', fontSize: 12 }}>
                                         {field}: {vals.join(', ')}
                                     </div>
@@ -634,6 +646,13 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                     and starts the persistent path, which requires its own{' '}
                                     <code>sudo ziya-approve</code> signature.
                                 </div>
+                                {persistentUnsigned && (
+                                    <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
+                                        The persistent config also holds unsigned extras; those
+                                        stay inactive regardless of this temporary grant until
+                                        signed with <code>sudo ziya-approve</code>.
+                                    </div>
+                                )}
                             </div>
                         }
                     />
@@ -666,6 +685,13 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                     <b>Save (persistent)</b> +{' '}
                                     <code>sudo ziya-approve</code>.
                                 </div>
+                                {persistentUnsigned && (
+                                    <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
+                                        The persistent config also holds unsigned extras; those
+                                        are not part of this grant and stay inactive until
+                                        signed with <code>sudo ziya-approve</code>.
+                                    </div>
+                                )}
                             </div>
                         }
                     />
