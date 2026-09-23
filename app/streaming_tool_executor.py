@@ -3270,6 +3270,10 @@ class StreamingToolExecutor:
                 skipped_tools = set()  # Track tools we're skipping due to limits
                 executed_tool_signatures = set()  # Track tool name + args to prevent duplicates
                 _feedback_received = False  # When True, skip remaining tools so model sees feedback immediately
+                # Tool calls whose execution is deferred to a single batch
+                # dispatched after this iteration's content blocks close, so
+                # consecutive read-only calls overlap (see app/tool_batch.py).
+                pending_tool_ctxs = []
                 
                 # Initialize content buffer and visualization detector
                 content_buffer = ""
@@ -4093,33 +4097,15 @@ Retry with the 'command' parameter included."""
                                     peek_feedback_fn=lambda: list(_pending_feedback),
                                     executor=self,
                                 )
-                                logger.debug(f"🔍 EXECUTING_TOOL: {actual_tool_name} with args {args}")
-                                async for _evt in execute_single_tool(_exec_ctx):
-                                    if _evt.get('type') == '_tool_result':
-                                        tool_results.append({
-                                            'tool_id': _evt['tool_id'],
-                                            'tool_name': _evt['tool_name'],
-                                            'result': _evt['result'],
-                                        })
-                                    else:
-                                        yield _evt
-                                if _exec_ctx.should_stop_stream:
-                                    if _feedback_monitor_task:
-                                        _feedback_monitor_task.cancel()
-                                    return
-                                # Collect any deferred feedback from this tool execution
-                                deferred_feedback_messages.extend(_exec_ctx.deferred_feedback)
-                                if _exec_ctx.feedback_received:
-                                    _feedback_received = True
-                                tools_executed_this_iteration = True
-                                logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
-
+                                logger.debug(f"🔍 QUEUEING_TOOL: {actual_tool_name} with args {args}")
+                                # Defer execution: collect this call and run the whole
+                                # iteration's tools through run_tool_batch once the content
+                                # blocks close, so consecutive read-only calls overlap instead
+                                # of running strictly serially.  Non-read calls stay barriers
+                                # (see app/tool_batch.plan_groups).  should_stop / feedback /
+                                # cancel are all handled once, at the post-loop batch dispatch.
+                                pending_tool_ctxs.append(_exec_ctx)
                                 completed_tools.add(tool_id)
-                                # Check after each tool so a multi-tool batch
-                                # stops immediately when cancellation is requested.
-                                if cancel_event is not None and cancel_event.is_set():
-                                    logger.debug("stream_with_tools: cancel_event after tool, stopping")
-                                    return
                             
                             except json.JSONDecodeError as e:
                                 logger.error(f"🔍 JSON_PARSE_ERROR: Failed to parse tool arguments for {tool_name}: {e}")
@@ -4209,6 +4195,45 @@ Please retry the tool call with valid JSON. Ensure:
                         continuation_happened = _ms_state.continuation_happened
                         thinking_tag_opened = _ms_state.thinking_tag_opened
                         break
+
+                # Execute this iteration's collected tool calls as a batch:
+                # runs of consecutive read-only calls overlap; any other
+                # call is a barrier.  handle_message_stop consumes only text
+                # and continuation state, never tool_results, so dispatching
+                # here — after the content blocks close, however the chunk
+                # loop ended — preserves every downstream consumer and the
+                # existing event order (preamble text flush, then tools).
+                if pending_tool_ctxs:
+                    from app.tool_batch import run_tool_batch, BatchOutcome
+                    _batch_outcome = BatchOutcome()
+                    # run_tool_batch orchestrates concurrency only; the
+                    # per-call adaptive delay still lives in
+                    # execute_single_tool, so hand the batch a no-op delay
+                    # rather than decay the real inter_tool_delay twice.
+                    async for _evt in run_tool_batch(
+                        pending_tool_ctxs,
+                        inter_tool_delay={'current': 0.0, 'min': 0.0, 'decay_factor': 1.0},
+                        outcome=_batch_outcome,
+                        cancel_event=cancel_event,
+                    ):
+                        if _evt.get('type') == '_tool_result':
+                            tool_results.append({
+                                'tool_id': _evt['tool_id'],
+                                'tool_name': _evt['tool_name'],
+                                'result': _evt['result'],
+                            })
+                        else:
+                            yield _evt
+                    deferred_feedback_messages.extend(_batch_outcome.deferred_feedback)
+                    if _batch_outcome.feedback_received:
+                        _feedback_received = True
+                    if _batch_outcome.executed:
+                        tools_executed_this_iteration = True
+                    pending_tool_ctxs = []
+                    if _batch_outcome.stop_requested or _batch_outcome.cancelled:
+                        if _feedback_monitor_task:
+                            _feedback_monitor_task.cancel()
+                        return
 
                 # An interrupted stream was resumed above and the resume
                 # produced content, so the turn's text is whole.  End here

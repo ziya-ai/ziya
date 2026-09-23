@@ -157,11 +157,19 @@ class TestExecutorRoutesThroughToolBatch:
 
         # Outermost surface: the tool_result message handed to the provider
         # carries every id, in the model's arrival order, with the real
-        # results (no stubs, no orphans).
+        # results (no stubs, no orphans).  Model-facing content is wrapped in
+        # the ASR NF-002 trust envelope by wrap_tool_result_for_model at
+        # message-build time (streaming_tool_executor.py), so match on
+        # substance: each real result present, inside its envelope, in order.
+        # A FEEDBACK_SKIP stub or an orphan would fail the substring check.
         assert len(provider.tool_result_messages) == 1
         sent = provider.tool_result_messages[0]
         assert [r["tool_use_id"] for r in sent] == ["t1", "t2", "t3"]
-        assert [r["content"] for r in sent] == ["result-t1", "result-t2", "result-t3"]
+        assert all(
+            r["content"].startswith('<tool_result trust=')
+            and f"result-{tid}" in r["content"]
+            for tid, r in zip(["t1", "t2", "t3"], sent)
+        ), sent
 
         # And the assistant message's tool_use blocks match, in order.
         tool_use_ids = [b["id"] for b in provider.assistant_messages[0]["content"]
