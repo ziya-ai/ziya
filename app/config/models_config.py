@@ -34,7 +34,7 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
         "fable": "fable5",
         "mythos": "mythos5",
         "sonnet": "sonnet4.6",
-        "opus": "opus4.8",
+        "opus": "opus5.5",
         "haiku": "haiku-4.5",
         "nova": "nova-pro",
         "deepseek-v3": "deepseek-v3.1",
@@ -49,7 +49,7 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
     },
     "anthropic": {
         "sonnet": "claude-sonnet-4-6",
-        "opus": "claude-opus-4-8",
+        "opus": "claude-opus-5-5",
         # Retired by Anthropic — claude-sonnet-4-20250514 and
         # claude-opus-4-20250514 on 2026-06-15, claude-opus-4-1-20250805 on
         # 2026-08-05.  Entries removed; keep the old names resolving so saved
@@ -749,7 +749,6 @@ MODEL_CONFIGS = {
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "opus4.8": {
-            "tier": "large",
             "model_id": {
                 "us": "us.anthropic.claude-opus-4-8",
                 "eu": "eu.anthropic.claude-opus-4-8",
@@ -779,7 +778,6 @@ MODEL_CONFIGS = {
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "opus5": {
-            "tier": "large",
             "model_id": {
                 "us": "us.anthropic.claude-opus-5",
                 "eu": "eu.anthropic.claude-opus-5",
@@ -804,6 +802,44 @@ MODEL_CONFIGS = {
             "supports_assistant_prefill": False,
             "effort_beta_required": False,
             # Opus 5 inherits 4.7/4.8's sampling-parameter restrictions
+            # (temperature/top_p/top_k rejected with 400). Steer via
+            # prompting + the `effort` parameter instead.
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "opus5.5": {
+            # Owns the bedrock `large` rung (moved off opus4.8/opus5 so tier
+            # resolution tracks the newest Opus, per the tier design note).
+            # Live-verified 2026-09-23: anthropic.claude-opus-5-5 "Claude
+            # Opus 5.5" on bedrock-runtime with us./eu./global. inference
+            # profiles (us-east-1, us-west-2, eu-west-1); TEXT+IMAGE input.
+            "tier": "large",
+            "model_id": {
+                "us": "us.anthropic.claude-opus-5-5",
+                "eu": "eu.anthropic.claude-opus-5-5",
+                "global": "global.anthropic.claude-opus-5-5"
+            },
+            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 8,
+            "timeout_multiplier": 6,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            # Thinking is always on for Opus 5.5 and cannot be disabled, so
+            # "none" is deliberately absent from the effort set (same shape
+            # as opus5). Forcing tool use is also rejected with a 400.
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "effort_beta_required": False,
+            # Inherits 4.7/4.8/5's sampling-parameter restrictions
             # (temperature/top_p/top_k rejected with 400). Steer via
             # prompting + the `effort` parameter instead.
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
@@ -1722,7 +1758,6 @@ MODEL_CONFIGS = {
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "claude-opus-4-8": {
-            "tier": "large",
             "model_id": "claude-opus-4-8",
             "family": "claude",
             "token_limit": 200000,
@@ -1735,8 +1770,25 @@ MODEL_CONFIGS = {
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "claude-opus-5": {
-            "tier": "large",
             "model_id": "claude-opus-5",
+            "family": "claude",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "claude-opus-5-5": {
+            # Owns the anthropic `large` rung (moved off claude-opus-4-8 and
+            # claude-opus-5 so tier resolution tracks the newest Opus).
+            # Bedrock foundation-model id stem is claude-opus-5-5 (verified
+            # live 2026-09-23); the anthropic-direct id matches that stem, as
+            # it does for every other Claude entry. Thinking is always on.
+            "tier": "large",
+            "model_id": "claude-opus-5-5",
             "family": "claude",
             "token_limit": 1000000,
             "max_output_tokens": 128000,
