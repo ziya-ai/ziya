@@ -139,6 +139,29 @@ class TestProcessResult:
         out = _process_result(result, "file_read", "file_read")
         assert out == "hello world"
 
+    def test_plain_payload_dict_is_json_not_python_repr(self):
+        """A builtin returning a payload dict with no `content` envelope
+        (task_card_stage / task_card_launch shape) must reach the frontend
+        as JSON.  str() yields Python repr — {'success': True} — which
+        JSON.parse rejects, so chatApi.ts never fired the binding refresh
+        and a model-staged tile did not appear until a reload."""
+        import json
+        result = {"success": True, "staged": True, "binding_id": "b-1",
+                  "warnings": [], "run_id": None}
+        out = _process_result(result, "task_card_stage", "task_card_stage")
+        assert isinstance(out, str)
+        parsed = json.loads(out)          # would raise on Python repr
+        assert parsed == result
+        assert "True" not in out and "None" not in out
+
+    def test_plain_payload_with_unserialisable_value_falls_back(self):
+        """default=str keeps json.dumps from raising on odd values; the
+        payload must still come back as a string, never an exception."""
+        import json
+        from pathlib import Path
+        out = _process_result({"path": Path("/tmp/x"), "ok": True}, "t", "t")
+        assert json.loads(out) == {"path": "/tmp/x", "ok": True}
+
     def test_content_string_without_path_serialises_as_json(self):
         """Dicts with string content but no path key still JSON-serialize."""
         result = {"content": "just text", "extra": "data"}
