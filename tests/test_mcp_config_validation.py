@@ -180,6 +180,76 @@ class TestPathAndAmbiguity:
         )
         assert "relative_script_path" not in _codes(findings)
 
+
+class TestBuiltinServers:
+    """The loader (MCPManager._load_server_configs) replaces a built-in
+    entry's command/args with its own sys.executable + packaged script path,
+    so the F-024 'use an absolute path' advice is wrong for them: there is no
+    absolute path the user could supply that Ziya would honour."""
+
+    _SHELL_ENTRY = {
+        "command": "/Users/x/.pyenv/versions/3.12.8/bin/python3.12",
+        "args": ["-u", "app/mcp_servers/shell_server.py"],
+        "enabled": True,
+        "env": {"ALLOW_COMMANDS": "ls,cat"},
+    }
+
+    def test_builtin_relative_script_is_not_flagged_as_unresolvable(self):
+        findings = validate_server_entry("shell", self._SHELL_ENTRY)
+        assert "relative_script_path" not in _codes(findings)
+
+    def test_builtin_names_match_manager_definitions(self):
+        """The validator hardcodes builtin names rather than importing the
+        manager (which would pull MCPManager into startup validation).  Pin
+        the two lists together so adding a third builtin cannot leave the
+        validator handing out F-024 advice for a server the loader owns."""
+        from app.mcp.config_validation import _BUILTIN_SERVER_NAMES
+        from app.mcp.manager import MCPManager
+
+        defs = MCPManager()._get_builtin_server_definitions()
+        # Only subprocess-launched builtins have command/args the loader
+        # overwrites; an "internal" marker entry has nothing to be ignored.
+        launched = {
+            name for name, cfg in defs.items()
+            if cfg.get("builtin") and isinstance(cfg.get("command"), str)
+        }
+        assert launched, "no subprocess-launched builtins found; test is vacuous"
+        assert _BUILTIN_SERVER_NAMES == launched
+
+    def test_builtin_launch_keys_are_reported_as_ignored(self):
+        findings = validate_server_entry("shell", self._SHELL_ENTRY)
+        f = _by_code(findings, "builtin_launch_keys_ignored")
+        assert f is not None
+        assert f["severity"] == "warning"
+        assert "command" in f["summary"] and "args" in f["summary"]
+        assert "Remove them" in f["detail"]
+
+    def test_builtin_entry_with_only_env_is_clean(self):
+        """The end state the builtin_launch_keys_ignored advice steers the user
+        to (env/enabled/description only) must produce no findings at all --
+        in particular not missing_launch_key, since the manager supplies the
+        launch mechanism for built-ins."""
+        findings = validate_server_entry(
+            "shell",
+            {"enabled": True, "description": "x", "env": {"ALLOW_COMMANDS": "ls"}},
+        )
+        assert findings == [], _codes(findings)
+
+    def test_user_server_without_launch_key_is_still_an_error(self):
+        findings = validate_server_entry(
+            "my-shell", {"enabled": True, "env": {"ALLOW_COMMANDS": "ls"}}
+        )
+        f = _by_code(findings, "missing_launch_key")
+        assert f is not None
+        assert f["severity"] == "error"
+
+    def test_same_shape_under_user_name_still_gets_f024_warning(self):
+        """The builtin exemption is keyed on the server name, not the path
+        shape — a user server pointing at a relative script is still at risk."""
+        findings = validate_server_entry("my-shell", self._SHELL_ENTRY)
+        assert "relative_script_path" in _codes(findings)
+        assert "builtin_launch_keys_ignored" not in _codes(findings)
+
     def test_enabled_and_disabled_together_is_ambiguous(self):
         findings = validate_server_entry(
             "s", {"command": "x", "enabled": True, "disabled": True}
