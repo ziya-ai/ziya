@@ -298,7 +298,7 @@ def test_lease_ended_during_confirm_wait_means_no_write(home):
     banner; an approval that arrives afterwards must not type it."""
     h, lease = _gated_host(home)
     t, box = _send_in_thread(h, lease, "rm -rf /tmp/x")
-    assert h.op("control_release", lease_id=lease)["ok"] is True
+    assert h.op("control_release", lease_id=lease, conversation_id="conv-1")["ok"] is True
     c = h.srv.pending_confirm()
     assert h.srv.resolve_confirm(True, c["confirm_id"]) is True
     t.join(timeout=3)

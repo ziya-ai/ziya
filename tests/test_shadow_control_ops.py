@@ -68,7 +68,7 @@ def test_acquire_heartbeat_status_release(controllable):
     # The lease_id is the bearer token; status is readable by any peer.
     assert "lease_id" not in st["lease"]
 
-    rel = client.request(e, "control_release", lease_id=lease_id)
+    rel = client.request(e, "control_release", lease_id=lease_id, conversation_id="conv-1")
     assert rel["ok"] is True
     assert client.request(e, "control_status")["lease"] is None
 

@@ -269,11 +269,11 @@ def control_heartbeat(ref, lease_id: str, conversation_id: str) -> Dict[str, Any
                    conversation_id=conversation_id, timeout=2.0)
 
 
-def control_release(ref: str, lease_id: str,
+def control_release(ref: str, lease_id: str, conversation_id: str,
                     provenance: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     entry = resolve_one(ref)
     return request(entry, "control_release", lease_id=lease_id,
-                   provenance=provenance or {})
+                   conversation_id=conversation_id, provenance=provenance or {})
 
 
 def control_status(ref: str) -> Dict[str, Any]:
