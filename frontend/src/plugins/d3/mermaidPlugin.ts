@@ -344,6 +344,11 @@ export interface ViewBoxTrimResult {
     newViewBox: string | null;
     reclaimedWidthPct: number;
     reclaimedHeightPct: number;
+    // Trimmed content dimensions (bbox + 2*pad). Exposed so the DOM driver can
+    // keep the SVG's explicit width/height attributes IN STEP with the trimmed
+    // viewBox — see applyViewBoxTrim / D-288 / D-291.
+    trimmedWidth: number;
+    trimmedHeight: number;
 }
 
 export function computeViewBoxTrim(
@@ -355,6 +360,7 @@ export function computeViewBoxTrim(
     const none: ViewBoxTrimResult = {
         shouldTrim: false, newViewBox: null,
         reclaimedWidthPct: 0, reclaimedHeightPct: 0,
+        trimmedWidth: 0, trimmedHeight: 0,
     };
     if (!viewBox || !bbox || !(bbox.width > 0) || !(bbox.height > 0)) return none;
     const parts = viewBox.split(/\s+/).map(Number);
@@ -373,7 +379,61 @@ export function computeViewBoxTrim(
         newViewBox: shouldTrim ? newViewBox : null,
         reclaimedWidthPct: oldW > 0 ? (1 - trimmedW / oldW) * 100 : 0,
         reclaimedHeightPct: oldH > 0 ? (1 - trimmedH / oldH) * 100 : 0,
+        trimmedWidth: trimmedW,
+        trimmedHeight: trimmedH,
     };
+}
+
+/**
+ * D-288 / D-291 (oversize-canvas-content-shrunk-labels-subpixel residuals):
+ * DOM driver around computeViewBoxTrim. It previously rewrote ONLY the
+ * `viewBox` after trimming, leaving any explicit `width`/`height` ATTRIBUTES at
+ * their original oversize values. The sibling pie-layout fix in this same file
+ * deliberately keeps width/height "in step so a fixed size attr cannot override
+ * the viewBox"; the generic trim path did not, so a stale oversized size attr
+ * could survive the trim and re-inflate the captured canvas (content re-shrunk
+ * to a sub-pixel sliver). This helper reclaims the excess viewBox AND, when the
+ * SVG carries numeric width/height attributes, scales them by the SAME factor
+ * so the trimmed geometry is authoritative regardless of later passes.
+ *
+ * Returns the ViewBoxTrimResult (shouldTrim=false and a no-op when nothing to
+ * reclaim, so it is safe to call on every render). Exported for unit testing.
+ */
+export function applyViewBoxTrim(svgElement: SVGElement): ViewBoxTrimResult {
+    const none: ViewBoxTrimResult = {
+        shouldTrim: false, newViewBox: null,
+        reclaimedWidthPct: 0, reclaimedHeightPct: 0,
+        trimmedWidth: 0, trimmedHeight: 0,
+    };
+    let bbox: { x: number; y: number; width: number; height: number };
+    try {
+        bbox = (svgElement as unknown as SVGGraphicsElement).getBBox();
+    } catch {
+        // getBBox throws / returns nothing before layout (e.g. jsdom) -> no-op.
+        return none;
+    }
+    const vb = svgElement.getAttribute('viewBox');
+    const trim = computeViewBoxTrim(vb, bbox);
+    if (!trim.shouldTrim || !trim.newViewBox) return trim;
+
+    svgElement.setAttribute('viewBox', trim.newViewBox);
+
+    // Keep explicit width/height attributes in step with the trimmed viewBox so
+    // a leftover oversize size attribute cannot re-inflate the canvas. Only
+    // numeric (px) attributes are rescaled; percentage/auto values are left as
+    // they are already responsive.
+    const parts = (vb || '').split(/\s+/).map(Number);
+    const oldW = parts[2];
+    const oldH = parts[3];
+    const wAttr = svgElement.getAttribute('width');
+    const hAttr = svgElement.getAttribute('height');
+    if (wAttr != null && /^\d*\.?\d+$/.test(wAttr.trim()) && oldW > 0) {
+        svgElement.setAttribute('width', String(trim.trimmedWidth));
+    }
+    if (hAttr != null && /^\d*\.?\d+$/.test(hAttr.trim()) && oldH > 0) {
+        svgElement.setAttribute('height', String(trim.trimmedHeight));
+    }
+    return trim;
 }
 
 export interface PieLayoutFixResult {
@@ -1316,16 +1376,16 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         // than the rendered content, leaving large empty margins that waste
         // space when the SVG is scaled to fit the container.
         try {
-            const svgG = svgElement as unknown as SVGGraphicsElement;
-            const bbox = svgG.getBBox();
             const vb = svgElement.getAttribute('viewBox');
             // D-287/D-145: reclaim excess viewBox on EITHER axis (width OR
             // height). Mermaid over-allocates height as often as width; the
             // old width-only gate left the oversize-height canvas untrimmed,
             // shrinking real content to a sub-pixel sliver on capture.
-            const trim = computeViewBoxTrim(vb, bbox);
+            // D-288/D-291: applyViewBoxTrim also keeps explicit width/height
+            // attributes in step with the trimmed viewBox so a stale oversize
+            // size attribute cannot re-inflate the captured canvas.
+            const trim = applyViewBoxTrim(svgElement);
             if (trim.shouldTrim && trim.newViewBox) {
-                svgElement.setAttribute('viewBox', trim.newViewBox);
                 console.log(`📐 VIEWBOX-TRIM: ${vb} → ${trim.newViewBox} (reclaimed ${trim.reclaimedWidthPct.toFixed(0)}% width, ${trim.reclaimedHeightPct.toFixed(0)}% height)`);
             }
         } catch (e) {
@@ -1357,6 +1417,20 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 // gitGraph branch/merge lines are <path>/<line>; commit dots
                 // are <circle> and labels are <text> (both still remediated).
                 lineSkipSelectors = ['path', 'line'];
+            } else if (diagramType === 'flowchart' || diagramType === 'graph') {
+                // D-155 (linkstyle-stroke-override-dropped:dark, regression):
+                // an explicit `linkStyle N stroke:<c>` is re-applied post-render
+                // by reapplyLinkStyleStrokes, which tags each honoured edge with
+                // [data-ziya-linkstroke]. Without this exemption the visibility
+                // pass's DELAYED (500ms) re-run repaints those edges back to the
+                // theme lineColor right at the ~500ms headless-capture boundary,
+                // and the reapply safety-net at 650ms lands AFTER capture — so
+                // the author colour is dropped in the captured frame and the fix
+                // oscillated verified<->regression. Exempting only the tagged
+                // edges removes the competing writer entirely (deterministic, no
+                // timer race). A flow with no linkStyle override tags nothing,
+                // so the selector matches nothing and this is a no-op there.
+                lineSkipSelectors = ['[data-ziya-linkstroke]'];
             }
         }
         if (shouldEnhanceMermaidVisibility(rawDefinition)) {
@@ -1628,8 +1702,11 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             } catch (e) { console.warn('PIE-LAYOUT-FIX failed:', e); }
         }
 
-        // Apply unified responsive scaling for all browsers
-        applyUnifiedResponsiveScaling(container, svgElement, isDarkMode);
+        // Apply unified responsive scaling for all browsers.
+        // Pass diagramType so the (now synchronous) effective-font sizing is
+        // type-aware and the capture-boundary race (D-287/D-420/D-425) is
+        // resolved deterministically for every diagram type, pie included.
+        applyUnifiedResponsiveScaling(container, svgElement, isDarkMode, diagramType);
 
         // Add action buttons
         const actionsContainer = document.createElement('div');
@@ -2239,46 +2316,72 @@ ${svgData}`;
 };
 
 // Unified responsive scaling that works across all browsers including Safari
+
+// Declared sizes below this are layout probes (mermaid emits sub-pixel and
+// zero-size measurement text), not legible labels, and must not anchor the
+// scale.
+const MIN_LEGIBLE_DECLARED_FONT = 4;
+
 /**
- * Find the maximum EFFECTIVE font size as actually rendered on screen
- * CRITICAL: Returns the maximum DECLARED font size (we'll apply viewBox scaling separately)
+ * Find the range of DECLARED font sizes among the diagram's visible text
+ * (viewBox scaling is applied separately). Hidden nodes (display:none,
+ * visibility:hidden, opacity:0), empty nodes and degenerate sizes are
+ * skipped: a minimum anchored on a 2px measurement probe would inflate the
+ * whole diagram. Returns {min:0, max:0} when no legible text exists.
  */
-function findMaxDeclaredFontSize(svgElement: SVGElement): number {
-    const textElements = svgElement.querySelectorAll('text, tspan');
-    const foreignObjectContainers = svgElement.querySelectorAll('foreignObject');
+function findDeclaredFontRange(svgElement: SVGElement): { min: number; max: number } {
+    let minFontSize = Infinity;
     let maxFontSize = 0;
 
-    // Measure SVG text elements - get DECLARED size from computedStyle
-    textElements.forEach(textEl => {
-        const text = textEl.textContent?.trim();
+    const consider = (el: Element) => {
+        const text = el.textContent?.trim();
         if (!text) return;
+        const cs = window.getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return;
+        const opacity = parseFloat(cs.opacity);
+        if (!Number.isNaN(opacity) && opacity === 0) return;
+        const declaredSize = parseFloat(cs.fontSize || '0');
+        if (!(declaredSize >= MIN_LEGIBLE_DECLARED_FONT)) return;
+        if (declaredSize < minFontSize) minFontSize = declaredSize;
+        if (declaredSize > maxFontSize) maxFontSize = declaredSize;
+    };
 
-        const computedStyle = window.getComputedStyle(textEl);
-        const declaredSize = parseFloat(computedStyle.fontSize || '0');
-
-        if (declaredSize > maxFontSize) {
-            maxFontSize = declaredSize;
-        }
+    // SVG text, then HTML labels inside foreignObject (htmlLabels mode).
+    svgElement.querySelectorAll('text, tspan').forEach(consider);
+    svgElement.querySelectorAll('foreignObject').forEach((fo) => {
+        fo.querySelectorAll('span, div').forEach(consider);
     });
 
-    // Also check foreignObject elements
-    foreignObjectContainers.forEach((fo) => {
-        const textEls = fo.querySelectorAll('span, div');
-        textEls.forEach(el => {
-            const text = el.textContent?.trim();
-            if (!text) return;
+    if (maxFontSize === 0) return { min: 0, max: 0 };
+    console.log(`📏 FONT-DETECTION: Declared font range: ${minFontSize.toFixed(1)}–${maxFontSize.toFixed(1)}px`);
+    return { min: minFontSize, max: maxFontSize };
+}
 
-            const computedStyle = window.getComputedStyle(el);
-            const declaredSize = parseFloat(computedStyle.fontSize || '0');
-
-            if (declaredSize > maxFontSize) {
-                maxFontSize = declaredSize;
-            }
-        });
-    });
-
-    console.log(`📏 FONT-DETECTION: Max declared font size: ${maxFontSize.toFixed(1)}px`);
-    return maxFontSize;
+/**
+ * Choose the rendered width for a diagram whose viewBox is `vbW` wide and
+ * whose visible text spans declared sizes [minFont, maxFont]. Pure, so the
+ * policy can be unit-tested without a DOM. Rules, in priority order:
+ *   1. Never exceed `maxWidth` (the container).
+ *   2. The SMALLEST text is the anchor: aim for TARGET_FONT_SIZE, and never
+ *      go below MIN_FONT_SIZE to satisfy rule 3.
+ *   3. Prefer the LARGEST text at or under MAX_FONT_SIZE — honoured only
+ *      while rule 2 holds. A large title is a style; an illegible label is
+ *      a defect.
+ *   4. Never collapse below `minWidth`.
+ * The old policy anchored on the largest font alone, which left every body
+ * label proportionally smaller than TARGET and the diagram narrow and
+ * centred in empty space — one number, two symptoms.
+ */
+export function chooseEffectiveWidth(
+    vbW: number, minFont: number, maxFont: number, maxWidth: number, minWidth: number,
+): number {
+    let width = Math.min(vbW * (SCALE_CONFIG.TARGET_FONT_SIZE / minFont), maxWidth);
+    const softCap = vbW * (SCALE_CONFIG.MAX_FONT_SIZE / maxFont);
+    if (width > softCap) {
+        const floor = vbW * (SCALE_CONFIG.MIN_FONT_SIZE / minFont);
+        width = Math.max(softCap, Math.min(floor, width));
+    }
+    return Math.max(width, minWidth);
 }
 
 /**
@@ -2286,7 +2389,7 @@ function findMaxDeclaredFontSize(svgElement: SVGElement): number {
  * Key insight: effective font = declared font × (svg width / viewBox width)
  * So we set svg width = viewBox width × (target font / declared font)
  */
-function applyEffectiveFontScaling(svgElement: SVGElement, mermaidWrapper: HTMLElement, diagramType: string): void {
+export function applyEffectiveFontScaling(svgElement: SVGElement, mermaidWrapper: HTMLElement, diagramType: string): void {
     const viewBox = svgElement.getAttribute('viewBox');
     if (!viewBox) {
         console.log('🎯 EFFECTIVE-SCALE: No viewBox found, skipping');
@@ -2295,40 +2398,24 @@ function applyEffectiveFontScaling(svgElement: SVGElement, mermaidWrapper: HTMLE
 
     const [, , vbW, vbH] = viewBox.split(' ').map(Number);
 
-    // Find max DECLARED font size
-    const maxDeclaredFont = findMaxDeclaredFontSize(svgElement);
+    const { min: minDeclaredFont, max: maxDeclaredFont } = findDeclaredFontRange(svgElement);
 
     if (maxDeclaredFont === 0) {
         console.log('🎯 EFFECTIVE-SCALE: No text found, skipping');
         return;
     }
 
-    console.log(`🎯 EFFECTIVE-SCALE: Type="${diagramType}", Declared font=${maxDeclaredFont.toFixed(1)}px, ViewBox=${vbW.toFixed(0)}×${vbH.toFixed(0)}`);
+    console.log(`🎯 EFFECTIVE-SCALE: Type="${diagramType}", Declared fonts=${minDeclaredFont.toFixed(1)}–${maxDeclaredFont.toFixed(1)}px, ViewBox=${vbW.toFixed(0)}×${vbH.toFixed(0)}`);
 
-    // Calculate viewBox scale needed for target font size
-    // effective font = declared font × viewBox scale
-    // target font = declared font × target viewBox scale
-    // target viewBox scale = target font / declared font
-    const targetViewBoxScale = SCALE_CONFIG.TARGET_FONT_SIZE / maxDeclaredFont;
-
-    // New SVG dimensions
-    let newWidth = vbW * targetViewBoxScale;
-    let newHeight = vbH * targetViewBoxScale;
-
-    // Clamp to container width so the diagram fills available space
-    // without overflowing. Fall back to a reasonable default.
+    // Container width is the hard ceiling. Fall back to a reasonable default
+    // when the container has not laid out yet.
     const containerWidth = mermaidWrapper.closest('.d3-container')?.clientWidth || mermaidWrapper.parentElement?.clientWidth || 0;
     const maxWidth = containerWidth > 200 ? containerWidth - 20 : 900;
     const minWidth = 100;
-    if (newWidth > maxWidth) {
-        const ratio = maxWidth / newWidth;
-        newWidth = maxWidth;
-        newHeight = newHeight * ratio;
-    } else if (newWidth < minWidth) {
-        const ratio = minWidth / newWidth;
-        newWidth = minWidth;
-        newHeight = newHeight * ratio;
-    }
+    // effective font = declared font × (svg width / viewBox width); pick the
+    // width so the smallest text is legible, then scale height to match.
+    const newWidth = chooseEffectiveWidth(vbW, minDeclaredFont, maxDeclaredFont, maxWidth, minWidth);
+    const newHeight = vbH * (newWidth / vbW);
 
     // Remove default width attribute and apply calculated dimensions
     svgElement.removeAttribute('width');
@@ -2367,7 +2454,7 @@ function applyEffectiveFontScaling(svgElement: SVGElement, mermaidWrapper: HTMLE
     console.log(`🎯 EFFECTIVE-SCALE: ${vbW.toFixed(0)}×${vbH.toFixed(0)} → ${newWidth.toFixed(0)}×${newHeight.toFixed(0)} (scale: ${finalScale.toFixed(3)}, effective font: ${finalEffectiveFont.toFixed(1)}px)`);
 }
 
-function applyUnifiedResponsiveScaling(
+export function applyUnifiedResponsiveScaling(
     container: HTMLElement,
     svgElement: SVGElement,
     isDarkMode: boolean,
@@ -2429,7 +2516,33 @@ function applyUnifiedResponsiveScaling(
             }
         }, 200); // Give Mermaid time to finish positioning
     } else {
-        // For non-Safari browsers, apply effective font-based scaling
+        // D-287 / D-420 / D-425: apply the effective-font sizing SYNCHRONOUSLY
+        // so the captured frame is DETERMINISTIC. The headless capture page
+        // (frontend/src/components/DiagramRenderPage.tsx) flips
+        // data-render-status to 'complete' — the signal Playwright screenshots
+        // on — exactly 500ms after the SVG is first detected. The old code
+        // ONLY sized the SVG on a coincident setTimeout(500ms), so whether the
+        // width/height mutation landed before or after the screenshot was a
+        // pure race with no ordering guarantee. That is why:
+        //   - D-287 oscillated verified<->regressed with no source change (an
+        //     oversize-canvas SVG was captured either at natural size or after
+        //     the fit-to-width shrink, non-deterministically);
+        //   - D-420's 60-slice pie (w2-15) dropped most legend labels in one
+        //     theme but not the other — the resize fired mid-capture, moving
+        //     rows out of frame — despite the DOM carrying every label;
+        //   - D-425's 620-edge flowchart (w2-02) rendered subpixel or not.
+        // Sizing here, in the synchronous render path, guarantees the final
+        // geometry is in place well before that 500ms 'complete' window
+        // elapses, so the screenshot always sees the settled diagram. The
+        // delayed re-run is kept as an idempotent safety net for LIVE browsers
+        // whose container layout (clientWidth) settles asynchronously; it
+        // recomputes from the (unchanged) viewBox + declared fonts, so a second
+        // call cannot fight the first.
+        try {
+            applyEffectiveFontScaling(svgElement, mermaidWrapper, diagramType);
+        } catch (e) {
+            console.warn('🎯 SCALE: synchronous effective font scaling failed:', e);
+        }
         setTimeout(() => {
             console.log(`🎯 SCALE: Starting effective font scaling for ${diagramType}`);
             applyEffectiveFontScaling(svgElement, mermaidWrapper, diagramType);
