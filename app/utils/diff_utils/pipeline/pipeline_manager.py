@@ -16,7 +16,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from app.utils.logging_utils import logger
 from ..core.exceptions import PatchApplicationError
 from ..file_ops.file_lock import diff_file_lock
-from ..parsing.diff_parser import parse_unified_diff_exact_plus, extract_target_file_from_diff, split_combined_diff
+from ..parsing.diff_parser import parse_unified_diff_exact_plus, extract_target_file_from_diff, split_combined_diff, restore_leading_slash
 from ..parsing.diff_preprocessor import preprocess_diff
 from ..validation.validators import is_new_file_creation, is_file_deletion, is_hunk_already_applied, normalize_line_for_comparison
 from ..file_ops.file_handlers import create_new_file, delete_file, cleanup_patch_artifacts, cleanup_workspace_artifacts
@@ -346,14 +346,16 @@ def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optio
     if not file_path:
         for line in git_diff.splitlines():
             if line.startswith('+++ b/'):
-                raw = line[6:]
-                candidate = raw if raw.startswith('/') else '/' + raw
-                file_path = candidate if os.path.exists(candidate) else os.path.join(user_codebase_dir, raw)
+                # Deterministic restore (root allowlist, not disk state): an
+                # absolute target stays absolute; anything else is resolved
+                # under the project root.
+                restored = restore_leading_slash(line[6:])
+                file_path = restored if restored.startswith('/') else os.path.join(user_codebase_dir, restored)
                 break
             elif line.startswith('diff --git'):
                 _, _, path = line.partition(' b/')
-                candidate = path if path.startswith('/') else '/' + path
-                file_path = candidate if os.path.exists(candidate) else os.path.join(user_codebase_dir, path)
+                restored = restore_leading_slash(path)
+                file_path = restored if restored.startswith('/') else os.path.join(user_codebase_dir, restored)
                 pipeline.file_path = file_path
                 pipeline.result.file_path = file_path
                 break

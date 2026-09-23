@@ -83,7 +83,16 @@ def create_new_file(git_diff: str, base_dir: str) -> None:
         # Make sure we found a file path
         if file_path is None:
             raise ValueError("Could not extract target file path from diff")
-            
+
+        # Honor an author-specified absolute target: git strips the leading
+        # slash into the b/ prefix, so restore it before the join below.
+        # os.path.join(base_dir, "/abs/path") returns "/abs/path" unchanged,
+        # so a restored absolute path is created where it was asked for
+        # instead of being nested under base_dir (the bug that silently wrote
+        # <project>/Users/.../file.py). A relative path is unaffected.
+        from ..parsing.diff_parser import restore_leading_slash
+        file_path = restore_leading_slash(file_path)
+
         # Extract the file path from the diff --git line
         full_path = os.path.join(base_dir, file_path)
         # Containment check (CWE-22/94): file_path came verbatim from a diff
