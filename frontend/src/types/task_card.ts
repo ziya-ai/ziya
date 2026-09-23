@@ -39,6 +39,13 @@ export interface TaskScope {
    */
   shell_commands?: string[];
   /**
+   * Per-task ceiling in seconds on one shell command.  Base ceiling is
+   * 300; a container's value merges downward as a MAXIMUM.  Set it on
+   * any task that runs a build or a full test sweep, or the command is
+   * killed mid-flight and the model retries it.  Null/undefined = unset.
+   */
+  shell_timeout_secs?: number | null;
+  /**
    * Model selection for this task and everything beneath it.  Like
    * ``cwd``, non-additive — the most specific (innermost) non-null
    * value wins.
@@ -107,6 +114,30 @@ export interface ArtifactPart {
   iteration?: number | null;
 }
 
+/**
+ * A task's templated fields and their resolution for ONE dispatch —
+ * mirrors app/models/task_card.py::TemplateResolution.  The card says
+ * "Wave 3 ({{item}})"; this says what that was for the iteration whose
+ * artifact carries it.  ``bindings`` has the same shape as the live
+ * ``task_bindings`` event (eventLog.ts TemplateBinding).
+ */
+export interface TemplateResolution {
+  task_block_id: string;
+  authored_name?: string | null;
+  /** Null when the name holds no placeholder or rendering was skipped. */
+  resolved_name?: string | null;
+  bindings: Array<{
+    placeholder: string;
+    value: string | null;
+    resolved: boolean;
+    truncated?: boolean;
+    length?: number | null;
+  }>;
+  /** Instructions as the model received them (before auto-context preambles). */
+  resolved_instructions?: string | null;
+  instructions_truncated?: boolean;
+}
+
 export interface Artifact {
   summary: string;
   decisions: string[];
@@ -118,6 +149,8 @@ export interface Artifact {
   // Optional error-identity hash for failure clustering.  Null on success.
   signature?: string | null;
   failed?: boolean;
+  /** One per templated task that produced this artifact; empty/absent otherwise. */
+  template_resolutions?: TemplateResolution[];
 }
 
 // ── The recursive Block type ──────────────────────────────

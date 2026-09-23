@@ -180,6 +180,17 @@ class IterationSummary(BaseModel):
     # existed — readers must treat a missing key as unknown coverage,
     # not as absence.
     item_key: Optional[str] = None
+    # Which pass of the ENCLOSING loop(s) this iteration belongs to, as
+    # the dotted outer indices at record time ("1", or "1.3" two levels
+    # deep).  None for a top-level loop.  A nested loop runs its whole
+    # roster once per outer iteration and appends every pass to this one
+    # list, so without this the record of a 20-engine Repeat inside an
+    # Until read 0..19, 0..19 — indistinguishable from one loop of 40
+    # (run 5d0b198c rendered "30/20" and lit two dots per index).  The
+    # history is kept, not reset: which engines failed on pass 0 versus
+    # pass 1 is exactly what a repair loop's record is for.  Consumers
+    # group by this key; ``index`` is unique only within a pass.
+    pass_key: Optional[str] = None
     # True if the full Artifact was persisted alongside this summary.
     # False when the iteration was a passing run beyond the retention
     # cap (50 passes per Repeat block).
@@ -200,9 +211,28 @@ class IterationSummary(BaseModel):
     # run_outcome._iteration_statuses, partialOutcome.progressCounts,
     # iterationClusters.analyzeFailures, and the tile's iterCounts.
     replayed: bool = False
+    # Compact per-stage digest of the loop body for this iteration
+    # ({index, label, status, tool_calls}; see self_improve.stage_digest).
+    # Body blocks have no block_states entry of their own — the executor
+    # persists only structural blocks — so after a reload the run map had
+    # nothing to say about them and showed a 'done' loop over four
+    # never-run children as four bare 'queued' rows (GFX Stage 2 run
+    # 3068d3d0).  Bounded: one small entry per body block, never the
+    # summaries.  None for a leaf body and for records written before the
+    # field existed; readers treat None as unknown, not as queued.
+    stages: Optional[List[Dict[str, Any]]] = None
     # Model the iteration's task ran on (Artifact.model), so a loop
     # whose iterations ran on different tiers can be told apart.
     model: Optional[str] = None
+    # The body task's name with its ``{{…}}`` rendered for this iteration
+    # ("Wave 3 (graphviz)" for a card that says "Wave 3 ({{item}})").
+    # Duplicated from Artifact.template_resolutions because the full
+    # artifact is dropped past the pass-retention cap while this record
+    # is kept for every iteration: without it, dots 51+ of a long
+    # for_each had no name at all.  First templated body task with a
+    # rendered name wins.  None when nothing in the body templated its
+    # name, and on records written before the field existed.
+    resolved_name: Optional[str] = None
 
 
 class SupersededBlockState(BaseModel):

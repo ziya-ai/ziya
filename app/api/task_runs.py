@@ -1045,6 +1045,9 @@ async def resume_run_from_iteration(
 @router.get("/{run_id}/iterations/{block_id}/{index}", response_model=Artifact)
 async def get_iteration_artifact(
     project_id: str, run_id: str, block_id: str, index: int,
+    pass_key: Optional[str] = Query(
+        None, description="Enclosing-loop pass for a nested loop's iteration "
+                          "(IterationSummary.pass_key); omit for a top-level loop."),
 ):
     """Fetch the full Artifact for one iteration.  Returns 404 if the
     iteration was retained as a summary-only record (beyond the
@@ -1053,7 +1056,8 @@ async def get_iteration_artifact(
     run = storage.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Task run not found")
-    artifact = storage.read_iteration_artifact(run_id, block_id, index)
+    artifact = storage.read_iteration_artifact(
+        run_id, block_id, index, pass_key=pass_key or None)
     if not artifact:
         raise HTTPException(status_code=404, detail="Iteration artifact not found")
     return artifact

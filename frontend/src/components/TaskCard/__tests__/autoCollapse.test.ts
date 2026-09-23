@@ -23,6 +23,7 @@
 
 import {
   AUTO_COLLAPSE_MS, ENGAGED_QUIET_MS, awaitsUser, decideAutoCollapse,
+  markUserLaunched, takeUserLaunched,
 } from '../autoCollapse';
 import { deriveRunControls } from '../runControls';
 import type { RunStatus, TaskRun } from '../../../types/task_run';
@@ -203,6 +204,53 @@ describe('decideAutoCollapse — manually expanded tile', () => {
     expect(
       decideAutoCollapse(run('done'), true, false, null, NOW, true).arm,
     ).toBe(false);
+  });
+});
+
+// ── rule 4: a user-launched attempt is pinned across the remount ──────
+
+describe('user-launched registry', () => {
+  it('claims a registered run exactly once', () => {
+    // The handler that launches the attempt and the tile that renders
+    // it are different React instances, so the fact must travel through
+    // a module-level registry.  Consuming (not peeking) confines the pin
+    // to the mount that follows the click; a later visit to the chat
+    // gets ordinary auto-collapse.
+    markUserLaunched('run-launched');
+    expect(takeUserLaunched('run-launched')).toBe(true);
+    expect(takeUserLaunched('run-launched')).toBe(false);
+  });
+
+  it('does not claim a run that was never registered', () => {
+    expect(takeUserLaunched('run-nobody-launched')).toBe(false);
+  });
+
+  it('tolerates a staged binding with no run id', () => {
+    expect(takeUserLaunched(null)).toBe(false);
+    expect(takeUserLaunched(undefined)).toBe(false);
+    expect(takeUserLaunched('')).toBe(false);
+  });
+
+  it('keeps registrations independent', () => {
+    markUserLaunched('run-a');
+    markUserLaunched('run-b');
+    expect(takeUserLaunched('run-a')).toBe(true);
+    // Claiming a must not consume b.
+    expect(takeUserLaunched('run-b')).toBe(true);
+  });
+
+  it('feeds the pin that suppresses collapse for a quick finish', () => {
+    // The reported bug end to end at the policy level: a continue past
+    // the last block finishes within seconds, the fresh tile has no
+    // interaction history, and without the pin it arms the untouched 8s
+    // timer.  With the claim wired to manuallyExpanded it never arms.
+    markUserLaunched('run-2');
+    const pinned = takeUserLaunched('run-2');
+    const fresh = { id: 'run-2', status: 'done' } as TaskRun;
+    expect(decideAutoCollapse(fresh, true, true, null, NOW, false).arm)
+      .toBe(true);   // what the fresh tile did before
+    expect(decideAutoCollapse(fresh, true, true, null, NOW, pinned).arm)
+      .toBe(false);  // what it does now
   });
 });
 

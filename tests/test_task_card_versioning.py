@@ -96,6 +96,10 @@ class TestVersionBump:
         assert after.run_count == 1
         # A run is not an edit: bookkeeping must not touch version.
         assert after.version == 1
+        # ...nor updated_at.  The editor renders "vN · edited <ago>" from
+        # it, so a launch stamping it made every run read as an edit.
+        assert after.updated_at == card.updated_at
+        assert after.last_run_at is not None and after.last_run_at >= card.updated_at
 
     def test_duplicate_starts_fresh_at_1(self, storage):
         card = storage.create(TaskCardCreate(name="V", root=_simple_task()))

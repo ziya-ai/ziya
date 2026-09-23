@@ -85,6 +85,44 @@ async def get_lessons_summary(project_id: str):
     }
 
 
+@router.get("/signature-summary")
+async def get_signature_summary(project_id: str):
+    """Deck-wide list of cards whose privilege escalation is not signed.
+
+    Drives the header-level Task Cards button outline and its tooltip.
+    The deck list gets the same answer by calling ``/{card_id}/scope-status``
+    once per card, but that endpoint has side effects (it rewrites the
+    signer staging file and the approval-TTL breadcrumb) and this indicator
+    re-polls on every window focus, so it must be read-only and one request
+    regardless of card count.
+
+    MUST be declared before ``get_task_card`` below: FastAPI matches routes
+    in declaration order, so with ``/{card_id}`` first this literal path
+    would be captured as a card id and 404.
+    """
+    storage = _get_storage(project_id)
+    project = ProjectStorage(get_ziya_home()).get(project_id)
+    deck_scope = getattr(project.settings, "taskScope", None) if project else None
+    cards = []
+    for card in storage.list():
+        try:
+            rows, _staged = _escalation_rows(
+                card, deck_scope, project_id=project_id, card_id=card.id,
+                check_approvals=True,
+            )
+        except Exception as e:  # noqa: BLE001 — one bad card must not blank the indicator
+            logger.warning(f"signature-summary skipped card {card.id}: {e}")
+            continue
+        unsigned = sum(1 for r in rows if r["needsSignature"])
+        if unsigned:
+            cards.append({
+                "id": card.id,
+                "name": card.name,
+                "unsignedBlocks": unsigned,
+            })
+    return {"cardsNeedingSignature": cards, "count": len(cards)}
+
+
 @router.get("/{card_id}", response_model=TaskCard)
 async def get_task_card(project_id: str, card_id: str):
     card = _get_storage(project_id).get(card_id)
@@ -876,6 +914,13 @@ async def _launch_run_for_card(
         # The startup reconciler handles zombies left behind by a hard
         # crash that bypassed the finally block below.
         run_storage.mark_active(run_id)
+        # Journal every relay event to disk so a sibling server (one
+        # that did not launch this run) can tail it and show the same
+        # live detail.  Opened before the first emit below.
+        try:
+            _relay.open_journal(run_id, run_storage.journal_path(run_id))
+        except Exception as e:  # noqa: BLE001 — observation is optional
+            logger.debug("Could not open run journal: %s", e)
         try:
             logger.info(f"🚀 TASK_RUN: {run_id[:8]} → marking running")
             run_storage.update_status(run_id, "running")
@@ -1011,6 +1056,7 @@ async def _launch_run_for_card(
         finally:
             # Always drop from the active-runs set, even on error.
             run_storage.mark_inactive(run_id)
+            _relay.close_journal(run_id)
             _live_runs.unregister(run_id)
 
     # Keep the handle.  It is the only in-process lever that can

@@ -74,7 +74,21 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     def _iteration_dir(self, run_id: str) -> Path:
         return contained_path(self.runs_dir, run_id) / "iterations"
 
-    def _iteration_file(self, run_id: str, block_id: str, index: int) -> Path:
+    def journal_path(self, run_id: str) -> Path:
+        """On-disk live-event journal for ``run_id``, written by the
+        executing process and tailed by sibling servers (see
+        app/agents/task_run_stream_relay.py).  Removed with the run."""
+        return contained_path(self.runs_dir, run_id) / "events.jsonl"
+
+    def _iteration_file(
+        self, run_id: str, block_id: str, index: int,
+        pass_key: Optional[str] = None,
+    ) -> Path:
+        # A nested loop's pass is part of the artifact's identity; without
+        # it each outer pass overwrote the previous pass's files.  The
+        # top-level name is unchanged so existing runs stay readable.
+        if pass_key:
+            return self._iteration_dir(run_id) / f"{block_id}_p{pass_key}_{index}.json"
         return self._iteration_dir(run_id) / f"{block_id}_{index}.json"
 
     def _touch_source_conversation(self, run: Optional[TaskRun]) -> None:
@@ -1008,6 +1022,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
 
     def write_iteration_artifact(
         self, run_id: str, block_id: str, index: int, artifact: Artifact,
+        pass_key: Optional[str] = None,
     ) -> None:
         """Persist the full Artifact for a single iteration to disk.
         Each iteration file is small (~10KB typical), scales linearly
@@ -1018,14 +1033,15 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         other TaskRunStorage write) so iteration artifacts fall under
         the "session_data" ALE category instead of being written as
         plaintext JSON [PenPal #43, CWE-311]."""
-        path = self._iteration_file(run_id, block_id, index)
+        path = self._iteration_file(run_id, block_id, index, pass_key)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._write_json(path, artifact.model_dump(mode="json"))
 
     def read_iteration_artifact(
         self, run_id: str, block_id: str, index: int,
+        pass_key: Optional[str] = None,
     ) -> Optional[Artifact]:
-        path = self._iteration_file(run_id, block_id, index)
+        path = self._iteration_file(run_id, block_id, index, pass_key)
         try:
             data = self._read_json(path)
             if data is None:

@@ -17,13 +17,14 @@
 
 import React from 'react';
 import { Spin } from 'antd';
-import type { Block, Artifact } from '../../types/task_card';
+import type { Block, Artifact, TemplateResolution } from '../../types/task_card';
 import type { TaskRun, TaskRunBlockState } from '../../types/task_run';
 import { blockOrigin, formatCompletedAt } from './partialOutcome';
 import { TaskMarkdown } from './TaskMarkdown';
 import { ArtifactViewer } from './ArtifactViewer';
 import { stripTaskMetaTags } from './completionCheck';
 import { blockConfigLines, blockEmoji, blockLabel } from './runMapModel';
+import { IterationBindingsBox } from './IterationBindings';
 
 interface Props {
   block: Block;
@@ -89,6 +90,103 @@ const ArtifactBody: React.FC<{
   </>
 );
 
+/**
+ * The resolutions a focused view should show, if any.
+ *
+ * A focused ITERATION shows its own artifact's records.  A focused bare
+ * TASK shows its block artifact's.  A focused LOOP block with no
+ * iteration focused shows none: its block artifact is the last
+ * iteration's, so its resolutions would present one item's values as
+ * though they described the whole loop — exactly the misreading the
+ * authored "({{item}})" title avoids.
+ */
+export function resolutionsFor(
+  block: Block,
+  isIter: boolean,
+  iterationArtifact: Artifact | null,
+  blockArtifact: Artifact | null,
+): TemplateResolution[] {
+  const source = isIter
+    ? iterationArtifact
+    : block.block_type === 'task' ? blockArtifact : null;
+  return source?.template_resolutions ?? [];
+}
+
+/**
+ * "Resolved for iteration #N" — what the card's template fields became
+ * for this dispatch.  Rendered above the authored Configuration, which
+ * collapses when this is present: the authored text is provenance, the
+ * resolved text is what actually ran.
+ */
+const ResolutionSection: React.FC<{
+  resolutions: TemplateResolution[];
+  iterationIndex: number | null;
+  /** Fallback from the always-retained IterationSummary. */
+  summaryName?: string | null;
+}> = ({ resolutions, iterationIndex, summaryName }) => {
+  const multi = resolutions.length > 1;
+  if (resolutions.length === 0) {
+    // Past the pass-retention cap the artifact — and with it the full
+    // resolution — is gone, but the summary still names the iteration.
+    // Say so rather than presenting the loop as though it had no
+    // templating at all.
+    if (!summaryName || iterationIndex == null) return null;
+    return (
+      <section className="tc-detail__resolution" data-testid="detail-resolution">
+        <div className="tc-detail__resolution-head">
+          <strong>Resolved for iteration #{iterationIndex}</strong>
+          <span>full bindings not retained for this iteration</span>
+        </div>
+        <div className="tc-detail__resolution-task">
+          <dl className="tc-detail__config">
+            <dt>Resolved name</dt>
+            <dd><strong>{summaryName}</strong></dd>
+          </dl>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="tc-detail__resolution" data-testid="detail-resolution">
+      <div className="tc-detail__resolution-head">
+        <strong>
+          {iterationIndex != null
+            ? `Resolved for iteration #${iterationIndex}`
+            : 'Resolved for this run'}
+        </strong>
+        <span>Only fields containing template variables are shown</span>
+      </div>
+      {resolutions.map((r, i) => (
+        <div key={`${r.task_block_id || 'task'}-${i}`} className="tc-detail__resolution-task">
+          {multi && (
+            <div className="tc-detail__section-label">
+              {r.resolved_name ?? r.authored_name ?? r.task_block_id}
+            </div>
+          )}
+          {r.resolved_name != null && (
+            <dl className="tc-detail__config">
+              <dt>Resolved name</dt>
+              <dd><strong>{r.resolved_name}</strong></dd>
+            </dl>
+          )}
+          <IterationBindingsBox bindings={r.bindings} />
+          {r.resolved_instructions != null && (
+            <details className="tc-detail__section" open>
+              <summary>Instructions as sent</summary>
+              <div className="tc-detail__pre">
+                {r.resolved_instructions}
+                {r.instructions_truncated && (
+                  <span className="tc-detail__empty"> … (clipped for the record)</span>
+                )}
+              </div>
+            </details>
+          )}
+        </div>
+      ))}
+    </section>
+  );
+};
+
 export const BlockDetailPanel: React.FC<Props> = ({
   block, status, run, blockState, liveText,
   iterationIndex, iterationArtifact, iterationLoading, iterationError,
@@ -109,6 +207,12 @@ export const BlockDetailPanel: React.FC<Props> = ({
   const artifact = blockState?.artifact ?? null;
   const error = blockState?.error ?? null;
   const isIter = iterationIndex != null;
+  const resolutions = resolutionsFor(block, isIter, iterationArtifact, artifact);
+  const summaryName = isIter
+    ? (blockState?.iteration_summaries ?? [])
+        .find(s => s.index === iterationIndex)?.resolved_name ?? null
+    : null;
+  const hasResolutions = resolutions.length > 0 || !!summaryName;
   // Temporal provenance.  Without this the panel showed state with no
   // "when", so a replayed stage from attempt 1 was indistinguishable
   // from one this attempt just produced — the "can't tell past from
@@ -150,8 +254,18 @@ export const BlockDetailPanel: React.FC<Props> = ({
         >{origin.displayStatus}</span>
       </div>
 
-      <details className="tc-detail__section" open>
-        <summary>Configuration</summary>
+      <ResolutionSection
+        resolutions={resolutions}
+        iterationIndex={iterationIndex}
+        summaryName={summaryName}
+      />
+
+      {/* Collapsed when a resolution is shown: the authored template is
+          still the source of truth for provenance, but the resolved
+          form above is what this iteration actually ran, and showing
+          both open doubled the panel for no new information. */}
+      <details className="tc-detail__section" open={!hasResolutions}>
+        <summary>{hasResolutions ? 'Authored configuration' : 'Configuration'}</summary>
         <dl className="tc-detail__config">
           {config.map((c, i) => (
             <React.Fragment key={i}>
@@ -164,7 +278,10 @@ export const BlockDetailPanel: React.FC<Props> = ({
 
       <div className="tc-detail__section">
         <div className="tc-detail__section-label">
-          {isIter ? `Output — iteration #${iterationIndex}` : 'Output'}
+          {isIter
+            ? `Output — iteration #${iterationIndex}`
+              + (summaryName ? ` · ${summaryName}` : '')
+            : 'Output'}
           {/* Restated on the output section itself, not only in the
               header: with a long config block open, the header scrolls
               out of view and the output would again look like this

@@ -11,6 +11,7 @@ import type { TaskCard, Block, BlockType, TaskScope } from '../../types/task_car
 import { BlockEditor } from './BlockEditor';
 import { BlockOutline } from './BlockOutline';
 import { BlockScopeButton } from './BlockScopeButton';
+import { cardVersionLabel } from './cardVersionLabel';
 import { SelfImproveSection } from './SelfImproveSection';
 import { TaskCardDragProvider } from './DragContext';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
@@ -198,8 +199,15 @@ export const TaskCardEditor: React.FC<Props> = ({
           onChange={e => setName(e.target.value)}
           placeholder="Task card name"
         />
-        <span className="tc-draft-indicator">
-          {card.id ? 'saved' : 'draft'}
+        <span
+          className="tc-draft-indicator"
+          title={card.id
+            ? 'Definition version — bumped when the block tree or scope '
+              + 'changes, not on renames or runs. A run tile shows which '
+              + 'version it executed.'
+            : 'Not yet saved'}
+        >
+          {cardVersionLabel(card)}
         </span>
         <div className="tc-card-actions">
           {onSave && (

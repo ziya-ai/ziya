@@ -242,6 +242,10 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             return None
         card.last_run_at = int(time.time() * 1000)
         card.run_count += 1
-        card.updated_at = card.last_run_at
+        # Deliberately NOT stamped: ``updated_at`` means the card itself
+        # changed, and the editor shows it as "edited N ago".  A launch
+        # is recorded by ``last_run_at`` / ``run_count``; letting it move
+        # ``updated_at`` made every run read as an edit.
+        # (``version`` was never bumped here; this aligns the timestamp.)
         self._write_json(self._card_file(card_id), card.model_dump())
         return card

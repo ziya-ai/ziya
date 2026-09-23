@@ -21,14 +21,15 @@
  * REST snapshot's block_states (durable) — see runMapModel.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import type { TaskCard } from '../../types/task_card';
 import type { TaskRun } from '../../types/task_run';
 import type { LiveTaskState } from '../../hooks/useTaskRunStream';
 import {
-  flattenBlocks, resolveBlockStatus, isLoopBlock, buildDots,
-  blockEmoji, blockLabel, dotCountLabel, STATUS_GLYPHS,
+  flattenBlocks, resolveBlockStatus, isLoopBlock, buildDotPasses,
+  blockEmoji, blockLabel, STATUS_GLYPHS,
 } from './runMapModel';
+import { IterationDotStrip } from './IterationDotStrip';
 import { deriveHoldChain, positionOf, holdLabel } from './holdChain';
 
 interface Props {
@@ -40,8 +41,15 @@ interface Props {
   focusedId: string | null;
   /** Focused loop iteration index, or null for block-level focus. */
   focusedIndex: number | null;
-  /** Report a focus change.  index=null focuses the block itself. */
-  onFocus: (blockId: string, index: number | null) => void;
+  /**
+   * Enclosing-loop pass of the focused iteration (IterationSummary
+   * .pass_key), or null for a top-level loop.  Needed alongside the
+   * index because a nested loop's index repeats once per outer pass.
+   */
+  focusedPassKey?: string | null;
+  /** Report a focus change.  index=null focuses the block itself;
+   * passKey qualifies the index for a nested loop's iteration. */
+  onFocus: (blockId: string, index: number | null, passKey?: string | null) => void;
   /**
    * When set, each row shows a "resume from here" affordance.  Absent
    * on live runs (the server 409s) and on runs with no card_snapshot
@@ -75,10 +83,14 @@ const POSITION_LABELS: Record<string, string> = {
 };
 
 export const TaskRunMap: React.FC<Props> = ({
-  card, run, live, focusedId, focusedIndex, onFocus,
+  card, run, live, focusedId, focusedIndex, focusedPassKey = null, onFocus,
   onResumeFrom, onContinueFrom, resumingBlockId,
 }) => {
   const rows = flattenBlocks(card.root, 0, run.call_snapshots ?? undefined);
+  // Loop rows whose collapsed pass history has been expanded.  Local to
+  // the map: it is a viewing choice, not run state, and resets with the
+  // tile like every other disclosure toggle.
+  const [expandedPasses, setExpandedPasses] = useState<Set<string>>(new Set());
   // Derived once for the whole map rather than per row: the walk is O(tree)
   // and every row needs an answer from the same snapshot.  Inert unless the
   // run actually held, so this is safe to call unconditionally.
@@ -95,11 +107,11 @@ export const TaskRunMap: React.FC<Props> = ({
 
   return (
     <div className="tc-map">
-      {rows.map(({ block, depth, viaCall }) => {
-        const status = resolveBlockStatus(block.id, live.blockStatuses, run);
+      {rows.map(({ block, depth, viaCall, loop }) => {
+        const status = resolveBlockStatus(block.id, live.blockStatuses, run, loop);
         const state = run.block_states?.[block.id];
-        const dots = isLoopBlock(block)
-          ? buildDots(
+        const passes = isLoopBlock(block)
+          ? buildDotPasses(
               state?.iteration_summaries, status === 'running',
               // Live buckets are the only source that knows HOW MANY
               // iterations are in flight; iteration_summaries records
@@ -112,7 +124,8 @@ export const TaskRunMap: React.FC<Props> = ({
         // The dots strip and the "running" chip both claim margin-left:
         // auto, so only one can hold the row's right edge.  The strip
         // already shows a live iteration, so the chip is redundant there.
-        const showDots = !!dots && (dots.total > 0 || dots.running);
+        const showDots = !!passes
+          && passes.some(p => p.dots.total > 0 || p.dots.running);
         const rowSelected = focusedId === block.id && focusedIndex == null;
         const holdPos = positionOf(hold, block.id);
         return (
@@ -162,73 +175,22 @@ export const TaskRunMap: React.FC<Props> = ({
                   called
                 </span>
               )}
-              {showDots && dots && (
-                <span className="tc-map__dots">
-                  {dots.overflow > 0 && (
-                    <span className="tc-map__dot-count">+{dots.overflow}</span>
-                  )}
-                  {dots.dots.map(d => {
-                    // Openable whenever an artifact was RETAINED, not only
-                    // when the iteration failed.  ``has_artifact`` is true
-                    // for every failure AND for passes under the retention
-                    // cap (see block_executor._record_iteration), so the old
-                    // ``status === 'failed'`` half of this test discarded
-                    // real, fetchable output: a 5-iteration loop that all
-                    // passed had five dots that looked identical to the
-                    // unopenable kind and did nothing on click.
-                    const clickable = d.hasArtifact;
-                    const sel = focusedId === block.id && focusedIndex === d.index;
-                    return (
-                      <button
-                        key={d.index}
-                        className={
-                          `tc-map__dot tc-map__dot--${d.status}` +
-                          // Distinguishes "nothing to open" from "click me"
-                          // VISUALLY.  Previously the only difference was the
-                          // disabled attribute, invisible on a 8px circle, so
-                          // clicking around mostly did nothing and read as
-                          // broken rather than as absent data.
-                          (clickable ? ' tc-map__dot--openable' : '') +
-                          // Preserved, not performed here.  Keeps the
-                          // pass/fail colour — the outcome is still the
-                          // record — but dimmed, so the strip reads as
-                          // "these three were kept, these two are mine"
-                          // instead of restarting the count at 1.
-                          (d.replayed ? ' tc-map__dot--replayed' : '') +
-                          (sel ? ' tc-map__dot--selected' : '')
-                        }
-                        onClick={clickable
-                          ? (e) => { e.stopPropagation(); onFocus(block.id, d.index); }
-                          : undefined}
-                        disabled={!clickable}
-                        title={d.replayed
-                          ? `#${d.index} ${d.status} — replayed from an earlier `
-                            + `attempt, not re-run`
-                            + (clickable ? ' — click to view output' : '')
-                          : clickable
-                          ? `#${d.index} ${d.status} — click to view output`
-                          : `#${d.index} ${d.status} — output not retained`}
-                      />
-                    );
+              {showDots && passes && (
+                <IterationDotStrip
+                  blockId={block.id}
+                  passes={passes}
+                  planned={state?.planned_iterations}
+                  focusedId={focusedId}
+                  focusedIndex={focusedIndex}
+                  focusedPassKey={focusedPassKey}
+                  onFocus={onFocus}
+                  expanded={expandedPasses.has(block.id)}
+                  onToggleExpanded={() => setExpandedPasses(prev => {
+                    const next = new Set(prev);
+                    if (next.has(block.id)) next.delete(block.id); else next.add(block.id);
+                    return next;
                   })}
-                  {dots.runningIndices.length > 0
-                    ? dots.runningIndices.map(i => (
-                        <span
-                          key={`running-${i}`}
-                          className="tc-map__dot tc-map__dot--running"
-                          title={`#${i} running`}
-                        />
-                      ))
-                    : dots.running && (
-                        <span className="tc-map__dot tc-map__dot--running" />
-                      )}
-                  {/* "n/m" when the loop's roster size is known — a
-                      for_each Repeat persists it at plan time — else the
-                      bare completed count, as before. */}
-                  <span className="tc-map__dot-count">
-                    {dotCountLabel(dots.total, state?.planned_iterations)}
-                  </span>
-                </span>
+                />
               )}
               {status === 'running' && !showDots && (
                 <span className="tc-map__tag tc-map__tag--running">running</span>

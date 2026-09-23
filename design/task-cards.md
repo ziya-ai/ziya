@@ -546,6 +546,23 @@ Events are transient; persisted storage remains the source of truth.
 Reconnecting clients reconcile by reading the snapshot and then
 resuming the event stream.
 
+**Cross-process observation.**  The relay's history buffer is
+process-local, so a server that did not launch the run has nothing to
+replay and receives no pushes.  The executing process therefore also
+appends every raw event to `task_runs/<run_id>/events.jsonl`
+(`TaskRunStorage.journal_path`, opened in the launch path right after
+`mark_active`, closed in the executor's `finally`).  The WS endpoint
+takes `?project_id=` to locate that journal; when the connecting
+server's relay is not the executor (`run_id` not in `_journals`) it
+starts a tail that feeds the file through its own `push`, so deltas
+fold, the local buffer fills for later connectors, and the socket sees
+the same stream it would on the origin.  The tail ends on
+`run_completed`, when the last local observer disconnects (byte offset
+retained — a restart never re-ingests), or when `executor_alive` is
+false and the file has gone quiet (crash with no terminal event; the
+reconciler owns the row from there).  The journal lives inside the run
+directory that `delete()` removes.
+
 **Teardown is gated on the executor having unwound, not on the run being
 final.**  These are different conditions and the client keeps two lists
 for them (`useTaskRunStream`).  A `held` run is *not* final — it

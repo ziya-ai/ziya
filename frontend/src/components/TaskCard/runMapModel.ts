@@ -20,6 +20,20 @@ export interface MapRow {
    * permissions.
    */
   viaCall?: string;
+  /**
+   * Set on a DIRECT child of a repeat/until body: the loop's id and this
+   * block's position in that body.  Body blocks have no block_states
+   * entry (the executor persists only structural blocks), so this is the
+   * key resolveBlockStatus uses to read the block's outcome from the
+   * loop's latest iteration digest.  A child of a group inside the body
+   * is not tagged: the executor records the group as ONE stage.
+   */
+  loop?: LoopPosition;
+}
+
+export interface LoopPosition {
+  id: string;
+  index: number;
 }
 
 /**
@@ -40,19 +54,24 @@ export function flattenBlocks(
   // Guards a malformed record: the server rejects call cycles, but a
   // hand-edited or truncated run file must not hang the UI.
   seen: ReadonlySet<string> = new Set(),
+  loop?: LoopPosition,
 ): MapRow[] {
   if (!root) return [];
   const rows: MapRow[] = [];
   if (root.block_type === 'group') {
     for (const child of root.body ?? []) {
-      rows.push(...flattenBlocks(child, depth, callSnapshots, seen));
+      rows.push(...flattenBlocks(child, depth, callSnapshots, seen, loop));
     }
     return rows;
   }
-  rows.push({ block: root, depth });
-  for (const child of root.body ?? []) {
-    rows.push(...flattenBlocks(child, depth + 1, callSnapshots, seen));
-  }
+  rows.push(loop ? { block: root, depth, loop } : { block: root, depth });
+  const isLoop = isLoopBlock(root);
+  (root.body ?? []).forEach((child, i) => {
+    rows.push(...flattenBlocks(
+      child, depth + 1, callSnapshots, seen,
+      isLoop ? { id: root.id, index: i } : undefined,
+    ));
+  });
   if (root.block_type === 'call' && callSnapshots) {
     const snap = callSnapshots[root.id];
     const key = snap?.key ?? root.id;
@@ -70,7 +89,13 @@ export function flattenBlocks(
  * Resolve a block's display status.  Precedence:
  *   1. live ``block_status`` events (freshest — updates mid-run)
  *   2. the REST snapshot's block_states (durable — survives reload)
- *   3. 'queued'
+ *   3. for a loop-body block with neither: the enclosing loop's latest
+ *      iteration digest (``IterationSummary.stages``), matched by body
+ *      position.  Body blocks never get a block_states entry, so without
+ *      this every one of them read 'queued' after a reload — a 'done'
+ *      loop over four never-run children showed four bare queued rows
+ *      (GFX Stage 2 run 3068d3d0).
+ *   4. 'queued'
  * Terminal backstop: once the run itself is terminal nothing can
  * still be running — a stale 'running' degrades to the run's own
  * terminal status (covers dropped terminal events).
@@ -79,10 +104,13 @@ export function resolveBlockStatus(
   blockId: string,
   liveStatuses: Record<string, string>,
   run: TaskRun | null,
+  loop?: LoopPosition,
 ): BlockStatus {
   const live = liveStatuses[blockId];
   const persisted = run?.block_states?.[blockId]?.status;
-  let status = (live ?? persisted ?? 'queued') as BlockStatus;
+  let status = (
+    live ?? persisted ?? (loop ? digestStatus(run, loop) : undefined) ?? 'queued'
+  ) as BlockStatus;
   const terminal = run
     && ['done', 'partial', 'failed', 'cancelled', 'held'].includes(run.status);
   if (terminal && status === 'running') {
@@ -106,6 +134,30 @@ export function resolveBlockStatus(
   return status;
 }
 
+/**
+ * A body block's outcome in the enclosing loop's LATEST iteration (by
+ * index, not array order — a resumed run's replayed prefix is seeded out
+ * of sequence).  Undefined when the loop has no iterations, the record
+ * predates the digest, or the position is not covered: those are
+ * unknowns, and the caller's 'queued' default is the honest word for
+ * them.
+ */
+function digestStatus(
+  run: TaskRun | null, loop: LoopPosition,
+): BlockStatus | undefined {
+  const summaries = run?.block_states?.[loop.id]?.iteration_summaries;
+  if (!summaries?.length) return undefined;
+  const latest = summaries.reduce((a, b) => (b.index > a.index ? b : a));
+  const entry = latest.stages?.find(s => s.index === loop.index);
+  switch (entry?.status) {
+    case 'passed': return 'done';
+    case 'failed': return 'failed';
+    case 'skipped': return 'skipped';
+    case 'cancelled': return 'cancelled';
+    default: return undefined;
+  }
+}
+
 export const isLoopBlock = (b: Block): boolean =>
   b.block_type === 'repeat' || b.block_type === 'until';
 
@@ -126,6 +178,8 @@ export interface DotModel {
      * iterations having been discarded.
      */
     replayed: boolean;
+    /** Resolved body-task name for this iteration, when templated. */
+    label?: string;
   }>;
   /** Count of older iterations collapsed out of view. */
   overflow: number;
@@ -158,6 +212,7 @@ export function buildDots(
       status: s.status,
       hasArtifact: s.has_artifact,
       replayed: !!s.replayed,
+      ...(s.resolved_name ? { label: s.resolved_name } : {}),
     })),
     overflow: total - shown.length,
     total,
@@ -166,6 +221,73 @@ export function buildDots(
       ? [...runningIndices].sort((a, b) => a - b)
       : [],
   };
+}
+
+/** One pass of a loop: its dot model plus the enclosing-pass key
+ * (``IterationSummary.pass_key``; null for a top-level loop). */
+export interface DotPass {
+  passKey: string | null;
+  dots: DotModel;
+}
+
+/**
+ * Group a loop's summaries by the outer pass that produced them, in
+ * first-appearance order.  A top-level loop yields exactly one group
+ * with ``passKey === null`` and a dot model identical to ``buildDots``,
+ * so every pre-existing single-strip row renders unchanged.  A nested
+ * loop yields one group per outer iteration; ``index`` repeats across
+ * groups and is unique only within one.  Live running indices belong
+ * to the pass in progress, which is always the last group (or a new
+ * empty one when nothing of the current pass has completed yet).
+ */
+export function buildDotPasses(
+  summaries: IterationSummary[] | undefined,
+  blockRunning: boolean,
+  runningIndices: number[] = [],
+): DotPass[] {
+  const order: Array<string | null> = [];
+  const groups = new Map<string | null, IterationSummary[]>();
+  for (const s of summaries ?? []) {
+    const k = s.pass_key ?? null;
+    if (!groups.has(k)) { groups.set(k, []); order.push(k); }
+    groups.get(k)!.push(s);
+  }
+  if (order.length === 0) {
+    return [{ passKey: null, dots: buildDots([], blockRunning, runningIndices) }];
+  }
+  return order.map((k, i) => ({
+    passKey: k,
+    dots: buildDots(
+      groups.get(k),
+      i === order.length - 1 && blockRunning,
+      i === order.length - 1 ? runningIndices : [],
+    ),
+  }));
+}
+
+/** Passes shown before the history collapses: current plus three prior. */
+export const PASS_WINDOW = 4;
+
+/** A rendered pass line, or a placeholder for ``hidden`` collapsed ones. */
+export type PassRow = DotPass | { hidden: number };
+
+/**
+ * Collapse a long pass history to the first pass, an ellipsis row, the
+ * previous pass and the current one.  Up to PASS_WINDOW passes are shown
+ * in full.  The first pass stays visible because it is the baseline the
+ * later ones are being compared against; the last two because the
+ * question a live repair loop is asked is "did this pass beat the one
+ * before it?".
+ */
+export function collapsePasses(passes: DotPass[]): PassRow[] {
+  if (passes.length <= PASS_WINDOW) return passes;
+  const n = passes.length;
+  return [
+    passes[0],
+    { hidden: n - 3 },
+    passes[n - 2],
+    passes[n - 1],
+  ];
 }
 
 /**

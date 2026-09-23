@@ -91,6 +91,7 @@ export const TaskBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, is
       tools: payload.tools,
       skills: payload.skills,
       shell_commands: payload.shellCommands,
+      shell_timeout_secs: payload.shellTimeoutSecs,
     });
   };
 
@@ -215,6 +216,7 @@ export const TaskBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, is
         tools={scope.tools}
         skills={scope.skills}
         shellCommands={scope.shell_commands ?? []}
+        shellTimeoutSecs={scope.shell_timeout_secs}
         onClose={() => setPermsOpen(false)}
         onSave={onSavePermsCombined}
       />

@@ -132,12 +132,43 @@ export interface IterationSummary {
   tokens: number;
   has_artifact: boolean;
   /**
+   * Enclosing-loop pass this iteration ran under ("1", or "1.3" two
+   * levels deep); absent for a top-level loop.  A nested loop's
+   * ``index`` repeats once per outer pass, so it identifies an
+   * iteration only together with this key.  See runMapModel.buildDotPasses.
+   */
+  pass_key?: string | null;
+  /**
    * Carried from an earlier attempt rather than executed by this run —
    * a mid-loop resume's replayed prefix.  Rendered as a dimmed dot so
    * the preserved work is visible, and excluded from every progress
    * aggregate.  Absent on runs written before the field existed.
    */
   replayed?: boolean;
+  /**
+   * Compact per-stage digest of the loop body for this iteration, from
+   * app.utils.self_improve.stage_digest.  ``index`` is the block's
+   * POSITION in the loop body.  Body blocks have no block_states entry
+   * of their own, so runMapModel.resolveBlockStatus reads the latest
+   * iteration's digest to show what happened to them after a reload.
+   * Absent (undefined/null) on a leaf body and on records written before
+   * the field existed -- treat as unknown, never as queued.
+   */
+  stages?: StageDigestEntry[] | null;
+  /**
+   * The body task's name with its template rendered for this iteration
+   * ("Wave 3 (graphviz)").  Always retained, unlike the artifact's
+   * template_resolutions, so an iteration past the pass-retention cap
+   * still has a name.  Absent when nothing templated the name.
+   */
+  resolved_name?: string | null;
+}
+
+export interface StageDigestEntry {
+  index: number | null;
+  label: string;
+  status: string;
+  tool_calls?: number;
 }
 
 /**

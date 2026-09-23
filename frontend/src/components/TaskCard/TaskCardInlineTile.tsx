@@ -530,7 +530,10 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
   // shows detail for.  null = the whole-run artifact (default).  This
   // is the "uplevel": the run map navigates, the region below reflects
   // whatever is focused.
-  const [focus, setFocus] = useState<{ blockId: string; index: number | null } | null>(null);
+  // ``passKey`` qualifies ``index`` for a nested loop, whose index
+  // repeats once per enclosing pass (IterationSummary.pass_key).
+  const [focus, setFocus] = useState<
+    { blockId: string; index: number | null; passKey?: string | null } | null>(null);
   const [iterArtifact, setIterArtifact] = useState<Artifact | null>(null);
   const [iterLoading, setIterLoading] = useState(false);
   const [iterError, setIterError] = useState<string | null>(null);
@@ -593,11 +596,14 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
   // Focus toggle: clicking the focused element again clears focus back
   // to the whole run.  index=null focuses the block; index=N a loop
   // iteration of it.
-  const onFocus = useCallback((blockId: string, index: number | null) => {
+  const onFocus = useCallback((
+    blockId: string, index: number | null, passKey: string | null = null,
+  ) => {
     setFocus(prev =>
       prev && prev.blockId === blockId && prev.index === index
+        && (prev.passKey ?? null) === passKey
         ? null
-        : { blockId, index });
+        : { blockId, index, passKey });
     setIterArtifact(null);
     setIterError(null);
   }, []);
@@ -614,7 +620,8 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
     if (!focus || focus.index == null || !run) return;
     let cancelled = false;
     setIterLoading(true);
-    getIterationArtifact(projectId, run.id, focus.blockId, focus.index)
+    getIterationArtifact(
+      projectId, run.id, focus.blockId, focus.index, focus.passKey)
       .then(a => { if (!cancelled) setIterArtifact(a); })
       .catch(e => { if (!cancelled) setIterError(String(e)); })
       .finally(() => { if (!cancelled) setIterLoading(false); });
@@ -1436,6 +1443,7 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             projectId={projectId} card={displayCard} run={run} live={live}
             focusedId={focus?.blockId ?? null}
             focusedIndex={focus?.index ?? null}
+            focusedPassKey={focus?.passKey ?? null}
             onFocus={onFocus}
             onResumeFrom={
               controls.canResumeFromBlock ? handleResumeFrom : undefined
