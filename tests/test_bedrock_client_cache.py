@@ -57,6 +57,62 @@ class TestConfigHash(unittest.TestCase):
         self.assertNotEqual(h1, h2)
 
 
+class TestRegionFallback(unittest.TestCase):
+    """
+    Regression: ModelManager._state['aws_region'] is None until the model has
+    been (re)initialized, and the direct streaming path passed that None
+    straight into boto3. botocore only consults AWS_DEFAULT_REGION on its own
+    (not AWS_REGION, which is what Ziya's startup sets), so a user with no
+    region in their profile hit NoRegionError on bedrock-runtime even though
+    Ziya had logged "Using AWS region ...". The cache must resolve a missing
+    region itself instead of handing None to boto3.
+    """
+
+    def setUp(self):
+        from app.providers import bedrock_client_cache as bcc
+        bcc.clear_cache()
+
+    def _run(self, region_arg, env):
+        from app.providers import bedrock_client_cache as bcc
+        session = MagicMock()
+        sts = MagicMock()
+        sts.get_caller_identity.return_value = {"Arn": "arn:test"}
+        runtime = MagicMock()
+
+        def _client(service, **kwargs):
+            return sts if service == "sts" else runtime
+        session.client.side_effect = _client
+
+        with patch.dict(os.environ, env, clear=False), \
+             patch("app.utils.aws_utils.create_fresh_boto3_session", return_value=session), \
+             patch("app.utils.custom_bedrock.CustomBedrockClient", side_effect=lambda c, model_config=None: c), \
+             patch("app.utils.aws_utils.ThrottleSafeBedrock", side_effect=lambda c: c):
+            for k in ("AWS_DEFAULT_REGION",):
+                os.environ.pop(k, None)
+            bcc.get_persistent_bedrock_client(
+                aws_profile=None, region=region_arg, model_id="m",
+            )
+        runtime_calls = [c for c in session.client.call_args_list
+                         if c.args and c.args[0] == "bedrock-runtime"]
+        self.assertEqual(len(runtime_calls), 1)
+        return runtime_calls[0].kwargs.get("region_name")
+
+    def test_none_region_falls_back_to_aws_region_env(self):
+        region = self._run(None, {"AWS_REGION": "eu-central-1"})
+        self.assertEqual(region, "eu-central-1")
+
+    def test_explicit_region_is_kept(self):
+        region = self._run("us-east-1", {"AWS_REGION": "eu-central-1"})
+        self.assertEqual(region, "us-east-1")
+
+    def test_none_region_never_reaches_boto3(self):
+        env = {k: v for k, v in os.environ.items()}
+        env.pop("AWS_REGION", None)
+        with patch.dict(os.environ, env, clear=True):
+            region = self._run(None, {})
+        self.assertIsNotNone(region)
+
+
 class TestClearCache(unittest.TestCase):
     """clear_cache must reset module-level state."""
 
