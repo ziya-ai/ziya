@@ -42,6 +42,7 @@ from app.shadow.redaction import redact_argv, safe_terminal_text
 from app.shadow.segmenter import Segmenter
 from app.shadow.sock_server import ShadowSocketServer
 from app.shadow.title import TitleRewriter
+from app.shadow import prompt_marker
 
 MENU_PREFIX = b"\x18"   # C-x
 MENU_KEY = b"\x1a"      # C-z
@@ -59,6 +60,38 @@ _TICK_S = 0.2
 HUMAN_QUIET_S = 1.5
 OUTPUT_QUIET_S = 0.3
 SEND_WAIT_S = 10.0
+
+# Shadow tint (§8): the one indicator that survives scrolling, `clear` and
+# ssh hops, because it is the LOCAL emulator's background colour (OSC 11)
+# and cursor colour (OSC 12), restored with OSC 111/112 on exit.  iTerm2
+# and ghostty both honour all four.  A shadowed terminal must never look
+# identical to an unshadowed one; a control lease deepens the tint so the
+# human can see at a glance that a chat may type here.  Override with
+# ZIYA_SHADOW_TINT / ZIYA_SHADOW_TINT_CONTROL (#rrggbb) or disable with
+# ZIYA_SHADOW_TINT=off.
+TINT_OBSERVE = os.environ.get("ZIYA_SHADOW_TINT", "#1a2230")
+TINT_CONTROL = os.environ.get("ZIYA_SHADOW_TINT_CONTROL", "#2a2010")
+CURSOR_CONTROL = os.environ.get("ZIYA_SHADOW_CURSOR_CONTROL", "#e0a020")
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def tint_sequence(controlled: bool) -> bytes:
+    """OSC 11 (+ OSC 12 under control) for the current shadow state, or b""
+    when tinting is disabled or a colour is malformed."""
+    if TINT_OBSERVE.lower() == "off":
+        return b""
+    bg = TINT_CONTROL if controlled else TINT_OBSERVE
+    if not _HEX_RE.match(bg):
+        return b""
+    out = b"\x1b]11;" + bg.encode() + b"\x07"
+    if controlled and _HEX_RE.match(CURSOR_CONTROL):
+        out += b"\x1b]12;" + CURSOR_CONTROL.encode() + b"\x07"
+    else:
+        out += b"\x1b]112\x07"          # cursor back to the terminal default
+    return out
+
+
+TINT_RESET = b"\x1b]111\x07\x1b]112\x07"
 _LINE_TERM_RE = re.compile(rb"(\r\n|\r|\n)")
 # DECSET/DECRST 2004: the child (its line editor) asked the terminal to
 # bracket pastes.  Tracked from output so a multi-statement snippet we type
@@ -437,6 +470,7 @@ class InteractiveFrontend:
         self._confirm_id: Optional[str] = None
         core.frontend = self
         self.titles = TitleRewriter(self._title_prefix())
+        self._shell_kind: Optional[str] = None
 
     def _title_prefix(self) -> str:
         """Window-title prefix: label, plus the attached chat when bound (§8)."""
@@ -450,6 +484,12 @@ class InteractiveFrontend:
     def refresh_title(self) -> None:
         self.titles.set_prefix(self._title_prefix())
         self.write_raw(self.titles.emit())
+
+    def refresh_tint(self) -> None:
+        """Re-assert the background/cursor tint for the current lease state."""
+        srv = self.core.server
+        lease = srv.current_lease() if srv else None
+        self.write_raw(tint_sequence(bool(lease and lease.granted)))
 
     # -- output -----------------------------------------------------------------
 
@@ -541,7 +581,9 @@ class InteractiveFrontend:
             f'shadow {e.session_id} ("{e.label}") · seg={e.segmentation} · {bound} · {ctl}'
             f"[a] ask · [l] relabel · [i] instrument shell · "
             f"[c] control ceiling: {e.control_ceiling} · "
-            f"[q] end session · other key: cancel")
+            + (f"[p] add ⏺ prompt marker to {prompt_marker.rc_path(self._shell_kind).name} · "
+               if self._shell_kind and not prompt_marker.is_installed(self._shell_kind) else "")
+            +             f"[q] end session · other key: cancel")
         self._mode = "menu"
 
     def _menu_key(self, key: bytes) -> None:
@@ -571,6 +613,13 @@ class InteractiveFrontend:
                          + ("  (a chat may now request control with shadow_control; "
                             "you grant with [g])" if e.control_ceiling != "none" else ""))
             self.refresh_title()
+        elif key == b"p" and self._shell_kind and not prompt_marker.is_installed(self._shell_kind):
+            try:
+                path = prompt_marker.install(self._shell_kind)
+                self.core.journal.meta("prompt_marker_installed", {"rc": str(path)})
+                self.overlay(f"added to {path} — takes effect in the next shadowed shell")
+            except OSError as ex:
+                self.overlay(f"could not write rc file: {ex}")
         elif key == b"r":
             if self.core.server and self.core.server.revoke_lease():
                 self.overlay("control lease revoked")
@@ -588,6 +637,7 @@ class InteractiveFrontend:
         """Server callback: a lease was requested (pending) or ended (None)."""
         if lease is None:
             self.overlay("control lease ended")
+            self.refresh_tint()
             return
         if lease.granted:
             return  # implicit grant (headless) never reaches a frontend
@@ -604,6 +654,7 @@ class InteractiveFrontend:
         if key == b"g" and srv is not None and srv.grant_active_lease(expected):
             self.overlay("control granted — this chat can now run commands here "
                          "(C-x C-z, r to revoke)")
+            self.refresh_tint()
         else:
             if srv is not None:
                 srv.revoke_lease()
@@ -723,11 +774,20 @@ class InteractiveFrontend:
         e = core.entry
         self.overlay(f'shadow session {e.session_id} ("{e.label}") — journaling locally. '
                      f"C-x C-z for menu.")
+        self.write_raw(tint_sequence(False))
+        self._shell_kind, hint = prompt_marker.should_hint(core.argv)
+        if hint:
+            self.overlay(f"tip: add a ⏺ to your prompt while shadowed — C-x C-z, p appends "
+                         f"this to {prompt_marker.rc_path(self._shell_kind).name}: "
+                         f"{prompt_marker.snippet(self._shell_kind)}")
+            prompt_marker.mark_hinted()
         try:
             tty.setraw(self.stdin_fd)
             code = core.run(stdin_fd=self.stdin_fd)
         finally:
             termios.tcsetattr(self.stdin_fd, termios.TCSADRAIN, saved)
+            if TINT_OBSERVE.lower() != "off":
+                self.write_raw(TINT_RESET)
         self.write_raw(f"\r\n{_DIM}⏺ shadow session {e.session_id} ended "
                        f"(exit {code}); journal removed.{_RESET}\r\n".encode("utf-8"))
         return code

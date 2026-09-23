@@ -180,6 +180,25 @@ Phase 1 is read-only: the chat can look and leave notes, never type.
 Password-style input is masked before it reaches disk; the journal lives at
 `~/.ziya/shadow/sessions/` (mode 0600) and is deleted when the session ends.
 
+You can always tell a shadowed terminal apart: its background is tinted for
+the life of the session (deeper, with an amber cursor, while a chat holds
+control), the window title carries a `⏺` prefix, and the tint survives
+`clear` and ssh hops because it is your local terminal's setting (iTerm2 and
+ghostty both support it). Tune or disable it with `ZIYA_SHADOW_TINT=#rrggbb`
+/ `ZIYA_SHADOW_TINT_CONTROL=#rrggbb` / `ZIYA_SHADOW_TINT=off`. For a marker
+in the prompt itself, the shadowed shell has `ZIYA_SHADOW_SESSION` set, so in
+`.zshrc`:
+
+```zsh
+[[ -n $ZIYA_SHADOW_SESSION ]] && PROMPT="%F{yellow}⏺%f $PROMPT"
+```
+
+To let a chat run commands in a session you already have open, press
+`C-x C-z` then `c` to raise the control ceiling (`supervised` = you approve
+every command; `gated` = only commands outside the read-only policy ask;
+`unrestricted` = no prompts), then ask the chat to take control and press
+`g` at the banner. `C-x C-z` then `r` revokes.
+
 ---
 
 ## Troubleshooting

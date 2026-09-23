@@ -173,6 +173,7 @@ def test_frontend_menu_prefix_handling(home):
         session_id, label, segmentation, allow_exec = "abc123", "stub", "raw", False
         display = "stub (abc123)"
         attached = None
+        control_ceiling = "none"
 
         def save(self):
             pass
@@ -194,6 +195,7 @@ def test_frontend_menu_prefix_handling(home):
         def __init__(self):
             self.typed = b""
             self.frontend = None
+            self.server = None
             self.server = None   # no socket server: menu shows no lease state
 
         def handle_input(self, data):
@@ -216,9 +218,9 @@ def test_frontend_menu_prefix_handling(home):
     core.typed = b""
     fe.handle_keys(MENU_PREFIX + MENU_KEY)      # opens menu
     assert fe._mode == "menu" and core.typed == b""
-    fe.handle_keys(b"x")                        # toggle exec
-    assert core.entry.allow_exec is True
-    assert ("allow_exec", {"enabled": True}) in core.journal.metas
+    fe.handle_keys(b"c")                        # raise control ceiling one rung
+    assert core.entry.control_ceiling == "supervised"
+    assert ("control_ceiling", {"ceiling": "supervised"}) in core.journal.metas
     assert fe._mode is None
 
     # ask composer: journals an ask record, flags pending_ask
