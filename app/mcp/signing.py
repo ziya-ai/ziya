@@ -60,7 +60,14 @@ def sign_tool_result(
     
     # Ensure result has proper structure
     if "content" not in result:
-        result = {"content": [{"type": "text", "text": str(result)}]}
+        # A builtin returning a bare payload dict (task_card_stage /
+        # task_card_launch: {success, staged, binding_id, ...}) is wrapped
+        # here BEFORE _process_result sees it.  str() yields Python repr
+        # (single quotes, True/None), which the frontend's JSON.parse
+        # rejects, so chatApi.ts never fired the task-binding refresh.
+        # default=str keeps odd values (Path, datetime) from raising.
+        result = {"content": [{"type": "text",
+                               "text": json.dumps(result, default=str)}]}
     
     # Create canonical representation of the result content for signing
     result_content = json.dumps(result.get("content", []), sort_keys=True)
