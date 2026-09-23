@@ -153,13 +153,85 @@ def sanitize_patch_for_git_apply(patch_content: str) -> str:
         # Non-hunk lines
         sanitized_lines.append(line)
     
+    sanitized_lines = _repair_undercounted_hunk_headers(sanitized_lines)
+
     # Ensure the patch ends with a newline
     sanitized = '\n'.join(sanitized_lines)
     if not sanitized.endswith('\n'):
         sanitized += '\n'
         
     return sanitized
- 
+
+
+_HUNK_HDR_RE = re.compile(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$')
+
+
+def _repair_undercounted_hunk_headers(lines: List[str]) -> List[str]:
+    """
+    Rewrite any @@ header whose declared old/new counts are SMALLER than the
+    lines its body actually contains.
+
+    git apply parses exactly the declared number of lines for a hunk and then
+    treats whatever follows -- up to the next header -- as trailing garbage,
+    exiting 0. An undercounted header therefore applies the first part of the
+    hunk and silently drops the rest while the pipeline reports success
+    (kimi-k3 half-apply, 2026-09-23: a "-N,6 +N,9" header over a 13/16-line
+    replacement hunk landed only the leading comment; see
+    tests/diff_test_cases/undercounted_hunk_header_*). Models undercount when
+    they stop tallying after the first change block.
+
+    This is a pure recount and deliberately one-directional. OVERcounted
+    headers (truncated hunks) are left alone: git rejects those loudly and the
+    difflib stage already handles them; recounting them changes matching
+    behaviour the regression suite depends on. Blank context lines emitted
+    without their leading space ('') are counted as context, as git accepts
+    them.
+    """
+    out: List[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        m = _HUNK_HDR_RE.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        header_idx = len(out)
+        out.append(lines[i])
+        i += 1
+        ctx = rem = add = 0
+        while i < n:
+            ln = lines[i]
+            if _HUNK_HDR_RE.match(ln) or ln.startswith(('diff --git', 'index ', '--- ', '+++ ')):
+                break
+            if ln.startswith('\\'):
+                pass
+            elif ln.startswith('-'):
+                rem += 1
+            elif ln.startswith('+'):
+                add += 1
+            elif ln.startswith(' ') or ln == '':
+                ctx += 1
+            else:
+                break  # not a hunk line: hunk ended
+            out.append(ln)
+            i += 1
+        body_old, body_new = ctx + rem, ctx + add
+        decl_old = int(m.group(2)) if m.group(2) is not None else 1
+        decl_new = int(m.group(4)) if m.group(4) is not None else 1
+        if body_old > decl_old or body_new > decl_new:
+            new_old = max(decl_old, body_old)
+            new_new = max(decl_new, body_new)
+            logger.warning(
+                "Hunk header undercounts its body (declared -%d/+%d, body -%d/+%d); "
+                "rewriting to -%d/+%d so git apply does not truncate the hunk",
+                decl_old, decl_new, body_old, body_new, new_old, new_new,
+            )
+            out[header_idx] = (
+                f"@@ -{m.group(1)},{new_old} +{m.group(3)},{new_new} @@{m.group(5)}"
+            )
+    return out
+
 def normalize_patch_with_whatthepatch(patch_content: str) -> str:
     """
     Normalize a patch using whatthepatch to ensure it's valid for git apply.
@@ -178,8 +250,14 @@ def normalize_patch_with_whatthepatch(patch_content: str) -> str:
             patches = list(whatthepatch.parse_patch(patch_content))
         except ValueError as e:
             logger.warning(f"whatthepatch parsing error: {str(e)}")
-            # If parsing fails, try to handle embedded diff markers
-            return handle_embedded_diff_markers(patch_content)
+            # If parsing fails, try to handle embedded diff markers. This path
+            # skips sanitize_patch_for_git_apply, so apply the undercount
+            # repair here too -- git's silent truncation does not care which
+            # normaliser produced the text.
+            handled = handle_embedded_diff_markers(patch_content)
+            return '\n'.join(_repair_undercounted_hunk_headers(handled.splitlines())) + (
+                '\n' if handled.endswith('\n') else ''
+            )
                 
         if not patches:
             logger.warning("No valid patches found in diff")
