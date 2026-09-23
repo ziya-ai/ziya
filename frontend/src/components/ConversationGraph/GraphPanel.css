@@ -2,7 +2,8 @@
    Panel only mounts when open — no hidden-state styling needed. */
 
 .cgp-panel {
-  position: fixed; top: 0; right: 0; height: 100vh;
+  /* 100% not 100vh: percentages are exempt from the body UI zoom (uiScale.ts) */
+  position: fixed; top: 0; right: 0; height: 100%;
   background: rgba(13,17,23,.98);
   border-left: 1px solid rgba(255,255,255,.08);
   box-shadow: -4px 0 24px rgba(0,0,0,.45);

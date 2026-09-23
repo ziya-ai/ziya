@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useTheme } from '../context/ThemeContext';
+import { layoutViewportWidth, toLayoutPx } from '../utils/uiScale';
 
 interface PanelResizerProps {
   onResize: (newWidth: number) => void;
@@ -46,13 +47,14 @@ const PanelResizer: React.FC<PanelResizerProps> = ({ onResize, isPanelCollapsed 
         // Minimum width
         const minWidth = 200;
         // Maximum width (80% of window or 600px, whichever is larger)
-        const maxWidth = Math.max(600, window.innerWidth * 0.8);
+        const maxWidth = Math.max(600, layoutViewportWidth() * 0.8);
         // Ensure width is positive and within constraints
         return Math.max(minWidth, Math.min(maxWidth, Math.abs(width)));
       };
 
-      // Calculate and validate new width
-      const newWidth = validateWidth(e.clientX);
+      // clientX is unzoomed viewport px; the panel width is a layout length,
+      // so convert through the UI zoom (uiScale.ts) or the panel lags the cursor.
+      const newWidth = validateWidth(toLayoutPx(e.clientX));
 
       throttledResize(newWidth);
     };
