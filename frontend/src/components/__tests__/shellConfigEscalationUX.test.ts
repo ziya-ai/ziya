@@ -222,3 +222,55 @@ describe('staged banner lists its delta like the persistent banner does', () => 
     expect(stagedBanner()).toMatch(/nothing beyond the default\s+floor/);
   });
 });
+
+// 2026-09-20: with unsigned extras in the on-disk config AND a session-only
+// request staged for the same delta, both yellow banners rendered at once,
+// each with its own "To activate" command (`sudo ziya-approve` vs
+// `sudo ziya-approve --session`). signatureStatus is file-only by design
+// (mcp_routes.py), so the persistent banner cannot know the session path was
+// chosen; the modal has to gate it. The same gate covers the applied case,
+// where the persistent banner's "running at the default floor" was false.
+describe('the two escalation paths do not compete for the modal', () => {
+  const persistentBanner = (): string => {
+    const start = SRC.indexOf('message="Unsigned privilege escalation — not active"');
+    expect(start).toBeGreaterThan(-1);
+    // back up to the enclosing conditional so the gate itself is in scope
+    const open = SRC.lastIndexOf('\n                {', start);
+    const rest = SRC.slice(open);
+    const end = rest.indexOf('message="Temporary grant staged');
+    expect(end).toBeGreaterThan(-1);
+    return rest.slice(0, end);
+  };
+  const activeBanner = (): string => {
+    const start = SRC.indexOf('message="Temporary grant active');
+    expect(start).toBeGreaterThan(-1);
+    return SRC.slice(start, start + 2500);
+  };
+  const stagedBanner = (): string => {
+    const start = SRC.indexOf('message="Temporary grant staged — this session only"');
+    const rest = SRC.slice(start);
+    return rest.slice(0, rest.indexOf('message="Temporary grant active'));
+  };
+
+  it('the persistent banner is suppressed while the session path is engaged', () => {
+    expect(SRC).toMatch(/const persistentUnsigned =\s*!!config\.signatureStatus\?\.hasEscalation && !config\.signatureStatus\?\.authorized/);
+    expect(SRC).toMatch(/const sessionPathEngaged = sessionStaged \|\| !!config\.sessionGrant\?\.active/);
+    expect(persistentBanner()).toMatch(/\{persistentUnsigned && !sessionPathEngaged && \(/);
+    // the old ungated inline condition is gone
+    expect(SRC).not.toMatch(/\{config\.signatureStatus\?\.hasEscalation && !config\.signatureStatus\?\.authorized && \(/);
+  });
+
+  it('the staged banner still surfaces the unsigned persistent extras, as a note', () => {
+    const banner = stagedBanner();
+    expect(banner).toMatch(/\{persistentUnsigned && \(/);
+    expect(banner).toMatch(/persistent config also holds unsigned extras/);
+    // but does not repeat the competing activation ceremony as a command block
+    expect(banner).not.toMatch(/CommandBlock cmd="sudo ziya-approve"/);
+  });
+
+  it('the active-grant banner carries the same note', () => {
+    const banner = activeBanner();
+    expect(banner).toMatch(/\{persistentUnsigned && \(/);
+    expect(banner).toMatch(/persistent config also holds unsigned extras/);
+  });
+});
