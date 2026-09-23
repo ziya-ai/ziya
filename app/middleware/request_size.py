@@ -78,52 +78,40 @@ class ModelSettingsMiddleware(BaseHTTPMiddleware):
                 if "max_input_tokens" in body:
                     max_input_tokens = body["max_input_tokens"]
                     os.environ["ZIYA_MAX_INPUT_TOKENS"] = str(max_input_tokens)
-                    
-                    # Handle top_k parameter - check if it's supported by the current model
+
+                # top_k and thinking_mode are normalized against the current
+                # model's capabilities independently of which other fields the
+                # client sent. They were previously nested under the
+                # max_input_tokens branch, which only worked because the
+                # frontend always posts the whole form.
+                if "top_k" in body or "thinking_mode" in body:
+                    from app.agents.models import ModelManager
+                    endpoint = ziya_env("ZIYA_ENDPOINT")
+                    model_name = ziya_env("ZIYA_MODEL")
+                    model_config = ModelManager.get_model_config(endpoint, model_name)
+
                     if "top_k" in body:
-                        from app.agents.models import ModelManager
-                        endpoint = ziya_env("ZIYA_ENDPOINT")
-                        model_name = ziya_env("ZIYA_MODEL")
-                        
-                        # Get model configuration
-                        model_config = ModelManager.get_model_config(endpoint, model_name)
-                        supported_params = []
-                        
-                        # Check if model supports top_k
-                        if 'supported_parameters' in model_config and 'top_k' in model_config['supported_parameters']:
+                        supported = model_config.get('supported_parameters', [])
+                        if 'top_k' in supported:
                             os.environ["ZIYA_TOP_K"] = str(body["top_k"])
                             logger.info(f"ModelSettingsMiddleware: Set ZIYA_TOP_K={body['top_k']}")
-                        elif "ZIYA_TOP_K" in os.environ:
-                            # If not supported, remove from environment
-                            if os.environ.get("ZIYA_TOP_K"):
-                                del os.environ["ZIYA_TOP_K"]
-                                logger.info("ModelSettingsMiddleware: Removed ZIYA_TOP_K as it's not supported by current model")
-                        
-                    # Handle thinking_mode parameter
+                        elif os.environ.get("ZIYA_TOP_K"):
+                            del os.environ["ZIYA_TOP_K"]
+                            logger.info("ModelSettingsMiddleware: Removed ZIYA_TOP_K as it's not supported by current model")
+
                     if "thinking_mode" in body:
-                        from app.agents.models import ModelManager
-                        endpoint = ziya_env("ZIYA_ENDPOINT")
-                        model_name = ziya_env("ZIYA_MODEL")
-                        
-                        # Get model configuration
-                        model_config = ModelManager.get_model_config(endpoint, model_name)
-                        
-                        # Check if model supports thinking mode
                         supports_thinking = model_config.get("supports_thinking", False)
                         thinking_mode = body["thinking_mode"]
-                        
                         if supports_thinking:
                             os.environ["ZIYA_THINKING_MODE"] = "1" if thinking_mode else "0"
                             logger.info(f"ModelSettingsMiddleware: Set ZIYA_THINKING_MODE={thinking_mode}")
                         else:
-                            # If not supported, always set to 0
                             os.environ["ZIYA_THINKING_MODE"] = "0"
                             logger.info("ModelSettingsMiddleware: Set ZIYA_THINKING_MODE=0 (not supported by current model)")
-                        
-                        # Force model reinitialization by clearing the model from ModelManager state
-                        from app.agents.models import ModelManager
-                        ModelManager._reset_state()
-                        logger.info(f"ModelSettingsMiddleware: Reset model state to force reinitialization with settings: {json.dumps(body)}")
+                        # The ModelManager state reset for a thinking_mode
+                        # change lives in the /api/model-settings route
+                        # handler, under _model_mutation_lock and paired with
+                        # the reinit.
             except Exception as e:
                 logger.error(f"ModelSettingsMiddleware error: {str(e)}")
                 
