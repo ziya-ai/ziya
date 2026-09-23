@@ -77,11 +77,19 @@ class ModelManager:
         
         logger.info("Resetting ModelManager state")
         
-        # Clear AWS region environment variable to ensure clean region selection
         from app.providers.bedrock_client_cache import clear_cache as _clear_client_cache
         _clear_client_cache()
 
-        if 'AWS_REGION' in os.environ:
+        # Clear a model-default AWS_REGION so the next init can re-select a
+        # region for the new model — but never discard a region the user
+        # asked for explicitly (--region, recorded as ZIYA_AWS_REGION by
+        # setup_environment). Previously the first model switch silently
+        # dropped --region and fell back to the model config / us-west-2.
+        explicit_region = os.environ.get("ZIYA_AWS_REGION")
+        if explicit_region:
+            os.environ["AWS_REGION"] = explicit_region
+            logger.info(f"Preserving explicit AWS_REGION={explicit_region} across reset")
+        elif 'AWS_REGION' in os.environ:
             del os.environ['AWS_REGION']
             logger.info("Cleared AWS_REGION environment variable")
         
@@ -94,7 +102,7 @@ class ModelManager:
             'auth_success': False,
             'google_credentials': None,
             'aws_profile': None,
-            'aws_region': None,
+            'aws_region': explicit_region or None,
             'process_id': os.getpid(),
             'llm_with_stop': None,
             'agent': None,
