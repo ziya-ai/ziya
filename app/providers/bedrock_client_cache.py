@@ -44,8 +44,17 @@ def get_persistent_bedrock_client(
     """
     global _current_config_hash
 
-    from app.utils.aws_utils import ThrottleSafeBedrock, create_fresh_boto3_session
+    from app.utils.aws_utils import (
+        ThrottleSafeBedrock, create_fresh_boto3_session, get_current_region,
+    )
     from app.utils.custom_bedrock import CustomBedrockClient
+
+    # Callers read the region from ModelManager state, which is None until a
+    # model init has run. boto3 only self-resolves from AWS_DEFAULT_REGION or
+    # the profile, so None reaches bedrock-runtime as NoRegionError for users
+    # without either. Resolve it here so no caller can pass None through.
+    if not region:
+        region = get_current_region()
 
     config_hash = get_client_config_hash(aws_profile, region, model_id)
 
