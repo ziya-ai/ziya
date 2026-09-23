@@ -913,6 +913,16 @@ async def _update_model_settings_locked(settings: ModelSettingsRequest):
     from app.agents.wrappers.nova_wrapper import NovaBedrock
     original_settings = settings.model_dump()
     try:
+        # A thinking_mode change needs a full state reset (kwargs and agent
+        # chain caches included) before the forced reinit below. This used
+        # to happen in ModelSettingsMiddleware, before the request reached
+        # this lock; a reinit failure then left the process with blank state
+        # and no AWS_REGION. Keyed on the fields the client actually sent so
+        # a plain temperature change does not tear the model down.
+        if "thinking_mode" in settings.model_fields_set:
+            logger.info("thinking_mode supplied — resetting ModelManager state before reinit")
+            ModelManager._reset_state()
+
         # Log the requested settings
 
         # Get current model configuration
