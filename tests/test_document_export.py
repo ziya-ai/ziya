@@ -129,6 +129,52 @@ def test_pagebreak_must_be_alone_on_line():
     assert split_sections(body) == [body]
 
 
+def test_split_sections_wires_linear_chain_preprocess():
+    """split_sections must run the generic body pre-processing pass (D-001),
+    so the linear-chain re-layout ships through BOTH exporter paths without an
+    edit to the non-writable pdf_exporter.  A vertical mermaid chain declared
+    ``graph TD`` must come out re-laid left-to-right (``flowchart LR`` for a
+    short chain).  Fails against the old split_sections, which never touched
+    fence bodies."""
+    body = (
+        "Intro paragraph.\n\n"
+        "```mermaid\n"
+        "graph TD\n"
+        "  A[Ingress] --> B[Parse]\n"
+        "  B --> C[Route]\n"
+        "  C --> D[Write]\n"
+        "```\n"
+    )
+    (section,) = split_sections(body)
+    assert "graph TD" not in section
+    assert "flowchart LR" in section
+    # Node labels preserved through the rewrite.
+    assert "Ingress" in section and "Write" in section
+
+
+def test_split_sections_leaves_non_linear_diagram_untouched():
+    """A branching graph is NOT a linear chain and must pass through the pass
+    byte-for-byte, so split_sections does not mangle real diagrams."""
+    body = (
+        "```mermaid\n"
+        "graph TD\n"
+        "  A --> B\n"
+        "  A --> C\n"
+        "```\n"
+    )
+    (section,) = split_sections(body)
+    assert "graph TD" in section          # untouched
+    assert "flowchart LR" not in section
+
+
+def test_split_sections_plain_prose_is_byte_identical():
+    """Prose with no diagram fence must be returned unchanged (the pass is a
+    no-op), so wiring the pre-processor into split_sections cannot regress
+    ordinary documents."""
+    body = "# Heading\n\nSome text with `inline code` and a [link](http://x).\n"
+    assert split_sections(body) == [body.strip('\n')]
+
+
 def test_resolve_document_path_rejects_traversal(tmp_path, monkeypatch):
     monkeypatch.setenv('ZIYA_USER_CODEBASE_DIR', str(tmp_path))
     with pytest.raises(ValueError):
