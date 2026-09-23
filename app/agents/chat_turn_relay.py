@@ -224,7 +224,7 @@ async def _pump(turn: _Turn, source: AsyncIterator[str]) -> None:
     except Exception as exc:  # noqa: BLE001 — wraps the entire chat stream
         logger.error(f"📡 CHAT_TURN_RELAY: turn for {turn.conversation_id[:8]} raised: {exc!r}",
                      exc_info=True)
-        from app.utils.error_sanitizer import sanitize_client_error
+        from app.utils.error_handlers import sanitize_client_error
         turn.error = sanitize_client_error(exc)
         await _publish(turn, _sse({"error": turn.error, "error_type": "stream_error"}))
         await _publish(turn, _sse({"type": "stream_end"}))
