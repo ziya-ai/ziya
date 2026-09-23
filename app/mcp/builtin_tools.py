@@ -119,6 +119,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "mcp_diagnostics": {
+        "name": "MCP Diagnostics",
+        "description": "Self-inspection of this instance's MCP servers — startup stage, failure diagnostics, and logs (read-only)",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -339,6 +346,16 @@ def get_shadow_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_mcp_diagnostics_tools() -> List[Type[BaseMCPTool]]:
+    """Get MCP self-inspection tools (startup state + logs, read-only)."""
+    try:
+        from app.mcp.tools.mcp_diagnostics import McpServerStatusTool
+        return [McpServerStatusTool]
+    except ImportError as e:
+        logger.warning(f"Could not import mcp diagnostics tools: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     tool_getters = {
@@ -357,6 +374,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "task_cards": get_task_card_tools,
         "task_artifacts": get_task_artifact_tools,
         "shadow": get_shadow_tools,
+        "mcp_diagnostics": get_mcp_diagnostics_tools,
     }
 
     getter = tool_getters.get(category)
