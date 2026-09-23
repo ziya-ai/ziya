@@ -704,7 +704,22 @@ class MCPManager:
                     if not user_cfg.get("url") and user_cfg.get("remote_url"):
                         user_cfg["url"] = user_cfg["remote_url"]
 
-                    if "command" not in user_cfg and "url" not in user_cfg and "installation_path" not in user_cfg:
+                    # Kiro / Q Developer write "transportType" where the client
+                    # reads "transport" (sse vs. streamable-http for URL servers;
+                    # unused for stdio). Same compatibility shim as "disabled".
+                    if "transport" not in user_cfg and isinstance(user_cfg.get("transportType"), str):
+                        user_cfg["transport"] = user_cfg["transportType"]
+
+                    # A stanza overriding a built-in server needs no launch key:
+                    # the built-in definition supplies command/args (and the
+                    # merge below re-asserts them). shell_config._ensure_shell_env
+                    # writes exactly that shape (enabled/description/env), so
+                    # skipping it here dropped the user's allowlist and its
+                    # ZIYA_SCOPE_SIG on every start while GET /shell-config kept
+                    # displaying them from the file.
+                    _overrides_builtin = name in server_configs and server_configs[name].get("builtin")
+                    if (not _overrides_builtin and "command" not in user_cfg
+                            and "url" not in user_cfg and "installation_path" not in user_cfg):
                         logger.info(f"MCP server '{name}' skipped: missing 'command' (or 'url') in config")
                         continue
 
