@@ -588,6 +588,16 @@ export function extractRejectedDiffHashes(markdown: string): Set<string> {
 }
 
 /**
+ * True when an html token consists ONLY of rejection markers. marked lexes a
+ * standalone HTML comment as an html block; the renderer's tag-name test
+ * finds no tag in a comment and would print it as literal text.
+ */
+export function isDiffRejectedMarkerBlock(text: string): boolean {
+    const rest = text.replace(new RegExp(DIFF_REJECTED_MARKER_RE.source, 'g'), '').trim();
+    return rest === '' && text.trim() !== '';
+}
+
+/**
  * Indices (into diffTexts) of diff fences the server declared rejected.
  * diffTexts must be the RAW token bodies, before header synthesis or
  * continuation chaining rewrite them -- the server hashed what the model
@@ -623,13 +633,14 @@ export function buildDiffRejectionNotice(rejected: RejectedDiffRecord[], separat
         .map(r => diffRejectedMarker(String(r.body_hash), r.file_path));
     const lines = rejected.map(r => {
         const file = r.file_path ? ` for \`${r.file_path}\`` : '';
-        const reason = (r.reason || '').replace(/\s+/g, ' ').trim();
+        // The pipeline's line ends in its own period; the notice adds one.
+        const reason = (r.reason || '').replace(/\s+/g, ' ').trim().replace(/\.+$/, '');
         return `> ⟳ **Patch${file} did not apply cleanly**${reason ? ` — ${reason}` : ''}. ` +
-            'Asked the model for a corrected version; the rejected patch above is disabled.';
+            'The model has been asked for a corrected version; the rejected patch above is disabled.';
     });
     const notice = lines.length > 0
         ? lines.join('\n>\n')
-        : '> ⟳ **A patch did not apply cleanly.** Asked the model for a corrected version.';
+        : '> ⟳ **A patch did not apply cleanly.** The model has been asked for a corrected version.';
     const parts = ['\n\n'];
     if (markers.length > 0) parts.push(markers.join('\n'), '\n\n');
     parts.push(notice, '\n');

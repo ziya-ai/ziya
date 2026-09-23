@@ -12,6 +12,7 @@ import {
     findRejectedDiffIndices,
     findSupersededDiffIndices,
     buildDiffRejectionNotice,
+    isDiffRejectedMarkerBlock,
 } from '../diffUtils';
 
 const GOLDEN_BODY =
@@ -90,5 +91,28 @@ describe('buildDiffRejectionNotice', () => {
         expect(out).toContain('did not apply cleanly');
         expect(extractRejectedDiffHashes(out).size).toBe(0);
         expect(out).toContain('Correcting failed diff(s)');
+    });
+});
+
+describe('isDiffRejectedMarkerBlock', () => {
+    it('recognises one or several markers with nothing else', () => {
+        expect(isDiffRejectedMarkerBlock(diffRejectedMarker('12fd264b', 'a/b.tsx'))).toBe(true);
+        expect(isDiffRejectedMarkerBlock(
+            `${diffRejectedMarker('00000001')}\n${diffRejectedMarker('00000002', 'f.py')}\n`)).toBe(true);
+    });
+    it('does not hide comments or prose that merely contain a marker', () => {
+        expect(isDiffRejectedMarkerBlock('<!-- something else -->')).toBe(false);
+        expect(isDiffRejectedMarkerBlock(`${diffRejectedMarker('00000001')}\n<div>x</div>`)).toBe(false);
+        expect(isDiffRejectedMarkerBlock('')).toBe(false);
+    });
+});
+
+describe('buildDiffRejectionNotice reason punctuation', () => {
+    it('does not double the period when the reason ends with one', () => {
+        const out = buildDiffRejectionNotice(
+            [{ file_path: 'p.tsx', body_hash: '12fd264b', reason: 'hunk 1 of 1 did not match the current file.' }]);
+        expect(out).toContain('current file. The model has been asked for a corrected version');
+        expect(out).not.toContain('Asked the model');
+        expect(out).not.toContain('..');
     });
 });

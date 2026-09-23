@@ -64,7 +64,7 @@ import {
     undoDiff,
     parseHunkStatuses
 } from '../apis/chatApi';
-import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffParts, findRejectedDiffIndices } from '../utils/diffUtils';
+import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffParts, findRejectedDiffIndices, isDiffRejectedMarkerBlock } from '../utils/diffUtils';
 import { formatMCPOutput } from '../utils/mcpFormatter';
 import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
@@ -5583,6 +5583,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'html':
                     if (!hasText(tokenWithText)) return null;
+
+                    // Server rejection markers are consumed by the diff pre-pass
+                    // above (hashed from token.raw). A comment has no tag name,
+                    // so the tag-allowlist test below would fall through and
+                    // print it as literal text.
+                    if (isDiffRejectedMarkerBlock(tokenWithText.text)) return null;
 
                     // Check for malformed tool blocks and hide them instead of leaking
                     if (tokenWithText.text.includes('<!-- TOOL_BLOCK_START:') &&
