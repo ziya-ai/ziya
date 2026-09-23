@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=rgba(242,246,250,0.9)]\n  (0,0) to[R=$R_1$] (2.4,0) to[R=$R_2$] (4.8,0) node[ocirc]{};\n\\draw[color=rgb(95,212,228)] (0,0) to[short] (0,-1.1) node[ground]{};\n\\node at (2.4,1.4) {rgba colours};\n",
+ "intent": "RECOVERY: colours as CSS rgba()/rgb() function calls where the engine expects a name or a model value. Classic LLM cross-dialect leakage from web charting libraries. Evident intent is a blue trace at 80% alpha."
+}

@@ -187,6 +187,37 @@ export function selfLoopEndpointConfig(): {
     };
 }
 
+/**
+ * D-411 (still-broken after re-anchoring alone): re-anchoring a self-loop to two
+ * DIFFERENT sides (top + right) is necessary but not sufficient. With no waypoint
+ * between them, the `smooth` connector draws a short chord straight across the
+ * top-right CORNER of the node — a tiny stub that reads as invisible and never
+ * bows out past the boundary, so all three self-loops in joint-w3-06 stayed
+ * unreadable. A visible loop needs at least one waypoint placed OUTSIDE the node
+ * so the arc bulges clear of the body. Given the element's bounding box, return a
+ * single vertex up-and-right of the top-right corner; the smooth connector then
+ * curves from the top anchor, out through that point, back down to the right
+ * anchor as a clearly visible loop.
+ *
+ * Pure geometry (no DOM / @joint/core) so it is unit-testable.
+ */
+export function selfLoopVertices(bbox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}): Array<{ x: number; y: number }> {
+    const x = Number.isFinite(bbox?.x) ? bbox.x : 0;
+    const y = Number.isFinite(bbox?.y) ? bbox.y : 0;
+    const w = Number.isFinite(bbox?.width) && bbox.width > 0 ? bbox.width : 120;
+    const h = Number.isFinite(bbox?.height) && bbox.height > 0 ? bbox.height : 80;
+    // Loop radius scales with the node but is never so small it hides in the
+    // stroke; clamped so huge nodes do not throw the vertex off-canvas.
+    const loop = Math.max(44, Math.min(0.6 * Math.min(w, h), 90));
+    // Up-and-right of the top-right corner: outside the body in both axes.
+    return [{ x: x + w + loop, y: y - loop }];
+}
+
 /** Perpendicular distance (px) a label is lifted off its own link stroke. */
 export const LABEL_STROKE_OFFSET = 14;
 
@@ -206,11 +237,22 @@ export const LABEL_STROKE_OFFSET = 14;
  */
 export function computeLabelPlacement(
     index: number = 0,
-    count: number = 1
+    count: number = 1,
+    ordinal: number = 0
 ): { distance: number; offset: number } {
     const off = LABEL_STROKE_OFFSET;
     if (!Number.isFinite(count) || count <= 1) {
-        return { distance: 0.5, offset: -off };
+        // D-407 / D-131 (still-broken): staggering only WITHIN a node pair does
+        // nothing for the common single-link case where two DIFFERENT pairs cross
+        // and their mid-links coincide — e.g. joint-w1-09, where s2->t2 and s1->t3
+        // both pass through ~(230,200), so the "manhattan" and "normal" labels
+        // (each count===1) both landed at distance 0.5 and overprinted. Nudge the
+        // along-link distance by a deterministic per-link amount so labels of
+        // distinct pairs whose midpoints collide separate along their own strokes.
+        const o = Number.isFinite(ordinal) ? Math.trunc(ordinal) : 0;
+        // 5 evenly spaced bands over the central 0.34..0.66 of the link.
+        const jitter = ((((o % 5) + 5) % 5) * 0.08) - 0.16; // -0.16 .. +0.16
+        return { distance: 0.5 + jitter, offset: -off };
     }
     const i = Number.isFinite(index) ? Math.max(0, Math.min(index, count - 1)) : 0;
     // Spread label anchors across the central 40% of the link.

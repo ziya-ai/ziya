@@ -22,11 +22,11 @@
    "golden": {
     "light": {
      "hash": "36e31118b1b61723e3b91f0cb24dd919d17916545c11c303321d73a7c36bc198",
-     "validated_at": "2026-09-19T09:53:20.012638Z"
+     "validated_at": "2026-09-20T16:14:51.487883Z"
     },
     "dark": {
      "hash": "2adda31076515d392686cb07478156442e9dd2250502a0caafc10dd40a0c25e5",
-     "validated_at": "2026-09-19T09:53:20.020791Z"
+     "validated_at": "2026-09-20T16:14:51.499633Z"
     }
    }
   },
@@ -55,11 +55,11 @@
    "golden": {
     "light": {
      "hash": "24f5c61c09216a1c225875124ba879de919ef3004f21a64f1d6a9fa340546224",
-     "validated_at": "2026-09-19T09:54:17.237841Z"
+     "validated_at": "2026-09-20T16:14:52.215682Z"
     },
     "dark": {
      "hash": "f7594dcb277c5e63afc9da4bedbbcac06cda6edeed39604e985d0d1dfa72a8db",
-     "validated_at": "2026-09-19T09:54:17.244819Z"
+     "validated_at": "2026-09-20T16:14:52.225368Z"
     }
    }
   },
@@ -78,16 +78,21 @@
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.648995Z"
+    },
+    {
+     "origin": "D-468",
+     "signature": "fill-misclassified-as-stroke-and-lifted:dark",
+     "at": "2026-09-22T14:57:54.657729Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "98b9306f915bce4f52854cd24db6afeaece5b14acd8c6c2ba0be1929f530c9c2",
-     "validated_at": "2026-09-19T09:55:08.555391Z"
+     "validated_at": "2026-09-22T14:57:23.848005Z"
     },
     "dark": {
-     "hash": "51d43158f03af674a629976869f2aa785bbad4ba2f2d72693a5f82fad947ae51",
-     "validated_at": "2026-09-19T09:55:08.560294Z"
+     "hash": "4eac6d235510c4b1cb67965386293e18d301b55d4d18e5e5ee67328b4023acf2",
+     "validated_at": "2026-09-22T14:57:23.854840Z"
     }
    }
   },
@@ -111,11 +116,11 @@
    "golden": {
     "light": {
      "hash": "a9610b663e8744bb33cd46c17c2e60ebb03ed7b380dcec12c57c8f22f7553a06",
-     "validated_at": "2026-09-19T09:55:44.054132Z"
+     "validated_at": "2026-09-20T16:16:03.507889Z"
     },
     "dark": {
      "hash": "a6e2ea1c2be4da80110dc51e01b98a61b1a608832dba624ea43756e0a1ee531a",
-     "validated_at": "2026-09-19T09:55:44.066544Z"
+     "validated_at": "2026-09-20T16:16:03.520131Z"
     }
    }
   },
@@ -134,16 +139,21 @@
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.654353Z"
+    },
+    {
+     "origin": "D-468",
+     "signature": "fill-misclassified-as-stroke-and-lifted:dark",
+     "at": "2026-09-22T14:57:54.671617Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "a626764d14b95d9df524397a3d7bb5ef6493f316a0ef1ba35375d335b9c3e606",
-     "validated_at": "2026-09-19T09:56:44.848806Z"
+     "validated_at": "2026-09-22T14:57:44.241048Z"
     },
     "dark": {
-     "hash": "c855abe372c68842d24cb5b69115e0814dfd18c2541da57936a815b0fcb8a950",
-     "validated_at": "2026-09-19T09:56:44.861781Z"
+     "hash": "3564b17a64fe7507bfdc06a0eedb2ac38039629cf2d5a4ac9785de77658f7748",
+     "validated_at": "2026-09-22T14:57:44.253842Z"
     }
    }
   },
@@ -167,11 +177,11 @@
    "golden": {
     "light": {
      "hash": "ae2a24d8345f7e3e26ea99bd8b25ed152d09f4a5a51800788ef29f3e49d2e4ab",
-     "validated_at": "2026-09-19T09:57:59.611104Z"
+     "validated_at": "2026-09-20T16:17:20.249731Z"
     },
     "dark": {
      "hash": "2f4dca92bce4a2155e4559a042e45905384ccf585634847419b564452614d45c",
-     "validated_at": "2026-09-19T09:57:59.619974Z"
+     "validated_at": "2026-09-20T16:17:20.260544Z"
     }
    }
   },
@@ -195,11 +205,11 @@
    "golden": {
     "light": {
      "hash": "446a51a9008d2ad35fb55c649dcec478ad993a7e5240969ed07acc9a1278c8f8",
-     "validated_at": "2026-09-19T09:58:33.674921Z"
+     "validated_at": "2026-09-20T16:19:22.899516Z"
     },
     "dark": {
      "hash": "5cd86af297feaf3c4dbbbe811f94fa8029befaf1e46a4c91228fb1d771e4a804",
-     "validated_at": "2026-09-19T09:58:33.682827Z"
+     "validated_at": "2026-09-20T16:19:22.916033Z"
     }
    }
   },
@@ -211,23 +221,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.663702Z"
+    },
+    {
+     "origin": "D-522",
+     "signature": "color-contrast-regression:dark",
+     "at": "2026-09-22T17:50:39.361293Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "51fe47ea2299b02c1a2081ba6af418d7e8eb3c279b4f8c9b08038a9a0ff20df1",
-     "validated_at": "2026-09-19T09:59:19.238492Z"
+     "validated_at": "2026-09-20T16:19:23.132324Z"
     },
     "dark": {
      "hash": "4ad4e8e3996c92e794a2706b326d5e7f8a334b27630d77652749a05f7d16255a",
-     "validated_at": "2026-09-19T09:59:19.247314Z"
+     "validated_at": "2026-09-20T16:19:23.161682Z"
     }
    }
   },
@@ -239,23 +255,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.666587Z"
+    },
+    {
+     "origin": "D-522",
+     "signature": "color-contrast-regression:dark",
+     "at": "2026-09-22T17:50:39.365965Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "4d536be703945333ef951b099110606fa815aeb5f8463faef0360929ed3cf189",
-     "validated_at": "2026-09-19T09:59:48.449884Z"
+     "validated_at": "2026-09-20T16:19:23.367850Z"
     },
     "dark": {
      "hash": "f669cf62ca454eb0847d69bd6e5c0cedfef0b9fbcf044568eea9bc29d9f5a139",
-     "validated_at": "2026-09-19T09:59:48.470318Z"
+     "validated_at": "2026-09-20T16:19:23.382730Z"
     }
    }
   },
@@ -267,23 +289,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.670051Z"
+    },
+    {
+     "origin": "D-522",
+     "signature": "color-contrast-regression:dark",
+     "at": "2026-09-22T17:50:39.370599Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "191625cfdd55a6bf67237e330dc3327060dfc44db06fa559b06ba276d65ba8ca",
-     "validated_at": "2026-09-19T10:00:19.259000Z"
+     "validated_at": "2026-09-20T16:19:23.553705Z"
     },
     "dark": {
      "hash": "2710f44c358c74a4edeae8fa25daf0c4e99137a6b6ba6a26e032fb580164f598",
-     "validated_at": "2026-09-19T10:00:19.268752Z"
+     "validated_at": "2026-09-20T16:19:23.563069Z"
     }
    }
   },
@@ -373,11 +401,11 @@
    "golden": {
     "light": {
      "hash": "df23a28fed39bc2167f5fa86fc15cf61cca0428e05a37067db01aab7c6d64eb5",
-     "validated_at": "2026-09-19T09:44:01.726588Z"
+     "validated_at": "2026-09-20T16:14:51.709132Z"
     },
     "dark": {
      "hash": "5154af2460e2700228369ed00b06d3c0cd20bb2494e6259154b93414cbf1b227",
-     "validated_at": "2026-09-19T09:44:01.736007Z"
+     "validated_at": "2026-09-20T16:14:51.719983Z"
     }
    }
   },
@@ -434,11 +462,11 @@
    "golden": {
     "light": {
      "hash": "25a7c11a2fa690eb92a262af9a1f89aa26b9c4b49aa2980b61c08ff3e01303d0",
-     "validated_at": "2026-09-19T09:45:18.031409Z"
+     "validated_at": "2026-09-20T16:16:03.664195Z"
     },
     "dark": {
      "hash": "a6eeb81a7187f66bf3a62cd47d64c887fb4d83266d5d7417fff4fba1d939e792",
-     "validated_at": "2026-09-19T09:45:18.048303Z"
+     "validated_at": "2026-09-20T16:16:03.674040Z"
     }
    }
   },
@@ -540,11 +568,11 @@
    "golden": {
     "light": {
      "hash": "1fb8b3c9783d0f0271a3325a4b908e24e32f700da2e413550340c02721050e22",
-     "validated_at": "2026-09-19T09:47:12.251326Z"
+     "validated_at": "2026-09-22T14:57:23.040303Z"
     },
     "dark": {
      "hash": "c7534108d88ccd9f26ba9707f5604d36a6d393640300900e6b451d385772ec6d",
-     "validated_at": "2026-09-19T09:47:12.260061Z"
+     "validated_at": "2026-09-22T14:57:23.060221Z"
     }
    }
   },
@@ -564,12 +592,21 @@
      "origin": "D-234",
      "signature": "light-default-ink-on-pale-author-fill:dark",
      "at": "2026-09-15T08:56:14.576306Z"
+    },
+    {
+     "origin": "D-491",
+     "signature": "definecolor-name-opaque-to-colour-repair:dark",
+     "at": "2026-09-22T14:57:54.679091Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "49db0f0ab4c8e436a98208f657641f16e244a2b2cb6a1b6d3584292f884c493d",
-     "validated_at": "2026-09-19T09:48:16.309582Z"
+     "validated_at": "2026-09-22T14:57:23.264283Z"
+    },
+    "dark": {
+     "hash": "53203a0cb2a160d96e133bfb06ab2f7e1e9c6add975b8e181affa3ba06f77250",
+     "validated_at": "2026-09-22T14:57:23.275538Z"
     }
    }
   },
@@ -594,11 +631,11 @@
    "golden": {
     "light": {
      "hash": "cd330f48047408846317ace6253fa3af32c806ba5be275c0cc49a45a668a7859",
-     "validated_at": "2026-09-19T09:48:52.209866Z"
+     "validated_at": "2026-09-22T14:57:23.493946Z"
     },
     "dark": {
      "hash": "ca41fd7a7f3c074e3b5562994aa2f00bf121104a5684aadb1db9c90eb12aec27",
-     "validated_at": "2026-09-19T09:48:52.214398Z"
+     "validated_at": "2026-09-22T14:57:23.501856Z"
     }
    }
   },
@@ -623,11 +660,11 @@
    "golden": {
     "light": {
      "hash": "81115696969a92e99328a44ba6ff6849c30225af9da792040a060bf121d1d6a8",
-     "validated_at": "2026-09-19T09:49:35.698604Z"
+     "validated_at": "2026-09-22T14:57:23.682044Z"
     },
     "dark": {
      "hash": "efcddb330ad68606d1296f5d01857e6b1277b677c2e523b1f7585e149cf48b59",
-     "validated_at": "2026-09-19T09:49:35.705662Z"
+     "validated_at": "2026-09-22T14:57:23.698233Z"
     }
    }
   },
@@ -735,11 +772,11 @@
    "golden": {
     "light": {
      "hash": "6592afc4881c22469960c1d420bd29856abad52a4fde134d095a5b488d5dd48c",
-     "validated_at": "2026-09-19T09:56:14.103774Z"
+     "validated_at": "2026-09-20T16:16:03.820705Z"
     },
     "dark": {
      "hash": "3cad3c09298eecf0bd76a9e36f8dd4afbc143cc288e14dfcf555d3f2c059a8bd",
-     "validated_at": "2026-09-19T09:56:14.113526Z"
+     "validated_at": "2026-09-20T16:16:03.829585Z"
     }
    }
   },
@@ -758,16 +795,21 @@
      "origin": "D-247",
      "signature": "rgba-rewrite-inside-definecolor-model-fatal",
      "at": "2026-09-15T08:56:14.609430Z"
+    },
+    {
+     "origin": "D-523",
+     "signature": "light-theme-edge-regression",
+     "at": "2026-09-22T17:50:39.391127Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "4e4bdf011793184df68b5f920e6c9b7013bc6502e24ac9fdabe8b1994565d767",
-     "validated_at": "2026-09-16T12:28:02.181404Z"
+     "validated_at": "2026-09-16T12:28:02.177696Z"
     },
     "dark": {
      "hash": "d304ada0f883ffcdd9107e0ab1f4036e1b1ef1a9b0fe42ed3926857d932239fd",
-     "validated_at": "2026-09-16T12:28:02.188176Z"
+     "validated_at": "2026-09-16T12:28:02.185667Z"
     }
    }
   },
@@ -779,23 +821,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-248",
      "signature": "inline-usetikzlibrary-stripped-shape-undefined",
      "at": "2026-09-15T08:56:14.613555Z"
+    },
+    {
+     "origin": "D-522",
+     "signature": "color-contrast-regression:dark",
+     "at": "2026-09-22T17:50:39.376265Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "560dc7dca5d1da80d29ccebbaff418ae03a168abab44a8d14440815c24ca8f05",
-     "validated_at": "2026-09-19T10:00:49.502947Z"
+     "validated_at": "2026-09-20T16:19:23.769633Z"
     },
     "dark": {
      "hash": "03cf8213ff76d65fff6e6ebd85531403399b4999682c9f93ea501a0a64cba1ae",
-     "validated_at": "2026-09-19T10:00:49.512070Z"
+     "validated_at": "2026-09-20T16:19:23.779727Z"
     }
    }
   },
@@ -842,16 +890,21 @@
      "origin": "D-250",
      "signature": "raw-hash-in-option-value-fatal",
      "at": "2026-09-15T08:56:14.626050Z"
+    },
+    {
+     "origin": "D-523",
+     "signature": "light-theme-edge-regression",
+     "at": "2026-09-22T17:50:39.396293Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "7a308ca094a77148ea520dbe40cbb94355c8d30f8a8cb4fd931e134596e622a5",
-     "validated_at": "2026-09-16T12:31:55.702287Z"
+     "validated_at": "2026-09-16T12:31:55.699219Z"
     },
     "dark": {
      "hash": "28e194a7965e7cbf8c1a884cd1587315e53ea1db474ad5245fe269cd168b5ec4",
-     "validated_at": "2026-09-16T12:31:55.709951Z"
+     "validated_at": "2026-09-16T12:31:55.707492Z"
     }
    }
   },
@@ -870,16 +923,21 @@
      "origin": "D-251",
      "signature": "missing-path-semicolon-fatal",
      "at": "2026-09-15T08:56:14.632279Z"
+    },
+    {
+     "origin": "D-523",
+     "signature": "light-theme-edge-regression",
+     "at": "2026-09-22T17:50:39.385241Z"
     }
    ],
    "golden": {
     "light": {
      "hash": "fd00f932f2661476e189e81ba5b4ac1d93cbfd743ba7440dcc136a5cbca085e0",
-     "validated_at": "2026-09-16T12:25:18.971452Z"
+     "validated_at": "2026-09-16T12:25:18.969171Z"
     },
     "dark": {
      "hash": "d8b6c3e99080531589204ac2a56bfeea498a660a0e00213f0d79301c6d5b9306",
-     "validated_at": "2026-09-16T12:25:18.977958Z"
+     "validated_at": "2026-09-16T12:25:18.975648Z"
     }
    }
   },
@@ -937,6 +995,119 @@
     "light": {
      "hash": "a0fbde99abeddb1d461f7a5cb4209d285de326459a81a85db7055dc0c79e9a8b",
      "validated_at": "2026-09-19T09:52:45.522114Z"
+    }
+   }
+  },
+  "tikz-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-468",
+     "signature": "fill-misclassified-as-stroke-and-lifted:dark",
+     "at": "2026-09-22T14:57:54.663008Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "9891ecf57366da72821131c47012d575f1861a841f573bd3632e2dc35c4483d0",
+     "validated_at": "2026-09-22T14:57:43.859379Z"
+    },
+    "light": {
+     "hash": "1882d4ad9b470f07b25c1ee96f55a3d0322b5aaf86be3b7a3306e5c0c38ca92e",
+     "validated_at": "2026-09-22T14:57:43.844285Z"
+    }
+   }
+  },
+  "tikz-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-468",
+     "signature": "fill-misclassified-as-stroke-and-lifted:dark",
+     "at": "2026-09-22T14:57:54.668111Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "488511313447c6f2faaf94379c9c032b9641178c6fc23894e374a4e3bdbfd3db",
+     "validated_at": "2026-09-22T14:57:44.086159Z"
+    },
+    "light": {
+     "hash": "14ccef960260728cc54170cf7db46babd3851be5119dc3fa5f0caf13a2a64276",
+     "validated_at": "2026-09-22T14:57:44.073761Z"
+    }
+   }
+  },
+  "tikz-w3-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-492",
+     "signature": "pale-fill-ink-autocorrect-skips-nested-bracket-option-block:dark",
+     "at": "2026-09-22T14:57:54.684714Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "23ecfc03e82e4cd70181adf4dd2c50587ab2ce53b798b56bccd060e6f4b9864d",
+     "validated_at": "2026-09-22T14:57:44.412870Z"
+    },
+    "light": {
+     "hash": "59f7b0976d9da007bd6c6c7268e6f297e862a514081d7ea74e6788f3c074d9de",
+     "validated_at": "2026-09-22T14:57:44.405737Z"
+    }
+   }
+  },
+  "tikz-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-499",
+     "signature": "colour-rewrite-lands-inside-label-text",
+     "at": "2026-09-22T14:57:54.688947Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "19f7ce705bcb64a4dcfa273a62e5e9a858cbda11d73ae10c7b547ecf4e94b265",
+     "validated_at": "2026-09-22T14:57:44.626028Z"
+    },
+    "light": {
+     "hash": "a3c3a138fa93d10f5540382dc30945e4736935b8362cc803afa249a1d2d4bffe",
+     "validated_at": "2026-09-22T14:57:44.622747Z"
     }
    }
   }

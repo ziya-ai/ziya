@@ -1,0 +1,162 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "cells": [
+   {
+    "type": "standard.Rectangle",
+    "id": "lt1",
+    "position": {
+     "x": 60,
+     "y": 60
+    },
+    "size": {
+     "width": 200,
+     "height": 90
+    },
+    "attrs": {
+     "body": {
+      "fill": "#fafafa",
+      "stroke": "#dddddd",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "near-white fill #fafafa",
+      "fill": "#333333",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "lt2",
+    "position": {
+     "x": 320,
+     "y": 60
+    },
+    "size": {
+     "width": 200,
+     "height": 90
+    },
+    "attrs": {
+     "body": {
+      "fill": "#ffffff",
+      "stroke": "#eeeeee",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "white on pale grey",
+      "fill": "#555555",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "lt3",
+    "position": {
+     "x": 580,
+     "y": 60
+    },
+    "size": {
+     "width": 200,
+     "height": 90
+    },
+    "attrs": {
+     "body": {
+      "fill": "#f5f5f5",
+      "stroke": "#cccccc",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "grey text #666 on #f5f5f5",
+      "fill": "#666666",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Circle",
+    "id": "lt4",
+    "position": {
+     "x": 60,
+     "y": 230
+    },
+    "size": {
+     "width": 160,
+     "height": 160
+    },
+    "attrs": {
+     "body": {
+      "fill": "#f8f9fa",
+      "stroke": "#e9ecef",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "#212529",
+      "fill": "#212529",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "lt5",
+    "position": {
+     "x": 320,
+     "y": 230
+    },
+    "size": {
+     "width": 200,
+     "height": 90
+    },
+    "attrs": {
+     "body": {
+      "fill": "#ffffff",
+      "stroke": "#f0f0f0",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "hairline #f0f0f0 border",
+      "fill": "#333333",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Link",
+    "id": "ll1",
+    "source": {
+     "id": "lt1"
+    },
+    "target": {
+     "id": "lt4"
+    },
+    "attrs": {
+     "line": {
+      "stroke": "#dddddd",
+      "strokeWidth": 1
+     }
+    }
+   },
+   {
+    "type": "standard.Link",
+    "id": "ll2",
+    "source": {
+     "id": "lt2"
+    },
+    "target": {
+     "id": "lt5"
+    },
+    "attrs": {
+     "line": {
+      "stroke": "#cccccc",
+      "strokeWidth": 1
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Author hardcodes a LIGHT-ONLY palette (near-white fills #fafafa/#ffffff, hairline #ddd/#eee/#f0f0f0 strokes, #333 text) on the canonical cells path. Must still be legible when the page is dark."
+}

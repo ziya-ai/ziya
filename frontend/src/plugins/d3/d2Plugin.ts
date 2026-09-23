@@ -402,6 +402,38 @@ export function d2GridPitch(nodes: any[]): { x: number; y: number } {
     return { x: Math.ceil(maxW) + 60, y: Math.ceil(maxH) + 60 };
 }
 
+// D-361 (nodes-overlap-edges-hidden REGRESSION): the layout invariant is that no
+// two node boxes may overlap — when they do, adjacent rects overpaint one another
+// and every connection is hidden under the target box. Both ELK paths already pin
+// each leaf to its measured box with MINIMUM_SIZE (buildElkFlatChild /
+// buildElkHierarchy), yet the headless elkjs layered pass has been observed to
+// return boxes packed at a near-zero pitch against 50-70px rects, collapsing the
+// whole graph. Rather than trust the engine output blindly, VALIDATE it: if any
+// two laid-out boxes overlap by more than a 1px tolerance, the result is degenerate
+// and the caller must fall back to the provably non-overlapping grid (d2SimpleLayout,
+// whose pitch is maxBox+60 > any box). Pure AABB overlap test over the laid-out
+// {x,y,width,height}; abutting boxes (touching edges, zero-area intersection) are
+// NOT counted as overlap. Geometry only — theme-invariant. O(n^2) but n is the node
+// count of a single diagram.
+export function d2NodesOverlap(nodes: any[], tol: number = 1): boolean {
+    if (!nodes || nodes.length < 2) return false;
+    const boxes = nodes.map(n => {
+        const w = (typeof n.width === 'number' && n.width > 0) ? n.width : d2NodeWidth(n.label || n.id);
+        const h = (typeof n.height === 'number' && n.height > 0) ? n.height : d2NodeHeight(n.label || n.id);
+        return { x: n.x || 0, y: n.y || 0, w, h };
+    });
+    for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i];
+            const b = boxes[j];
+            const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+            const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+            if (ix > tol && iy > tol) return true;
+        }
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // Topology-aware fallback layout (G-44: D-090 / D-091 / D-093).
 //
@@ -593,6 +625,29 @@ export function d2CanvasBounds(
     const width = Math.max(800, (maxX - originX) + 100);
     const height = Math.max(400, (maxY - originY) + 100);
     return { width, height, viewBox: `${originX} ${originY} ${width} ${height}` };
+}
+
+// Per-edge vertical stack index for edge labels, so two edges between the SAME
+// unordered node pair (a bidirectional `a <-> b`, or `a -> b` plus `b -> a`)
+// do not paint their labels at the identical segment midpoint and superimpose
+// into an unreadable smear (D-362, worst on the db<->app pairs). Edges are
+// walked in order; the first label on a pair gets index 0, the next 1, etc.
+// The renderer multiplies the index by the label row height to fan the labels
+// apart vertically. Edges without a label are skipped so they never consume a
+// slot. Pure; returns an array aligned to `edges`.
+export function d2EdgeLabelStackIndex(
+    edges: Array<{ source: string; target: string; label?: any }>
+): number[] {
+    const seen = new Map<string, number>();
+    return (edges || []).map(e => {
+        if (!e || e.label == null || e.label === '') return 0;
+        const a = String(e.source);
+        const b = String(e.target);
+        const key = a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
+        const idx = seen.get(key) ?? 0;
+        seen.set(key, idx + 1);
+        return idx;
+    });
 }
 
 export function stripD2Quotes(v: string): string {
@@ -1803,8 +1858,15 @@ class ELKLayoutEngine {
                 const graph = buildElkHierarchy(nodes, edges, containers, options);
                 const laid = await this.elk.layout(graph);
                 const flat = flattenElkResult(laid, nodes);
-                if (flat.length === nodes.length) return { nodes: flat, edges };
-                console.warn('ELK hierarchical layout dropped nodes, falling back to simple layout');
+                // D-361: reject a degenerate ELK result whose boxes overlap (the
+                // whole-graph collapse that hides every edge) and fall back to the
+                // provably non-overlapping grid instead of trusting the engine.
+                if (flat.length === nodes.length && !d2NodesOverlap(flat)) return { nodes: flat, edges };
+                if (flat.length === nodes.length) {
+                    console.warn('ELK hierarchical layout produced overlapping boxes (D-361), falling back to simple layout');
+                } else {
+                    console.warn('ELK hierarchical layout dropped nodes, falling back to simple layout');
+                }
             } catch (error) {
                 console.warn('ELK hierarchical layout failed, falling back to simple layout:', error);
             }
@@ -1859,6 +1921,15 @@ class ELKLayoutEngine {
                     height: elkNode.height || 50
                 };
             }) || [];
+
+            // D-361: guard the layout invariant. A degenerate flat ELK pass has
+            // been observed to pack the boxes at a near-zero pitch (every edge then
+            // hidden under the overpainted target rect); fall back to the grid whose
+            // pitch is maxBox+60 and cannot overlap, rather than emit the collapse.
+            if (layoutedNodes.length > 1 && d2NodesOverlap(layoutedNodes)) {
+                console.warn('ELK flat layout produced overlapping boxes (D-361), falling back to simple layout');
+                return this.simpleGridLayout(nodes, edges);
+            }
 
             return { nodes: layoutedNodes, edges };
         } catch (error) {
@@ -2321,6 +2392,15 @@ nodeGroups.each(function (this: any, d: any) {
                     y: (s.y + s.height / 2 + t.y + t.height / 2) / 2,
                 };
             };
+            // Fan apart labels that share the same node pair so a bidirectional
+            // `a <-> b` (or `a -> b` + `b -> a`) does not stack two labels on the
+            // identical midpoint (D-362). The stack index is computed over ALL
+            // edges (so the pair bookkeeping matches), then looked up per label.
+            const EDGE_LABEL_ROW = EDGE_LABEL_FONT + 2 * EDGE_LABEL_PAD_Y + 2;
+            const _stack = d2EdgeLabelStackIndex(layoutResult.edges as any);
+            const _stackByEdge = new Map<any, number>();
+            layoutResult.edges.forEach((e: any, i: number) => _stackByEdge.set(e, _stack[i]));
+            const edgeLabelOffsetY = (d: any): number => (_stackByEdge.get(d) || 0) * EDGE_LABEL_ROW;
             const edgeLabelGroups = svg.selectAll('.edge-label')
                 .data(layoutResult.edges.filter(d => d.label))
                 .enter()
@@ -2328,7 +2408,8 @@ nodeGroups.each(function (this: any, d: any) {
                 .attr('class', 'edge-label')
                 .attr('transform', (d: any) => {
                     const m = edgeLabelMid(d);
-                    return m ? `translate(${m.x}, ${m.y})` : 'translate(0, 0)';
+                    const dy = edgeLabelOffsetY(d);
+                    return m ? `translate(${m.x}, ${m.y + dy})` : `translate(0, ${dy})`;
                 });
             edgeLabelGroups.append('rect')
                 .attr('class', 'edge-label-bg')

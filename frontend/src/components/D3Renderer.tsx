@@ -8,7 +8,7 @@ import { ContainerSizingManager } from '../utils/containerSizing';
 import { isSafari } from '../utils/browserUtils';
 import { parseD3Spec } from '../utils/d3SpecParser';
 import { unwrapDiagramEnvelope } from '../utils/d3EnvelopeUnwrap';
-import { pluginDimensionProps, resolveContainerDimensions, resolveFixedContainerWidth } from '../utils/pluginDimensions';
+import { pluginDimensionProps, resolveContainerDimensions, resolveFixedContainerWidth, resolveRenderContainerBox } from '../utils/pluginDimensions';
 
 type RenderType = 'auto' | 'vega-lite' | 'd3';
 
@@ -820,18 +820,36 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // Also null for a plugin that owns its spec dimensions (Vega-Lite):
                 // its width/height are plot-area properties, not a canvas.
                 const explicitContainerDims = resolveContainerDimensions(parsed, sizingConfig?.sizingStrategy, currentPlugin);
-                container.style.width = explicitContainerDims
-                    ? explicitContainerDims.width
-                    : (isFlexible ? '100%' : `${width}px`);
+                // D-043 (regression real cause): this imperative block writes the
+                // final styles onto the ACTUAL d3 render container (d3ContainerRef,
+                // where the SVG lives) AFTER React applies containerStyles, so it
+                // wins at runtime. For a 'fixed' plugin (chord) it pinned the
+                // container to the component `width` prop (default 600px) with
+                // overflow:hidden, clipping the right edge of an explicit canvas
+                // wider than the frame (chord-w1-14 860px, w2-10 1400px, w2-14
+                // 2000px). resolveContainerDimensions is null for 'fixed', so the
+                // JSX containerStyles width fix never survived this override.
+                // Adopt the explicit px width here (the width-axis analog of
+                // needsDynamicHeight) and relax overflow to 'auto' so the whole
+                // canvas is laid out and the ancestor capture-fit unclip reveals
+                // it. Null for normal/small fixed canvases -> byte-identical.
+                const fixedContainerWidth = resolveFixedContainerWidth(parsed, sizingConfig?.sizingStrategy);
+                const renderBox = resolveRenderContainerBox({
+                    explicitContainerDims,
+                    fixedContainerWidth,
+                    isFlexible,
+                    fallbackWidthPx: width,
+                    needsOverflowVisible,
+                    willHaveError,
+                });
+                container.style.width = renderBox.width;
                 container.style.height = (needsDynamicHeight || willHaveError)
                     ? 'auto'
                     : (explicitContainerDims ? explicitContainerDims.height : `${height}px`);
                 container.style.minHeight = configMinHeight != null ? `${configMinHeight}px` : 'unset';
                 container.style.maxHeight = (needsDynamicHeight || willHaveError || explicitContainerDims) ? 'none' : 'unset';
                 container.style.position = 'relative';
-                container.style.overflow = (needsOverflowVisible || willHaveError)
-                    ? 'visible'
-                    : (explicitContainerDims ? 'auto' : 'hidden');
+                container.style.overflow = renderBox.overflow;
 
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');

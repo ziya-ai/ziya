@@ -5685,6 +5685,16 @@ export function reapplyLinkStyleStrokes(svg: Element, definition: string, isDark
   const apply = (el: Element, stroke: string) => {
     const safe = ensureReadableFill(stroke, refBg, '#88c0d0', 3);
     (el as unknown as SVGElement).style.setProperty('stroke', safe, 'important');
+    // D-155 (regression, linkstyle-stroke-override-dropped:dark): tag every
+    // edge whose author linkStyle colour we just honoured. The dark visibility
+    // pass runs a DELAYED (500ms) re-run that repaints edges back to the theme
+    // lineColor right at the ~500ms headless-capture boundary; the reapply
+    // safety-net at 650ms lands AFTER capture, so the author colour is lost in
+    // the captured frame and the fix oscillated verified<->regression. The
+    // plugin adds `[data-ziya-linkstroke]` to the visibility pass's
+    // skipSelectors, so tagging here removes the competing writer entirely
+    // (deterministic — no timer race) rather than out-racing it.
+    el.setAttribute('data-ziya-linkstroke', '1');
     applied++;
   };
   for (const s of styles) {

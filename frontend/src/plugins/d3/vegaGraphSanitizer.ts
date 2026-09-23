@@ -321,6 +321,116 @@ export function rewindVegaGeoshapePolygons(spec: any): void {
 }
 
 /**
+ * (D-279) Repair a degenerate `stratify` hierarchy IN PLACE so d3-hierarchy's
+ * `stratify()` produces a valid single-rooted tree instead of THROWING inside
+ * the dataflow. Vega routes a transform throw ("ambiguous: <id>", "cycle",
+ * "multiple roots", "missing: <id>") to the view LOGGER — it does NOT reject
+ * `runAsync()` and does NOT dispatch the view `'error'` event — so a malformed
+ * hierarchy escapes render()'s try/catch AND the D-274 error listener alike,
+ * leaving a silent blank canvas the harness scores as a successful render
+ * (vega-w3-04: duplicate id, self-edge, 2-cycle). This is the SAME
+ * degenerate-graph class already repaired for force links and geoshape data:
+ * fix the input BEFORE the runtime touches it rather than let one bad datum
+ * erase the whole chart.
+ *
+ * The repair is conservative and general (never spec-specific): it dedupes
+ * duplicate ids, nulls a self-parent or dangling parent, breaks any parent
+ * cycle, and re-parents extra roots under the first root so exactly one root
+ * remains. A well-formed hierarchy hits none of these branches and is left
+ * byte-for-byte unchanged. Returns the number of rows whose parent/identity was
+ * altered (for logging/testing).
+ */
+export function sanitizeVegaStratify(spec: any): number {
+  if (!spec || typeof spec !== 'object') return 0;
+  const datasets: any[] = Array.isArray(spec.data) ? spec.data : [];
+  let changed = 0;
+
+  for (const ds of datasets) {
+    const transforms: any[] = Array.isArray(ds?.transform) ? ds.transform : [];
+    const st = transforms.find((t) => t && t.type === 'stratify');
+    if (!st) continue;
+    // Resolve the row array this stratify runs on (own values or a source chain).
+    let rows: any[] | null = Array.isArray(ds.values) ? ds.values : null;
+    if (!rows && typeof ds.source === 'string') rows = resolveDatasetValues(spec, ds.source);
+    if (!Array.isArray(rows) || rows.length === 0) continue;
+
+    const keyField: string = typeof st.key === 'string' ? st.key : 'id';
+    const parentField: string = typeof st.parentKey === 'string' ? st.parentKey : 'parent';
+
+    // (1) Dedupe by id — the first row for each id wins; later dupes are dropped
+    // ("ambiguous: <id>"). Only touch the array if a duplicate actually exists.
+    const seenIds = new Set<any>();
+    const deduped: any[] = [];
+    for (const r of rows) {
+      if (!r || typeof r !== 'object') { deduped.push(r); continue; }
+      const id = r[keyField];
+      if (id != null && seenIds.has(id)) { changed++; continue; }
+      if (id != null) seenIds.add(id);
+      deduped.push(r);
+    }
+    if (deduped.length !== rows.length) {
+      if (Array.isArray(ds.values)) { ds.values.length = 0; ds.values.push(...deduped); }
+      rows = Array.isArray(ds.values) ? ds.values : deduped;
+    }
+
+    // Ensure rows is not null
+    if (!rows) continue;
+
+    const validIds = new Set(
+      rows.filter((r) => r && typeof r === 'object' && r[keyField] != null).map((r) => r[keyField]),
+    );
+
+    // (2) Null a self-parent or a parent that references no node ("cycle" /
+    // "missing: <id>") so the row becomes a root candidate.
+    for (const r of rows) {
+      if (!r || typeof r !== 'object') continue;
+      const id = r[keyField];
+      const p = r[parentField];
+      if (p == null || p === '') continue;
+      if (p === id || !validIds.has(p)) {
+        r[parentField] = null;
+        changed++;
+      }
+    }
+
+    // (3) Break longer parent cycles (a→b→a, chains): walking up from each node,
+    // the first node that revisits an ancestor has its parent nulled.
+    const byId = new Map<any, any>();
+    for (const r of rows) if (r && typeof r === 'object' && r[keyField] != null) byId.set(r[keyField], r);
+    for (const r of rows) {
+      if (!r || typeof r !== 'object') continue;
+      const path = new Set<any>();
+      let cur = r;
+      while (cur && cur[parentField] != null && cur[parentField] !== '') {
+        const id = cur[keyField];
+        if (path.has(id)) { cur[parentField] = null; changed++; break; }
+        path.add(id);
+        cur = byId.get(cur[parentField]);
+      }
+    }
+
+    // (4) Enforce a single root: keep the first root, re-parent every other root
+    // under it (d3 stratify throws "multiple roots" otherwise). If somehow no
+    // root remains, promote the first row.
+    const rootRows = rows.filter(
+      (r) => r && typeof r === 'object' && (r[parentField] == null || r[parentField] === ''),
+    );
+    if (rootRows.length === 0) {
+      const first = rows.find((r) => r && typeof r === 'object' && r[keyField] != null);
+      if (first) { first[parentField] = null; changed++; }
+    } else if (rootRows.length > 1) {
+      const primary = rootRows[0];
+      const primaryId = primary[keyField];
+      for (let i = 1; i < rootRows.length; i++) {
+        if (rootRows[i][keyField] !== primaryId) { rootRows[i][parentField] = primaryId; changed++; }
+      }
+    }
+  }
+
+  return changed;
+}
+
+/**
  * Apply every Vega graph/geometry sanitizer to a spec IN PLACE and return the
  * spec. Safe to call on any spec: it no-ops when the spec has no force/geoshape
  * transforms.
@@ -330,6 +440,7 @@ export function sanitizeVegaSpec(spec: any): any {
   sanitizeVegaForceLinks(spec);
   sanitizeVegaGeoshapeData(spec);
   rewindVegaGeoshapePolygons(spec);
+  sanitizeVegaStratify(spec);
   sanitizeVegaFacetGroupTitles(spec);
   return spec;
 }

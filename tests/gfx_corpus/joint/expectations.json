@@ -22,11 +22,11 @@
    "golden": {
     "light": {
      "hash": "b2b98048829b2208f66c5eebad984200244dbf85aa51c112cef0c7630b90d9a1",
-     "validated_at": "2026-09-19T05:21:29.456334Z"
+     "validated_at": "2026-09-20T12:09:17.336873Z"
     },
     "dark": {
      "hash": "5c6874cb0873e81dcd5e69059ba8c69d98ff8a032af49aee5e4c47b25bc75ba9",
-     "validated_at": "2026-09-19T05:21:29.471894Z"
+     "validated_at": "2026-09-20T12:09:17.350619Z"
     }
    }
   },
@@ -50,11 +50,11 @@
    "golden": {
     "light": {
      "hash": "8632d1dc3ae1bd5c4a9b2c6bba348f832b82a4d13f10917df1c34d2f71a9edff",
-     "validated_at": "2026-09-19T05:21:29.773780Z"
+     "validated_at": "2026-09-20T12:09:18.597953Z"
     },
     "dark": {
      "hash": "02df311023283caace56dc0dad0eb19085b14682e83c5aa90c6eab9750eddd75",
-     "validated_at": "2026-09-19T05:21:29.791140Z"
+     "validated_at": "2026-09-20T12:09:18.608761Z"
     }
    }
   },
@@ -78,11 +78,11 @@
    "golden": {
     "light": {
      "hash": "39d2cbd51fe7fcfc6d2a334cda2d8437e54b8b6a40d0868254d4a6bfec0f661e",
-     "validated_at": "2026-09-19T05:21:30.048000Z"
+     "validated_at": "2026-09-20T12:09:18.950892Z"
     },
     "dark": {
      "hash": "23a9c06416deaedacb24ff4b785bd4c292c04349b8e2dae615e9d790de939b51",
-     "validated_at": "2026-09-19T05:21:30.062512Z"
+     "validated_at": "2026-09-20T12:09:18.964198Z"
     }
    }
   },
@@ -111,11 +111,11 @@
    "golden": {
     "light": {
      "hash": "09a4b2faf86f734768f19a8da7a5b48f7637fa593bd5d97d09762b26a3c214bf",
-     "validated_at": "2026-09-19T05:33:06.787918Z"
+     "validated_at": "2026-09-20T12:09:22.886830Z"
     },
     "dark": {
      "hash": "cb6ad1094cdb45bb3f576468b61c08481f07065e295070d069886edb7cd627c3",
-     "validated_at": "2026-09-19T05:33:06.799103Z"
+     "validated_at": "2026-09-20T12:09:22.903088Z"
     }
    }
   },
@@ -145,11 +145,11 @@
    "golden": {
     "light": {
      "hash": "a831efcaf8ccb873dbd1b1254c10a4a98b071dfdf792e557b63e612b421502b3",
-     "validated_at": "2026-09-19T05:16:14.437475Z"
+     "validated_at": "2026-09-22T11:54:14.710798Z"
     },
     "dark": {
      "hash": "41797caa79f7f46f0a31c51b5638662a8609d715c54fd582fd001ac9f1324719",
-     "validated_at": "2026-09-19T05:16:14.464284Z"
+     "validated_at": "2026-09-22T11:54:14.737254Z"
     }
    }
   },
@@ -178,12 +178,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "6f060561fa5b6bda7a7066f66258f47cd57257788255a6d4a4658b0f37e33615",
-     "validated_at": "2026-09-19T05:17:35.888413Z"
+     "hash": "3cb0dbaac9807d03c4600359d716694bd6b371db3a67bfbc11e8077e56d93319",
+     "validated_at": "2026-09-22T11:55:10.100889Z"
     },
     "dark": {
-     "hash": "d83c5254e02a2018c4b603b22914b08db70a59d36a91edec58369422b0a11ef7",
-     "validated_at": "2026-09-19T05:17:35.921561Z"
+     "hash": "a4cb03005555381a06a16d96aaa47e8c9d005761bbe4c80ae0fd9219ac85d813",
+     "validated_at": "2026-09-22T11:55:10.116204Z"
     }
    }
   },
@@ -206,12 +206,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "4b759352ae5410f7ac372745caf7fcabeda2eee95cd04e5bd331a6ac1f17a6d7",
-     "validated_at": "2026-09-19T05:17:36.146389Z"
+     "hash": "318690342827c1ea19fe3ca8be9eb1f48ddb16f52b8a2f0b1c573ef486185697",
+     "validated_at": "2026-09-22T11:55:10.366944Z"
     },
     "dark": {
-     "hash": "44bc756af45fcbcd417a22e63a54d8185fd0d7e7efdb67e87747268acf1f0b0e",
-     "validated_at": "2026-09-19T05:17:36.156422Z"
+     "hash": "ff5f05d5c267aebf14d1f968c0c5f82c81dfe743fee91a994da7df240bdbb91c",
+     "validated_at": "2026-09-22T11:55:10.378092Z"
     }
    }
   },
@@ -240,12 +240,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "c2c1db414bd256d9a79cb63b4135e75cf7db7ef8dd4d348101305e2bb1cd3f23",
-     "validated_at": "2026-09-19T05:17:36.326685Z"
+     "hash": "beacb29855e8ba29ef10b00c0bdc7f1de0492f5cfb5765fc3ee91c5761e333f0",
+     "validated_at": "2026-09-22T11:57:39.979498Z"
     },
     "dark": {
-     "hash": "b449741fda4fc49aafafb2de4ab0adbdbc9cd76debeb1a1fa282e94b61f243d3",
-     "validated_at": "2026-09-19T05:17:36.334658Z"
+     "hash": "7b291e74efda506d874d12c2c04f1e3d45ed5cad2db04a46e97d8f30baf1260b",
+     "validated_at": "2026-09-22T11:57:39.997359Z"
     }
    }
   },
@@ -257,23 +257,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-128",
      "signature": "raw-dia-element-missing-type:cell-dropped",
      "at": "2026-09-15T08:56:12.935218Z"
+    },
+    {
+     "origin": "D-138",
+     "signature": "shape-palette-label-contrast",
+     "at": "2026-09-22T12:24:28.245257Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "c6e047053b85238a0c075a73ec9c30c9e888ea2d7316e8d1cce130e81c06d468",
-     "validated_at": "2026-09-19T05:18:31.990347Z"
+     "hash": "53ea47b04c25b4915fb535fe50d4400c9d5c95fa902b50ffa5a4ff819587cf8e",
+     "validated_at": "2026-09-22T11:57:40.207316Z"
     },
     "dark": {
-     "hash": "3250bfdbd9da70326964ef0cd210278b9b3a6438d9f2226494c0e5a744969c1e",
-     "validated_at": "2026-09-19T05:18:32.003604Z"
+     "hash": "53336019cf8a0b93bdce16f0ffe0b093ba17ba19a42e1b4cef0d712543c94f13",
+     "validated_at": "2026-09-22T11:57:40.224652Z"
     }
    }
   },
@@ -292,8 +298,23 @@
      "origin": "D-128",
      "signature": "raw-dia-element-missing-type:cell-dropped",
      "at": "2026-09-15T08:56:12.938478Z"
+    },
+    {
+     "origin": "D-404",
+     "signature": "viewbox-fit-clip",
+     "at": "2026-09-22T12:24:28.303467Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3ce1185e2fc55a1e60d176fe54c4d9089a1091b70b4d3c865c879fbb834b2dc1",
+     "validated_at": "2026-09-22T11:57:40.462117Z"
+    },
+    "dark": {
+     "hash": "cf1ba47c89c71b24ac664893290aee9a1514749f112f43dc2c4e634e0453550c",
+     "validated_at": "2026-09-22T11:57:40.480831Z"
+    }
+   }
   },
   "joint-w2-01": {
    "themes": [
@@ -311,7 +332,17 @@
      "signature": "content-exceeds-viewport-no-scale-to-fit",
      "at": "2026-09-15T08:56:12.943869Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b8ca4feceb29c3065472525cb890d1f0b28f84d5a66b12a981a9579af3d0a685",
+     "validated_at": "2026-09-22T11:59:15.447608Z"
+    },
+    "dark": {
+     "hash": "78c37247b2c192ebc98b779cdc6ac02e20c5f40a86155818da5452c0e21ca1cd",
+     "validated_at": "2026-09-22T11:59:15.456307Z"
+    }
+   }
   },
   "joint-w2-03": {
    "themes": [
@@ -321,15 +352,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:min_text_size"
    ],
    "origins": [
     {
      "origin": "D-129",
      "signature": "content-exceeds-viewport-no-scale-to-fit",
      "at": "2026-09-15T08:56:12.947459Z"
+    },
+    {
+     "origin": "D-405",
+     "signature": "fit-plan-downscale-to-illegible",
+     "at": "2026-09-22T12:24:28.325342Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8e81a31b2a067a422ea7ff115b4be4e88659be6f235af412b1ce01ba8d29342d",
+     "validated_at": "2026-09-22T12:03:43.168787Z"
+    },
+    "dark": {
+     "hash": "2c974dcbf894629920a423db8d1a7b59bf707b58af7cac44c543bcbaab7d802b",
+     "validated_at": "2026-09-22T12:03:43.190349Z"
+    }
+   }
   },
   "joint-w2-04": {
    "themes": [
@@ -346,8 +393,23 @@
      "origin": "D-129",
      "signature": "content-exceeds-viewport-no-scale-to-fit",
      "at": "2026-09-15T08:56:12.951504Z"
+    },
+    {
+     "origin": "D-404",
+     "signature": "viewbox-fit-clip",
+     "at": "2026-09-22T12:24:28.307381Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "9ab22b8c662c27df7b9a74670cb7674bdecdfb37f4175f601b17a281b2b4f5dc",
+     "validated_at": "2026-09-22T12:03:43.400071Z"
+    },
+    "dark": {
+     "hash": "956469f3a2af8af88774cf829dd0122d6f989529e688951ab847fd29c4f08ce3",
+     "validated_at": "2026-09-22T12:03:43.411429Z"
+    }
+   }
   },
   "joint-w2-09": {
    "themes": [
@@ -364,8 +426,23 @@
      "origin": "D-129",
      "signature": "content-exceeds-viewport-no-scale-to-fit",
      "at": "2026-09-15T08:56:12.955976Z"
+    },
+    {
+     "origin": "D-404",
+     "signature": "viewbox-fit-clip",
+     "at": "2026-09-22T12:24:28.316255Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a309cfb506f950341074b8b6ddf38959413aced838938899b07ba623aa4b6cc3",
+     "validated_at": "2026-09-22T12:07:16.492854Z"
+    },
+    "dark": {
+     "hash": "113cd6392c4fde1cc000e6f4d2cf4973aaa54cc23b588dd2a1a7d50a4dbfb669",
+     "validated_at": "2026-09-22T12:07:16.507388Z"
+    }
+   }
   },
   "joint-w2-12": {
    "themes": [
@@ -401,7 +478,17 @@
      "signature": "content-exceeds-viewport-no-scale-to-fit",
      "at": "2026-09-15T08:56:12.973043Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "df14966dfa904f105d5412cc4945fd312be3898cd7747912abdcab48093449e3",
+     "validated_at": "2026-09-22T12:20:32.329075Z"
+    },
+    "dark": {
+     "hash": "987d61283049ab56ea80e0f33d13d6504a1c8e75948499adfe27d29aa127bbc1",
+     "validated_at": "2026-09-22T12:20:32.341009Z"
+    }
+   }
   },
   "joint-w2-15": {
    "themes": [
@@ -418,8 +505,23 @@
      "origin": "D-129",
      "signature": "content-exceeds-viewport-no-scale-to-fit",
      "at": "2026-09-15T08:56:12.977736Z"
+    },
+    {
+     "origin": "D-404",
+     "signature": "viewbox-fit-clip",
+     "at": "2026-09-22T12:24:28.320596Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "9cd3d46ca66f9a1ce4db4170a4876637bf03bb3cf66d37c82ba4eafc3091e97a",
+     "validated_at": "2026-09-22T12:13:08.556936Z"
+    },
+    "dark": {
+     "hash": "52ceeaadb0cece4d2d192483d1be21966105bc5d53eb62829b9d5f7ecfbe3714",
+     "validated_at": "2026-09-22T12:13:08.575154Z"
+    }
+   }
   },
   "joint-w2-05": {
    "themes": [
@@ -441,11 +543,11 @@
    "golden": {
     "light": {
      "hash": "1a660b9d50f852f2c8a3942b898478e498bd85fb1c0b4cfe957f40598e6af7a0",
-     "validated_at": "2026-09-19T05:23:32.141147Z"
+     "validated_at": "2026-09-22T12:05:21.860486Z"
     },
     "dark": {
      "hash": "0e65b63060b9a23c97266027fd474fcf8855af2f03b70fea35efda6bbf003fd7",
-     "validated_at": "2026-09-19T05:23:32.170935Z"
+     "validated_at": "2026-09-22T12:05:21.891228Z"
     }
    }
   },
@@ -464,8 +566,23 @@
      "origin": "D-130",
      "signature": "label-geometry-not-fitted-to-node",
      "at": "2026-09-15T08:56:12.984566Z"
+    },
+    {
+     "origin": "D-404",
+     "signature": "viewbox-fit-clip",
+     "at": "2026-09-22T12:24:28.311314Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e534535300f5532697657bcd796a2be8ddd4df2c5c59887d5264119001578f97",
+     "validated_at": "2026-09-22T12:07:16.250845Z"
+    },
+    "dark": {
+     "hash": "6c70945f5b84a919133ff27804a85353f2e64f24137f4a2c2bda4ac2c9381d26",
+     "validated_at": "2026-09-22T12:07:16.282946Z"
+    }
+   }
   },
   "joint-w2-13": {
    "themes": [
@@ -486,12 +603,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "d2f52e2a7a5aa3f386be52fb83139be00f5e375ee4cd0f59547883315ac739ed",
-     "validated_at": "2026-09-19T05:46:50.875240Z"
+     "hash": "e0c2f6f3693b0a32fdf821253bb4fbae21724ce0d38706a44080640c5bcc1204",
+     "validated_at": "2026-09-22T12:17:21.492731Z"
     },
     "dark": {
-     "hash": "46d5ebdba58bbeb8774f79400f2a7c1d626d521db34b6f5c4478de5b2c12b546",
-     "validated_at": "2026-09-19T05:46:50.886332Z"
+     "hash": "0cab70b7d3158f0614042f9af9785f70907c33b3003428f2673a40b4f4fc2e7e",
+     "validated_at": "2026-09-22T12:17:21.507268Z"
     }
    }
   },
@@ -511,8 +628,23 @@
      "origin": "D-131",
      "signature": "link-overdraw-no-label-background",
      "at": "2026-09-15T08:56:12.993068Z"
+    },
+    {
+     "origin": "D-407",
+     "signature": "link-label-collision-overdraw",
+     "at": "2026-09-22T12:24:28.329553Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d3a2a538ce96734ff56b6fbb4729724fa9646ded5ed9e0e635d769b132182b31",
+     "validated_at": "2026-09-22T11:56:20.102739Z"
+    },
+    "dark": {
+     "hash": "5d87c26275f88d7c55f986adcada1e7111b08aa14674017f58a8479303c32f59",
+     "validated_at": "2026-09-22T11:56:20.115881Z"
+    }
+   }
   },
   "joint-w2-10": {
    "themes": [
@@ -531,7 +663,17 @@
      "signature": "link-overdraw-no-label-background",
      "at": "2026-09-15T08:56:12.998388Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "75770853cbfb1e156c15877b7fa8c2ac64de25790244618c165f4e33b71ee3e3",
+     "validated_at": "2026-09-22T12:10:12.944728Z"
+    },
+    "dark": {
+     "hash": "7040315551d9ef3fc06fcdecfab56fc7191294754b3a38ed07da9e1143995e21",
+     "validated_at": "2026-09-22T12:10:12.973771Z"
+    }
+   }
   },
   "joint-w1-13": {
    "themes": [
@@ -553,11 +695,11 @@
    "golden": {
     "light": {
      "hash": "0c07e7bc66cfbeb98a7aba50d70d386380797d687b3c9e6ad84cdc2ad1db31b8",
-     "validated_at": "2026-09-19T05:18:31.693846Z"
+     "validated_at": "2026-09-20T12:09:19.500359Z"
     },
     "dark": {
      "hash": "5dd911446c2e727e801dd77b47ff48b44f3347395cccafb6b9c21ef578e317c2",
-     "validated_at": "2026-09-19T05:18:31.704768Z"
+     "validated_at": "2026-09-20T12:09:19.516843Z"
     }
    }
   },
@@ -581,11 +723,11 @@
    "golden": {
     "light": {
      "hash": "f2896f63755bf37c51a73bcaeb1ad0a734169f8032cd8256742124081e4490a6",
-     "validated_at": "2026-09-19T05:30:20.869400Z"
+     "validated_at": "2026-09-19T16:58:48.495408Z"
     },
     "dark": {
      "hash": "6f9155d45848c5e6c687970415a88fe16c304b9524dc3d29a8a270b177637e2c",
-     "validated_at": "2026-09-19T05:30:20.883886Z"
+     "validated_at": "2026-09-19T16:58:48.506498Z"
     }
    }
   },
@@ -609,11 +751,11 @@
    "golden": {
     "light": {
      "hash": "64c9e75a5f8daf6ef5154a0347b5921860409759be9d7d46a1d14a10539e75b8",
-     "validated_at": "2026-09-19T05:30:21.174570Z"
+     "validated_at": "2026-09-19T16:59:33.068182Z"
     },
     "dark": {
-     "hash": "0c7a1156b1229d607e32858328a276b67307670cadd5ae4746bd197da8cd7149",
-     "validated_at": "2026-09-19T05:30:21.184282Z"
+     "hash": "b617965b59eca4068870fb47d90961ab6324bae273556326b50e598c5f7ce9d7",
+     "validated_at": "2026-09-19T16:59:33.093964Z"
     }
    }
   },
@@ -636,8 +778,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "19e88c6f1ab76ee22388c7ce38564bad7bb75456fd8e324b9daddbc814db3d55",
-     "validated_at": "2026-09-16T09:47:57.777262Z"
+     "hash": "7a3a85e079545e653e47f66bd123fcc776f57f7c754c9711c436ff5f57d3876e",
+     "validated_at": "2026-09-19T17:02:25.405261Z"
+    },
+    "dark": {
+     "hash": "6976d4a9a42e4233ba43e3be3cce2e1a23fcfb88fd84a1d051ce1eb8d935fa81",
+     "validated_at": "2026-09-19T17:02:25.421691Z"
     }
    }
   },
@@ -675,8 +821,23 @@
      "origin": "D-134",
      "signature": "port-position-string-invalid-layoutCallback:links-dropped",
      "at": "2026-09-15T08:56:13.018962Z"
+    },
+    {
+     "origin": "D-404",
+     "signature": "viewbox-fit-clip",
+     "at": "2026-09-22T12:24:28.299130Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "16ba7957c17449964eb5d22c15264cb1ab7290cd4352fa816c322ac7749953ce",
+     "validated_at": "2026-09-22T11:56:20.304519Z"
+    },
+    "dark": {
+     "hash": "e6d69d75a304d79b98828bb9f0705f27faa94e22876d87686501aa5b6a0864be",
+     "validated_at": "2026-09-22T11:56:20.316941Z"
+    }
+   }
   },
   "joint-w1-06": {
    "themes": [
@@ -749,12 +910,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "2091afd5ca38989ed38d57b8df789fe8ff88b36c7aabf3c90f4dcdac2023a78c",
-     "validated_at": "2026-09-19T05:16:14.780122Z"
+     "hash": "31db4d61fe8225dbe59de585e4cdd770ecf4a139e1cc37d4fc8c6c4dc3662387",
+     "validated_at": "2026-09-22T11:53:20.338158Z"
     },
     "dark": {
-     "hash": "632b52815545f786e9e4d7dea82b3246324a1d8a4f9a1434dfd44179bc1e6291",
-     "validated_at": "2026-09-19T05:16:14.796959Z"
+     "hash": "802996e9486b6499509547f13a28e04ac5d1433436005d50bd95c6f03b2e8827",
+     "validated_at": "2026-09-22T11:53:20.350038Z"
     }
    }
   },
@@ -778,12 +939,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "e5749acde916cc28c87f5bc572ee594dd75f5f08241cebdf29864f877f0d801d",
-     "validated_at": "2026-09-19T05:16:15.057418Z"
+     "hash": "02141f1b766778a9dcf07cedaeddc14f9db3303274fad98a35a1c3b0822ddcce",
+     "validated_at": "2026-09-22T11:54:14.969449Z"
     },
     "dark": {
-     "hash": "d7fc16f640570d1f6290231d2977144f4877c19b650c360410c1dac4de6345c5",
-     "validated_at": "2026-09-19T05:16:15.075318Z"
+     "hash": "46cf3d4cad2749b15ab835da086552762decaa516ea051eb8516025aa219f938",
+     "validated_at": "2026-09-22T11:54:14.993240Z"
     }
    }
   },
@@ -804,7 +965,17 @@
      "signature": "shape-palette-label-contrast",
      "at": "2026-09-15T08:56:13.053619Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "23daebffb74056e90cc61b70fbefa3fdd15ca8a91362d5573887d524df527e35",
+     "validated_at": "2026-09-22T12:11:45.192681Z"
+    },
+    "dark": {
+     "hash": "110d69813b8c60a92c890fc01e4eab091e820abba41f56de25f969d1f14c1fe6",
+     "validated_at": "2026-09-22T12:11:45.210071Z"
+    }
+   }
   },
   "joint-w4-14": {
    "themes": [
@@ -826,11 +997,11 @@
    "golden": {
     "light": {
      "hash": "9080f6d76b51bdf0b1de67220c30bf983542a329a65c67693683069393ba35c3",
-     "validated_at": "2026-09-19T05:33:07.182380Z"
+     "validated_at": "2026-09-20T12:09:23.350139Z"
     },
     "dark": {
      "hash": "80c254523491b99d35df1b7091151350dfe58dc318784948c7952de3f171ff4e",
-     "validated_at": "2026-09-19T05:33:07.189322Z"
+     "validated_at": "2026-09-20T12:09:23.363126Z"
     }
    }
   },
@@ -854,11 +1025,11 @@
    "golden": {
     "light": {
      "hash": "a1cb3f74ebe48aa1cd959d16cdf6cbd866dbae8fd67ef172b6b8f8c8c5895829",
-     "validated_at": "2026-09-19T05:32:06.337780Z"
+     "validated_at": "2026-09-20T12:09:22.452058Z"
     },
     "dark": {
      "hash": "0a6d17404a97778ce87667da0f22797378a24ba33b3fb7f3ecb9a66f14cf1a82",
-     "validated_at": "2026-09-19T05:32:06.345586Z"
+     "validated_at": "2026-09-20T12:09:22.462724Z"
     }
    }
   },
@@ -938,11 +1109,11 @@
    "golden": {
     "light": {
      "hash": "25e2834784da3b4cfe929c82b0980285ca778b168909dfd65866dee99168860f",
-     "validated_at": "2026-09-19T05:32:06.585576Z"
+     "validated_at": "2026-09-20T12:09:22.614233Z"
     },
     "dark": {
      "hash": "6c48b9975647b5ed38170984849e23ee6f1d930634f9258ecd5f50ee0262ea8d",
-     "validated_at": "2026-09-19T05:32:06.601135Z"
+     "validated_at": "2026-09-20T12:09:22.621070Z"
     }
    }
   },
@@ -1079,11 +1250,11 @@
    "golden": {
     "light": {
      "hash": "d66de757b39d3a6493c9f2c0b1fddca356adb196484f72ceac370af46a6607d3",
-     "validated_at": "2026-09-19T05:33:06.999498Z"
+     "validated_at": "2026-09-20T12:09:23.122217Z"
     },
     "dark": {
      "hash": "d8e89f42924a4bb9dced70d66a7c3b13a954c434246ac1c1d43d1185c591aaa6",
-     "validated_at": "2026-09-19T05:33:07.008122Z"
+     "validated_at": "2026-09-20T12:09:23.131960Z"
     }
    }
   },
@@ -1104,7 +1275,17 @@
      "signature": "string-boolean-not-coerced:manual-layout-lost",
      "at": "2026-09-15T08:56:13.120793Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "19f4948254a86e931925edf4052e4827a2b936e6faa39e59e1bcf287db923827",
+     "validated_at": "2026-09-22T12:24:17.999301Z"
+    },
+    "dark": {
+     "hash": "62ce718aaff8e0339737d5117481ec1d1418d0d2452a38eab2cd1c81221bc8ec",
+     "validated_at": "2026-09-22T12:24:18.008793Z"
+    }
+   }
   },
   "joint-w3-04": {
    "themes": [
@@ -1150,6 +1331,93 @@
     "light": {
      "hash": "4fe2ac09f093d41655d3bcfab9227efdea5c12625277b36ccf40ba3930590918",
      "validated_at": "2026-09-18T07:44:10.291261Z"
+    }
+   }
+  },
+  "joint-w3-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-411",
+     "signature": "self-loop-zero-length-invisible",
+     "at": "2026-09-22T12:24:28.335162Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "a0207dd50fd66242e5cc9d79baf10245562a97919b20f706605394b3a8296d41",
+     "validated_at": "2026-09-22T12:22:31.612207Z"
+    },
+    "light": {
+     "hash": "72a37ec1322d1e6663782670f56b11809c84c06e4337f6a317e5655c557c56a5",
+     "validated_at": "2026-09-22T12:22:31.605141Z"
+    }
+   }
+  },
+  "joint-w3-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-417",
+     "signature": "hardcoded-fill-matches-paper",
+     "at": "2026-09-22T12:24:28.341812Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "e2bc12601469e99bc129015e03080e1442b2894c615285e2f9dd411eeb9ed885",
+     "validated_at": "2026-09-22T12:24:17.637838Z"
+    },
+    "light": {
+     "hash": "a911e0249398e057858679640c84336a2451ab48b8df5ceb21070d5821380294",
+     "validated_at": "2026-09-22T12:24:17.632407Z"
+    }
+   }
+  },
+  "joint-w3-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-417",
+     "signature": "hardcoded-fill-matches-paper",
+     "at": "2026-09-22T12:24:28.346414Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "b66e72240c14fd7a0943750caa258cf26e69e14ee9cb0d650912cb6b9f14bd05",
+     "validated_at": "2026-09-22T12:24:17.824548Z"
+    },
+    "light": {
+     "hash": "82a6d0cb83ddd3127629ccffa5fab1ce08ea4e678f1e273f50e9a718105d7c10",
+     "validated_at": "2026-09-22T12:24:17.819092Z"
     }
    }
   }

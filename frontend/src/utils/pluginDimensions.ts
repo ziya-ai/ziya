@@ -78,9 +78,32 @@ export function extractExplicitDimensions(spec: any): { width: number; height: n
         }
     }
     if (!s || typeof s !== 'object') return null;
-    // Unwrap a { type:'d3', definition:<spec> } envelope; the inner definition
-    // is where the plugin-targeted width/height live.
-    if (s.definition && typeof s.definition === 'object') s = s.definition;
+    // Unwrap a { type:'d3'|'basic-chart', definition:<spec> } envelope; the
+    // inner definition is where the plugin-targeted width/height live.
+    //
+    // D-001 (basic-chart-w2-11, 3600x2600 blank): the render boundary
+    // (app/services/diagram_renderer.py normalize_spec_definition) serialises an
+    // object definition to a JSON STRING before it reaches the browser, so the
+    // memoised container-style path (D3Renderer resolveContainerDimensions on
+    // the RAW prop spec, not the unwrapped one) saw a string here, skipped the
+    // object-only unwrap, read no top-level width/height and returned null. The
+    // responsive default (height:400px) then clamped the tall canvas, cropping
+    // the 2600px-tall chart to blank on capture — w2-08 (180px) only escaped
+    // because it fit inside 400px. Parse a string definition too so explicit
+    // dims survive the string-envelope shape as well as the object one.
+    if (s.definition != null) {
+        if (typeof s.definition === 'object') {
+            s = s.definition;
+        } else if (typeof s.definition === 'string') {
+            try {
+                const innerDef = JSON.parse(s.definition);
+                if (innerDef && typeof innerDef === 'object') s = innerDef;
+            } catch {
+                // Non-JSON definition (e.g. a graphviz/mermaid source string) —
+                // leave s as the envelope; it carries no plugin width/height.
+            }
+        }
+    }
     const w = typeof s.width === 'number' && s.width > 0 ? s.width : undefined;
     const h = typeof s.height === 'number' && s.height > 0 ? s.height : undefined;
     if (w !== undefined && h !== undefined) return { width: w, height: h };
@@ -163,4 +186,48 @@ export function resolveFixedContainerWidth(
     if (!dims) return null;
     if (dims.width <= FIXED_WIDTH_ADOPT_THRESHOLD_PX) return null;
     return `${dims.width}px`;
+}
+
+/**
+ * D-043 (regression real cause): the width + overflow the imperative D3Renderer
+ * effect writes onto the ACTUAL d3 render container (d3ContainerRef, where the
+ * SVG lives). That effect runs AFTER React applies the containerStyles memo and
+ * writes directly to ``container.style``, so it — not the memo — decides the
+ * pixels at capture time.
+ *
+ * The pre-fix effect resolved width as ``explicitContainerDims ?? (isFlexible ?
+ * '100%' : `${width}px`)`` and overflow as ``explicitContainerDims ? 'auto' :
+ * 'hidden'``. resolveContainerDimensions returns null for a 'fixed' plugin, so
+ * for chord that collapsed to the component ``width`` prop (default 600px) with
+ * overflow:hidden — clipping the right edge of an explicit canvas wider than the
+ * frame (chord-w1-14 860px, w2-10 1400px, w2-14 2000px). The JSX containerStyles
+ * width fix never survived because this override clobbered it.
+ *
+ * This helper folds ``fixedContainerWidth`` (the width-axis analog of
+ * needsDynamicHeight) into that decision: a wide 'fixed' canvas now holds its
+ * full px width and scrolls (overflow:auto) instead of clipping. It is a strict
+ * no-op for every other case — null fixedContainerWidth reproduces the old
+ * width/overflow exactly. Purely a sizing/overflow decision with no color
+ * input, so it is identical in light and dark themes.
+ *
+ * Exported for regression testing.
+ */
+export function resolveRenderContainerBox(args: {
+    explicitContainerDims: { width: string; height: string } | null;
+    fixedContainerWidth: string | null;
+    isFlexible: boolean;
+    fallbackWidthPx: number;
+    needsOverflowVisible: boolean;
+    willHaveError: boolean;
+}): { width: string; overflow: 'visible' | 'auto' | 'hidden' } {
+    const { explicitContainerDims, fixedContainerWidth, isFlexible, fallbackWidthPx, needsOverflowVisible, willHaveError } = args;
+    const width = explicitContainerDims
+        ? explicitContainerDims.width
+        : (fixedContainerWidth
+            ? fixedContainerWidth
+            : (isFlexible ? '100%' : `${fallbackWidthPx}px`));
+    const overflow: 'visible' | 'auto' | 'hidden' = (needsOverflowVisible || willHaveError)
+        ? 'visible'
+        : (explicitContainerDims || fixedContainerWidth ? 'auto' : 'hidden');
+    return { width, overflow };
 }

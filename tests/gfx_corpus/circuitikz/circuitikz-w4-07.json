@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=var(--ziya-text)] (0,0) to[R=$R_1$] (2.4,0) node[ocirc]{};\n\\draw[color=theme.foreground] (0,-1.1) to[short] (2.4,-1.1);\n\\node[text=currentColor] at (2.4,1.4) {Theme tokens};\n",
+ "intent": "RECOVERY: colours given as theme tokens that do not exist in this engine -- a CSS custom property, a dotted theme path, and currentColor. A model that has seen Ziya's frontend theming naturally reaches for these. THE VALUABLE CASE the brief names: if recovery falls back to a default that lands on the background colour, that is structurally fine and illegible."
+}

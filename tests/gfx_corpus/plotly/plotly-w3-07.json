@@ -1,0 +1,150 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "scatterternary",
+    "mode": "markers+text",
+    "a": [
+     0.6,
+     0.2,
+     0.2,
+     0.4
+    ],
+    "b": [
+     0.2,
+     0.6,
+     0.2,
+     0.3
+    ],
+    "c": [
+     0.2,
+     0.2,
+     0.6,
+     0.3
+    ],
+    "text": [
+     "A-rich",
+     "B-rich",
+     "C-rich",
+     "even"
+    ],
+    "textposition": "top center",
+    "marker": {
+     "size": 14,
+     "color": "#4c78a8"
+    },
+    "name": "tern"
+   },
+   {
+    "type": "carpet",
+    "carpet": "c1",
+    "a": [
+     0,
+     1,
+     2,
+     0,
+     1,
+     2
+    ],
+    "b": [
+     1,
+     1,
+     1,
+     2,
+     2,
+     2
+    ],
+    "y": [
+     1,
+     2.2,
+     3,
+     1.5,
+     2.6,
+     3.4
+    ],
+    "aaxis": {
+     "title": {
+      "text": "a-axis"
+     }
+    },
+    "baxis": {
+     "title": {
+      "text": "b-axis"
+     }
+    },
+    "xaxis": "x2",
+    "yaxis": "y2"
+   },
+   {
+    "type": "contourcarpet",
+    "carpet": "c1",
+    "a": [
+     0,
+     1,
+     2,
+     0,
+     1,
+     2
+    ],
+    "b": [
+     1,
+     1,
+     1,
+     2,
+     2,
+     2
+    ],
+    "z": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ],
+    "contours": {
+     "showlabels": true
+    },
+    "xaxis": "x2",
+    "yaxis": "y2"
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "ternary + carpet — unthemed surface probe"
+   },
+   "ternary": {
+    "domain": {
+     "x": [
+      0,
+      0.45
+     ]
+    },
+    "aaxis": {
+     "title": {
+      "text": "A"
+     }
+    },
+    "baxis": {
+     "title": {
+      "text": "B"
+     }
+    },
+    "caxis": {
+     "title": {
+      "text": "C"
+     }
+    }
+   },
+   "xaxis2": {
+    "domain": [
+     0.58,
+     1.0
+    ]
+   },
+   "yaxis2": {}
+  }
+ },
+ "intent": "scatterternary + carpet/contourcarpet: layout.ternary is the PREDICTED unthemed-surface dark bug"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "# labels containing the parser's own delimiters\narrowLabel: uses -> as text\ncolonLabel: ratio 16:9 aspect\nbraceLabel: config { key }\npipeLabel: a | b | c\nsemiLabel: one; two; three\nquoteLabel: it's \"quoted\" text\nunicodeArrow: flows → onward\narrowLabel -> colonLabel\nbraceLabel -> pipeLabel: sep -> here\nsemiLabel -> quoteLabel\nunicodeArrow -> arrowLabel",
+ "intent": "Labels embedding ->, :, {, }, |, ; and a unicode arrow; probes delimiter collision in parseLine dispatch"
+}

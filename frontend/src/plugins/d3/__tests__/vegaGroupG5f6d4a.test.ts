@@ -22,6 +22,7 @@ import { declutterDenseTextMarks } from '../vegaLitePlugin';
 import {
   reconcileThemeColors,
   reconcileFieldDrivenFillsVsCanvas,
+  applyCategoricalPaletteFix,
   resolveColorToRgb,
   contrastRatio,
 } from '../vegaRecovery';
@@ -145,4 +146,28 @@ describe('G-5f6d4a D-503 field-driven literal bar fills reconcile against the ca
     // #7f8c8d clears 3:1 on white → untouched.
     expect(spec.data.values[4].f).toBe('#7f8c8d');
   });
+});
+
+// ── D-503 regression lock: the FULL post-process order the renderer runs ─────
+// The regression (verified→fail at c4fc4277) was a fill reconcile that held in
+// isolation but could be undone by a later pass in the render pipeline. This
+// asserts the exact order vegaLitePlugin applies — declutterDenseTextMarks →
+// reconcileThemeColors (which runs reconcileFieldDrivenFillsVsCanvas) →
+// applyCategoricalPaletteFix — leaves every field-driven literal bar fill at or
+// above the 3:1 floor on BOTH canvases, so no downstream pass reverts it.
+describe('G-5f6d4a D-503 pipeline-order lock: literal bar fills survive the whole chain', () => {
+  for (const [name, bg, dark] of [['light', LIGHT, false], ['dark', DARK, true]] as const) {
+    it(`keeps every bar fill >=3:1 through the full ${name} post-process chain`, () => {
+      const spec: any = w3_04();
+      declutterDenseTextMarks(spec);
+      reconcileThemeColors(spec, dark);
+      applyCategoricalPaletteFix(spec, dark);
+      for (const row of spec.data.values) {
+        expect(cr(row.f, bg)).toBeGreaterThanOrEqual(3);
+      }
+      // A scale:null literal-colour field must never be hijacked into a scaled
+      // categorical range (that would drop the per-datum fills).
+      expect(spec.config?.range?.category).toBeUndefined();
+    });
+  }
 });

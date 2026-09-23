@@ -1065,6 +1065,21 @@ export function normalizeNativeVegaAutosize(spec: any): boolean {
     a === 'none' ||
     (a && typeof a === 'object' && !Array.isArray(a) && a.type === 'none');
   if (!isNone) return false;
+  // (D-510) A `projection`-bearing spec uses `autosize:"none"` DELIBERATELY.
+  // A mercator projection with a fixed `translate` plus a world `graticule`
+  // generator draws geometry that spans the ENTIRE projected globe, far outside
+  // the authored width×height frame; `none` tells Vega to clip that spill to
+  // the frame (the intended regional map), and the D-283 post-render flood-clip
+  // then honours the authored viewport. Rewriting `none`→`pad` here makes Vega
+  // lay the view out to CONTAIN the whole-globe graticule instead, collapsing
+  // the intended map into a tiny sliver with the rest of the canvas blank
+  // (vega-w1-11: map squeezed into a ~330px column, ~75% blank below). So leave
+  // a projection spec's authored `none` intact. D-505's target specs (donut/
+  // sunburst/pack/force) declare no projection, so they are unaffected.
+  const hasProjection =
+    (Array.isArray(spec.projections) && spec.projections.length > 0) ||
+    (spec.projection && typeof spec.projection === 'object');
+  if (hasProjection) return false;
   spec.autosize = { type: 'pad', contains: 'padding' };
   return true;
 }
@@ -1526,6 +1541,50 @@ export function resolveVegaViewBox(
     return { x: 0, y: 0, w: authoredW, h: authoredH, clip: true };
   }
   return useBBox;
+}
+
+/**
+ * (D-505) Resolve the EXPLICIT pixel size a native-Vega SVG must take so it
+ * FILLS the delivered container width, preserving the content aspect.
+ *
+ * postRenderSizing historically sized the SVG with `width:'100%'` +
+ * `height:'auto'`, trusting the percentage to resolve against the measured
+ * container. That works for a landscape spec (vega-w1-08 480×300, vega-w1-10
+ * 460×320 — both fill), but a native spec whose authored canvas is SQUARE or
+ * TALL and whose marks are radial/hierarchical/force (donut vega-w1-05 340²,
+ * sunburst w1-06 400², circle-pack w1-09 420², tidy-tree fan w2-06 420×900,
+ * force w2-12 700×560) rendered at NATIVE size pinned to the top-left of a
+ * ~1280-wide canvas, 65-93% blank in BOTH themes. The percentage width never
+ * enlarged the SVG: vega-embed wraps the scenegraph in a `display:inline-block`
+ * `.vega-embed`, and `width:'100%'` on an SVG whose containing block is that
+ * shrink-to-fit inline-block resolves back to the SVG's own intrinsic (viewBox)
+ * width — a self-referential cycle that collapses to the native size. The
+ * earlier autosize:none→pad rewrite made Vega lay the view out but did NOT
+ * break this percentage cycle, so the underfill persisted.
+ *
+ * Sizing the SVG to a DEFINITE pixel width taken from the measured container
+ * removes the cycle: the inline-block wrapper then shrink-wraps to that
+ * explicit width (grows to the container) instead of the other way round. It is
+ * a NO-OP for a spec that already fills — the definite width equals exactly
+ * what `width:'100%'` was supposed to resolve to (the container width), and the
+ * height equals `containerWidth × aspect`, i.e. what `height:'auto'` already
+ * produced — so the landscape specs and every previously-verified sizing
+ * behaviour (re-tick D-277, flood-clip D-283) are byte-for-byte unchanged.
+ * Theme-independent (pure geometry). Returns null for a degenerate measurement
+ * so the caller keeps the `100%`/`auto` fallback. PURE + exported for testing.
+ */
+export function computeVegaFillSize(
+  containerWidth: number,
+  contentWidth: number,
+  contentHeight: number,
+): { width: number; height: number } | null {
+  if (!(containerWidth > 0) || !(contentWidth > 0) || !(contentHeight > 0)) {
+    return null;
+  }
+  const aspect = contentHeight / contentWidth;
+  const width = Math.round(containerWidth);
+  const height = Math.max(1, Math.round(width * aspect));
+  return { width, height };
 }
 
 export const vegaPlugin: D3RenderPlugin = {
@@ -2014,8 +2073,25 @@ export const vegaPlugin: D3RenderPlugin = {
       svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
       svg.removeAttribute('width');
       svg.removeAttribute('height');
-      svg.style.width = '100%';
-      svg.style.height = 'auto';
+      // (D-505) Size the SVG to an EXPLICIT container-width in px rather than
+      // `width:'100%'`. The percentage resolves against vega-embed's
+      // `display:inline-block` `.vega-embed` wrapper, which shrink-wraps to the
+      // SVG's own viewBox width — a cycle that collapses a square/tall native
+      // spec (donut/sunburst/pack/force) back to its native corner size while a
+      // landscape spec happened to fill. A definite px width makes the wrapper
+      // grow to the SVG instead. No-op for specs that already fill: the value
+      // equals the container width `100%` was meant to resolve to, and the
+      // height equals `containerWidth × aspect` that `height:'auto'` produced.
+      const fillContainerW = container.getBoundingClientRect().width || 0;
+      const fill = computeVegaFillSize(fillContainerW, vb.w, vb.h);
+      if (fill) {
+        svg.style.maxWidth = 'none';
+        svg.style.width = `${fill.width}px`;
+        svg.style.height = `${fill.height}px`;
+      } else {
+        svg.style.width = '100%';
+        svg.style.height = 'auto';
+      }
       svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
       svg.style.display = 'block';
       // (D-276) overflow:visible for the normal path — 'xMidYMid meet' already

@@ -3680,7 +3680,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // move to the y axis where they lie flat, so the rotation/overlap/title-
       // collision failure of the vertical form never arises. No-op for every
       // other chart shape (guarded on mark, channel types, cardinality, length).
-      if (transposeLongLabelBarChart(vegaSpec)) {
+      if (transposeLongLabelBarChart(vegaSpec, availableWidth)) {
         console.log('🔧 VEGA-POST-PROCESS: transposed long-label bar chart to horizontal (D-309/D-500)');
       }
 

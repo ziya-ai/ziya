@@ -1,0 +1,164 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "title": {
+   "text": "Malformed hierarchy: duplicate id, self edge, 2-cycle",
+   "fontSize": 14
+  },
+  "data": [
+   {
+    "name": "tree",
+    "values": [
+     {
+      "id": "a",
+      "p": null
+     },
+     {
+      "id": "b",
+      "p": "a"
+     },
+     {
+      "id": "b",
+      "p": "a"
+     },
+     {
+      "id": "c",
+      "p": "c"
+     },
+     {
+      "id": "d",
+      "p": "e"
+     },
+     {
+      "id": "e",
+      "p": "d"
+     },
+     {
+      "id": "f",
+      "p": "b"
+     }
+    ],
+    "transform": [
+     {
+      "type": "stratify",
+      "key": "id",
+      "parentKey": "p"
+     },
+     {
+      "type": "tree",
+      "method": "tidy",
+      "size": [
+       {
+        "signal": "height"
+       },
+       {
+        "signal": "width - 100"
+       }
+      ],
+      "as": [
+       "y",
+       "x",
+       "depth",
+       "children"
+      ]
+     }
+    ]
+   },
+   {
+    "name": "links",
+    "source": "tree",
+    "transform": [
+     {
+      "type": "treelinks"
+     },
+     {
+      "type": "linkpath",
+      "orient": "horizontal",
+      "shape": "diagonal"
+     }
+    ]
+   }
+  ],
+  "marks": [
+   {
+    "type": "path",
+    "from": {
+     "data": "links"
+    },
+    "encode": {
+     "enter": {
+      "path": {
+       "field": "path"
+      },
+      "stroke": {
+       "value": "#8899aa"
+      },
+      "strokeWidth": {
+       "value": 1
+      }
+     }
+    }
+   },
+   {
+    "type": "symbol",
+    "from": {
+     "data": "tree"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "field": "x"
+      },
+      "y": {
+       "field": "y"
+      },
+      "size": {
+       "value": 300
+      },
+      "fill": {
+       "value": "#4c78a8"
+      },
+      "stroke": {
+       "value": "#ffffff"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "tree"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "field": "x",
+       "offset": 12
+      },
+      "y": {
+       "field": "y"
+      },
+      "text": {
+       "field": "id"
+      },
+      "baseline": {
+       "value": "middle"
+      },
+      "fontSize": {
+       "value": 12
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "DEGENERATE/MALFORMED HIERARCHY: stratify fed duplicate node ids ('b' twice), a self-referencing edge (c->c) and a 2-cycle (d->e->d). Probes whether the engine errors legibly, drops the bad nodes, or hangs."
+}

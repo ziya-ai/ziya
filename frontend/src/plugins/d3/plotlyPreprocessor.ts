@@ -1705,10 +1705,48 @@ export function neutralizeCaptureHangCombos<T extends PlotlySpec>(spec: T, force
     t => t && typeof t === 'object' && t.type === 'contourcarpet',
   );
   if (hasContourCarpet) {
-    const filtered = data.filter(
-      t => !(t && typeof t === 'object' && typeof t.type === 'string' && /carpet$/.test(t.type)),
+    const removed = data.filter(
+      t => t && typeof t === 'object' && typeof t.type === 'string' && /carpet$/.test(t.type),
     );
-    if (filtered.length !== data.length) { data = filtered; changed = true; }
+    const filtered = data.filter(t => !removed.includes(t));
+    if (filtered.length !== data.length) {
+      data = filtered;
+      changed = true;
+      // D-460: the dropped carpet traces were the ONLY occupants of their
+      // cartesian subplot (here x2/y2). Left in place, plotly still draws that
+      // subplot as an empty framed box beside the surviving ternary — a "silent
+      // blank" half the canvas wide. Remove any axis definition that only the
+      // removed traces referenced (and no surviving trace uses) so the figure
+      // shows just the content that actually rendered.
+      const axisKey = (ref: any, kind: 'x' | 'y'): string => {
+        const s = typeof ref === 'string' && ref ? ref : kind; // 'x2' / 'x'
+        const n = s.slice(1); // '2' / ''
+        return kind + 'axis' + n; // 'xaxis2' / 'xaxis'
+      };
+      const survivingAxes = new Set<string>();
+      for (const t of filtered) {
+        if (t && typeof t === 'object') {
+          survivingAxes.add(axisKey((t as any).xaxis, 'x'));
+          survivingAxes.add(axisKey((t as any).yaxis, 'y'));
+        }
+      }
+      const orphanAxes = new Set<string>();
+      for (const t of removed) {
+        if (t && typeof t === 'object') {
+          for (const k of [axisKey((t as any).xaxis, 'x'), axisKey((t as any).yaxis, 'y')]) {
+            // Never strip the primary x/y (default subplot) and never one still in use.
+            if (k !== 'xaxis' && k !== 'yaxis' && !survivingAxes.has(k)) orphanAxes.add(k);
+          }
+        }
+      }
+      if (orphanAxes.size && layout && typeof layout === 'object') {
+        const restLayout: any = {};
+        for (const [k, v] of Object.entries(layout)) {
+          if (!orphanAxes.has(k)) restLayout[k] = v;
+        }
+        layout = restLayout;
+      }
+    }
   }
 
   return changed ? { ...spec, data, layout } : spec;

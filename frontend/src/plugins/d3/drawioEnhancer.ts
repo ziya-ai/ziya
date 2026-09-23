@@ -582,6 +582,29 @@ export class DrawIOEnhancer {
             const innerDiv = foreignObj.querySelector('div') as HTMLDivElement | null;
             if (!innerDiv) return;
 
+            // D-385: maxGraph already places a ROTATED cell's label correctly
+            // inside the rotate()d group. The shape/label screen measurement
+            // below uses getBoundingClientRect (axis-aligned), so for a rotated
+            // cell it computes a bogus margin-left and mirrors/drops the label.
+            // This pass runs BEFORE the rotation guard in fixAllForeignObjects
+            // and marks labels data-force-positioned, which would let the damage
+            // slip past that guard — so skip rotated cells here too. We return
+            // WITHOUT marking data-force-positioned, letting the main loop's
+            // rotation guard tag it and keep maxGraph's native placement.
+            // D-385: maxGraph already places a ROTATED cell's label correctly
+            // inside the rotate()d group. The shape/label screen measurement
+            // below uses getBoundingClientRect (axis-aligned), so for a rotated
+            // cell it computes a bogus margin-left and mirrors/drops the label.
+            // This pass runs BEFORE the rotation guard in fixAllForeignObjects
+            // and marks labels data-force-positioned, which would let the damage
+            // slip past that guard — so skip rotated cells here too. We return
+            // WITHOUT marking data-force-positioned, letting the main loop's
+            // rotation guard tag it and keep maxGraph's native placement.
+            if (elementHasRotatedAncestor(foreignObj)) {
+                console.log(`  ↻ forceTextCellPositioning: skipping rotated cell ${tc.id} — native placement kept`);
+                return;
+            }
+
             // DIAGNOSTIC: log what state.shape.node actually IS for this cell.
             // For text-style cells, it may be an invisible/empty element rather
             // than the visible background rect we want to align with.
@@ -722,6 +745,12 @@ export class DrawIOEnhancer {
             const innerDiv = foreignObj.querySelector('div') as HTMLDivElement | null;
             if (!innerDiv) return;
 
+            // D-385: a rotated title is placed correctly by maxGraph; the
+            // axis-aligned screen measurement below would misplace it, and
+            // marking it data-force-positioned would hide that from the
+            // fixAllForeignObjects rotation guard. Skip rotated cells here.
+            if (elementHasRotatedAncestor(foreignObj)) return;
+
             const shapeScreen = shapeNode.getBoundingClientRect();
             const divScreen = innerDiv.getBoundingClientRect();
 
@@ -806,11 +835,22 @@ export class DrawIOEnhancer {
     static scaleDownArrowMarkers(
         svgElement: SVGSVGElement,
         maxMarkerPx: number = 12,
-        minMarkerPx: number = 4
+        minMarkerPx: number = 4,
+        viewScale: number = 1
     ): void {
         // Find groups that contain edge shapes (polyline or unfilled path + filled path siblings)
         const allPaths = svgElement.querySelectorAll('path[fill]:not([fill="none"])');
         let scaled = 0;
+
+        // D-091: getBBox() reports the marker's INTRINSIC local size, which is
+        // unaffected by the ancestor view-scale transform that fitCenter applies.
+        // The on-screen size is `localDim * viewScale`, so the legibility band must
+        // be decided against the screen size, not the local size. A wide diagram is
+        // fit-DOWNscaled (viewScale < 1), collapsing a local ~4px marker to sub-pixel;
+        // a narrow one is fit-UPscaled (viewScale > 1). We therefore normalise in
+        // SCREEN space and apply the correction in LOCAL space (the path lives inside
+        // the scaled view group, so a local factor f renders as `screenDim * f`).
+        const effViewScale = Number.isFinite(viewScale) && viewScale > 0 ? viewScale : 1;
 
         allPaths.forEach((pathEl: Element) => {
             const path = pathEl as SVGPathElement;
@@ -828,9 +868,13 @@ export class DrawIOEnhancer {
             try {
                 const bbox = path.getBBox();
                 const maxDim = Math.max(bbox.width, bbox.height);
+                // Effective on-screen size after fitCenter's view-scale transform.
+                const screenDim = maxDim * effViewScale;
 
+                // Decide the band on the SCREEN size; the returned factor applied
+                // in local space lands the on-screen size back inside the band.
                 const scaleFactor = DrawIOEnhancer.computeMarkerNormalizationScale(
-                    maxDim, minMarkerPx, maxMarkerPx
+                    screenDim, minMarkerPx, maxMarkerPx
                 );
                 if (scaleFactor !== 1) {
                     // Scale around the path's center point

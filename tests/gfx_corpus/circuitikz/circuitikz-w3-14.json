@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\n\\node[mixer, fill=blue!20] (mx) at (0,0) {};\n\\node[muxdemux, muxdemux def={NL=2,NR=1,NB=0,NT=0}, fill=green!20] (md) at (3,0) {};\n\\node[flipflop D, fill=orange!20] (ff) at (6.5,0) {};\n\\node[dipchip, num pins=8, fill=red!20] (dc) at (0,-3.2) {};\n\\node[elmech, fill=cyan!20] (em) at (4,-3.2) {};\n\\node[oscillator, fill=yellow!30] (os) at (7,-3.2) {};\n\\node[circulator, fill=violet!20] (ci) at (10,0) {};\n\\node[antenna] (an) at (10,-3.2) {};\n\\node at (5,1.8) {less-travelled circuitikz shapes, each with a fill};\n",
+ "intent": "less-travelled circuitikz block shapes (mixer, muxdemux, flipflop, dipchip, elmech, oscillator, circulator, antenna) with fills -- resolves w1 open probe (a)"
+}

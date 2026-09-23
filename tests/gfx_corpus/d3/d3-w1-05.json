@@ -1,0 +1,46 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "scatter",
+  "width": 620,
+  "height": 380,
+  "data": [
+   {
+    "x": 1.2,
+    "y": 8.4,
+    "size": 10
+   },
+   {
+    "x": 2.8,
+    "y": 15.1,
+    "size": 10
+   },
+   {
+    "x": 4.1,
+    "y": 11.7,
+    "size": 10
+   },
+   {
+    "x": 5.6,
+    "y": 22.3,
+    "size": 10
+   },
+   {
+    "x": 7.0,
+    "y": 19.8,
+    "size": 10
+   },
+   {
+    "x": 8.4,
+    "y": 28.6,
+    "size": 10
+   },
+   {
+    "x": 9.9,
+    "y": 25.0,
+    "size": 10
+   }
+  ]
+ },
+ "intent": "basic-chart scatter (continuous x/y form): twin linear scales with 10% domain padding"
+}

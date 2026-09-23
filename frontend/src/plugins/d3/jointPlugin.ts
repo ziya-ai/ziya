@@ -10,6 +10,7 @@ import {
     sanitizeConnector,
     isSelfLoop,
     selfLoopEndpointConfig,
+    selfLoopVertices,
     linkPairKey,
     computeLabelPlacement,
 } from './jointLinkRouting';
@@ -200,6 +201,74 @@ export const JOINT_MIN_FIT_SCALE = 0.2;
 export const JOINT_MAX_RENDER_HEIGHT = 2000;
 
 // ---------------------------------------------------------------------------
+// Resize-response fit (D-130 — viewbox-fit-clip).
+//
+// The ResizeObserver that reacts to a container-width change used to set the SVG
+// viewBox to `0 0 containerWidth contentHeight` and translate the paper at 1:1.
+// That pins the frame to the CONTAINER width, so any content wider than the
+// container has its right-hand columns cropped, and the paper carries no
+// downscale — exactly the joint-w2-06 failure (a DirectedGraph 4x10 ~700x1800
+// grid loses column 4 at the right edge and row 10 at the bottom, ~28 of 40
+// nodes in frame). fitContentToPaper already frames the FULL content extent via
+// the viewBox and bounds the paper with computeJointFitPlan, but the observer
+// re-clobbered that good viewBox with the naive form whenever the container was
+// (re)sized. This helper reproduces the correct framing as a pure, DOM-free
+// unit so both paths agree: the viewBox spans the whole content bbox (never the
+// container width) and preserveAspectRatio 'meet' scales it all in with nothing
+// clipped, while the paper is bounded to the capture box.
+// ---------------------------------------------------------------------------
+export interface JointResizeFit {
+    paperWidth: number;
+    paperHeight: number;
+    viewBox: { x: number; y: number; width: number; height: number };
+}
+
+export function computeJointResizeFit(
+    bbox: { x: number; y: number; width: number; height: number },
+    containerWidth: number,
+    maxHeight: number,
+    padding = 40,
+): JointResizeFit {
+    const contentWidth = Math.max(1, bbox.width) + padding * 2;
+    const contentHeight = Math.max(1, bbox.height) + padding * 2;
+    const plan = computeJointFitPlan(contentWidth, contentHeight, containerWidth, maxHeight);
+    return {
+        paperWidth: plan.paperWidth,
+        paperHeight: plan.paperHeight,
+        // Frame the full content extent (in paper coords), NOT the container box.
+        viewBox: { x: bbox.x - padding, y: bbox.y - padding, width: contentWidth, height: contentHeight },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Apply the content-framing viewBox to a rendered joint SVG (D-129 / D-404).
+//
+// The fit path used to inline this DOM mutation, and it only ran inside a
+// deferred setTimeout, so a heavy graph captured before the timer fired kept the
+// paper's initial container-sized viewBox (content cropped / mis-framed). This
+// pure helper frames the FULL content bbox (plus padding) in PAPER coordinates
+// and sets preserveAspectRatio 'meet', so the whole graph scales in with nothing
+// clipped — the viewBox is NEVER pinned to the container width. Extracted as a
+// DOM-only unit (no layout reads, no JointJS Paper) so it is testable against a
+// plain <svg> element, and called both inline (synchronously, after layout) and
+// from the safety re-run.
+// ---------------------------------------------------------------------------
+export function applyJointContentFrame(
+    svg: SVGSVGElement | null | undefined,
+    bbox: { x: number; y: number; width: number; height: number },
+    padding = 40,
+): { x: number; y: number; width: number; height: number } | null {
+    if (!svg) return null;
+    const contentWidth = Math.max(1, bbox.width) + padding * 2;
+    const contentHeight = Math.max(1, bbox.height) + padding * 2;
+    const vbX = bbox.x - padding;
+    const vbY = bbox.y - padding;
+    svg.setAttribute('viewBox', `${vbX} ${vbY} ${contentWidth} ${contentHeight}`);
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    return { x: vbX, y: vbY, width: contentWidth, height: contentHeight };
+}
+
+// ---------------------------------------------------------------------------
 // Grid fallback for a DirectedGraph.layout throw at scale (G-27 / D-030 / D-111).
 //
 // @joint/layout-directed-graph's DirectedGraph.layout throws
@@ -244,6 +313,51 @@ export function computeGridFallbackPositions(
         out.push({ id: cells[i].id, x: col * pitchX, y: row * pitchY });
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Wide-auto-layout reflow guard (D-133 / D-405).
+//
+// DirectedGraph.layout can SUCCEED yet emit a degenerate, extremely wide bbox:
+// a balanced tree whose widest rank holds ~100 nodes (joint-w2-02) or a single
+// hub fanning out to 60 leaves in one rank (joint-w2-03) lays out ~10-17k px
+// wide by a few hundred px tall. That surface only fits the capture box by
+// downscaling to ~0.04-0.06x — a ~20px illegible strip with sub-pixel labels —
+// and the JOINT_MIN_FIT_SCALE floor merely hands the same illegible aspect to
+// the downstream capture-fit, which re-shrinks it. Neither the throw-fallback
+// (layout succeeded, so it never fires) nor the fit floor helps.
+//
+// This predicate detects that case: many nodes, far wider than tall, and a
+// width-fit scale already below the legibility floor. When it fires, the render
+// loop re-flows the elements into the SAME near-square reading-order grid the
+// throw-fallback uses (computeGridFallbackPositions), trading a lost hierarchy
+// for a legible matrix. It is self-limiting — a layout that already fits
+// legibly has widthFit above the floor and is left untouched, so ordinary
+// graphs and the intentionally TALL chain (joint-w2-04, narrow bbox → widthFit
+// is fine) keep their DirectedGraph layout verbatim.
+// ---------------------------------------------------------------------------
+
+/** Minimum node count before a wide layout is considered for grid reflow. */
+export const JOINT_WIDE_REFLOW_MIN_NODES = 24;
+/** Width-fit scale below which single-rank/fan content reads as an illegible
+ *  strip; only then is a very wide layout re-flowed to a grid (D-133 / D-405). */
+export const JOINT_WIDE_REFLOW_SCALE = 0.15;
+/** Minimum width:height ratio for reflow — leaves tall/near-square layouts be. */
+export const JOINT_WIDE_REFLOW_ASPECT = 3;
+
+export function shouldReflowWideLayout(
+    contentWidth: number,
+    contentHeight: number,
+    containerWidth: number,
+    nodeCount: number,
+): boolean {
+    if (!(nodeCount >= JOINT_WIDE_REFLOW_MIN_NODES)) return false;
+    const cw = Math.max(1, containerWidth);
+    const w = Math.max(1, contentWidth);
+    const h = Math.max(1, contentHeight);
+    const widthFit = cw / w;          // scale needed to fit the width into the box
+    const aspect = w / h;             // > 1 means wider than tall
+    return aspect > JOINT_WIDE_REFLOW_ASPECT && widthFit < JOINT_WIDE_REFLOW_SCALE;
 }
 
 export interface JointSpec {
@@ -1649,7 +1763,8 @@ export function coerceJointBoolean(value: any): any {
 const createEnhancedLink = (
     linkSpec: JointLink,
     theme: 'light' | 'dark',
-    siblingInfo?: { index: number; count: number }
+    siblingInfo?: { index: number; count: number; ordinal?: number },
+    loopVertices?: { x: number; y: number }[]
 ) => {
     // Configure source/target with proper anchor and connection points
     const sourceConfig = typeof linkSpec.source === 'string'
@@ -1716,7 +1831,13 @@ const createEnhancedLink = (
         // D-411: a self-loop overrides the connector to 'smooth' so the arc between
         // its two distinct side-anchors bows out visibly rather than cutting straight.
         connector: selfLoopConnector || sanitizeConnector(linkSpec.connector, 'rounded', { radius: 15 }),
-        vertices: linkSpec.vertices || [],
+        // D-411: a self-loop needs a waypoint OUTSIDE the node so the smooth
+        // connector bows the arc out past the boundary instead of cutting a short
+        // chord across the corner (which reads as invisible). loopVertices is
+        // computed from the source element's bbox at the call site.
+        vertices: (selfLoop && loopVertices && loopVertices.length)
+            ? loopVertices
+            : (linkSpec.vertices || []),
         defaultRouter: { name: 'normal' },
         attrs: {
             line: {
@@ -1748,7 +1869,11 @@ const createEnhancedLink = (
         // lengthwise) and, when several links share a node pair, stagger the
         // labels along the link and to alternating sides so they do not pile up
         // at one midpoint (the a<->b 2-cycle overprint).
-        const placement = computeLabelPlacement(siblingInfo?.index ?? 0, siblingInfo?.count ?? 1);
+        const placement = computeLabelPlacement(
+            siblingInfo?.index ?? 0,
+            siblingInfo?.count ?? 1,
+            siblingInfo?.ordinal ?? 0
+        );
         link.appendLabel({
             position: { distance: placement.distance, offset: placement.offset },
             attrs: {
@@ -2209,6 +2334,20 @@ export function computeJointElementStyle(
             const surfHex = expandJointHex(effectiveFill)
                 || (/^#[0-9a-f]{6}$/i.test(effectiveFill) ? effectiveFill : null);
             if (surfHex && jointContrastRatio(surfHex, opts.pageBg) < 1.35) {
+                // D-417: a ghost outline on a fill that equals the page still reads
+                // as an EMPTY box — the node has no visible surface. So first nudge
+                // the fill itself to stand off the page (>=1.5:1) by mixing it toward
+                // the page's opposite, which preserves the author's light/dark
+                // character (a near-white fill stays a light-grey card, a near-black
+                // fill stays a dark-grey card) while giving the node a body again.
+                // Then lift the boundary stroke to the 3:1 graphical floor. Fill +
+                // border together read as a legible node in either theme.
+                const nudged = ensureReadableFill(surfHex, opts.pageBg, surfHex, 1.5);
+                if (nudged !== surfHex) {
+                    body.fill = nudged;
+                    effectiveFill = nudged;
+                    bodyFillChanged = true;
+                }
                 const authorStroke = (typeof body.stroke === 'string' && body.stroke !== 'none')
                     ? body.stroke : '#808080';
                 body.stroke = ensureReadableFill(authorStroke, opts.pageBg, authorStroke, 3);
@@ -2680,31 +2819,44 @@ export const jointPlugin: D3RenderPlugin = {
 
                         // Get content bounds to maintain proper height
                         const bbox = graph.getBBox();
-                        if (bbox) {
+                        if (bbox && bbox.width > 0 && bbox.height > 0) {
+                            // D-130 (viewbox-fit-clip): frame the FULL content extent and
+                            // bound the paper to the capture box, exactly as
+                            // fitContentToPaper does. The previous handler set the viewBox
+                            // to `0 0 newWidth contentHeight` and translated the paper at
+                            // 1:1, pinning the frame to the container width — so w2-06's
+                            // 4x10 ~700x1800 grid lost column 4 (right edge) and row 10
+                            // (bottom) whenever the observer fired after layout. Using the
+                            // shared fit lets preserveAspectRatio 'meet' scale all content
+                            // in with nothing clipped.
                             const padding = 40;
-                            const contentHeight = bbox.height + padding * 2;
+                            const maxHeight = Math.max(JOINT_MAX_RENDER_HEIGHT, spec.height || 0);
+                            const fit = computeJointResizeFit(bbox, newWidth, maxHeight, padding);
 
-                            // Update paper width, maintain content-based height
-                            paper.setDimensions(newWidth, Math.max(contentHeight, 300));
+                            // Bound the paper to the fit plan (may downscale an oversized graph).
+                            paper.setDimensions(fit.paperWidth, fit.paperHeight);
 
-                            // Update container and parent heights to match
-                            container.style.height = `${Math.max(contentHeight, 300)}px`;
-                            container.style.minHeight = `${Math.max(contentHeight, 300)}px`;
+                            // Update container and parent heights to match the paper.
+                            container.style.height = `${fit.paperHeight}px`;
+                            container.style.minHeight = `${fit.paperHeight}px`;
 
                             // Also update parent d3-container if it exists
                             const parentContainer = container.parentElement;
                             if (parentContainer?.classList.contains('d3-container')) {
                                 parentContainer.style.height = 'auto';
-                                parentContainer.style.minHeight = `${Math.max(contentHeight, 300)}px`;
+                                parentContainer.style.minHeight = `${fit.paperHeight}px`;
                             }
 
-                            // Reposition content to center
-                            paper.translate(padding - bbox.x, padding - bbox.y);
+                            // Keep the paper at the identity transform; the viewBox frames
+                            // the full content extent, so no translate is needed.
+                            paper.translate(0, 0);
 
-                            // Update SVG viewBox
+                            // Update SVG viewBox to the full content extent (not the
+                            // container box) so every column/row stays in frame.
                             const svg = container.querySelector('svg');
                             if (svg) {
-                                svg.setAttribute('viewBox', `0 0 ${newWidth} ${Math.max(contentHeight, 300)}`);
+                                svg.setAttribute('viewBox', `${fit.viewBox.x} ${fit.viewBox.y} ${fit.viewBox.width} ${fit.viewBox.height}`);
+                                svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
                             }
                         }
                     }
@@ -2885,10 +3037,29 @@ export const jointPlugin: D3RenderPlugin = {
                     const pairKey = linkPairKey(linkSpec.source, linkSpec.target);
                     const pairIdx = jointPairSeen.get(pairKey) || 0;
                     jointPairSeen.set(pairKey, pairIdx + 1);
+                    // D-411: for a self-loop, hand createEnhancedLink a waypoint
+                    // outside the source node's bbox so the loop arc is visible.
+                    let loopVerts: { x: number; y: number }[] | undefined;
+                    if (isSelfLoop(linkSpec.source, linkSpec.target)) {
+                        try {
+                            const srcEl = jointElements.find(el => el.id === sourceId);
+                            if (srcEl && typeof (srcEl as any).getBBox === 'function') {
+                                const bb = (srcEl as any).getBBox();
+                                loopVerts = selfLoopVertices({
+                                    x: bb.x, y: bb.y, width: bb.width, height: bb.height,
+                                });
+                            }
+                        } catch (bbErr) {
+                            console.warn(`joint: could not compute self-loop vertices for ${linkSpec.id}`, bbErr);
+                        }
+                    }
                     const link = createEnhancedLink(linkSpec, theme, {
                         index: pairIdx,
                         count: jointPairCount.get(pairKey) || 1,
-                    });
+                        // D-407 / D-131: a monotonic per-link ordinal breaks label
+                        // ties between DIFFERENT pairs whose mid-links coincide.
+                        ordinal: jointLinks.length,
+                    }, loopVerts);
                     if (link) {
                         jointLinks.push(link);
                         graph.addCell(link);
@@ -2946,6 +3117,46 @@ export const jointPlugin: D3RenderPlugin = {
                     } catch (gridErr) {
                         console.warn('joint: grid fallback positioning failed', gridErr);
                     }
+                }
+            }
+
+            // D-133 / D-405: a SUCCESSFUL DirectedGraph.layout can still produce a
+            // degenerate, extremely wide bbox (w2-02 ~100-node bottom rank, w2-03
+            // 60-leaf single-rank fan) that only fits the capture box by downscaling
+            // to an illegible ~20px strip. When the width-fit is below the legibility
+            // floor and the content is far wider than tall, re-flow into the same
+            // near-square reading-order grid the throw-fallback uses, so the graph
+            // degrades to a legible matrix instead of a blank strip. Self-limiting:
+            // a layout that already fits legibly (or a tall chain) is untouched.
+            if (spec.autoLayout !== false && jointElements.length > 1) {
+                try {
+                    const bb = graph.getBBox();
+                    const cr0 = container.getBoundingClientRect();
+                    const cW0 = cr0.width > 0 ? cr0.width : width;
+                    if (bb && bb.width > 0 && bb.height > 0 &&
+                        shouldReflowWideLayout(bb.width, bb.height, cW0, jointElements.length)) {
+                        const cells: JointGridCell[] = jointElements.map(el => {
+                            const s = (typeof (el as any).size === 'function')
+                                ? (el as any).size() : undefined;
+                            return {
+                                id: String((el as any).id),
+                                width: (s && s.width) || 120,
+                                height: (s && s.height) || 60,
+                            };
+                        });
+                        const placements = computeGridFallbackPositions(cells);
+                        const byId = new Map(placements.map(p => [p.id, p]));
+                        jointElements.forEach(el => {
+                            const p = byId.get(String((el as any).id));
+                            if (p && typeof (el as any).position === 'function') {
+                                (el as any).position(p.x, p.y);
+                            }
+                        });
+                        console.log('joint: reflowed wide auto-layout to grid',
+                            placements.length, 'nodes; bbox was', bb.width, 'x', bb.height);
+                    }
+                } catch (reflowErr) {
+                    console.warn('joint: wide-layout reflow check failed', reflowErr);
                 }
             }
 
@@ -3029,16 +3240,29 @@ export const jointPlugin: D3RenderPlugin = {
                         svg.style.height = '100%';
                         svg.style.maxWidth = '100%';
                         svg.style.maxHeight = 'none'; // Allow vertical growth
-                        const vbX = bbox.x - padding;
-                        const vbY = bbox.y - padding;
-                        svg.setAttribute('viewBox', `${vbX} ${vbY} ${contentWidth} ${contentHeight}`);
-                        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                        console.log('SVG viewBox set to content extent:', vbX, vbY, contentWidth, contentHeight);
+                        const framed = applyJointContentFrame(svg as SVGSVGElement, bbox, padding);
+                        console.log('SVG viewBox set to content extent:', framed);
                     }
                 }
             };
 
-            // Fit content after layout completes
+            // D-129 / D-404: apply the fit SYNCHRONOUSLY, immediately after layout.
+            // The paper is synchronous (no `async: true`), so every cell view is
+            // already rendered and graph.getBBox() is valid the instant we get here.
+            // The previous code applied the content-framing viewBox ONLY inside
+            // setTimeout(fitContentToPaper, 300), while DiagramRenderPage's headless
+            // completion detector snapshots the DOM 500ms after the FIRST <svg>
+            // mutation — two UNCOUPLED fixed timers. A small graph fits inside that
+            // 200ms margin, but a heavy graph (100-node / 500-cell / long auto-layout
+            // chain — exactly the D-129/D-404 failing specs) whose layout + first
+            // paint starve the main thread can have its capture fire before the naked
+            // 300ms timer ever runs, so the PNG is taken with the paper's initial
+            // container-sized viewBox: content cropped (D-129) or mis-framed (D-404).
+            // Running the fit inline guarantees the correct viewBox is in the DOM
+            // before the <svg> is ever observed, closing the race. The delayed re-run
+            // is kept as a belt-and-suspenders pass for any post-layout reflow (e.g.
+            // late webfont metrics) and is idempotent — it recomputes the same frame.
+            fitContentToPaper();
             setTimeout(fitContentToPaper, 300);
 
             // Add interaction handlers

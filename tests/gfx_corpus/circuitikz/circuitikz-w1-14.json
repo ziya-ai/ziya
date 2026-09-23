@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\ctikzset{bipoles/length=1.4cm}\n\\draw (0,0) to[R=$R_1$, color=blue!60!black] (3,0) to[R=$R_2$, color=red!70!black] (6,0);\n\\draw[green!45!black] (0,-2) to[R=$R_3$] (3,-2) to[C=$C_1$, fill=black!15] (6,-2);\n\\draw (0,-4) to[R=$R_4$, mirror] (3,-4) to[D=$D_1$, invert] (6,-4);",
+ "intent": "ctikzset global styling (bipoles/length) combined with per-path and per-component colour, fill, mirror and invert keys. Author palette is !black-mixed."
+}

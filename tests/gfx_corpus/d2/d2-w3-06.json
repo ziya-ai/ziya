@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "# less-travelled shape dialects combined\ndisk: {shape: cylinder}\ncircleNode: {shape: circle}\ncloudy: {shape: cloud}\npersonA: {shape: person}\ndocNode: {shape: document}\nhexNode: {shape: hexagon}\ndiamondNode: {shape: diamond}\nqueueNode: {shape: queue}\npageNode: {shape: page}\nstepNode: {shape: step}\ndisk -> circleNode\ncloudy -> personA\ndocNode -> hexNode\ndiamondNode -> queueNode\npageNode -> stepNode",
+ "intent": "Ten d2 shape dialects (cylinder/circle/cloud/person/document/hexagon/diamond/queue/page/step) in one spec"
+}

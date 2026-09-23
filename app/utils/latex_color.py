@@ -158,6 +158,71 @@ def _rgb_call_to_expr(inner: str) -> str | None:
     return f"rgb,255:red,{chans[0]};green,{chans[1]};blue,{chans[2]}"
 
 
+def _hsl_call_channels(inner: str) -> tuple[int, int, int] | None:
+    """``'210,50%,40%'`` -> ``(51, 102, 153)`` (CSS hsl -> sRGB, alpha dropped).
+
+    Hue in degrees, saturation/lightness as a fraction or a ``%`` value.  A ``%``
+    is a TeX comment, so an unconverted ``hsl(210,50%,40%)`` would swallow the
+    rest of the line -- this conversion removes it before it reaches TeX (D-482).
+    Returns None when the first three fields cannot be read as numbers.
+    """
+    parts = [p.strip() for p in inner.split(",")]
+    if len(parts) < 3:
+        return None
+
+    def _frac(x: str) -> float:
+        """A saturation/lightness field: ``40%`` -> 0.40, ``0.4`` -> 0.4."""
+        x = x.strip()
+        return float(x[:-1]) / 100.0 if x.endswith("%") else float(x)
+
+    try:
+        # Hue is an angle in degrees (a trailing ``deg`` or ``%`` is tolerated).
+        htok = parts[0].strip().rstrip("%")
+        if htok.lower().endswith("deg"):
+            htok = htok[:-3]
+        h = float(htok)
+        s = _frac(parts[1])
+        ll = _frac(parts[2])
+    except ValueError:
+        return None
+    s = max(0.0, min(1.0, s))
+    ll = max(0.0, min(1.0, ll))
+    return _hsl_to_rgb(h, s, ll)
+
+
+def _hsl_to_rgb(h: float, s: float, ll: float) -> tuple[int, int, int]:
+    """CSS ``hsl(h, s, l)`` (h deg, s/l in 0..1) -> ``(r, g, b)`` 0..255."""
+    h = h % 360.0
+    c = (1.0 - abs(2.0 * ll - 1.0)) * s
+    x = c * (1.0 - abs((h / 60.0) % 2.0 - 1.0))
+    mm = ll - c / 2.0
+    if h < 60:
+        rp, gp, bp = c, x, 0.0
+    elif h < 120:
+        rp, gp, bp = x, c, 0.0
+    elif h < 180:
+        rp, gp, bp = 0.0, c, x
+    elif h < 240:
+        rp, gp, bp = 0.0, x, c
+    elif h < 300:
+        rp, gp, bp = x, 0.0, c
+    else:
+        rp, gp, bp = c, 0.0, x
+    return (
+        max(0, min(255, int(round((rp + mm) * 255)))),
+        max(0, min(255, int(round((gp + mm) * 255)))),
+        max(0, min(255, int(round((bp + mm) * 255)))),
+    )
+
+
+def _hsl_call_to_expr(inner: str) -> str | None:
+    """``'210,50%,40%'`` -> ``'rgb,255:red,51;green,102;blue,153'`` (alpha dropped)."""
+    chans = _hsl_call_channels(inner)
+    if chans is None:
+        return None
+    return f"rgb,255:red,{chans[0]};green,{chans[1]};blue,{chans[2]}"
+
+
 def _convert_token(tok: str) -> str | None:
     """Convert a single colour token to an xcolor-valid BARE expression/name.
 
@@ -169,6 +234,11 @@ def _convert_token(tok: str) -> str | None:
     m = re.fullmatch(r"rgba?\(([^)]*)\)", t, re.IGNORECASE)
     if m:
         return _rgb_call_to_expr(m.group(1))
+    # hsl() / hsla() -- convert to an rgb expression so the ``%`` (a TeX comment)
+    # never reaches TeX and swallows the line (D-482).
+    m = re.fullmatch(r"hsla?\(([^)]*)\)", t, re.IGNORECASE)
+    if m:
+        return _hsl_call_to_expr(m.group(1))
     # hashed hex (#abc / #aabbcc)
     m = re.fullmatch(r"#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})", t)
     if m:
@@ -237,6 +307,17 @@ _RGB_CALL_RE = re.compile(r"rgba?\(([^)]*)\)", re.IGNORECASE)
 _BARE_RGBCALL_RE = re.compile(
     r"([\[,]\s*)(rgba?\(([^)]*)\))(?=\s*[,\]])", re.IGNORECASE)
 
+# hsl()/hsla() anywhere -- the CSS functional form xcolor cannot parse, and
+# whose ``%`` is a TeX line comment that would swallow the rest of the line
+# (D-482, tikz-cd-w4-10 ``color=hsl(210,50%,40%)``).  Converted to a braced
+# ``{rgb,255:...}`` expression exactly like ``rgb()``; alpha (hsla) is dropped.
+_HSL_CALL_RE = re.compile(r"hsla?\(([^)]*)\)", re.IGNORECASE)
+# hsl()/hsla() as a BARE positional option token (mirror of _BARE_RGBCALL_RE):
+# wrapped as ``color={rgb,...}`` so tikz/chemfig do not read a bare brace as a
+# key.
+_BARE_HSLCALL_RE = re.compile(
+    r"([\[,]\s*)(hsla?\(([^)]*)\))(?=\s*[,\]])", re.IGNORECASE)
+
 # key=value colour option: fill= / draw= / color= / text=  followed by a
 # convertible value token.
 _KEY = "|".join(_COLOUR_KEYS)
@@ -247,6 +328,12 @@ _OPT_HEX_RE = re.compile(
     rf"(?<![A-Za-z])((?:{_KEY})\s*=\s*)[\"']?#([0-9A-Fa-f]{{6}}|[0-9A-Fa-f]{{3}})[\"']?")
 _OPT_TRANSPARENT_RE = re.compile(
     rf"(?<![A-Za-z])((?:{_KEY})\s*=\s*)transparent(?:!\d+)?(?![A-Za-z])")
+# ``opacity=`` (or ``fill/draw/text opacity=``) carrying a CSS keyword instead
+# of a number (D-484: ``opacity=none`` / ``opacity=inherit`` abort pgfmath).
+_OPT_OPACITY_KEYWORD_RE = re.compile(
+    r"((?:fill\s+|draw\s+|text\s+)?opacity\s*=\s*)"
+    r"(none|inherit|initial|unset|transparent)(?![A-Za-z])",
+    re.IGNORECASE)
 _OPT_NAME_RE = re.compile(
     rf"(?<![A-Za-z])((?:{_KEY})\s*=\s*)([A-Za-z]+)(?=[\s,\]}}])")
 
@@ -268,7 +355,8 @@ _OPT_BARE_NAME_RE = re.compile(r"([\[,]\s*)([A-Za-z]{3,})(?=\s*[,\]])")
 # (chemfig-w4-06), ``currentColor``, or ``theme-bg`` / ``theme.foreground``.
 _THEME_TOKEN_FULL_RE = re.compile(
     r"var\(--[A-Za-z0-9_-]+\)|--[A-Za-z][A-Za-z0-9_-]*"
-    r"|currentcolor|theme[-.][A-Za-z.-]+",
+    r"|currentcolor|theme[-.][A-Za-z.-]+"
+    r"|\$[A-Za-z][A-Za-z0-9_-]*",
     re.IGNORECASE)
 
 
@@ -291,7 +379,8 @@ def _is_theme_token(tok: str) -> bool:
 # other option passes, so a stray ``var(--x)`` in a label is left alone.
 _OPT_THEME_TOKEN_RE = re.compile(
     rf"(?<![A-Za-z])((?:{_KEY})\s*=\s*)"
-    r"(var\(--[A-Za-z0-9_-]+\)|currentcolor|theme[-.][A-Za-z-]+)",
+    r"(var\(--[A-Za-z0-9_-]+\)|currentcolor|theme[-.][A-Za-z-]+"
+    r"|\$[A-Za-z][A-Za-z0-9_-]*)",
     re.IGNORECASE,
 )
 
@@ -570,6 +659,13 @@ _CLAMP_MACRO_RE = re.compile(r"(\\(?:color|textcolor))(?!\s*\[)\s*\{([^{}]*)\}")
 _CLAMP_OPT_RE = re.compile(rf"(?<![A-Za-z])((?:draw|color)\s*=\s*){_COLOUR_VALUE}")
 # a bare colour as a whole option inside a [...] list: promote to color={...}.
 _CLAMP_BARE_RE = re.compile(rf"([\[,]\s*)({_COLOUR_BARE})(?=\s*[,\]])")
+# a node ``text=<value>`` ink option.  Clamped ONLY when its enclosing option
+# block carries no ``fill=`` (D-351): a ``text=`` paired with a ``fill=`` was
+# chosen for that fill and is handled by the fill-aware label-ink helpers, but a
+# node with no fill draws its label straight on the page/backdrop, so its
+# ``text=`` ink must clear the 4.5:1 text floor like any other label
+# (circuitikz-w3-09 ``\node[text=DarkGreen]`` = 2.27:1 on the dark page).
+_CLAMP_TEXT_RE = re.compile(rf"(?<![A-Za-z])(text\s*=\s*){_COLOUR_VALUE}")
 
 #: A node LABEL carrier inside a single statement: a ``node`` (``\node`` or a
 #: path-attached ``node``) that terminates in a brace group with visible text.
@@ -579,6 +675,16 @@ _CLAMP_BARE_RE = re.compile(rf"([\[,]\s*)({_COLOUR_BARE})(?=\s*[,\]])")
 #: ``\node[blue]{$\sin x$}`` lifted only to 3.12/3.15:1 leave the LABEL under
 #: the text floor while the stroke passes).
 _NODE_LABEL_RE = re.compile(r"\bnode\b[^;]*?\{[^{}]*?\S[^{}]*?\}")
+#: a circuitikz component LABEL: a ``to[...]`` whose option list carries an
+#: uppercase-keyed annotation (``R=$R_1$``, ``C=$C_1$``, ``L=$L_1$``, ``V=``,
+#: ``I=`` ...).  circuitikz draws that label in the path's ``color=``/bare ink,
+#: so -- exactly like a node label (D-233) -- that ink paints text and must
+#: clear the 4.5:1 text floor, not the 3:1 graphical floor (D-351: a
+#: ``color=green!45!black`` tinting both the bipole and its ``R=$R_3$`` label
+#: was lifted only to 3:1, leaving the label sub-legible).  tikz option keys
+#: (color/fill/draw/out/in/bend...) are lowercase, so an UPPERCASE key inside a
+#: ``to[...]`` is unambiguously a component label, not a styling key.
+_CKT_LABEL_RE = re.compile(r"\bto\b\s*\[[^\]]*?(?<![A-Za-z])[A-Z][A-Za-z]*\s*=")
 
 
 def _enclosing_is_bracket(text: str, pos: int) -> bool:
@@ -618,7 +724,27 @@ def _statement_has_label(text: str, pos: int) -> bool:
     end = text.find(";", pos)
     if end == -1:
         end = len(text)
-    return _NODE_LABEL_RE.search(text[start:end]) is not None
+    seg = text[start:end]
+    return (_NODE_LABEL_RE.search(seg) is not None
+            or _CKT_LABEL_RE.search(seg) is not None)
+
+
+def _statement_has_ckt_label(text: str, pos: int) -> bool:
+    """True iff the statement containing ``pos`` carries a circuitikz component
+    label (``to[R=..]`` / ``to[V=..]`` ...).
+
+    Narrower than ``_statement_has_label``: it excludes general tikz ``node``
+    labels.  circuitikz draws such a component annotation in the path's
+    ``color=``/bare ink, so an illegible one is a bug on EITHER page -- the same
+    carve-out d033 makes for ``\\color`` macros -- which is what licenses lifting
+    it on the light bare page (D-352/D-354).  A general ``\\node`` stroke is NOT
+    licensed there: the light-page stroke/colour passthrough for author nodes is
+    the deliberate, g04/d234-protected contract."""
+    start = text.rfind(";", 0, pos) + 1
+    end = text.find(";", pos)
+    if end == -1:
+        end = len(text)
+    return _CKT_LABEL_RE.search(text[start:end]) is not None
 
 
 # --------------------------------------------------------------------------
@@ -704,6 +830,56 @@ def _fill_opt_colour(opts: str) -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------
+# Alpha / fill-opacity compositing (D-470).
+#
+# The backdrop and fill-label helpers below measured an author fill as OPAQUE
+# and ignored a ``fill opacity=``/``opacity=`` sitting in the same option list.
+# A ``fill=blue, fill opacity=0.15`` cell is not blue -- it is 15% blue over the
+# page (``#D9D9FF`` on white, a near-white surface), so a page-relative verdict
+# that treats it as saturated blue picks the wrong ink endpoint: it injects
+# WHITE labels (or lifts a text ink toward white) that then score ~1.4:1 on the
+# actual pale composite (tikz-cd-w3-10).  ``_fill_alpha`` reads the effective
+# fill alpha and ``_composite`` blends the colour over the surface, so the
+# measured backdrop is the pixels a viewer actually sees.  A fill without an
+# opacity key resolves to alpha 1.0 -> the colour is returned unchanged, so
+# every opacity-free body is byte-identical.
+# --------------------------------------------------------------------------
+
+#: ``fill opacity=<a>`` (fill-only alpha); wins over a standalone ``opacity=``.
+_FILL_OPACITY_RE = re.compile(r"fill\s+opacity\s*=\s*([0-9]*\.?[0-9]+)")
+#: a STANDALONE ``opacity=<a>`` option (sets both fill and draw alpha).  Anchored
+#: to a ``[``/``,`` delimiter so a qualified ``fill opacity``/``text opacity``/
+#: ``draw opacity`` (a word + space before ``opacity``) never matches here.
+_BARE_OPACITY_RE = re.compile(r"[\[,]\s*opacity\s*=\s*([0-9]*\.?[0-9]+)")
+
+
+def _fill_alpha(opts: str) -> float:
+    """Effective fill alpha from an option list (D-470): ``fill opacity`` wins,
+    else a standalone ``opacity``, else fully opaque (1.0)."""
+    m = _FILL_OPACITY_RE.search(opts) or _BARE_OPACITY_RE.search(opts)
+    if m is None:
+        return 1.0
+    try:
+        return max(0.0, min(1.0, float(m.group(1))))
+    except ValueError:
+        return 1.0
+
+
+def _composite(fg: tuple[int, int, int], alpha: float,
+               bg: tuple[int, int, int]) -> tuple[int, int, int]:
+    """``fg`` painted at ``alpha`` over ``bg`` (straight alpha over)."""
+    if alpha >= 1.0:
+        return fg
+    return tuple(int(round(fg[i] * alpha + bg[i] * (1 - alpha)))  # type: ignore[return-value]
+                 for i in range(3))
+
+
+#: the CONTENT of a tikz-cd/tikz ``nodes = { ... }`` cell-option block, so both
+#: its ``fill=`` and any ``fill opacity=`` can be read together (D-470).
+_CELL_NODES_RE = re.compile(r"nodes\s*=\s*\{([^{}]*)\}")
+
+
 def _effective_surface(body: str, page: tuple[int, int, int],
                        defs: dict[str, tuple[int, int, int]]
                        ) -> tuple[int, int, int]:
@@ -719,18 +895,24 @@ def _effective_surface(body: str, page: tuple[int, int, int],
         rgb = _resolve_xcolor_rgb(m.group(1).strip(), defs)
         if rgb is not None:
             return rgb
-    m = _CELL_FILL_RE.search(body)
-    if m:
-        rgb = _resolve_xcolor_rgb(m.group(1).strip(), defs)
-        if rgb is not None:
-            return rgb
+    mnodes = _CELL_NODES_RE.search(body)
+    if mnodes:
+        blk = mnodes.group(1)
+        fm = re.search(r"(?<![A-Za-z])fill\s*=\s*(\{[^{}]*\}|[A-Za-z][\w!]*)", blk)
+        if fm:
+            rgb = _resolve_xcolor_rgb(fm.group(1).strip(), defs)
+            if rgb is not None:
+                # Composite the cell fill over the page by its fill opacity so
+                # the backdrop is the effective (visible) surface, not the
+                # saturated colour (D-470: fill=blue at 0.15 -> #D9D9FF).
+                return _composite(rgb, _fill_alpha(blk), page)
     rects = _FILL_RECT_RE.findall(body)
     if len(rects) == 1:
         col = _fill_opt_colour(rects[0])
         if col:
             rgb = _resolve_xcolor_rgb(col.strip(), defs)
             if rgb is not None:
-                return rgb
+                return _composite(rgb, _fill_alpha(rects[0]), page)
     return page
 
 
@@ -758,17 +940,118 @@ def detect_dark_plate(body: str) -> tuple[int, int, int] | None:
     try:
         defs = _collect_definecolors(body)
         rects = _FILL_RECT_RE.findall(body)
-        if len(rects) != 1:
+        if len(rects) == 1:
+            col = _fill_opt_colour(rects[0])
+            if not col:
+                return None
+            rgb = _resolve_xcolor_rgb(col.strip(), defs)
+            if rgb is None:
+                return None
+            if _rel_luminance(rgb) >= 0.18:  # a light/mid plate is not this case
+                return None
+            return rgb
+        # No sole \fill rectangle.  A tikz-cd/tikz all-dark cell card (D-467)
+        # is the same situation by a different construction: the cell fill
+        # ``cells={nodes={fill=<dark>}}`` is the card and light ink (edge
+        # arrows, edge labels) sits on it, but the arrows crossing BETWEEN
+        # cells fall on the page -- invisible on white.  Extending the plate to
+        # the whole page (as the sole-rectangle case does) keeps that off-cell
+        # ink legible.  Guarded exactly as the rectangle case: fire ONLY when
+        # the sole resolvable cell fill is DARK and there is no lighter fill
+        # elsewhere, so a near-white-cell card (tikz-cd-w3-08) or a mixed body
+        # keeps the plain white page and is byte-identical.
+        if not rects:
+            mnodes = _CELL_NODES_RE.search(body)
+            if mnodes:
+                blk = mnodes.group(1)
+                fm = re.search(
+                    r"(?<![A-Za-z])fill\s*=\s*(\{[^{}]*\}|[A-Za-z][\w!]*)", blk)
+                if fm:
+                    rgb = _resolve_xcolor_rgb(fm.group(1).strip(), defs)
+                    if rgb is not None:
+                        eff = _composite(rgb, _fill_alpha(blk), (255, 255, 255))
+                        if _rel_luminance(eff) < 0.18:
+                            return eff
+        return None
+    except Exception:                      # pragma: no cover - defensive
+        return None
+
+
+#: A ``\shade[...] ... rectangle`` background (an axis/radial gradient), used by
+#: detect_light_plate to judge a light card that is painted with gradients
+#: rather than a solid ``\fill`` (D-353, circuitikz-w3-04).
+_SHADE_RECT_RE = re.compile(r"\\shade\s*\[([^\]]*)\][^;]*?\brectangle\b")
+#: ``[<edge> ]color=`` inside a ``\shade`` option list -- the gradient endpoint
+#: colours (left/right/top/bottom/inner/outer/middle color, or a bare color).
+_SHADE_COLOUR_RE = re.compile(
+    r"(?:[a-z]+\s+)?color\s*=\s*(\{[^{}]*\}|[A-Za-z][\w!.]*)")
+
+
+def detect_light_plate(body: str) -> tuple[int, int, int] | None:
+    """RGB of a SOLE author LIGHT background, else None (D-353).
+
+    The MIRROR of ``detect_dark_plate``.  A model commonly emits a
+    self-contained LIGHT "card": the whole background is a white/pale
+    ``\\fill[...] ... rectangle`` (circuitikz-w3-01) or a set of pale
+    ``\\shade[...] ... rectangle`` gradients (circuitikz-w3-04), with a light
+    palette drawn on top.  On the DARK page ``build_document`` bakes a dark
+    surface + light default ink, so the card renders as a jarring light patch
+    and every uncoloured label collapses (#EDEDED on the pale region: 1.2:1
+    w3-04) while a light author stroke stays faint.  ``build_document`` uses
+    this on the DARK page to MATCH the page to the light card and bake DARK ink
+    -- the exact symmetric treatment ``detect_dark_plate`` gives a dark card on
+    the light page -- so the whole cropped canvas is the card the author built
+    and the contrast clamp lifts the palette against it (the light render is
+    already the white page, so it is byte-identical).
+
+    Fires ONLY when the background is unambiguously a single light region:
+      * no explicit ``\\pagecolor`` (the author did not choose the page);
+      * not already a dark card (``detect_dark_plate`` is None);
+      * EITHER exactly one ``\\fill[...] rectangle`` and no ``\\shade`` rectangle,
+        OR one-or-more ``\\shade[...] rectangle`` and no ``\\fill`` rectangle;
+      * every detected background colour resolves, none is genuinely dark
+        (luminance >= 0.18), and their mean is clearly light (>= 0.5).
+    Anything else returns None, so a mixed or dark body keeps the dark page and
+    is byte-identical.  Advisory: any internal fault degrades to None.
+    """
+    try:
+        if _PAGECOLOR_RE.search(body):
             return None
-        col = _fill_opt_colour(rects[0])
-        if not col:
+        if detect_dark_plate(body) is not None:
             return None
-        rgb = _resolve_xcolor_rgb(col.strip(), defs)
-        if rgb is None:
+        defs = _collect_definecolors(body)
+        fills = _FILL_RECT_RE.findall(body)
+        shades = _SHADE_RECT_RE.findall(body)
+        lums: list[float] = []
+        if fills and not shades:
+            if len(fills) != 1:
+                return None
+            col = _fill_opt_colour(fills[0])
+            if not col:
+                return None
+            rgb = _resolve_xcolor_rgb(col.strip(), defs)
+            if rgb is None:
+                return None
+            lums.append(_rel_luminance(rgb))
+        elif shades and not fills:
+            for opt in shades:
+                got = False
+                for m in _SHADE_COLOUR_RE.finditer(opt):
+                    rgb = _resolve_xcolor_rgb(m.group(1).strip(), defs)
+                    if rgb is not None:
+                        lums.append(_rel_luminance(rgb))
+                        got = True
+                if not got:                # a shade whose endpoints we cannot
+                    return None            # resolve -> bail (conservative)
+        else:                              # no background rects, or a fill+shade
+            return None                    # mix -> ambiguous, keep the dark page
+        if not lums:
             return None
-        if _rel_luminance(rgb) >= 0.18:    # a light/mid plate is not this case
+        if min(lums) < 0.18:               # a genuinely dark region present ->
+            return None                    # not a light card
+        if sum(lums) / len(lums) < 0.5:    # not predominantly light -> leave it
             return None
-        return rgb
+        return (255, 255, 255)
     except Exception:                      # pragma: no cover - defensive
         return None
 
@@ -788,7 +1071,30 @@ def _enclosing_open_index(text: str, pos: int) -> int:
     return stack[-1][1] if stack and stack[-1][0] == "[" else -1
 
 
-_FILL_CMD_BEFORE_RE = re.compile(r"\\(fill|shade|pagecolor)\s*$")
+def _enclosing_block_has_fill(text: str, pos: int) -> bool:
+    """True iff the ``[...]`` option block enclosing ``pos`` carries a ``fill=``.
+
+    Used to decide whether a ``text=`` ink is fill-paired (leave it to the
+    fill-aware label-ink helpers) or a bare-page label that must be
+    contrast-clamped (D-351)."""
+    idx = _enclosing_open_index(text, pos)
+    if idx < 0:
+        return False
+    depth = 0
+    end = len(text)
+    for i in range(idx, len(text)):
+        ch = text[i]
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    return re.search(r"(?<![A-Za-z])fill\s*=", text[idx:end]) is not None
+
+
+_FILL_CMD_BEFORE_RE = re.compile(r"\\(filldraw|fill|shade|pagecolor)\s*$")
 
 
 def _bare_option_is_fill(text: str, pos: int) -> bool:
@@ -804,6 +1110,41 @@ def _bare_option_is_fill(text: str, pos: int) -> bool:
     if idx < 0:
         return False
     return _FILL_CMD_BEFORE_RE.search(text[:idx]) is not None
+
+
+#: a tikz-cd / tikz-matrix per-cell option prefix ``|[ ... ]|`` (D-471).  A
+#: ``fill=`` inside it sets the fill of the cell node that follows, and the cell
+#: runs until the next ``&`` (column) or ``\\`` (row) separator.
+_CELL_PREFIX_RE = re.compile(r"\|\[([^\]]*)\]\|")
+_CELL_FILL_IN_OPTS_RE = re.compile(
+    r"(?<![A-Za-z])fill\s*=\s*(\{[^{}]*\}|[A-Za-z$][\w!.$-]*)")
+
+
+def _enclosing_cell_fill(body: str, pos: int,
+                         defs: dict[str, tuple[int, int, int]] | None
+                         ) -> tuple[int, int, int] | None:
+    """RGB of the ``|[fill=...]|`` cell fill a label at ``pos`` sits on, else None.
+
+    A tikz-cd cell may be prefixed with ``|[fill=C]|`` (D-471), which paints the
+    cell's node.  A ``\\textcolor{...}`` label inside that cell is drawn ON that
+    fill, so its contrast must be measured against the fill -- not the page/plate
+    the global clamp uses.  Returns the fill RGB when ``pos`` falls in a cell
+    with a resolvable ``|[...fill=...]|`` prefix and no cell separator (``&`` or
+    ``\\``) sits between that prefix and ``pos``; else None (fall back to the
+    global surface, so a plain body is byte-identical)."""
+    best: str | None = None
+    for m in _CELL_PREFIX_RE.finditer(body):
+        if m.end() > pos:
+            break
+        between = body[m.end():pos]
+        if "&" in between or "\\\\" in between:
+            continue
+        fm = _CELL_FILL_IN_OPTS_RE.search(m.group(1))
+        if fm:
+            best = fm.group(1)
+    if best is None:
+        return None
+    return _resolve_xcolor_rgb(best.strip("{} "), defs)
 
 
 def _clamp_body_colours(body: str, theme: str,
@@ -859,11 +1200,27 @@ def _clamp_body_colours(body: str, theme: str,
         # dark page, above the graphical floor yet below the text floor its
         # atom labels need).
         macro, arg = m.group(1), m.group(2)
-        expr = _clamped_expr(arg, _TEXT_CONTRAST_FLOOR)
-        if expr is None:
+        rgb = _resolve_xcolor_rgb(arg, defs)
+        if rgb is None:
             return m.group(0)
-        ratio = _contrast_ratio(_resolve_xcolor_rgb(arg, defs), surface)  # type: ignore[arg-type]
+        # D-471: when the label sits inside a tikz-cd ``|[fill=C]|`` cell it is
+        # drawn ON that fill, so measure/clamp against the ENCLOSING FILL, not
+        # the page/plate the global clamp uses.  A page-relative verdict here
+        # both misses an illegible on-fill pair (white on pale yellow) AND
+        # WRONGLY lifts a correct one (black on a yellow fill scores 12.64:1 but
+        # measured 1.27:1 on the dark page was greyed out).  No enclosing fill
+        # -> local == surface, so a plain body is byte-identical.
+        local = surface
         where = "backdrop" if backdrop else f"{theme} surface"
+        cell_fill = _enclosing_cell_fill(body, m.start(), defs)
+        if cell_fill is not None:
+            local = cell_fill
+            where = "enclosing fill"
+        new = _clamp_rgb_to_surface(rgb, local, _TEXT_CONTRAST_FLOOR)
+        if new is None:
+            return m.group(0)
+        expr = _rgb_to_expr(new)
+        ratio = _contrast_ratio(rgb, local)
         applied.append(
             f"{macro}{{{arg}}} -> {macro}{{{expr}}} "
             f"(text ink {ratio:.2f}:1 below {_TEXT_CONTRAST_FLOOR:g}:1 on the "
@@ -876,16 +1233,36 @@ def _clamp_body_colours(body: str, theme: str,
     # explicit xcolor model is "speaking xcolor" and must pass through verbatim.
     body = _CLAMP_MACRO_RE.sub(_macro_sub, body)
 
-    # The stroke/fill-option clamps run on the dark page, or on either page when
-    # a resolvable author backdrop was detected.
-    if not (dark_theme or backdrop):
-        return body
+    # The stroke/fill-option clamps run FULLY on the dark page, or on either
+    # page when a resolvable author backdrop was detected.  On the LIGHT bare
+    # page (no backdrop) they run in a RESTRICTED "labels only" mode: a colour
+    # is lifted only when its statement also paints LABEL TEXT -- the same
+    # "an illegible label is a bug in either theme" rationale that already runs
+    # the \color/\textcolor macro clamp above in both themes (D-033).  A purely
+    # decorative stroke with NO label is left exactly as authored, preserving
+    # the deliberate light-page stroke passthrough that g02/g04/d033 protect
+    # (a page-relative clamp cannot tell an illegible pale stroke from an
+    # intentional decorative one).  D-352/D-354: circuitikz LABEL inks --
+    # ``color=``/bare/``text=`` that tint a ``to[R=..]`` component label or a
+    # ``node{..}`` caption -- are the illegible-label case this mode reaches on
+    # the light page (a 24-member ``color=cyan`` palette at 1.07:1, a
+    # ``color=darkink`` #CCCCCC scope ink at 1.61:1), while a decorative pale
+    # frame / ground symbol with no label stays as authored.
+    labels_only = not (dark_theme or backdrop)
 
     def _opt_sub(m: re.Match) -> str:
         key, value = m.group(1), m.group(2)
         # A colour on a statement that also carries a node label paints the
         # label glyphs too, so it must clear the 4.5:1 text floor (D-233).
         texty = _statement_has_label(body, m.start(2))
+        # Light bare page (labels_only): lift ONLY a circuitikz component-label
+        # statement's ink -- the unambiguous illegible-label case (D-352/D-354);
+        # a general tikz node/decorative stroke stays on the deliberate
+        # light-page passthrough (g04/d234).
+        if labels_only:
+            if not _statement_has_ckt_label(body, m.start(2)):
+                return m.group(0)
+            texty = True
         floor = _TEXT_CONTRAST_FLOOR if texty else _CONTRAST_FLOOR
         expr = _clamped_expr(value, floor)
         if expr is None:
@@ -907,18 +1284,31 @@ def _clamp_body_colours(body: str, theme: str,
         # list, never inside a {...} value list (D-233 tikz-w2-11 abort).
         if not _enclosing_is_bracket(body, m.start(2)):
             return m.group(0)
-        # When a DISTINCT author backdrop is detected, leave its ``\fill`` /
-        # ``\shade`` bare colour alone in BOTH themes: it is a region (not ink)
-        # and is the reference surface itself, so recolouring it would repaint
-        # the background AND desync it from the surface the inks are measured
-        # against (D-051: the #16324A plate must stay put while its labels are
-        # lifted to clear it).  A backdrop that equals the page (circuitikz-w1-15
-        # plate black!88 == #1F1F1F) sets backdrop=False, so that spec's
-        # established plate lift is untouched.
-        if backdrop and _bare_option_is_fill(body, m.start(2)):
+        # A bare colour that is the positional option of a ``\fill`` /
+        # ``\filldraw`` / ``\shade`` command is a FILL region, not a stroke/ink
+        # -- the "fill is not clamped" contract -- so it is left alone in BOTH
+        # themes when the statement draws NO label (D-468).  The earlier gate
+        # only skipped this when a DISTINCT backdrop was present, so an authored
+        # dark plate ``\fill[black!88]`` whose colour EQUALS the dark page
+        # (#1F1F1F -> backdrop=False) was misread as a bare stroke, measured
+        # 1.00:1 against the page, and lifted to a mid-grey slab
+        # (rgb(107,107,107)), destroying the author's deliberately dark plate.
+        # The carve-out is conditioned on the statement having no node label: a
+        # ``\fill[blue] ... node{..}`` draws that label glyph in the fill colour
+        # (D-233 w1-04), so there the colour IS ink and must still be lifted to
+        # the text floor -- only a label-less fill region (a backdrop plate,
+        # a self-painted disc) is left untouched.
+        if (_bare_option_is_fill(body, m.start(2))
+                and not _statement_has_label(body, m.start(2))):
             return m.group(0)
         pre, value = m.group(1), m.group(2)
         texty = _statement_has_label(body, m.start(2))
+        # Light bare page (labels_only): only a circuitikz component-label
+        # statement is the unambiguous illegible-label case (see _opt_sub).
+        if labels_only:
+            if not _statement_has_ckt_label(body, m.start(2)):
+                return m.group(0)
+            texty = True
         floor = _TEXT_CONTRAST_FLOOR if texty else _CONTRAST_FLOOR
         expr = _clamped_expr(value, floor)
         if expr is None:
@@ -933,6 +1323,27 @@ def _clamp_body_colours(body: str, theme: str,
         return f"{pre}color={{{expr}}}"
 
     body = _CLAMP_BARE_RE.sub(_bare_sub, body)
+
+    def _text_sub(m: re.Match) -> str:
+        # A ``text=`` ink paired with a ``fill=`` was chosen for that fill and
+        # is handled by the fill-aware label-ink helpers -- leave it (D-331: do
+        # not over-lift a label picked for its chip).  A ``text=`` with no fill
+        # in its block is a bare-page label and must clear the text floor.
+        if _enclosing_block_has_fill(body, m.start(2)):
+            return m.group(0)
+        key, value = m.group(1), m.group(2)
+        expr = _clamped_expr(value, _TEXT_CONTRAST_FLOOR)
+        if expr is None:
+            return m.group(0)
+        ratio = _contrast_ratio(_resolve_xcolor_rgb(value, defs), surface)  # type: ignore[arg-type]
+        where = "backdrop" if backdrop else f"{theme} surface"
+        applied.append(
+            f"{key}{value} -> {key}{{{expr}}} "
+            f"(node text ink {ratio:.2f}:1 below {_TEXT_CONTRAST_FLOOR:g}:1 on "
+            f"the {where}; lifted to the text floor)")
+        return f"{key}{{{expr}}}"
+
+    body = _CLAMP_TEXT_RE.sub(_text_sub, body)
     return body
 
 
@@ -1116,6 +1527,73 @@ _DARK_DEFAULT_INK: tuple[int, int, int] = (0xED, 0xED, 0xED)
 #: value) are not brackets, so they survive inside the capture; nested option
 #: brackets are vanishingly rare in an option list and simply skip the match.
 _OPT_BLOCK_RE = re.compile(r"\[([^\[\]]*)\]")
+
+
+class _BlockMatch:
+    """A minimal ``re.Match`` stand-in exposing ``group(0)``/``group(1)`` so an
+    existing ``_block_sub`` closure written for ``_OPT_BLOCK_RE.sub`` can be
+    reused unchanged over balanced-scanned blocks (D-492)."""
+    __slots__ = ("_full", "_content")
+
+    def __init__(self, full: str, content: str) -> None:
+        self._full = full
+        self._content = content
+
+    def group(self, idx: int = 0) -> str:
+        return self._full if idx == 0 else self._content
+
+
+def _sub_option_blocks(body: str, block_sub) -> str:
+    """``re.sub``-style replacement over balanced top-level ``[...]`` option
+    blocks -- the nesting-aware replacement for ``_OPT_BLOCK_RE.sub`` (D-492).
+
+    The non-nesting ``_OPT_BLOCK_RE`` (``\\[([^\\[\\]]*)\\]``) cannot match an
+    option block whose value braces themselves contain bracket groups -- e.g. a
+    TikZ node ``[..., fill=orange!25, label={[red]left:..}, pin={[..]30:..}]``
+    -- so a pale ``fill=`` inside such a block was skipped and its dark-page
+    label kept the washed-out light default ink (tikz-w3-05).  This scan tracks
+    brace depth (a ``[`` inside ``{...}`` does NOT open a nested option level)
+    and bracket depth (a genuinely nested option ``[...]`` is balanced), so the
+    WHOLE block is passed to ``block_sub``.  ``block_sub`` receives a
+    ``_BlockMatch`` with ``.group(0) == '[...]'`` and ``.group(1) == content``
+    and returns the replacement text, exactly as with ``_OPT_BLOCK_RE.sub``.
+    An unbalanced ``[`` degrades to a literal copy of that character (advisory:
+    never raises), so a malformed body is left as authored."""
+    out: list[str] = []
+    i, n = 0, len(body)
+    while i < n:
+        if body[i] == "[":
+            depth = 0
+            brace = 0
+            j = i
+            end = -1
+            while j < n:
+                c = body[j]
+                if c == "{":
+                    brace += 1
+                elif c == "}":
+                    if brace:
+                        brace -= 1
+                elif c == "[" and brace == 0:
+                    depth += 1
+                elif c == "]" and brace == 0:
+                    depth -= 1
+                    if depth == 0:
+                        end = j
+                        break
+                j += 1
+            if end == -1:
+                out.append(body[i])
+                i += 1
+                continue
+            full = body[i:end + 1]
+            content = body[i + 1:end]
+            out.append(block_sub(_BlockMatch(full, content)))
+            i = end + 1
+        else:
+            out.append(body[i])
+            i += 1
+    return "".join(out)
 #: ``fill=<value>`` inside a block; value is a name/blend or a ``{...}`` expr.
 _FILL_VALUE_RE = re.compile(rf"(?<![A-Za-z])fill\s*=\s*{_COLOUR_VALUE}")
 #: an explicit ``text=`` key already present in the block (author intent).
@@ -1137,25 +1615,38 @@ def _pale_fill_label_ink(body: str, theme: str, applied: list[str]) -> str:
     if theme != "dark":
         return body
 
-    def _fill_needs_dark_ink(fill_tok: str):
-        """(fill_rgb, black_ratio) when a pale fill washes out the light ink."""
-        fill_rgb = _resolve_xcolor_rgb(fill_tok)
+    page = _THEME_SURFACE_RGB["dark"]
+    # D-234: resolve author \definecolor fills (``fill=motifA!12``) so a pale
+    # chip defined via \definecolor is MEASURED, not skipped as unresolvable --
+    # without the body's definecolor map ``motifA!12`` reads as None and the
+    # label keeps the washed-out light default ink (1.04:1 on #E4EAEF).
+    defs = _collect_definecolors(body)
+
+    def _fill_needs_dark_ink(fill_tok: str, opts: str = ""):
+        """(fill_rgb, black_ratio) when a pale fill washes out the light ink.
+
+        ``opts`` is the surrounding option list; its ``fill opacity``/``opacity``
+        is composited over the dark page so a low-opacity fill is measured as
+        the pixels it actually shows (D-470), not as the saturated colour."""
+        fill_rgb = _resolve_xcolor_rgb(fill_tok, defs)
         if fill_rgb is None:
             return None                    # \definecolor name / gradient: skip
+        fill_rgb = _composite(fill_rgb, _fill_alpha(opts), page)
         if _contrast_ratio(_DARK_DEFAULT_INK, fill_rgb) >= _CONTRAST_FLOOR:
             return None                    # dark/mid fill: light default ink ok
         return fill_rgb, _contrast_ratio((0, 0, 0), fill_rgb)
 
-    def _style_sub(sm: re.Match) -> str:
-        head, val = sm.group(1), sm.group(2)
+    def _reink_style_value(head: str, val: str) -> str:
+        """Inject ``text=black`` into ONE style value when it carries a pale
+        fill and no explicit ``text=`` (per-style, never block-wide)."""
         if _TEXT_KEY_PRESENT_RE.search(val):
-            return sm.group(0)             # this style already sets its ink
+            return head + "{" + val + "}"  # this style already sets its ink
         fm = _FILL_VALUE_RE.search(val)
         if fm is None:
-            return sm.group(0)             # unfilled style: keep light ink
-        need = _fill_needs_dark_ink(fm.group(1))
+            return head + "{" + val + "}"  # unfilled style: keep light ink
+        need = _fill_needs_dark_ink(fm.group(1), val)
         if need is None:
-            return sm.group(0)
+            return head + "{" + val + "}"
         _, black_ratio = need
         applied.append(
             f"{head.strip()} fill={fm.group(1)} + default light ink -> added "
@@ -1163,19 +1654,68 @@ def _pale_fill_label_ink(body: str, theme: str, applied: list[str]) -> str:
             f"default ink out; black label ink is {black_ratio:.2f}:1)")
         return head + "{" + val + ",text=black}"
 
+    # D-234: named styles declared with \tikzset{...} (BRACE-delimited) or in a
+    # \begin{tikzpicture}[...] option list are NOT reached by the [...] block
+    # scan below, so a pale-fill style (``cell/.style={fill=motifA!12}``)
+    # referenced later by ``\node[cell]`` kept the washed-out light default ink
+    # (tikz-w3-02: $m_i$ labels at 1.04:1 on #E4EAEF).  Re-ink every
+    # ``NAME/.style={...}`` in the body FIRST, wherever it is declared, so a
+    # pale-fill style is fixed at its definition; per-style (never block-wide)
+    # injection is preserved, so an unfilled sibling style keeps the light ink
+    # (tikz-w1-06).
+    #
+    # The style VALUE routinely carries nested braces AT THIS POINT -- the step-8
+    # clamp has already rewritten ``draw=motifA`` to ``draw={rgb,...}`` -- so a
+    # simple ``\{[^{}]*\}`` capture can no longer find the closing brace.  Scan
+    # with a balanced-brace walk instead, so the fill inside a clamped style is
+    # still seen.  A style whose value itself opens a sub-group (an arrow tip
+    # ``-{Stealth}``) is matched correctly by the balance walk; it carries no
+    # fill, so re-inking is a no-op there.
+    _STYLE_HEAD_RE = re.compile(r"([A-Za-z@][\w@ ]*/\.style\s*=\s*)\{")
+
+    def _scan_style_defs(text: str) -> str:
+        out: list[str] = []
+        i = 0
+        while True:
+            m = _STYLE_HEAD_RE.search(text, i)
+            if m is None:
+                out.append(text[i:])
+                break
+            out.append(text[i:m.start()])
+            open_brace = m.end() - 1        # index of the '{'
+            depth = 0
+            j = open_brace
+            while j < len(text):
+                c = text[j]
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if j >= len(text):              # unbalanced: leave the rest as-is
+                out.append(text[m.start():])
+                break
+            val = text[open_brace + 1:j]
+            out.append(_reink_style_value(m.group(1), val))
+            i = j + 1
+        return "".join(out)
+
+    body = _scan_style_defs(body)
+
     def _block_sub(m: re.Match) -> str:
         block = m.group(1)
-        # A style-DEFINITION block must inject per style, never block-wide: a
-        # block-wide text=black leaks onto nodes that inherit an unfilled
-        # sibling style (D-234 tikz-w1-06).
+        # Style-definition blocks were already re-inked per style by the
+        # whole-body pass above; leave them untouched here.
         if "/.style" in block:
-            return "[" + _STYLE_DEF_RE.sub(_style_sub, block) + "]"
+            return m.group(0)
         if _TEXT_KEY_PRESENT_RE.search(block):
             return m.group(0)              # author chose the label ink already
         fm = _FILL_VALUE_RE.search(block)
         if fm is None:
             return m.group(0)
-        need = _fill_needs_dark_ink(fm.group(1))
+        need = _fill_needs_dark_ink(fm.group(1), block)
         if need is None:
             return m.group(0)
         _, black_ratio = need
@@ -1185,7 +1725,136 @@ def _pale_fill_label_ink(body: str, theme: str, applied: list[str]) -> str:
             f"this pale fill; black label ink is {black_ratio:.2f}:1)")
         return "[" + block + ",text=black]"
 
-    return _OPT_BLOCK_RE.sub(_block_sub, body)
+    return _sub_option_blocks(body, _block_sub)
+
+
+# --------------------------------------------------------------------------
+# Dark-theme pale-fill SHAPE ink (D-356).
+#
+# ``_pale_fill_label_ink`` (step 9) re-inks the LABEL TEXT of a pale-filled
+# node, but a circuitikz component shape (``\node[mixer, fill=blue!20]{}``)
+# carries its meaning in the shape's INTERNAL GLYPH, drawn in the node's
+# ``draw`` colour -- not its (here empty) text label.  On the dark page that
+# glyph inherits the baked light default ink (#EDEDED) and collapses against the
+# pale fill (blue!20 -> #CCCCFF -> 1.03:1, circuitikz-w3-14).  The label-ink
+# pass never touches ``draw``, so shape-internal glyphs stayed invisible.
+#
+# Repair (mirrors the label pass, applied to the shape stroke): a node whose
+# ONLY content is its shape graphic -- an EMPTY text label -- with a pale author
+# fill and no explicit ``draw=``/``color=`` gets a fill-legible dark ``draw``
+# ink injected.  Gating on the empty label is the STRUCTURAL signature of a
+# shape-only node, so a plain text node (non-empty label, whose ink the label
+# pass already handles) never has a border added and never special-cases a
+# spec.  Dark theme only and contrast-gated on the node's OWN fill, so the light
+# page is byte-identical and a dark/mid fill on which #EDEDED is already legible
+# is left untouched.
+# --------------------------------------------------------------------------
+_NODE_KW_RE = re.compile(r"\\node\b")
+#: an explicit ``draw=``/``color=`` already present (author set the shape ink).
+_DRAW_OR_COLOR_KEY_RE = re.compile(r"(?<![A-Za-z])(?:draw|color)\s*=")
+
+
+def _pale_fill_shape_ink(body: str, theme: str, applied: list[str]) -> str:
+    """Inject a dark shape ink for empty-label pale-fill nodes on dark (D-356).
+
+    Walks each ``\\node[...]{...}`` statement, balancing braces so a normalised
+    ``fill={rgb,...}`` value inside the option block is handled.  When the node
+    label is empty (a shape-only node), the block carries a resolvable pale fill
+    and no explicit ``draw=``/``color=``, and the baked light default ink fails
+    the graphical floor on that fill, a fill-legible ``draw=black`` is appended
+    to the block so the shape's internal glyphs are legible on their own fill.
+    """
+    if theme != "dark":
+        return body
+    page = _THEME_SURFACE_RGB["dark"]
+    defs = _collect_definecolors(body)
+    out: list[str] = []
+    i = 0
+    n = len(body)
+    while True:
+        m = _NODE_KW_RE.search(body, i)
+        if m is None:
+            out.append(body[i:])
+            break
+        out.append(body[i:m.start()])
+        # The option block must follow ``\node`` (after optional whitespace).
+        k = m.end()
+        while k < n and body[k] in " \t":
+            k += 1
+        if k >= n or body[k] != "[":
+            out.append(body[m.start():m.end()])
+            i = m.end()
+            continue
+        # Balanced ``[...]`` scan (braces of a normalised fill={rgb,...} value
+        # survive inside the block, so bracket depth must ignore them).
+        p = k
+        depth = 0
+        brace = 0
+        while p < n:
+            c = body[p]
+            if c == "{":
+                brace += 1
+            elif c == "}":
+                brace -= 1
+            elif c == "[" and brace == 0:
+                depth += 1
+            elif c == "]" and brace == 0:
+                depth -= 1
+                if depth == 0:
+                    break
+            p += 1
+        if p >= n:                          # unbalanced: leave as authored
+            out.append(body[m.start():m.end()])
+            i = m.end()
+            continue
+        options = body[k + 1:p]
+        # The node label is the next brace group before the statement ends.
+        q = p + 1
+        while q < n and body[q] not in "{;":
+            q += 1
+        if q >= n or body[q] != "{":
+            out.append(body[m.start():p + 1])
+            i = p + 1
+            continue
+        r = q
+        bdepth = 0
+        while r < n:
+            c = body[r]
+            if c == "{":
+                bdepth += 1
+            elif c == "}":
+                bdepth -= 1
+                if bdepth == 0:
+                    break
+            r += 1
+        if r >= n:
+            out.append(body[m.start():q])
+            i = q
+            continue
+        label = body[q + 1:r]
+        replaced = None
+        if label.strip() == "" and not _DRAW_OR_COLOR_KEY_RE.search(options):
+            fm = _FILL_VALUE_RE.search(options)
+            if fm is not None:
+                fill_rgb = _resolve_xcolor_rgb(fm.group(1), defs)
+                if fill_rgb is not None:
+                    fill_rgb = _composite(fill_rgb, _fill_alpha(options), page)
+                    if _contrast_ratio(_DARK_DEFAULT_INK, fill_rgb) < _CONTRAST_FLOOR:
+                        black_ratio = _contrast_ratio((0, 0, 0), fill_rgb)
+                        new_opts = "[" + options + ",draw=black]"
+                        replaced = (body[m.start():k] + new_opts
+                                    + body[p + 1:r + 1])
+                        applied.append(
+                            f"fill={fm.group(1)} shape-only node + default light "
+                            f"ink -> added draw=black (dark-page default ink "
+                            f"#EDEDED is below {_CONTRAST_FLOOR:g}:1 on this pale "
+                            f"fill; the shape's internal glyphs are black at "
+                            f"{black_ratio:.2f}:1)")
+        if replaced is None:
+            replaced = body[m.start():r + 1]
+        out.append(replaced)
+        i = r + 1
+    return "".join(out)
 
 
 # --------------------------------------------------------------------------
@@ -1247,6 +1916,11 @@ def _light_fill_label_ink(body: str, theme: str, applied: list[str]) -> str:
         fill_rgb = _resolve_xcolor_rgb(fm.group(1))
         if fill_rgb is None:
             return m.group(0)              # \definecolor / gradient / loop var
+        # Composite the fill over the white page by its opacity so a low-opacity
+        # fill (fill=blue, fill opacity=0.15 -> #D9D9FF) is measured as the pale
+        # pixels it shows, not as saturated blue -- otherwise a white label is
+        # wrongly injected onto a near-white surface (D-470).
+        fill_rgb = _composite(fill_rgb, _fill_alpha(block), (255, 255, 255))
         black_ratio = _contrast_ratio(_LIGHT_DEFAULT_INK, fill_rgb)
         if black_ratio >= _TEXT_CONTRAST_FLOOR:
             return m.group(0)              # pale/mid fill: black default ink ok
@@ -1260,7 +1934,111 @@ def _light_fill_label_ink(body: str, theme: str, applied: list[str]) -> str:
             f"{white_ratio:.2f}:1)")
         return "[" + block + ",text=white]"
 
-    return _OPT_BLOCK_RE.sub(_block_sub, body)
+    return _sub_option_blocks(body, _block_sub)
+
+
+# --------------------------------------------------------------------------
+# Mismatched EXPLICIT fill-paired label ink (D-033).
+#
+# The two label-ink helpers above (_pale_fill_label_ink / _light_fill_label_ink)
+# only INJECT a ``text=`` when the author gave a fill but NO explicit ink, and
+# the ``text=`` branch of _clamp_body_colours deliberately SKIPS a ``text=``
+# that is paired with a ``fill=`` (D-331: a label chosen for its chip must not
+# be over-lifted against the page).  Between those two rules an EXPLICIT but
+# WRONG fill-paired ink -- ``\node[fill=Navy, text=black]`` (black on #000080 =
+# 1.31:1) or ``\node[fill=DarkOrange, text=white]`` (white on #ff8c00 = 2.33:1)
+# -- is caught by NEITHER: the author set an ink, so nothing injects; it is
+# fill-paired, so the page clamp skips it.  The label is then illegible on its
+# own chip in BOTH themes, with no contrast guard at all.
+#
+# This pass closes that gap.  For an option block carrying a resolvable
+# ``fill=`` AND an explicit resolvable ``text=``, it composites the fill over
+# the theme page (by its fill opacity, D-470) and measures the author ink
+# against that chip.  Because this OVERRIDES an EXPLICIT author choice, the
+# threshold is the 3:1 GRAPHICAL floor, not the 4.5:1 small-text floor: it
+# intervenes only when the pairing is EGREGIOUSLY illegible (black on #000080 =
+# 1.31:1, white on #ff8c00 = 2.33:1 -- both below 3:1), and defers to the author
+# on a merely-borderline small-text choice (white on SteelBlue = 3.8:1, black on
+# Crimson = 4.2:1) that a reader can still make out and that the author clearly
+# intended.  When it does act it flips the ink to whichever monochrome endpoint
+# (black / white) contrasts the chip better, and only if that endpoint is
+# strictly more legible than the author's.  A pairing at/above 3:1 is left
+# byte-for-byte, so the D-331 "don't over-lift" contract and the g02 base-name
+# passthrough both hold; the decision is against the node's OWN fill, not the
+# page, so it is theme-invariant for an opaque chip and cannot break one theme
+# to fix the other.  Advisory: an unresolvable fill or ink (a gradient, a
+# loop-variable blend) is left exactly as authored.
+# --------------------------------------------------------------------------
+
+#: an explicit ``text=<value>`` ink inside an option block.
+_TEXT_VALUE_RE = re.compile(rf"(?<![A-Za-z])text\s*=\s*{_COLOUR_VALUE}")
+
+
+def _fix_mismatched_fill_ink(body: str, theme: str, applied: list[str]) -> str:
+    """Correct an explicit fill-paired label ink illegible on its own fill (D-033)."""
+    page = _THEME_SURFACE_RGB.get(theme)
+    if page is None:
+        return body
+    defs = _collect_definecolors(body)
+
+    def _block_sub(m: re.Match) -> str:
+        block = m.group(1)
+        tm = _TEXT_VALUE_RE.search(block)
+        fm = _FILL_VALUE_RE.search(block)
+        if tm is None or fm is None:
+            return m.group(0)
+        ink = _resolve_xcolor_rgb(tm.group(1).strip(), defs)
+        fill = _resolve_xcolor_rgb(fm.group(1).strip(), defs)
+        if ink is None or fill is None:
+            return m.group(0)              # gradient / loop var / unknown name
+        chip = _composite(fill, _fill_alpha(block), page)
+        cur = _contrast_ratio(ink, chip)
+        if cur >= _CONTRAST_FLOOR:
+            return m.group(0)              # not egregiously illegible -> defer
+        black_r = _contrast_ratio((0, 0, 0), chip)
+        white_r = _contrast_ratio((255, 255, 255), chip)
+        endpoint, best_r, name = (
+            ((0, 0, 0), black_r, "black") if black_r >= white_r
+            else ((255, 255, 255), white_r, "white"))
+        if best_r <= cur:
+            return m.group(0)              # no monochrome endpoint does better
+        new_val = _rgb_to_expr(endpoint)
+        # tm spans are relative to ``block``; rebuild the block, then re-wrap in
+        # the ``[...]`` brackets _OPT_BLOCK_RE consumed.
+        new_block = block[:tm.start(1)] + "{" + new_val + "}" + block[tm.end(1):]
+        applied.append(
+            f"text={tm.group(1)} on fill={fm.group(1)} -> text={name} "
+            f"(explicit label ink {cur:.2f}:1 below the {_CONTRAST_FLOOR:g}:1 "
+            f"graphical floor on its own chip; flipped to the legible endpoint "
+            f"{best_r:.2f}:1)")
+        return "[" + new_block + "]"
+
+    return _sub_option_blocks(body, _block_sub)
+
+
+def _effective_theme_colours(body: str, theme: str) -> dict[str, str]:
+    """Theme fg/bg for token resolution, against the surface actually painted.
+
+    Normally the nominal theme surface, but when a SOLE dark author plate is
+    detected on the LIGHT page ``build_document`` repaints the page to that
+    plate and bakes the light-on-dark ink -- so a foreground theme token
+    (``currentColor`` / ``var(--fg)`` / ``theme.foreground``) must resolve to
+    that plate ink (#EDEDED = 11.29:1 on #16324A) and a surface token to the
+    plate, NOT to the nominal white-page black which the step-8 clamp could only
+    lift to a muddy mid-grey (D-358, circuitikz-w4-07: black on the #16324A
+    plate = 1.59:1, the token's whole point -- "the theme's ink" -- being the
+    crisp light ink the plate is designed for).  A body without such a plate,
+    and the dark theme, are unchanged (byte-identical).
+    """
+    base = _THEME_COLOURS.get(theme, _THEME_COLOURS["light"])
+    if theme == "light":
+        try:
+            plate = detect_dark_plate(body)
+        except Exception:                  # pragma: no cover - defensive
+            plate = None
+        if plate is not None:
+            return {"fg": _hex_to_expr("ededed"), "bg": _rgb_to_expr(plate)}
+    return base
 
 
 def _normalize(body: str, theme: str = "light") -> tuple[str, tuple[str, ...]]:
@@ -1277,7 +2055,10 @@ def _normalize(body: str, theme: str = "light") -> tuple[str, tuple[str, ...]]:
     body = _DEFINECOLOR_HTML_RE.sub(_def_sub, body)
 
     # active-theme ink/surface, shared by every theme-token resolution below.
-    resolved = _THEME_COLOURS.get(theme, _THEME_COLOURS["light"])
+    # Resolved against the surface build_document actually paints, not the
+    # nominal theme surface, so a foreground token on a detected dark plate
+    # becomes the crisp plate ink rather than a mid-grey clamp result (D-358).
+    resolved = _effective_theme_colours(body, theme)
 
     # 1b. \definecolor{name}{rgb}{rgba(...)} -> \definecolor{name}{RGB}{r,g,b}
     # (tikz-w4-06).  Runs BEFORE the generic rgb() pass so the value is
@@ -1367,6 +2148,35 @@ def _normalize(body: str, theme: str = "light") -> tuple[str, tuple[str, ...]]:
 
     body = _RGB_CALL_RE.sub(_rgb_sub, body)
 
+    # 3b. hsl()/hsla() as a BARE positional option token -> color={rgb,...}
+    # (mirror of the bare rgb() pass; runs before the generic hsl() pass).
+    def _bare_hslcall_sub(m: re.Match) -> str:
+        expr = _hsl_call_to_expr(m.group(3))
+        if expr is None:
+            return m.group(0)
+        applied.append(
+            f"{m.group(2)} -> color={{{expr}}} "
+            "(bare hsl()/hsla() in a positional colour field; wrapped as an "
+            "explicit color= assignment so it is not parsed as a tikz key; "
+            "alpha dropped)")
+        return f"{m.group(1)}color={{{expr}}}"
+
+    body = _BARE_HSLCALL_RE.sub(_bare_hslcall_sub, body)
+
+    # 3c. hsl()/hsla() anywhere else (option values, e.g. ``color=hsl(210,50%,40%)``
+    # -- tikz-cd-w4-10).  The ``%`` is a TeX comment, so converting to an rgb
+    # expression here is what keeps it from swallowing the rest of the line (D-482).
+    def _hsl_sub(m: re.Match) -> str:
+        expr = _hsl_call_to_expr(m.group(1))
+        if expr is None:
+            return m.group(0)
+        applied.append(
+            f"{m.group(0)} -> {{{expr}}} (hsl() converted to rgb; the '%' would "
+            "otherwise comment out the line; alpha dropped)")
+        return "{" + expr + "}"
+
+    body = _HSL_CALL_RE.sub(_hsl_sub, body)
+
     # 4. key=#hex  ->  key={rgb,255:...}
     def _opt_hex_sub(m: re.Match) -> str:
         expr = _hex_to_expr(_expand_hex(m.group(2)))
@@ -1375,13 +2185,53 @@ def _normalize(body: str, theme: str = "light") -> tuple[str, tuple[str, ...]]:
 
     body = _OPT_HEX_RE.sub(_opt_hex_sub, body)
 
-    # 5. fill=/draw=/text= transparent -> none (there is no 'transparent' colour).
+    # 5. key=transparent recovery, KEY-AWARE (D-484).  xcolor's ``none`` is
+    # valid only on ``fill=`` / ``draw=`` (meaning "no fill"/"no stroke"); on
+    # ``color=`` / ``text=`` a ``none`` colour is a fatal "Undefined color" that
+    # aborts the compile (tikz-cd-w4-12 ``color=transparent``).  Mapping the ink
+    # keys to the SURFACE would be structurally valid but invisible -- a failure
+    # -- so resolve ``color=``/``text=`` transparent to the active-theme INK so
+    # the element stays visible; keep the ``none`` rewrite for the region keys.
     def _opt_transp_sub(m: re.Match) -> str:
-        applied.append(f"{m.group(0)} -> {m.group(1)}none "
-                       "('transparent' is not an xcolor colour)")
-        return m.group(1) + "none"
+        # Scope discipline (D-499): ``(fill|draw|color|text)=transparent`` is a
+        # colour OPTION and only ever appears inside a ``[...]`` option block.
+        # The regex is otherwise unanchored, so a heading node whose literal
+        # LABEL TEXT reads ``{fill=transparent}`` (tikz-w4-07) had that displayed
+        # string rewritten to ``fill=none`` -- corrupting content, not colour.
+        # Fire only when the match sits inside a bracket option context, never
+        # inside a ``{...}`` label/value brace group.
+        if not _enclosing_is_bracket(body, m.start()):
+            return m.group(0)
+        key_eq = m.group(1)
+        key = key_eq.split("=")[0].strip().lower()
+        if key in ("fill", "draw"):
+            applied.append(f"{m.group(0)} -> {key_eq}none "
+                           f"('transparent' is not an xcolor colour; "
+                           f"'none' is valid on {key}=)")
+            return key_eq + "none"
+        expr = resolved["fg"]
+        applied.append(
+            f"{m.group(0)} -> {key_eq}{{{expr}}} "
+            f"('transparent'/'none' is invalid on {key}= and mapping to the "
+            f"surface would be invisible; resolved to the {theme} ink)")
+        return f"{key_eq}{{{expr}}}"
 
     body = _OPT_TRANSPARENT_RE.sub(_opt_transp_sub, body)
+
+    # 5b. CSS opacity keyword recovery (D-484).  ``opacity=none`` /
+    # ``opacity=inherit`` (and initial/unset) are CSS keywords, not pgf numbers,
+    # so pgfmath aborts on them (tikz-cd-w4-12 also carries ``opacity=none`` and
+    # ``opacity=inherit``).  Treat them as fully opaque (1) -- the visible,
+    # no-op-alpha reading -- so the element renders.  A numeric opacity is
+    # untouched, so the fill-alpha compositing above is unaffected.
+    def _opt_opacity_kw_sub(m: re.Match) -> str:
+        applied.append(
+            f"{m.group(0)} -> {m.group(1)}1 "
+            f"(CSS opacity keyword '{m.group(2)}' is not a pgf number; "
+            f"treated as fully opaque)")
+        return m.group(1) + "1"
+
+    body = _OPT_OPACITY_KEYWORD_RE.sub(_opt_opacity_kw_sub, body)
 
     # 6. key=lowercasecssname -> key=CamelCase
     def _opt_name_sub(m: re.Match) -> str:
@@ -1417,7 +2267,7 @@ def _normalize(body: str, theme: str = "light") -> tuple[str, tuple[str, ...]]:
     # _OPT_THEME_TOKEN_RE).  Runs after pass 6: ``currentColor`` also matches
     # the bare-name pattern there, but is not an xcolor name so pass 6 leaves it
     # untouched for this pass to resolve.
-    resolved = _THEME_COLOURS.get(theme, _THEME_COLOURS["light"])
+    resolved = _effective_theme_colours(body, theme)
 
     def _opt_theme_sub(m: re.Match) -> str:
         role = _classify_theme_token(m.group(2))
@@ -1463,6 +2313,14 @@ def _normalize(body: str, theme: str = "light") -> tuple[str, tuple[str, ...]]:
     # ink chosen per fill luminance.  Light theme is a no-op (byte-identical).
     body = _pale_fill_label_ink(body, theme, applied)
 
+    # 9b. Dark-theme pale-fill SHAPE ink (D-356).  Step 9 re-inks a pale-filled
+    # node's LABEL text; a circuitikz component shape carries its meaning in an
+    # internal glyph drawn in the node's ``draw`` colour, so an empty-label
+    # shape node on a pale fill needs a fill-legible ``draw`` ink too.  Runs
+    # after the clamp/label passes (fills are resolved) and dark-only, so the
+    # light page is byte-identical.
+    body = _pale_fill_shape_ink(body, theme, applied)
+
     # 10. Light-theme dark-fill label ink (D-048).  The mirror of step 9 for the
     # light page: where the baked black default ink would be swallowed by a
     # SATURATED/dark author fill (``fill=blue!70`` -> black is 3.82:1, below the
@@ -1470,6 +2328,15 @@ def _normalize(body: str, theme: str = "light") -> tuple[str, tuple[str, ...]]:
     # Fires only in the light theme, so the dark page (and step 9's verified
     # behaviour) is byte-identical.
     body = _light_fill_label_ink(body, theme, applied)
+
+    # 11. Mismatched explicit fill-paired label ink (D-033).  Steps 9/10 only
+    # inject an ink where the author gave NONE, and the step-8 text= clamp skips
+    # a fill-paired text= (D-331).  An EXPLICIT but wrong fill-paired ink
+    # (text=black on fill=Navy = 1.31:1, text=white on fill=DarkOrange = 2.33:1)
+    # is therefore caught by nothing.  This pass flips such an ink to the
+    # legible monochrome endpoint measured against the node's OWN chip -- both
+    # themes, only when illegible on the chip, so a correct pairing is untouched.
+    body = _fix_mismatched_fill_ink(body, theme, applied)
 
     return body, tuple(applied)
 

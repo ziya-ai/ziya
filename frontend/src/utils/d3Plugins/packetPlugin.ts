@@ -442,8 +442,23 @@ export function maxRowBits(sections: PacketSection[] | undefined): number {
  * inside a capturable, paintable surface WITHOUT relying on post-capture
  * downscale: the bit-cell width shrinks (to a fractional px if need be) so
  * `gridBits * BIT_W <= PACKET_MAX_GRID_PX`.
+ *
+ * D-201 (wide-grid-downscaled-text-illegible): the ceiling was 6000 — exactly
+ * CAPTURE_MAX_DIMENSION_PX — so a bitWidth-512 grid produced a ~6200px surface
+ * that the capture path keeps at ~6000px and the judging/vision downscale then
+ * collapses to viewport width (~0.2-0.25x), turning every 11px field label,
+ * the title and all ruler numbers into sub-pixel smears. rulerTickStride only
+ * prevents tick OVERLAP; it cannot lift absolute font size, because a uniform
+ * downscale shrinks font and cell together. The durable fix is to bound the
+ * natural grid to a LEGIBLE width (~1600px ≈ a 96-100 bit ruler at BIT_W 16)
+ * so the captured surface is ~1800px wide and survives the vision downscale at
+ * ~0.85-1.0x with fonts still legible. This is strictly tighter than the
+ * former 6000 cap so the D-451 blank-strip guard is preserved, and it is a
+ * no-op for every real-world packet (the whole gfx corpus except the 512-bit
+ * extreme is <= ~768px GRID_W, well under this ceiling, and renders
+ * byte-identically).
  */
-export const PACKET_MAX_GRID_PX = 6000;
+export const PACKET_MAX_GRID_PX = 1600;
 
 /**
  * Single source of truth for the packet grid geometry, shared by

@@ -22,11 +22,11 @@
    "golden": {
     "light": {
      "hash": "c527d3f1093d6b47c18c79e1e53dc78032254e58a90ae9d51176c795edc214d9",
-     "validated_at": "2026-09-19T03:03:36.492024Z"
+     "validated_at": "2026-09-20T10:03:41.407005Z"
     },
     "dark": {
      "hash": "ed41430ac0f1c52affabb609b1c42fb536a46e9679e49931cf459655fbed6013",
-     "validated_at": "2026-09-19T03:03:36.511410Z"
+     "validated_at": "2026-09-20T10:03:41.430000Z"
     }
    }
   },
@@ -50,11 +50,11 @@
    "golden": {
     "light": {
      "hash": "dbb83404519e14b8522e81350e6111c105be75287faecdba37905aceffc7f2a6",
-     "validated_at": "2026-09-19T03:03:36.726283Z"
+     "validated_at": "2026-09-20T10:04:29.675267Z"
     },
     "dark": {
      "hash": "f2560971f58f2c0093c2deb2b0a37aab888c6b27fd73e8d9dc581a1c5ca8cd0f",
-     "validated_at": "2026-09-19T03:03:36.745317Z"
+     "validated_at": "2026-09-20T10:04:29.707334Z"
     }
    }
   },
@@ -78,11 +78,11 @@
    "golden": {
     "light": {
      "hash": "5fa4581c730c7b205418ab6f8dfbef79efa888f446262d2ab3da58b2d3945d76",
-     "validated_at": "2026-09-19T03:03:36.931962Z"
+     "validated_at": "2026-09-20T10:05:17.830989Z"
     },
     "dark": {
      "hash": "dd05b6acd90145b724b2c7bf65c05c239c9ea74784e449e2b39e389edd29902a",
-     "validated_at": "2026-09-19T03:03:36.950865Z"
+     "validated_at": "2026-09-20T10:05:17.866614Z"
     }
    }
   },
@@ -106,11 +106,11 @@
    "golden": {
     "light": {
      "hash": "a695d16fb07a7e5537cbf4cef548272d090406c86821feb22eb7cd39db366aac",
-     "validated_at": "2026-09-19T03:03:37.178443Z"
+     "validated_at": "2026-09-20T10:06:04.888782Z"
     },
     "dark": {
      "hash": "6e9f4ef963d07f33aaae5e49815de01fca356288ed83d380a60f92eedce74308",
-     "validated_at": "2026-09-19T03:03:37.211743Z"
+     "validated_at": "2026-09-20T10:06:04.914371Z"
     }
    }
   },
@@ -134,11 +134,11 @@
    "golden": {
     "light": {
      "hash": "7c35afe2d020bc4cb91875bfb6f28e634127b293f383aafd2e747103b3360605",
-     "validated_at": "2026-09-19T03:05:37.031487Z"
+     "validated_at": "2026-09-20T10:07:10.563506Z"
     },
     "dark": {
      "hash": "98895d45f47839b149e6bed797ad4ca96ce9d516381f1869aa01cd7ca9f65414",
-     "validated_at": "2026-09-19T03:05:37.055416Z"
+     "validated_at": "2026-09-20T10:07:10.584640Z"
     }
    }
   },
@@ -162,11 +162,11 @@
    "golden": {
     "light": {
      "hash": "da951ccc5e5d6062bb1890c1dcc8c9c621a80a98d66ff7b0a3ea17d591c02c40",
-     "validated_at": "2026-09-19T03:05:37.557681Z"
+     "validated_at": "2026-09-20T10:08:59.593944Z"
     },
     "dark": {
      "hash": "071b7af5e84172b06df00d7b3786d34f2a3a51d96601da307c30dcaff4cdabc3",
-     "validated_at": "2026-09-19T03:05:37.580899Z"
+     "validated_at": "2026-09-20T10:08:59.630163Z"
     }
    }
   },
@@ -190,11 +190,11 @@
    "golden": {
     "light": {
      "hash": "29ab0d03da4e9248465745d42d2da15be2970b86c280517d9c788fd866f381ad",
-     "validated_at": "2026-09-19T03:05:37.771211Z"
+     "validated_at": "2026-09-20T10:09:58.069738Z"
     },
     "dark": {
      "hash": "e3a0429c9d05f4944285cdbc5d9d3af92d35eed53a6399dd9611bf78c719ab1e",
-     "validated_at": "2026-09-19T03:05:37.789417Z"
+     "validated_at": "2026-09-20T10:09:58.089682Z"
     }
    }
   },
@@ -218,11 +218,11 @@
    "golden": {
     "light": {
      "hash": "a9960648f29dd03de3932737ef826043ae47206a3e8d66153f6c08f7eae28404",
-     "validated_at": "2026-09-19T03:08:09.866404Z"
+     "validated_at": "2026-09-20T10:11:56.044410Z"
     },
     "dark": {
      "hash": "e425994f379be93a7f90c5b8e05074ce892b8be548b576d7f75ed6d0b14ddeb0",
-     "validated_at": "2026-09-19T03:08:09.887899Z"
+     "validated_at": "2026-09-20T10:11:56.065654Z"
     }
    }
   },
@@ -246,11 +246,11 @@
    "golden": {
     "light": {
      "hash": "be0b879baacf9d18829517169095a089f5c4d031682352545c49eb4439a68604",
-     "validated_at": "2026-09-19T03:07:38.073835Z"
+     "validated_at": "2026-09-20T10:13:29.809108Z"
     },
     "dark": {
      "hash": "dca31e9cb3c5f233419b6827a4b28b22a28a49fda879243e4059f183c696a006",
-     "validated_at": "2026-09-19T03:07:38.110679Z"
+     "validated_at": "2026-09-20T10:13:29.832150Z"
     }
    }
   },
@@ -274,11 +274,11 @@
    "golden": {
     "light": {
      "hash": "2f55c758b556add0b1dc776c29b50c9756446b6bffb73a1e321de4dbb93e22b1",
-     "validated_at": "2026-09-19T03:11:29.157976Z"
+     "validated_at": "2026-09-20T10:17:59.215575Z"
     },
     "dark": {
      "hash": "4534fb5e38d2930096733894def42d48409deda595461db57cadb79e8c441a3e",
-     "validated_at": "2026-09-19T03:11:29.178065Z"
+     "validated_at": "2026-09-20T10:17:59.241699Z"
     }
    }
   },
@@ -297,16 +297,21 @@
      "origin": "D-266",
      "signature": "postrender-viewbox-aspect-clip",
      "at": "2026-09-15T08:56:14.718053Z"
+    },
+    {
+     "origin": "D-505",
+     "signature": "autosize-none-canvas-oversized-underfill",
+     "at": "2026-09-22T10:58:02.592153Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "0e4227ae8a93865dd173a64704ab262807e8733d7fde3b7e799982fc1312df16",
-     "validated_at": "2026-09-17T21:24:35.363729Z"
+     "hash": "04368f1f6d667f5fa401434dfab963bcea44e635fc6ab31fa8e99912faa1993c",
+     "validated_at": "2026-09-22T10:54:54.495084Z"
     },
     "dark": {
-     "hash": "1cc872d91a54e51cedc9179e9b3bddcac6892e8480b34567fc956d4b46c91178",
-     "validated_at": "2026-09-17T21:24:35.389579Z"
+     "hash": "2c05f00b5e9219a8e919a3b2a2d39515bc8870a7e06f00df2f66263fa226deae",
+     "validated_at": "2026-09-22T10:54:54.505004Z"
     }
    }
   },
@@ -325,16 +330,21 @@
      "origin": "D-266",
      "signature": "postrender-viewbox-aspect-clip",
      "at": "2026-09-15T08:56:14.723384Z"
+    },
+    {
+     "origin": "D-505",
+     "signature": "autosize-none-canvas-oversized-underfill",
+     "at": "2026-09-22T10:58:02.597001Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "63ac4d6c6e6a6b43e071e6e428a8fbb4ff98ab248967ff2c9bfeced54ef2c70a",
-     "validated_at": "2026-09-17T21:24:35.782301Z"
+     "hash": "1222e81ddfd6bf4129215d2c5a2330e8829def6ccc2baee2eefe70e3b5a5b96b",
+     "validated_at": "2026-09-22T10:55:38.449528Z"
     },
     "dark": {
-     "hash": "b594fcd2f8eb8ab02c5ed7ffb2a9bd3b087d4241c7761c5af65490c6e46b29f9",
-     "validated_at": "2026-09-17T21:24:35.812078Z"
+     "hash": "1c059ea9ed4ec8124e6717e4b2f9a028fe2a1390abfb90882321319a1f36879a",
+     "validated_at": "2026-09-22T10:55:38.466392Z"
     }
    }
   },
@@ -353,8 +363,23 @@
      "origin": "D-266",
      "signature": "postrender-viewbox-aspect-clip",
      "at": "2026-09-15T08:56:14.727489Z"
+    },
+    {
+     "origin": "D-505",
+     "signature": "autosize-none-canvas-oversized-underfill",
+     "at": "2026-09-22T10:58:02.601158Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a0a8ee56d268b55ce0f579a686278445284377548c491ad394c4a798b206976e",
+     "validated_at": "2026-09-22T10:57:05.501447Z"
+    },
+    "dark": {
+     "hash": "dec7f46fb48f67e336e633f79bc04e2ac9c23be294615426978eeb3383567aba",
+     "validated_at": "2026-09-22T10:57:05.526266Z"
+    }
+   }
   },
   "vega-w2-12": {
    "themes": [
@@ -371,8 +396,23 @@
      "origin": "D-266",
      "signature": "postrender-viewbox-aspect-clip",
      "at": "2026-09-15T08:56:14.732032Z"
+    },
+    {
+     "origin": "D-505",
+     "signature": "autosize-none-canvas-oversized-underfill",
+     "at": "2026-09-22T10:58:02.604979Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2dc75f27c9171e8a136d96960fdc3c1b8906df0738559ddb36693cd9ab8db336",
+     "validated_at": "2026-09-22T10:57:53.099242Z"
+    },
+    "dark": {
+     "hash": "4656fad5441159abafbaad4de4d5ddc6b3c6a815f65334a9e52128bf809a6057",
+     "validated_at": "2026-09-22T10:57:53.119753Z"
+    }
+   }
   },
   "vega-w2-01": {
    "themes": [
@@ -394,11 +434,11 @@
    "golden": {
     "light": {
      "hash": "f40be0fd1c5662460a1b959c13e1349dfd65304f383fb96be89adfde905cd542",
-     "validated_at": "2026-09-19T03:07:37.678284Z"
+     "validated_at": "2026-09-20T10:12:42.808639Z"
     },
     "dark": {
      "hash": "07e921b5692dd9adc14a2a5b818dde853620ece8debfbf3245b2ede5cd0200f7",
-     "validated_at": "2026-09-19T03:07:37.715569Z"
+     "validated_at": "2026-09-20T10:12:42.830675Z"
     }
    }
   },
@@ -422,11 +462,11 @@
    "golden": {
     "light": {
      "hash": "06960b171dda560ca9c6c5560e2081c0f4a99b6a8c9d63e15825beb5447cf17b",
-     "validated_at": "2026-09-19T03:10:21.755612Z"
+     "validated_at": "2026-09-20T10:14:16.921739Z"
     },
     "dark": {
      "hash": "ffd9d854f1bea5d8449e4a5e0cd4e6b87ffe8d423999be8c74a00cb94fe560f4",
-     "validated_at": "2026-09-19T03:10:21.779548Z"
+     "validated_at": "2026-09-20T10:14:16.938803Z"
     }
    }
   },
@@ -478,11 +518,11 @@
    "golden": {
     "light": {
      "hash": "d839bf207fe2d2e8feaee1cc247aa477fd30d3ccd65d7d584e69b8026a54506d",
-     "validated_at": "2026-09-19T03:07:37.304497Z"
+     "validated_at": "2026-09-20T10:11:02.704289Z"
     },
     "dark": {
      "hash": "41dbb94c8682df4da6f3140cbe02bf19f72f07ab4792a2996546c58e4fe0ff0e",
-     "validated_at": "2026-09-19T03:07:37.326070Z"
+     "validated_at": "2026-09-20T10:11:02.724676Z"
     }
    }
   },
@@ -712,11 +752,11 @@
    "golden": {
     "light": {
      "hash": "4c6fe033a40f6961de841e0b98dae00489dba34b602217fcffe54712c5276b13",
-     "validated_at": "2026-09-19T03:11:28.925513Z"
+     "validated_at": "2026-09-20T10:17:16.826915Z"
     },
     "dark": {
      "hash": "5c25c9d28712d37a7fc71a1657af0d1e47e516df9019172440b161f2b0885227",
-     "validated_at": "2026-09-19T03:11:28.944973Z"
+     "validated_at": "2026-09-20T10:17:16.845879Z"
     }
    }
   },
@@ -857,11 +897,11 @@
    "golden": {
     "light": {
      "hash": "de96986f0843e069c61d39bf65bd7b543b2e62bd84b7f499412841ea007d42ee",
-     "validated_at": "2026-09-19T03:11:29.402898Z"
+     "validated_at": "2026-09-20T10:18:42.489097Z"
     },
     "dark": {
      "hash": "f718650e50021682aa5dd734ca3c44c91753624764d76ad4ab9bf10dd2039bd3",
-     "validated_at": "2026-09-19T03:11:29.427896Z"
+     "validated_at": "2026-09-20T10:18:42.509157Z"
     }
    }
   },
@@ -922,12 +962,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "b3047c01feaa3453db10c674d305c420d29ed2653f46bedc1d58d399c0d1dc8d",
-     "validated_at": "2026-09-18T04:36:33.954542Z"
+     "hash": "027f05c9a57b14103d9312b67c3cfdda15549ee624ea166ad51ad793047e3006",
+     "validated_at": "2026-09-22T10:52:30.670606Z"
     },
     "dark": {
-     "hash": "f01e36d114b1438fc333257bea0cae90824dc27a79941bf33842c47ca5096df0",
-     "validated_at": "2026-09-18T04:36:33.983234Z"
+     "hash": "2ea616742a86c78b80a416bfb5accb56784ca67eeee5345a0a311b6b526fb404",
+     "validated_at": "2026-09-22T10:52:30.681760Z"
     }
    }
   },
@@ -1314,6 +1354,90 @@
     "light": {
      "hash": "fafe1e794c47561a5e6e6e690b3362753be52ea78e0e990e7b08e8b7d6e45a08",
      "validated_at": "2026-09-17T21:31:02.485275Z"
+    }
+   }
+  },
+  "vega-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-511",
+     "signature": "group-title-signal-cannot-see-facet-datum",
+     "at": "2026-09-19T14:19:54.985166Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "ab83bde9d8cb16fcc87879ee280db734161e19a680b2711da23d1bf3f670b8a2",
+     "validated_at": "2026-09-19T14:08:14.805925Z"
+    },
+    "light": {
+     "hash": "3331bd30d5d3ba78d760544d2d47424b5f1bc0b141229ced1b616e5e3bb73e55",
+     "validated_at": "2026-09-19T14:08:14.781736Z"
+    }
+   }
+  },
+  "vega-w3-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-279",
+     "signature": "dataflow-error-escapes-catch-blank-canvas",
+     "at": "2026-09-22T10:58:02.572234Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "f7b90b5974334c482abc0fff16a9dc47e7b2ae76910801471640c47775d5fc1a",
+     "validated_at": "2026-09-22T10:53:13.805761Z"
+    },
+    "light": {
+     "hash": "06dd94193563e48239268d6983a46877ddcde5170d5edb279bbb69db95240c91",
+     "validated_at": "2026-09-22T10:53:13.793789Z"
+    }
+   }
+  },
+  "vega-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-505",
+     "signature": "autosize-none-canvas-oversized-underfill",
+     "at": "2026-09-22T10:58:02.587549Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "a63421de8518c1063d4d1feba34c6ddcc445ca84d446bfb2a0a55175c3bbddd0",
+     "validated_at": "2026-09-22T10:54:10.649006Z"
+    },
+    "light": {
+     "hash": "143fd892a6544c5932775c4175771a8d7ef2591defcb82496c5eb8a58a1a80bd",
+     "validated_at": "2026-09-22T10:54:10.636575Z"
     }
    }
   }

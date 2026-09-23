@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\n\\draw[Crimson, thick] (0,2) to[R=$R_1$] (3,2);\n\\draw[Navy, thick] (0,0) to[C=$C_1$] (3,0);\n\\draw[Teal, thick] (5,1) to[L=$L_1$] (8,1);\n\\node[text=DarkGreen] at (4,3) {svgnames colours: Crimson / Navy / Teal / DarkGreen};\n",
+ "intent": "xcolor svgnames probe -- the chemfig profile pre-loads xcolor[svgnames,dvipsnames] for exactly this; circuitikz does not"
+}
