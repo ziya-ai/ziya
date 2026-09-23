@@ -1,0 +1,7 @@
+{
+ "type": "packet",
+ "definition": {
+  "definition": "packet-beta\n0-3: \"Version\"\n4-7: \"IHL\"\n8-15: \"Type of Service\"\n16-31: \"Total Length\"\n32-47: \"Identification\"\n48-50: \"Flags\"\n51-63: \"Fragment Offset\""
+ },
+ "intent": "packet-beta DSL dialect with header line, bit-range syntax — bridge path"
+}

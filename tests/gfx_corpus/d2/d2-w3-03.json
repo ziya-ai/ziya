@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "# duplicate ids, self-edges, cycles\nalpha: First Definition\nalpha: Second Definition\nbeta: Beta Node\nbeta: Beta Node\nselfloop: Self Referencing\nselfloop -> selfloop\nselfloop -> selfloop: retry\nalpha -> beta\nbeta -> alpha\nc1: Cycle One\nc2: Cycle Two\nc3: Cycle Three\nc1 -> c2\nc2 -> c3\nc3 -> c1",
+ "intent": "Duplicate ids, self-referencing edges, 2-cycle and 3-cycle in one spec"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "gateway.style.fill: \"#fafafa\"\ngateway.style.stroke: \"#dddddd\"\ngateway.style.font-color: \"#333333\"\nservice.style.fill: \"#ffffff\"\nservice.style.stroke: \"#e0e0e0\"\nservice.style.font-color: \"#333333\"\ncache.style.fill: \"#f5f5f5\"\ncache.style.stroke: \"#cccccc\"\ncache.style.font-color: \"#444444\"\nstore.style.fill: \"#fcfcfc\"\nstore.style.stroke: \"#d6d6d6\"\nstore.style.font-color: \"#222222\"\ngateway: API Gateway\nservice: Order Service\ncache: Redis Cache\nstore: Postgres Store\ngateway -> service\nservice -> cache\nservice -> store",
+ "intent": "Hardcoded LIGHT palette (near-white fills #fafafa/#ffffff, pale grey strokes #dddddd, #333 text) that must survive a dark page"
+}

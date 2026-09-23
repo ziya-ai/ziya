@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\fill[black!88] (-0.45,-0.45) rectangle (15.05,15.05);\n\\foreach \\i in {0,...,29}{\n  \\foreach \\j in {0,...,29}{\n    \\pgfmathtruncatemacro{\\c}{12+2*\\i+\\j}\n    \\fill[white!\\c!black] (\\i*0.5,\\j*0.5) circle (0.21);\n  }\n}\n\\node[text=white, font=\\bfseries\\small] at (7.3,15.6) {900 discs, self-painted plate};",
+ "intent": "900 filled discs on a self-painted opaque plate (theme-neutral by the wave-1 workaround): isolates element count from the known dark-ink defect"
+}

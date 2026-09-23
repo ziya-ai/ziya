@@ -354,6 +354,13 @@ export function applyPlotlyTheme(layout: any, isDarkMode: boolean): any {
     const axisDark = { gridcolor: '#333', zerolinecolor: '#555' };
     const sceneAxis = { ...axisDark, backgroundcolor: '#1e1e1e', showbackground: true };
     const polarAxisDark = { gridcolor: '#333', linecolor: '#555' };
+    // D-460: the ternary block below re-backgrounded only `bgcolor`, so the
+    // three ternary sub-axes (aaxis/baxis/caxis) kept plotly's default grid
+    // (~#282828) which sits at 1.13:1 on the #1e1e1e surface — invisible. Give
+    // the ternary grid/line the same visible token the color sanitizer uses:
+    // #8a8a8a is 4.83:1 on #1e1e1e (dark) and 3.45:1 on #ffffff (light), so it
+    // clears the 3:1 non-text floor on BOTH backgrounds.
+    const ternaryAxisDark = { gridcolor: '#8a8a8a', linecolor: '#8a8a8a' };
     merged = {
       paper_bgcolor: '#1e1e1e',
       plot_bgcolor: '#1e1e1e',
@@ -382,6 +389,11 @@ export function applyPlotlyTheme(layout: any, isDarkMode: boolean): any {
       ternary: {
         bgcolor: '#1e1e1e',
         ...(base.ternary || {}),
+        // Merge each sub-axis so our grid/line colour lands, while an author's
+        // own aaxis/baxis/caxis fields (e.g. title text) still win, spread last.
+        aaxis: { ...ternaryAxisDark, ...((base.ternary && base.ternary.aaxis) || {}) },
+        baxis: { ...ternaryAxisDark, ...((base.ternary && base.ternary.baxis) || {}) },
+        caxis: { ...ternaryAxisDark, ...((base.ternary && base.ternary.caxis) || {}) },
       },
       geo: {
         bgcolor: '#1e1e1e',

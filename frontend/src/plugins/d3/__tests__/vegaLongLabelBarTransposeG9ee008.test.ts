@@ -20,8 +20,13 @@
  */
 import {
   transposeLongLabelBarChart,
+  transposedCategoryLabelLimit,
   TRANSPOSE_LABEL_CHARS,
   TRANSPOSE_MAX_CATEGORIES,
+  TRANSPOSE_LABEL_LIMIT_MIN,
+  TRANSPOSE_LABEL_LIMIT_MAX,
+  TRANSPOSE_LABEL_LIMIT_DEFAULT,
+  MAX_AXIS_LABEL_LIMIT,
 } from '../vegaLayerDefaults';
 
 // Reduced form of vega-lite-w2-05: 8 categories with 65-75 char labels.
@@ -59,8 +64,34 @@ describe('D-309/D-500 long-label bar chart transposed to horizontal', () => {
     // ...and the quantitative measure drives the horizontal bar extent.
     expect(spec.encoding.x.field).toBe('v');
     expect(spec.encoding.x.type).toBe('quantitative');
-    // The authored axis title rides along with its channel onto y.
-    expect(spec.encoding.y.axis).toEqual({ title: 'programme' });
+    // The authored axis title rides along with its channel onto y...
+    expect(spec.encoding.y.axis.title).toBe('programme');
+    // ...and the category label column is bounded (D-500) so the rotated
+    // axis title can never be clamped back onto the labels. Without the fix
+    // the axis carried only { title } and the 320px MAX_AXIS_LABEL_LIMIT
+    // default applied, overprinting the middle labels.
+    expect(spec.encoding.y.axis.labelLimit).toBeLessThan(MAX_AXIS_LABEL_LIMIT);
+    expect(spec.encoding.y.axis.labelLimit).toBe(TRANSPOSE_LABEL_LIMIT_DEFAULT);
+  });
+
+  it('D-500: bounds the label column relative to the available width', () => {
+    // Narrow container (headless 400px floor): column stays well under the
+    // observed ~145px collision point.
+    const narrow: any = longLabelBar();
+    transposeLongLabelBarChart(narrow, 400);
+    expect(narrow.encoding.y.axis.labelLimit).toBeGreaterThanOrEqual(TRANSPOSE_LABEL_LIMIT_MIN);
+    expect(narrow.encoding.y.axis.labelLimit).toBeLessThan(MAX_AXIS_LABEL_LIMIT);
+    expect(narrow.encoding.y.axis.labelLimit).toBeLessThanOrEqual(145);
+
+    // Wide viewport: the column is capped so it never dominates the plot.
+    const wide: any = longLabelBar();
+    transposeLongLabelBarChart(wide, 2000);
+    expect(wide.encoding.y.axis.labelLimit).toBe(TRANSPOSE_LABEL_LIMIT_MAX);
+
+    // The pure limit helper: floor / proportional / ceil.
+    expect(transposedCategoryLabelLimit(undefined)).toBe(TRANSPOSE_LABEL_LIMIT_DEFAULT);
+    expect(transposedCategoryLabelLimit(300)).toBe(TRANSPOSE_LABEL_LIMIT_MIN); // 96 -> floor
+    expect(transposedCategoryLabelLimit(5000)).toBe(TRANSPOSE_LABEL_LIMIT_MAX); // clamp ceil
   });
 
   it('is theme-independent: identical mutation across two invocations', () => {

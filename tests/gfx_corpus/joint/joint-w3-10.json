@@ -1,0 +1,162 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "cells": [
+   {
+    "type": "standard.Rectangle",
+    "id": "dk1",
+    "position": {
+     "x": 60,
+     "y": 60
+    },
+    "size": {
+     "width": 200,
+     "height": 90
+    },
+    "attrs": {
+     "body": {
+      "fill": "#1a1a1a",
+      "stroke": "#333333",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "#eeeeee on #1a1a1a",
+      "fill": "#eeeeee",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "dk2",
+    "position": {
+     "x": 320,
+     "y": 60
+    },
+    "size": {
+     "width": 200,
+     "height": 90
+    },
+    "attrs": {
+     "body": {
+      "fill": "#000000",
+      "stroke": "#222222",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "white on pure black",
+      "fill": "#ffffff",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "dk3",
+    "position": {
+     "x": 580,
+     "y": 60
+    },
+    "size": {
+     "width": 200,
+     "height": 90
+    },
+    "attrs": {
+     "body": {
+      "fill": "#2b2b2b",
+      "stroke": "#3c3c3c",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "#cfcfcf on #2b2b2b",
+      "fill": "#cfcfcf",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Circle",
+    "id": "dk4",
+    "position": {
+     "x": 60,
+     "y": 230
+    },
+    "size": {
+     "width": 160,
+     "height": 160
+    },
+    "attrs": {
+     "body": {
+      "fill": "#111827",
+      "stroke": "#374151",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "#f9fafb",
+      "fill": "#f9fafb",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "dk5",
+    "position": {
+     "x": 320,
+     "y": 230
+    },
+    "size": {
+     "width": 200,
+     "height": 90
+    },
+    "attrs": {
+     "body": {
+      "fill": "#0d1117",
+      "stroke": "#30363d",
+      "strokeWidth": 1
+     },
+     "label": {
+      "text": "github dark tokens",
+      "fill": "#c9d1d9",
+      "fontSize": 13
+     }
+    }
+   },
+   {
+    "type": "standard.Link",
+    "id": "dl1",
+    "source": {
+     "id": "dk1"
+    },
+    "target": {
+     "id": "dk4"
+    },
+    "attrs": {
+     "line": {
+      "stroke": "#30363d",
+      "strokeWidth": 1
+     }
+    }
+   },
+   {
+    "type": "standard.Link",
+    "id": "dl2",
+    "source": {
+     "id": "dk2"
+    },
+    "target": {
+     "id": "dk5"
+    },
+    "attrs": {
+     "line": {
+      "stroke": "#222222",
+      "strokeWidth": 1
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Author hardcodes a DARK-ONLY palette (#000/#0d1117/#111827 fills, near-white text, #222-#374151 strokes). Must survive a light page."
+}

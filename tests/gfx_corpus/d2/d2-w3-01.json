@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "# unicode + CJK + emoji labels, distinct ids\ncafé: Café Service\nnaïve: Naïve Cache\n日本語: 日本語サービス\n中文字: 中文字数据库\n한국어: 한국어 API\nemoji1: 🚀 Deploy\nemoji2: 🔥 Hotfix\nemoji3: ✅ Verified\nmathsym: ∑∏∫ Analytics\ncafé -> 日本語: 送信\nnaïve -> 中文字\n한국어 -> emoji1\nemoji2 -> emoji3: 🔁\nmathsym -> café",
+ "intent": "Unicode/CJK/RTL-adjacent/emoji ids and labels; probes normalizeNodeId collapsing non-alphanumerics"
+}

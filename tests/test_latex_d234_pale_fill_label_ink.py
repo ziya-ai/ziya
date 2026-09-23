@@ -92,11 +92,17 @@ def test_dark_fill_keeps_light_default_ink():
 
 
 def test_author_text_colour_is_respected():
-    # An explicit author text= must win; the pass leaves the block alone.
-    body = r"\node[fill=green!20, text=white] {L};"
+    # An explicit author ink that is ALREADY LEGIBLE on its fill must win: the
+    # label-ink machinery neither injects (D-234, no missing ink) nor corrects
+    # (D-033, ink already clears the floor on its chip).  DarkBlue on green!20
+    # is 13.65:1, so it survives untouched.  (An explicit but ILLEGIBLE ink --
+    # white on this same pale fill = 1.1:1 -- is a separate case that D-033
+    # deliberately corrects; see test_latex_d033_fill_paired_ink.)
+    body = r"\node[fill=green!20, text=DarkBlue] {L};"
     dark, _ = normalize_colors(body, theme="dark")
-    assert "text=white" in dark
+    assert "text=DarkBlue" in dark
     assert "text=black" not in dark
+    assert "text=white" not in dark
 
 
 def test_unresolvable_definecolor_fill_is_left_alone():

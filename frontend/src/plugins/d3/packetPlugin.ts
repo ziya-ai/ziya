@@ -60,6 +60,58 @@ export function resolvePacketDefinitionString(rawSpec: any): string | undefined 
 }
 
 /**
+ * Unwrap a nested `{ definition: <dsl|json> }` envelope that survives a JSON
+ * parse and bridge a `packet-beta` DSL wherever it surfaces (D-453).
+ *
+ * The server's `normalize_spec_definition` (diagram_renderer.py) `json.dumps()`
+ * any object/array `definition` before it crosses to the frontend, so a spec
+ * authored as `{ type:'packet', definition:{ definition:"packet-beta …" } }`
+ * reaches the plugin as a DOUBLE-ENCODED STRING
+ * `'{"definition":"packet-beta …"}'`. `resolvePacketDefinitionString` returns
+ * that string, `parsePacketBetaDsl` misses it (it starts with `{`, not
+ * `packet`), and `lenientParsePacketJson` yields the inner envelope object
+ * `{ definition:"packet-beta …" }` — which has no `sections`, so render()
+ * reached the "requires a sections array" guard and painted an error card with
+ * no <svg> (blank capture). The earlier resolvePacketDefinitionString fix only
+ * covered the OBJECT-envelope shape, which the server never actually delivers.
+ *
+ * Given the parsed value, follow `.definition` down through further envelopes
+ * and bridge a DSL / re-parse a JSON string at each level, returning the
+ * innermost loose PacketSpec-ish value for normalizePacketSpec. A value that
+ * already carries `sections`/`rows`/`fields` (a real spec) is returned
+ * untouched, so direct specs and the flat/array shapes normalizePacketSpec
+ * already handles are unaffected. Bounded so a self-referential envelope can
+ * never loop. Pure / DOM-free / testable.
+ */
+export function unwrapNestedPacketDefinition(parsed: any, maxDepth = 6): any {
+  let cur = parsed;
+  for (let i = 0; i < maxDepth; i++) {
+    if (!cur || typeof cur !== 'object' || Array.isArray(cur)) return cur;
+    // A value that already looks like a packet spec is done — never descend
+    // past real content into an inner `definition` it may also carry.
+    const hasContent =
+      (Array.isArray((cur as any).sections) && (cur as any).sections.length > 0) ||
+      (Array.isArray((cur as any).rows) && (cur as any).rows.length > 0) ||
+      (Array.isArray((cur as any).fields) && (cur as any).fields.length > 0);
+    if (hasContent || !('definition' in cur)) return cur;
+
+    const inner = (cur as any).definition;
+    if (typeof inner === 'string') {
+      const cleaned = normalizePacketSmartQuotes(stripPacketFence(inner));
+      const dsl = parsePacketBetaDsl(cleaned);
+      if (dsl) return dsl;
+      const reparsed = lenientParsePacketJson(cleaned);
+      if (reparsed === undefined) return cur;
+      cur = reparsed;
+      continue;
+    }
+    if (inner && typeof inner === 'object') { cur = inner; continue; }
+    return cur;
+  }
+  return cur;
+}
+
+/**
  * Vertical stagger offsets (px, one per input in order) for co-extensive
  * bracket labels (D-452). Co-extensive brackets get DISTINCT depths, so their
  * labels share nearly the same y but sit only ~30px apart in x; a horizontal
@@ -332,7 +384,13 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
         renderError(container, 'Invalid JSON in definition', rawSpec, isDarkMode);
         return;
       }
-      pkt = parsed as PacketSpec;
+      // The parsed value may itself be a `{ definition: "packet-beta …" }`
+      // envelope (D-453): the server's normalize_spec_definition json.dumps()
+      // an object envelope, so a {definition:{definition:dsl}} spec arrives as
+      // a double-encoded STRING that parses back to {definition: dsl}. Unwrap
+      // nested definition envelopes and bridge the inner DSL/JSON so it does
+      // not fall through to the "requires a sections array" error card.
+      pkt = unwrapNestedPacketDefinition(parsed) as PacketSpec;
     }
   } else {
     pkt = extractDefinition(rawSpec) as PacketSpec;

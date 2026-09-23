@@ -536,6 +536,80 @@ def measured_drawing_extent_px(
     return (float(bbox_uu_w), float(bbox_uu_h))
 
 
+def fit_rewrite_svg_px_extent(
+    union_uu_w: float,
+    union_uu_h: float,
+    cur_vb_w: float,
+    svg_client_w: float,
+    declared_px_w: float = 0.0,
+) -> tuple[float, float]:
+    """The CSS-px size to give an SVG when ``_CAPTURE_FIT_JS`` rewrites it to the
+    viewBox/content UNION extent — the rewrite-side twin of ``measured_drawing_extent_px``.
+
+    D-401 / D-125 (rewrite side): when a graph needs the capture fit, the fit
+    step expands the SVG's viewBox to the union of its declared viewBox and its
+    content ``getBBox`` (``content_extent_from_boxes``) so off-canvas content is
+    revealed. That union is in SVG USER UNITS. For a point-based engine
+    (graphviz: 1 user unit = 1pt) sizing ``svg.style.width`` to the raw union
+    number as *px* collapses the drawing back to its point count — undoing the
+    plugin's on-screen px sizing and, once ``compute_capture_fit``'s px-derived
+    ``scale`` is layered on top via the container transform, rescaling the
+    drawing to a thin strip that captures blank/cropped. This is the exact
+    blank-canvas mechanism the D-125 fix corrected on the MEASURE side; the
+    REWRITE must apply the same units correction.
+
+    The SVG's on-screen px-per-user-unit ratio is ``svg_client_w / cur_vb_w``
+    (its current client width over its current viewBox width, before the union
+    expansion). Sizing the SVG to ``union * ratio`` keeps the drawing at its
+    correct on-screen px scale while the widened viewBox reveals the overflow.
+    Engines whose user units are already CSS px (mermaid, vega) have
+    ``ratio ~= 1`` — or no viewBox at all (Vega), in which case the caller
+    passes the declared px size and this returns it unchanged.
+
+    Returns ``(px_w, px_h)``. Falls back to the raw union extent (ratio 1) when
+    no usable current viewBox / client width is available, so paths without a
+    measurable on-screen box keep the historic behaviour. Pure and
+    side-effect-free so the units contract is unit-testable without a browser;
+    mirrors the rewrite branch of ``_CAPTURE_FIT_JS``.
+    """
+    try:
+        uw = float(union_uu_w)
+        uh = float(union_uu_h)
+    except (TypeError, ValueError):
+        return (0.0, 0.0)
+    if uw <= 0 or uh <= 0:
+        return (max(0.0, uw), max(0.0, uh))
+    # D-451 (wide-packet blank strip): the px-per-user-unit reference must be
+    # the LARGER of the on-screen client width and the SVG's DECLARED px width.
+    # A packet SVG carries `width=<natural px>` AND `max-width:100%`, so inside
+    # the bounded capture container a grid wider than the container is DISPLAYED
+    # shrunk (declared 6250px shown at ~1280px). Using the shrunk client width
+    # as the reference yields ratio < 1, which re-applies that shrink and sizes
+    # the just-unclipped SVG back DOWN to the container width — captured as a
+    # blank/illegible strip instead of the natural surface compute_capture_fit's
+    # scale expects. Taking max(client, declared) ignores the max-width shrink
+    # (declared > client) while preserving an intentional on-screen UPSCALE
+    # (client > declared — a point-based graphviz drawn larger than its pt count,
+    # D-401/D-125). declared_px_w defaults to 0, so the historic client-only
+    # call sites (and a Vega SVG with no declared width) are byte-identical.
+    ratio = 1.0
+    try:
+        vbw = float(cur_vb_w)
+        cw = float(svg_client_w)
+        try:
+            dw = float(declared_px_w)
+        except (TypeError, ValueError):
+            dw = 0.0
+        ref = max(cw if cw > 0 else 0.0, dw if dw > 0 else 0.0)
+        if vbw > 0 and ref > 0:
+            r = ref / vbw
+            if r > 0 and r != float("inf"):
+                ratio = r
+    except (TypeError, ValueError):
+        ratio = 1.0
+    return (uw * ratio, uh * ratio)
+
+
 # D-117/D-119: the natural extent is the UNION of the declared viewBox and the
 # content getBBox (mirrors content_extent_from_boxes), so content that overflows
 # the declared viewBox (negative-x labels, forced-size upscales, off-canvas
@@ -621,8 +695,26 @@ _CAPTURE_MEASURE_JS = """
     // size in via MAX (monotonic: can only raise, never shrink a measurement —
     // viewBox engines are unaffected). Mirrors merge_declared_svg_extent().
     try {
-      const dw = (svg.width && svg.width.baseVal && svg.width.baseVal.value) || 0;
-      const dh = (svg.height && svg.height.baseVal && svg.height.baseVal.value) || 0;
+      // D-125 (measure side of the LR-crop regression): read the DECLARED px
+      // size from the width/height ATTRIBUTE, NOT svg.width.baseVal.value. The
+      // graphviz plugin REMOVES the width/height attributes and drives size via
+      // CSS (graphvizPlugin.ts svgEl.removeAttribute('width')), so baseVal.value
+      // synthesizes the SVG default (100% resolved to the viewport width) — a
+      // fabricated ~1280 that inflated natW and (on the rewrite side) was folded
+      // into the point-unit union and multiplied by the px-per-unit ratio into a
+      // multi-thousand-px cropped strip. An absent attribute (graphviz) yields 0
+      // -> no fold. Vega/packet declare a real px attribute, so they are
+      // unchanged. Mirrors merge_declared_svg_extent (declared px, 0 if none).
+      const declPx = (nm) => {
+        const a = svg.getAttribute(nm);
+        if (!a) return 0;
+        const s = String(a).trim();
+        if (!/^-?[0-9]*\\.?[0-9]+(px)?$/i.test(s)) return 0;
+        const n = parseFloat(s);
+        return (isFinite(n) && n > 0) ? n : 0;
+      };
+      const dw = declPx('width');
+      const dh = declPx('height');
       if (dw > 0) natW = Math.max(natW, Math.ceil(dw));
       if (dh > 0) natH = Math.max(natH, Math.ceil(dh));
     } catch (e) {}
@@ -747,8 +839,23 @@ _CAPTURE_FIT_JS = """
     // is sized to its full surface, not the under-reported getBBox. Max-only,
     // so viewBox engines are unchanged. Mirrors merge_declared_svg_extent().
     try {
-      const dw = (svg.width && svg.width.baseVal && svg.width.baseVal.value) || 0;
-      const dh = (svg.height && svg.height.baseVal && svg.height.baseVal.value) || 0;
+      // D-125 (rewrite side of the LR-crop regression): source the DECLARED px
+      // size from the width/height ATTRIBUTE, never svg.width.baseVal.value.
+      // graphviz removes its width/height attrs (CSS-driven), so baseVal
+      // fabricates a ~1280 default that here was folded into the POINT-unit
+      // union `w`/`h` and then multiplied by the px-per-unit ratio -> a
+      // multi-thousand-px cropped strip. Absent attr (graphviz) -> 0, no fold;
+      // Vega/packet keep their real declared px. Mirrors merge_declared_svg_extent.
+      const declPx = (nm) => {
+        const a = svg.getAttribute(nm);
+        if (!a) return 0;
+        const s = String(a).trim();
+        if (!/^-?[0-9]*\\.?[0-9]+(px)?$/i.test(s)) return 0;
+        const n = parseFloat(s);
+        return (isFinite(n) && n > 0) ? n : 0;
+      };
+      const dw = declPx('width');
+      const dh = declPx('height');
       if (dw > 0) w = Math.max(w, Math.ceil(dw));
       if (dh > 0) h = Math.max(h, Math.ceil(dh));
       // A Vega SVG with no viewBox but a declared size still needs sizing: adopt
@@ -757,8 +864,51 @@ _CAPTURE_FIT_JS = """
       if (!haveVb && dw > 0 && dh > 0) { haveVb = true; }
     } catch (e) {}
     if (haveVb && w > 0 && h > 0) {
+      // D-401/D-125 (rewrite side): w/h are the union extent in SVG USER UNITS.
+      // For a point-based engine (graphviz: 1 unit = 1pt) sizing style.width to
+      // `w` px collapses the drawing back to its point count — a thin strip /
+      // near-blank capture once the px-derived container `scale` is layered on
+      // top. Preserve the on-screen px scale: size the SVG to the union scaled
+      // by the current px-per-unit ratio (client width / current viewBox width).
+      // Mirrors fit_rewrite_svg_px_extent(). px-unit engines (mermaid/vega) have
+      // ratio ~= 1, and a no-real-viewBox Vega SVG falls back to the union (its
+      // declared px size folded into w/h above), so both are unchanged.
+      let ratio = 1;
+      try {
+        const curVbW = (vb && vb.width) ? vb.width : 0;
+        const sr = svg.getBoundingClientRect();
+        const clientW = (sr && sr.width > 0) ? sr.width : 0;
+        // D-451: a packet SVG has width=<natural px> AND max-width:100%, so a
+        // grid wider than the bounded capture container is DISPLAYED shrunk
+        // (declared 6250px shown at ~1280px). Using that shrunk client width as
+        // the px-per-unit reference gives ratio<1, which re-applies the shrink
+        // and sizes the unclipped SVG back to the container width -> blank/
+        // illegible strip. Take the LARGER of the client width and the DECLARED
+        // px width so the max-width shrink is ignored (declared > client) while
+        // an intentional on-screen upscale is preserved (client > declared,
+        // graphviz D-401). Mirrors fit_rewrite_svg_px_extent(declared_px_w).
+        // D-125: DECLARED px from the ATTRIBUTE only (0 when the graphviz plugin
+        // has removed it) — baseVal.value fabricates a viewport-sized default
+        // that re-applies as a spurious upscale reference here. Vega/packet keep
+        // their real declared px attribute.
+        const declW = (() => {
+          const a = svg.getAttribute('width');
+          if (!a) return 0;
+          const s = String(a).trim();
+          if (!/^-?[0-9]*\\.?[0-9]+(px)?$/i.test(s)) return 0;
+          const n = parseFloat(s);
+          return (isFinite(n) && n > 0) ? n : 0;
+        })();
+        const refW = Math.max(clientW, declW);
+        if (curVbW > 0 && refW > 0) {
+          const r = refW / curVbW;
+          if (isFinite(r) && r > 0) ratio = r;
+        }
+      } catch (e) {}
+      const pxW = Math.max(1, Math.round(w * ratio));
+      const pxH = Math.max(1, Math.round(h * ratio));
       svg.setAttribute('viewBox', minX + ' ' + minY + ' ' + w + ' ' + h);
-      svg.style.maxWidth = 'none'; svg.style.width = w + 'px'; svg.style.height = h + 'px';
+      svg.style.maxWidth = 'none'; svg.style.width = pxW + 'px'; svg.style.height = pxH + 'px';
     }
   }
   c.style.display = 'inline-block';

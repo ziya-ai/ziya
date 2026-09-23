@@ -347,7 +347,33 @@ export const TRANSPOSE_MAX_CATEGORIES = 20;
  * Structural and theme-independent (no colour touched). Returns whether it
  * transposed.
  */
-export function transposeLongLabelBarChart(spec: any): boolean {
+/**
+ * D-500 (axis-title-collides-with-rotated-labels): after the transpose the long
+ * category names live on the y axis. If their label column is allowed to grow
+ * to MAX_AXIS_LABEL_LIMIT (320px), Vega-Lite's `autosize: fit-x` clamps the plot
+ * to the container width and the rotated y-axis TITLE is pushed back onto the
+ * label band, overprinting the middle rows. Bound the transposed category-axis
+ * `labelLimit` to a fraction of the width the chart can afford, clamped to a
+ * range whose FLOOR still fits every distinguishing prefix (the eight programme
+ * names differ within the first ~20 chars) and whose CEIL never lets the column
+ * dominate a wide viewport. With the column bounded, the title's auto offset
+ * (label extent + titlePadding) sits clear of the labels.
+ */
+export const TRANSPOSE_LABEL_COLUMN_FRACTION = 0.32;
+export const TRANSPOSE_LABEL_LIMIT_MIN = 120;
+export const TRANSPOSE_LABEL_LIMIT_MAX = 220;
+/** Used when the available width is unknown (matches the legacy-OK ~180px). */
+export const TRANSPOSE_LABEL_LIMIT_DEFAULT = 150;
+
+export function transposedCategoryLabelLimit(availableWidth?: number): number {
+  if (!Number.isFinite(availableWidth as number) || (availableWidth as number) <= 0) {
+    return TRANSPOSE_LABEL_LIMIT_DEFAULT;
+  }
+  const proportional = Math.round((availableWidth as number) * TRANSPOSE_LABEL_COLUMN_FRACTION);
+  return Math.min(TRANSPOSE_LABEL_LIMIT_MAX, Math.max(TRANSPOSE_LABEL_LIMIT_MIN, proportional));
+}
+
+export function transposeLongLabelBarChart(spec: any, availableWidth?: number): boolean {
   if (!spec || typeof spec !== 'object') return false;
   // Only a single-view unit spec — a composition has its own layout rules.
   if (spec.layer || spec.hconcat || spec.vconcat || spec.concat ||
@@ -386,6 +412,15 @@ export function transposeLongLabelBarChart(spec: any): boolean {
   // horizontal bar extent. Any authored axis title / sort / scale rides along.
   enc.x = y;
   enc.y = x;
+
+  // D-500: bound the (now y-axis) category label column so the rotated axis
+  // title cannot be clamped back onto the labels under `autosize: fit-x`. This
+  // is set explicitly rather than left to applyUnitAxisDefaults, whose 320px
+  // default is the width that caused the overprint. Any authored title/other
+  // axis props are preserved; only the label sizing is pinned.
+  const labelLimit = transposedCategoryLabelLimit(availableWidth);
+  const priorAxis = enc.y && typeof enc.y.axis === 'object' && enc.y.axis ? enc.y.axis : {};
+  enc.y.axis = { ...priorAxis, labelLimit, labelFontSize: 11, titlePadding: 8 };
   return true;
 }
 

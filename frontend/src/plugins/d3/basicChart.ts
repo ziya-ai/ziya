@@ -27,6 +27,37 @@ export interface BasicChartSpec {
 const defaultMargin = { top: 20, right: 20, bottom: 30, left: 40 };
 
 /**
+ * y-scale domain for a band (bar/line) chart (D-320 / basic-chart-w3-04).
+ *
+ * A hardcoded `[0, max]` domain broke on negative values: a negative datum
+ * maps below the [0..] floor, so the bar's `height - y(value)` went negative,
+ * which SVG rejects (console error) and the bar disappeared. Span the domain
+ * across zero — `[min(0, dataMin), max(0, dataMax)]` — so negatives get real
+ * plot space AND the zero baseline stays on-scale. For all-positive data the
+ * floor stays 0, so the domain is unchanged from before and previously
+ * verified charts render byte-identically.
+ */
+export function barYDomain(values: number[]): [number, number] {
+    const nums = (values || []).filter((v) => typeof v === 'number' && isFinite(v));
+    const dataMax = nums.length ? Math.max(...nums) : 0;
+    const dataMin = nums.length ? Math.min(...nums) : 0;
+    return [Math.min(0, dataMin), Math.max(0, dataMax)];
+}
+
+/**
+ * Zero-baseline rect geometry for one bar (D-320 / basic-chart-w3-04). Given a
+ * value's mapped y-pixel and the mapped zero baseline, returns a rect that
+ * always has a NON-NEGATIVE height: a positive bar rises from the baseline up
+ * to `yValue` (yValue <= baseline), a negative bar drops from the baseline down
+ * to `yValue` (yValue >= baseline). For all-positive data the baseline equals
+ * the plot bottom, so this reduces exactly to the historical
+ * `{ y: yValue, height: plotBottom - yValue }`.
+ */
+export function barRectGeometry(yValue: number, baseline: number): { y: number; height: number } {
+    return { y: Math.min(yValue, baseline), height: Math.abs(yValue - baseline) };
+}
+
+/**
  * Clamp a caller-supplied margin UP to the known-good default gutter on each
  * side (D-005 / basic-chart-w2-15). A degenerate `margin:{0,0,0,0}` was honoured
  * verbatim, so with no left/bottom gutter the y-axis tick number labels rendered
@@ -134,6 +165,38 @@ export function withHeightAwareTicks(axis: any, plotHeight: number, fontSize: nu
     return axis;
 }
 
+/**
+ * True only when a continuous (scatter/bubble) dataset carries a size dimension
+ * that actually VARIES (D-375 / d3-w1-05). `radiusRange`/`rScale` map a datum's
+ * `size` through a sqrt scale onto [minRadius, maxRadius]; when every row shares
+ * the same size (e.g. a plain x/y scatter authored with a constant `size:10`),
+ * that domain is degenerate — every point maps to `maxSize` and draws at
+ * `maxRadius` (~r=40), so adjacent markers physically overlap and the scatter
+ * cannot read as discrete points. Requiring at least two DISTINCT finite sizes
+ * means a uniform-size dataset is treated as sizeless (fixed small radius),
+ * while a genuine bubble chart with graduated sizes (e.g. d3-w2-07: 5,12,19,…)
+ * still reports true and is unchanged.
+ */
+export function sizeVaries(data: any[]): boolean {
+    const sizes = (data || [])
+        .map((d) => (d && typeof d.size === 'number' && isFinite(d.size) ? d.size : null))
+        .filter((s): s is number => s !== null);
+    // No sized rows → genuinely sizeless.
+    if (sizes.length === 0) return false;
+    // A LONE sized datum is still a bubble (it cannot overlap anything and the
+    // author explicitly gave a size — D-010's single high/large bubble). Only a
+    // dataset of ≥2 points that all share ONE size is the degenerate case that
+    // over-inflates and overlaps (D-375 / d3-w1-05).
+    if (sizes.length === 1) return true;
+    let min = sizes[0];
+    let max = sizes[0];
+    for (const s of sizes) {
+        if (s < min) min = s;
+        if (s > max) max = s;
+    }
+    return max > min;
+}
+
 export function radiusRange(hasSize: boolean, plotW: number, plotH: number, n: number): { min: number; max: number } {
     if (!hasSize) return { min: 5, max: 5 };
     const areaPerPoint = Math.max(1, plotW * plotH) / Math.max(1, n);
@@ -179,11 +242,24 @@ export const basicChartPlugin: D3RenderPlugin = {
     priority: 10, // Higher priority than network diagram
     sizingConfig: {
         sizingStrategy: 'responsive',
-        needsDynamicHeight: false,
+        // D-374: the container previously pinned `height: '400px'` with
+        // `needsDynamicHeight: false`, so D3Renderer forced the host box to a
+        // fixed 400px (it sets `container.style.height = needsDynamicHeight
+        // ? 'auto' : '<h>px'` and maxHeight accordingly). A chart authored
+        // taller than 400px (e.g. a bubble/scatter with height 500) then drew
+        // its SVG at natural size inside that clipped box: the headless
+        // element-screenshot captured only the ~400px visible window (measured
+        // 832x464 for a 500px chart), silently cropping the bottom band — the
+        // x axis line and all x tick labels. Same root cause as networkDiagram
+        // D-052; matching every other tall D3 engine (network/chord/graphviz/
+        // vega), `needsDynamicHeight: true` lets the container height follow
+        // the SVG content ('auto' + maxHeight 'none') so the whole chart,
+        // including the x axis, is shown and captured. No sub-viewport height
+        // is pinned; overflow stays 'auto' so a responsive width still scrolls.
+        needsDynamicHeight: true,
         needsOverflowVisible: false,
         observeResize: false,
         containerStyles: {
-            height: '400px',
             overflow: 'auto'
         }
     },
@@ -265,7 +341,11 @@ export const basicChartPlugin: D3RenderPlugin = {
                 if (hasLabels) {
                     const provW = (spec.width || 600) - margin.left - margin.right;
                     const provH = (spec.height || 400) - margin.top - margin.bottom;
-                    const hasSizeProv = data.some((d: any) => typeof d?.size === 'number' && isFinite(d.size));
+                    // D-375: a bubble domain needs VARYING sizes; a constant
+                    // `size` (a plain scatter authored with size:10) is treated
+                    // as sizeless so the headroom estimate matches the fixed
+                    // small radius used below.
+                    const hasSizeProv = sizeVaries(data);
                     const estMax = radiusRange(hasSizeProv, provW, provH, data.length).max;
                     const headroom = Math.ceil(estMax + colors.fontSize + 6);
                     if (headroom > margin.top) margin.top = headroom;
@@ -297,7 +377,14 @@ export const basicChartPlugin: D3RenderPlugin = {
 
                 // D-009: fixed small radius for a sizeless scatter; an area/count
                 // -aware range for a bubble chart (never the old absolute [4,40]).
-                const hasSize = data.some((d: any) => typeof d?.size === 'number' && isFinite(d.size));
+                // D-375: "has size" requires the size dimension to actually VARY.
+                // A degenerate size domain (all rows share one value, e.g. a plain
+                // x/y scatter authored with size:10) carries no size signal, so
+                // mapping it through rScale drew every marker at maxRadius (~r=40)
+                // and adjacent points overlapped into blobs. Treat it as sizeless
+                // → fixed small radius → discrete points. A real bubble chart with
+                // graduated sizes still varies, so its radii are unchanged.
+                const hasSize = sizeVaries(data);
                 const { min: minRadius, max: maxRadius } = radiusRange(hasSize, width, height, data.length);
                 const radiusOf = (d: any) => {
                     if (!hasSize) return minRadius;
@@ -385,9 +472,19 @@ export const basicChartPlugin: D3RenderPlugin = {
                 .domain(data.map((d: any) => d.label))
                 .padding(0.1);
 
+            // D-320 (basic-chart-w3-04): a hardcoded [0, max] y-domain broke on
+            // negative values. With domain floor 0 a negative value maps BELOW
+            // the baseline, so `y(value) > height`; the bar height
+            // `height - y(value)` then went NEGATIVE, which SVG rejects (console
+            // error) and the bar vanished — a negative-valued dataset lost every
+            // negative bar. Span the domain across zero so negatives get real
+            // plot space, and anchor bars to the zero baseline (below). For
+            // all-positive data the domain is still [0, max] and the geometry is
+            // byte-identical (see the bar block), so previously-verified charts
+            // are unchanged.
             const y = d3.scaleLinear()
                 .range([height, 0])
-                .domain([0, d3.max(data, (d: any) => d.value)]);
+                .domain(barYDomain(data.map((d: any) => d.value)));
 
             // Add X axis, then fit its category labels (thin/rotate/truncate) and
             // colour it for the active theme.
@@ -405,14 +502,22 @@ export const basicChartPlugin: D3RenderPlugin = {
                 .selectAll('text').style('fill', colors.axis);
 
             if (effectiveType === 'bar') {
-                // Add bars
+                // D-320 (w3-04): anchor bars to the zero baseline so both signs
+                // draw with a POSITIVE height. `y` now spans [min(0,dataMin),
+                // max(0,dataMax)]; a positive bar rises from baseline to y(value)
+                // (y(value) <= baseline), a negative bar drops from baseline to
+                // y(value) (y(value) >= baseline). Height is the absolute gap.
+                // For all-positive data baseline === y(0) === height, so
+                // y=min(y(value),height)=y(value) and height=|y(value)-height|=
+                // height-y(value): identical to the prior formula (no regression).
+                const baseline = y(0);
                 svg.selectAll('rect')
                     .data(data)
                     .join('rect')
                     .attr('x', (d: any) => x(d.label))
-                    .attr('y', (d: any) => y(d.value))
+                    .attr('y', (d: any) => barRectGeometry(y(d.value), baseline).y)
                     .attr('width', x.bandwidth())
-                    .attr('height', (d: any) => height - y(d.value))
+                    .attr('height', (d: any) => barRectGeometry(y(d.value), baseline).height)
                     .attr('fill', (d: any) => ensureReadableFill(d.color, colors.bg, colors.seriesFallback));
             } else if (effectiveType === 'line' || effectiveType === 'scatter') {
                 // Create line generator

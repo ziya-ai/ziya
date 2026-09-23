@@ -4794,6 +4794,18 @@ export async function renderMusicSpec(
   /** Non-fatal spec problems, reported together rather than failing the render. */
   const problems: string[] = [];
 
+  // Acciaccatura grace notes whose distinguishing slash VexFlow 5.0.0 fails to
+  // draw.  Verified against the bare VexFlow API: `new GraceNote({slash:true})`
+  // in a GraceNoteGroup renders its stem but NO slash stroke -- so the crushed
+  // acciaccatura is indistinguishable from a plain appoggiatura (D-435,
+  // music-w1-09).  The single, UNBEAMED grace notes that asked for a slash are
+  // collected here and the short diagonal stroke is drawn ourselves after
+  // factory.draw() (where the note's stem geometry is resolved), the same way
+  // this plugin already compensates for VexFlow's other gaps.  Only the
+  // unbeamed case is compensated: a beamed grace run carries its slash on the
+  // beam via VexFlow's own beamed-slash path.
+  const slashedGraceNotes: any[] = [];
+
   // Meter counts used both to synthesise barlines for a flat `notes[]` staff
   // (D-138) and, later, to build the VexFlow Voice; parsed once so the two
   // cannot disagree about where a bar ends.
@@ -5679,6 +5691,13 @@ export async function renderMusicSpec(
           group.beamNotes();
         }
         note.addModifier(group, 0);
+        // A single, unbeamed slashed grace is an acciaccatura whose slash
+        // VexFlow will not draw (see slashedGraceNotes' declaration); remember
+        // it so the stroke can be added after factory.draw().  `slash` is the
+        // public field GraceNote copies from its noteStruct.
+        if (graceNotes.length === 1 && (graceNotes[0] as any).slash) {
+          slashedGraceNotes.push(graceNotes[0]);
+        }
         }
       }
       // Fingering: a bare value means "below", which is the piano convention.
@@ -6552,6 +6571,20 @@ export async function renderMusicSpec(
   // Iterates perStaff, NOT built: `built` now holds one entry per
   // (staff x system), so a flat index would be re-applied to every system's
   // slice -- a tuplet on notes 0-2 would appear on every line.
+  //
+  // Each built Tuplet is captured with the placement the SPEC asked for so it
+  // can be RE-APPLIED after Beam.generateBeams below.  VexFlow's generateBeams
+  // runs a trailing pass over every tuplet touching a beamed note and
+  // unconditionally calls `tuplet.setTupletLocation(stemDown ? -1 : 1)` --
+  // forcing the number onto the stem/beam side and DISCARDING the `location`
+  // the constructor was given.  That silently inverted an explicit
+  // `position:"below"` on a stems-up beamed triplet (it printed ABOVE) and
+  // dropped the plugin's documented default of ABOVE for stems-down beamed
+  // groups (they printed BELOW) -- the `tuplet-position-inverted` defect
+  // (music-w1-06).  Re-applying the resolved location AFTER beaming makes the
+  // author's placement authoritative again; an unbeamed tuplet is never in
+  // generateBeams' pass, so its re-apply is a harmless no-op.
+  const builtTuplets: Array<{ tuplet: any; location: number; bracketed?: boolean }> = [];
   for (const { staffSpec, notes, noteSystem } of perStaff) {
     for (const tuplet of staffSpec.tuplets ?? []) {
       const { from, to } = tuplet;
@@ -6595,17 +6628,26 @@ export async function renderMusicSpec(
         );
         continue;
       }
+      // "above"/"below" -> Tuplet.LOCATION_TOP (1) / LOCATION_BOTTOM (-1).
+      const location = tuplet.position === 'below' ? -1 : 1;
       const options: Record<string, unknown> = {
         numNotes: num,
         notesOccupied: inSpaceOf,
-        // "above"/"below" -> Tuplet.LOCATION_TOP (1) / LOCATION_BOTTOM (-1).
-        location: tuplet.position === 'below' ? -1 : 1,
+        location,
       };
       if (tuplet.ratioed != null) options.ratioed = tuplet.ratioed;
       if (tuplet.bracketed != null) options.bracketed = tuplet.bracketed;
       // factory.Tuplet enqueues on the factory's render list, so factory.draw()
       // renders it -- no explicit context/draw is needed, unlike generated beams.
-      factory.Tuplet({ notes: members, options });
+      const builtTuplet = factory.Tuplet({ notes: members, options });
+      // Remember the requested placement (and an explicit bracket) so it can be
+      // restored after Beam.generateBeams clobbers it (see the comment above the
+      // loop and the re-apply pass after beaming).
+      builtTuplets.push({
+        tuplet: builtTuplet,
+        location,
+        bracketed: tuplet.bracketed != null ? Boolean(tuplet.bracketed) : undefined,
+      });
     }
   }
 
@@ -6813,6 +6855,26 @@ export async function renderMusicSpec(
     }
   }
 
+  // Restore each tuplet's requested placement.  Beam.generateBeams (called
+  // above while constructing the auto-beams) ran its trailing pass over every
+  // beamed tuplet and overwrote `location` with `stemDown ? -1 : 1`, discarding
+  // the constructor's value -- so without this an explicit `position:"below"`
+  // and the documented default ("above") were both silently flipped to the
+  // beam side (D-434, music-w1-06).  setTupletLocation only mutates the option
+  // read by getYPosition() at draw time, so re-applying it here -- after all
+  // beam construction, before factory.draw() -- is the last word.  Unbeamed
+  // tuplets never entered generateBeams' pass and already hold this value, so
+  // their re-apply is a no-op; an explicit `bracketed` is likewise restored so
+  // a bracketed beamed group is not silently down-graded to number-only.
+  for (const { tuplet, location, bracketed } of builtTuplets) {
+    if (typeof tuplet?.setTupletLocation === 'function') {
+      tuplet.setTupletLocation(location);
+    }
+    if (bracketed !== undefined && typeof tuplet?.setBracketed === 'function') {
+      tuplet.setBracketed(bracketed);
+    }
+  }
+
   factory.draw();
 
   // Beams from Beam.generateBeams are not factory-owned, so the factory's own
@@ -6836,6 +6898,45 @@ export async function renderMusicSpec(
   for (const beam of crossStaffBeamObjs) {
     if (typeof beam.getContext === 'function' && !beam.getContext()) {
       beam.setContext(factory.getContext()).draw();
+    }
+  }
+
+  // Acciaccatura slashes VexFlow omitted (see slashedGraceNotes).  Drawn on the
+  // factory context BEFORE the theme recolour so the stroke inherits the ink
+  // the recolour applies to every other VexFlow primitive -- exactly how the
+  // grace stem it crosses is coloured -- keeping it correct in BOTH themes
+  // without a hardcoded colour.  A short diagonal (~17px) centred on the grace
+  // stem: deliberately small (the staff is ~40px tall) so it reads as a slash
+  // through the stem, never the oversized cross-staff stroke of the original
+  // defect.  Geometry is read from the note's resolved stem, and any grace
+  // whose stem geometry is non-finite is skipped rather than drawn at NaN.
+  {
+    const ctx: any = factory.getContext();
+    for (const grace of slashedGraceNotes) {
+      try {
+        const stemX = typeof grace.getStemX === 'function' ? grace.getStemX() : null;
+        const ext = typeof grace.getStemExtents === 'function' ? grace.getStemExtents() : null;
+        if (stemX == null || !ext) continue;
+        const topY = ext.topY;
+        const baseY = ext.baseY;
+        if (![stemX, topY, baseY].every((v) => Number.isFinite(v))) continue;
+        const midY = (topY + baseY) / 2;
+        const half = 6; // total length ~17px -- short, crosses the stem
+        if (typeof ctx.save === 'function') ctx.save();
+        if (typeof ctx.setLineWidth === 'function') ctx.setLineWidth(1.5);
+        // Draw in black so the dark-mode recolour (which remaps #000000 -> the
+        // dark ink, the same pass that recolours the stem) picks it up; in
+        // light mode black-on-white is already the correct ink.
+        if (typeof ctx.setStrokeStyle === 'function') ctx.setStrokeStyle('#000000');
+        ctx.beginPath();
+        ctx.moveTo(stemX - half, midY + half);
+        ctx.lineTo(stemX + half, midY - half);
+        ctx.stroke();
+        if (typeof ctx.restore === 'function') ctx.restore();
+      } catch {
+        // A grace whose resolved geometry is unavailable simply gets no slash,
+        // never a thrown render.
+      }
     }
   }
 

@@ -1,0 +1,76 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "notes": [
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "q",
+    "graceNotes": [
+     {
+      "keys": [
+       "b/4"
+      ],
+      "duration": "8",
+      "slash": true
+     }
+    ]
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "q",
+    "graceNotes": [
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "8"
+     }
+    ]
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "q",
+    "graceNotes": [
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "16"
+     },
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "16"
+     }
+    ]
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "q",
+    "graceNotes": [
+     {
+      "keys": [
+       "e/5",
+       "g/5"
+      ],
+      "duration": "8"
+     }
+    ]
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Grace notes: slashed acciaccatura, unslashed appoggiatura, a two-note ornamental run, and a grace chord."
+}

@@ -1,0 +1,110 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "elements": [
+   {
+    "id": "a",
+    "type": "rect",
+    "label": "A",
+    "position": [
+     120,
+     120
+    ],
+    "size": {
+     "width": 120,
+     "height": 70
+    }
+   },
+   {
+    "id": "b",
+    "type": "rect",
+    "label": "B",
+    "position": [
+     420,
+     120
+    ],
+    "size": {
+     "width": 120,
+     "height": 70
+    }
+   },
+   {
+    "id": "c",
+    "type": "rect",
+    "label": "C",
+    "position": [
+     420,
+     380
+    ],
+    "size": {
+     "width": 120,
+     "height": 70
+    }
+   },
+   {
+    "id": "d",
+    "type": "circle",
+    "label": "D",
+    "position": [
+     120,
+     360
+    ],
+    "size": {
+     "width": 120,
+     "height": 120
+    }
+   }
+  ],
+  "connections": [
+   {
+    "id": "s1",
+    "source": "a",
+    "target": "a",
+    "label": "self A"
+   },
+   {
+    "id": "s2",
+    "source": "b",
+    "target": "b",
+    "label": "self B"
+   },
+   {
+    "id": "s3",
+    "source": "d",
+    "target": "d",
+    "label": "self D"
+   },
+   {
+    "id": "c1",
+    "source": "a",
+    "target": "b",
+    "label": "a->b"
+   },
+   {
+    "id": "c2",
+    "source": "b",
+    "target": "a",
+    "label": "b->a"
+   },
+   {
+    "id": "c3",
+    "source": "b",
+    "target": "c"
+   },
+   {
+    "id": "c4",
+    "source": "c",
+    "target": "d"
+   },
+   {
+    "id": "c5",
+    "source": "d",
+    "target": "a",
+    "label": "cycle close"
+   }
+  ]
+ },
+ "intent": "Self-referencing edges (3) plus a 2-cycle and a 4-cycle. Self-loops need a routed arc; a centre-to-centre connectionStrategy degenerates them to zero length."
+}

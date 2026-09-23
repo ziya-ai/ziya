@@ -801,6 +801,32 @@ export function minNearestNeighborGap(nodes: any[]): number {
 }
 
 /**
+ * Effective DRAWN radius of a node circle, capped at half the distance to its
+ * nearest neighbour so two discs never overlap into a coincident blob
+ * (D-440/D-179/D-447).
+ *
+ * WHY: the layout stage (`fitNodePositionsToViewport`, `decollideCoincidentNodes`,
+ * `computeGridLayout`) only ever moves node CENTRES; the circle was still drawn
+ * at its authored/default `size`. On a dense or undersized canvas — network-w2-09
+ * packs 40 nodes onto an 80x60 viewBox, where 40 discs of r=10 cannot physically
+ * be separated — fitting the centres into the interior still leaves every r=10
+ * disc overlapping its neighbours into one opaque mass with the edges and labels
+ * buried. Capping the drawn radius at `0.5 * minGap` (the nearest-neighbour
+ * centre distance measured from the FINAL positions) guarantees adjacent discs at
+ * worst touch, so a dense field renders as distinct dots rather than a blob. It
+ * NEVER enlarges a node and only bites when `minGap < 2*size`, so a comfortably
+ * spaced graph (grids, sensible authored coords) keeps its authored radius and is
+ * pixel-identical. A small floor keeps a node from vanishing entirely. Pure/
+ * DOM-free. Exported for testing.
+ */
+export function effectiveNodeRadius(size: any, minGap: number, floorPx = 1.5): number {
+    const s = Number.isFinite(Number(size)) && Number(size) > 0 ? Number(size) : NETWORK_DEFAULT_NODE_SIZE;
+    const floor = Number.isFinite(Number(floorPx)) && Number(floorPx) > 0 ? Number(floorPx) : 1.5;
+    if (!Number.isFinite(minGap) || minGap <= 0) return s;
+    return Math.max(floor, Math.min(s, minGap * 0.5));
+}
+
+/**
  * Cap the label font so a label is never taller than the inter-node gap (D-446;
  * also the tall/wide-extreme half of D-441).
  *
@@ -1378,7 +1404,11 @@ export const networkDiagramPlugin: D3RenderPlugin = {
                 .attr('transform', (d: any) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 
             nodeGroups.append('circle')
-                .attr('r', (d: any) => d.size || 10)
+                // Cap the drawn radius at half the nearest-neighbour gap so a
+                // dense/undersized layout (w2-09: 40 nodes on 80x60) renders as
+                // distinct discs instead of a coincident overlapping blob; a
+                // well-spaced graph keeps its authored radius (D-440/D-179/D-447).
+                .attr('r', (d: any) => effectiveNodeRadius(d.size, minGap))
                 .attr('fill', (d: any) => resolveNodeFill(d))
                 .attr('stroke', netColors.nodeStroke)
                 .attr('stroke-width', 1.5);

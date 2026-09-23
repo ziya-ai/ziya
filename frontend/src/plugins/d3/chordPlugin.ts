@@ -1003,6 +1003,21 @@ export const chordPlugin: D3RenderPlugin = {
     // isDarkBackground() into a LIGHT misclassification on an actually-dark page
     // (D-036: chord-w4-14).
     const bg = resolveChordBackground(style.background, isDarkMode);
+    // D-342 (theme, dark): when the chord canvas is far smaller than the ~632px
+    // capture frame (w2-11 100x100, w2-12/w2-13 aspect-capped), the plugin's own
+    // render container is wider/taller than the SVG. The container is otherwise
+    // transparent, so the flank around the canvas showed the AntD dark 'paper'
+    // surface behind it (#1f1f1f), a visibly different grey rectangle against the
+    // diagram/page background (#1f1f1f vs #1a1a2e = 1.035:1). Paint the container
+    // with the SAME resolved theme surface the SVG uses so the flank is
+    // byte-identical to the canvas (1.00:1, seam gone). Theme-resolved (bg tracks
+    // isDarkMode / style.background), so light stays #ffffff == page (invisible,
+    // 1.00:1) and any pinned style.background carries to the flank too. No-op for
+    // a canvas that fills the frame (no flank). Not spec-special-casing: it is
+    // the shared 'let the diagram background fill the frame' fix for every chord.
+    if (container && (container as HTMLElement).style) {
+      (container as HTMLElement).style.background = bg;
+    }
     // Resolve foreground defaults from the EFFECTIVE canvas luminance, not the
     // raw isDarkMode flag. A caller may pin a light panel under dark theme (or
     // vice-versa) via style.background; label and stroke contrast must track the

@@ -1,0 +1,191 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 880,
+  "height": 700,
+  "padding": 5,
+  "autosize": "pad",
+  "signals": [
+   {
+    "name": "cw",
+    "value": 96
+   },
+   {
+    "name": "ch",
+    "value": 74
+   }
+  ],
+  "data": [
+   {
+    "name": "raw",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 1920,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "panel",
+      "expr": "floor(datum.i / 30)"
+     },
+     {
+      "type": "formula",
+      "as": "t",
+      "expr": "datum.i % 30"
+     },
+     {
+      "type": "formula",
+      "as": "v",
+      "expr": "50 + 40*sin(datum.i/4 + floor(datum.i/30))"
+     },
+     {
+      "type": "formula",
+      "as": "col",
+      "expr": "floor(datum.i / 30) % 8"
+     },
+     {
+      "type": "formula",
+      "as": "row",
+      "expr": "floor(floor(datum.i / 30) / 8)"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "linear",
+    "domain": [
+     0,
+     29
+    ],
+    "range": [
+     0,
+     {
+      "signal": "cw"
+     }
+    ]
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": [
+     5,
+     95
+    ],
+    "range": [
+     {
+      "signal": "ch"
+     },
+     0
+    ]
+   },
+   {
+    "name": "c",
+    "type": "ordinal",
+    "domain": {
+     "data": "raw",
+     "field": "col"
+    },
+    "range": {
+     "scheme": "tableau10"
+    }
+   }
+  ],
+  "marks": [
+   {
+    "type": "group",
+    "from": {
+     "facet": {
+      "name": "pf",
+      "data": "raw",
+      "groupby": [
+       "panel",
+       "col",
+       "row"
+      ]
+     }
+    },
+    "encode": {
+     "enter": {
+      "width": {
+       "signal": "cw"
+      },
+      "height": {
+       "signal": "ch"
+      },
+      "stroke": {
+       "value": "#bbbbbb"
+      },
+      "strokeWidth": {
+       "value": 0.5
+      }
+     },
+     "update": {
+      "x": {
+       "signal": "datum.col * (cw + 14)"
+      },
+      "y": {
+       "signal": "datum.row * (ch + 20)"
+      }
+     }
+    },
+    "title": {
+     "text": {
+      "signal": "'p' + datum.panel"
+     },
+     "fontSize": 6,
+     "offset": 1
+    },
+    "axes": [
+     {
+      "orient": "bottom",
+      "scale": "x",
+      "tickCount": 2,
+      "labelFontSize": 5,
+      "domainWidth": 0.5
+     },
+     {
+      "orient": "left",
+      "scale": "y",
+      "tickCount": 2,
+      "labelFontSize": 5,
+      "domainWidth": 0.5
+     }
+    ],
+    "marks": [
+     {
+      "type": "line",
+      "from": {
+       "data": "pf"
+      },
+      "encode": {
+       "enter": {
+        "x": {
+         "scale": "x",
+         "field": "t"
+        },
+        "y": {
+         "scale": "y",
+         "field": "v"
+        },
+        "stroke": {
+         "scale": "c",
+         "field": "col"
+        },
+        "strokeWidth": {
+         "value": 0.7
+        }
+       }
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "SCALE/NESTING + FAN-OUT: 64 faceted small multiples in an 8x8 grid of nested group marks, each with its own titled sub-axis and 30-point line. Probes deep group nesting and per-facet chrome at scale."
+}

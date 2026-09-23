@@ -1,0 +1,174 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 340,
+  "height": 340,
+  "autosize": "none",
+  "padding": 10,
+  "signals": [
+   {
+    "name": "radius",
+    "update": "160"
+   }
+  ],
+  "data": [
+   {
+    "name": "slices",
+    "values": [
+     {
+      "label": "Search",
+      "value": 120
+     },
+     {
+      "label": "Index",
+      "value": 90
+     },
+     {
+      "label": "Ingest",
+      "value": 65
+     },
+     {
+      "label": "Admin",
+      "value": 40
+     },
+     {
+      "label": "Other",
+      "value": 25
+     }
+    ],
+    "transform": [
+     {
+      "type": "pie",
+      "field": "value",
+      "startAngle": 0,
+      "endAngle": 6.283185307179586,
+      "sort": false
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "color",
+    "type": "ordinal",
+    "domain": {
+     "data": "slices",
+     "field": "label"
+    },
+    "range": {
+     "scheme": "category10"
+    }
+   }
+  ],
+  "marks": [
+   {
+    "type": "arc",
+    "from": {
+     "data": "slices"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "signal": "width / 2"
+      },
+      "y": {
+       "signal": "height / 2"
+      },
+      "startAngle": {
+       "field": "startAngle"
+      },
+      "endAngle": {
+       "field": "endAngle"
+      },
+      "innerRadius": {
+       "value": 70
+      },
+      "outerRadius": {
+       "signal": "radius"
+      },
+      "fill": {
+       "scale": "color",
+       "field": "label"
+      },
+      "stroke": {
+       "value": "#ffffff"
+      },
+      "strokeWidth": {
+       "value": 1.5
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "slices"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "signal": "width / 2"
+      },
+      "y": {
+       "signal": "height / 2"
+      },
+      "radius": {
+       "value": 118
+      },
+      "theta": {
+       "signal": "(datum.startAngle + datum.endAngle) / 2"
+      },
+      "fill": {
+       "value": "#ffffff"
+      },
+      "align": {
+       "value": "center"
+      },
+      "baseline": {
+       "value": "middle"
+      },
+      "fontSize": {
+       "value": 12
+      },
+      "fontWeight": {
+       "value": "bold"
+      },
+      "text": {
+       "field": "label"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "encode": {
+     "enter": {
+      "x": {
+       "signal": "width / 2"
+      },
+      "y": {
+       "signal": "height / 2"
+      },
+      "align": {
+       "value": "center"
+      },
+      "baseline": {
+       "value": "middle"
+      },
+      "fontSize": {
+       "value": 20
+      },
+      "fontWeight": {
+       "value": "bold"
+      },
+      "text": {
+       "value": "340 total"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Donut chart: `pie` transform + arc marks + data-bound slice labels + a STATIC text mark for the centre total. Also exercises the plugin's filterVegaChromeMarks path, which activates whenever a data-bound arc mark is present."
+}

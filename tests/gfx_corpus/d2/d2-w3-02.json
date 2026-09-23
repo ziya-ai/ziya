@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "# RTL: Arabic + Hebrew + bidi mixing\nعميل: عميل الويب\nخدمة: خدمة المصادقة\nמסד: מסד נתונים\nשרת: שרת API\nmixed1: Order رقم 12345 confirmed\nmixed2: שלום world 42\nعميل -> خدمة: طلب\nמסד -> שרת: שאילתה\nmixed1 -> mixed2\nخدمة -> מסד",
+ "intent": "RTL Arabic/Hebrew ids plus bidirectional mixed-script labels; probes id normalization and text direction"
+}

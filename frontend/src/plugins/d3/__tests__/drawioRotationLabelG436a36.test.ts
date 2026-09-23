@@ -127,3 +127,113 @@ describe('fixAllForeignObjects — D-385 leaves a rotated label untouched', () =
         }
     });
 });
+
+// ---------------------------------------------------------------------------
+// D-385 real remaining cause: the EARLIER explicit-layout passes
+// (forceTextCellPositioning / positionContainerTitles) run BEFORE the rotation
+// guard in fixAllForeignObjects, reposition a rotated text/title label using an
+// axis-aligned getBoundingClientRect measurement, and mark it
+// data-force-positioned='true' — which then makes the main-loop rotation guard
+// skip it (already positioned), so the damage slips through. drawio-w3-06 is an
+// explicit layout, so this pass is what actually mishandled the rotated label.
+// The fix adds the same elementHasRotatedAncestor guard to these passes.
+// ---------------------------------------------------------------------------
+
+const SVGNS2 = 'http://www.w3.org/2000/svg';
+
+// Minimal maxGraph-shaped mock: one text-only vertex whose rendered label FO
+// lives inside a rotate()d group. Enough surface for forceTextCellPositioning
+// to find the cell (model walk + getCell) and its DOM (view.getState).
+function buildRotatedTextGraph(groupTransform: string): {
+    svg: SVGSVGElement;
+    fo: SVGForeignObjectElement;
+    graph: any;
+} {
+    const svg = document.createElementNS(SVGNS2, 'svg') as SVGSVGElement;
+
+    // shape group (background) — placement target for the axis-aligned solver.
+    const shapeG = document.createElementNS(SVGNS2, 'g');
+    const rect = document.createElementNS(SVGNS2, 'rect');
+    shapeG.appendChild(rect);
+    svg.appendChild(shapeG);
+
+    // label group carries the rotation; the FO + margin-left div sit under it.
+    const labelG = document.createElementNS(SVGNS2, 'g');
+    labelG.setAttribute('transform', groupTransform);
+    const fo = document.createElementNS(SVGNS2, 'foreignObject') as SVGForeignObjectElement;
+    fo.setAttribute('x', '20');
+    fo.setAttribute('y', '110');
+    fo.setAttribute('width', '120');
+    fo.setAttribute('height', '40');
+    const div = document.createElement('div');
+    div.setAttribute('style', 'margin-left: 50px; padding-top: 0px;');
+    div.textContent = 'Rotated 30';
+    fo.appendChild(div);
+    labelG.appendChild(fo);
+    svg.appendChild(labelG);
+
+    const cell: any = {
+        getId: () => 'txt1',
+        getValue: () => 'Rotated 30',
+        getStyle: () => ({ text: 1, align: 'left' }),
+        getGeometry: () => ({ x: 20, y: 110, width: 120, height: 40 }),
+        isVertex: () => true,
+        getChildCount: () => 0,
+        getChildAt: () => null,
+    };
+    const root: any = {
+        getId: () => '1',
+        getValue: () => null,
+        getStyle: () => null,
+        getGeometry: () => null,
+        isVertex: () => false,
+        getChildCount: () => 1,
+        getChildAt: (i: number) => (i === 0 ? cell : null),
+    };
+    const model = {
+        getRoot: () => root,
+        getCell: (id: string) => (id === 'txt1' ? cell : null),
+    };
+    const graph = {
+        getModel: () => model,
+        model,
+        view: {
+            getState: (c: any) =>
+                c === cell ? { shape: { node: shapeG }, text: { node: labelG } } : null,
+        },
+    };
+    return { svg, fo, graph };
+}
+
+describe('forceTextCellPositioning — D-385 rotated text cell left untouched', () => {
+    it('CONTROL: an UNrotated text cell IS force-positioned (marked + margin rewritten)', () => {
+        const { svg, fo, graph } = buildRotatedTextGraph('scale(1)');
+        DrawIOEnhancer.forceTextCellPositioning(svg, graph);
+        // The axis-aligned solver ran and tagged the label.
+        expect(fo.getAttribute('data-force-positioned')).toBe('true');
+    });
+
+    it('ROTATED: the rotated text label is NOT repositioned and NOT force-tagged', () => {
+        const { svg, fo, graph } = buildRotatedTextGraph('rotate(30,80,130)');
+        DrawIOEnhancer.forceTextCellPositioning(svg, graph);
+        // Without the guard this pass rewrites margin-left off the axis-aligned
+        // rect and marks data-force-positioned, which then hides the rotated
+        // cell from the main-loop guard. With the guard both are preserved.
+        const style = (fo.querySelector('div') as HTMLDivElement).getAttribute('style') || '';
+        expect(style).toMatch(/margin-left:\s*50px/);
+        expect(fo.getAttribute('data-force-positioned')).not.toBe('true');
+    });
+
+    it('ROTATED end-to-end: fixAllForeignObjects (which calls the earlier pass) keeps native placement in BOTH themes', () => {
+        // Exercises the real call order: explicit-layout branch runs
+        // forceTextCellPositioning first, then the main loop. The rotated label
+        // must survive intact regardless of theme (geometry-only, no colour).
+        for (const transform of ['rotate(30,80,130)', 'rotate(-45,80,130)']) {
+            const { svg, fo, graph } = buildRotatedTextGraph(transform);
+            DrawIOEnhancer.fixAllForeignObjects(svg, graph, { explicitLayout: true });
+            expect(parseFloat(fo.getAttribute('x') || '0')).toBe(20);
+            const style = (fo.querySelector('div') as HTMLDivElement).getAttribute('style') || '';
+            expect(style).toMatch(/margin-left:\s*50px/);
+        }
+    });
+});

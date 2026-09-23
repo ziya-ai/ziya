@@ -16,6 +16,35 @@ import { registerDrawioExtraShapes, registerDrawioExtraEdgeMarkers, registerDraw
 import { rerouteAroundObstacles } from './orthogonalRouter';
 
 /**
+ * D-092 / D-382 / D-389 — terminal-anchor predicate for updateFixedTerminalPoint.
+ *
+ * mxGraph's canonical updateFixedTerminalPoint override only falls back to a
+ * terminal's ROUTING CENTRE when the terminal has NO perimeter function — i.e.
+ * a shape maxGraph cannot compute a perimeter intersection for. For every normal
+ * vertex (which HAS a perimeter) the terminal point must be left null so the
+ * later updateFloatingTerminalPoint pass anchors the edge to the box PERIMETER.
+ *
+ * The plugin's copy of that snippet dropped the `getPerimeterFunction() == null`
+ * guard, so it pinned EVERY floating edge endpoint to the cell centre. On opaque
+ * boxes the fill hides the interior segment (looks fine); on a transparent-fill
+ * box the centre-anchored segment is visible and strikes the label (w4-09), and
+ * centre-to-centre anchoring is precisely what drives edges straight through
+ * intervening vertex interiors (w1-06 / w2-11 / w1-04 / w1-08). Restoring the
+ * guard re-enables perimeter anchoring. Pure so it is unit-testable in isolation.
+ *
+ * @param hasTerminal   the edge end is connected to a terminal cell
+ * @param hasFixedPoint a fixed/absolute terminal point was already resolved
+ * @param hasPerimeter  the terminal has a perimeter function (normal vertex)
+ */
+export function shouldPinTerminalToCenter(
+    hasTerminal: boolean,
+    hasFixedPoint: boolean,
+    hasPerimeter: boolean
+): boolean {
+    return hasTerminal && !hasFixedPoint && !hasPerimeter;
+}
+
+/**
  * maxGraph's built-in default vertex fill. A styled vertex that specifies no
  * fillColor is still painted with this light-blue fill regardless of theme —
  * the plugin's defaultVertexStyle overrides only fontColor/fontSize, not the
@@ -248,6 +277,36 @@ export function applyTextCellFillDefaults(
     if (!isTextPrimitive) return styleObj;
     if (styleObj['fillColor'] == null) styleObj['fillColor'] = 'none';
     if (styleObj['strokeColor'] == null) styleObj['strokeColor'] = 'none';
+    return styleObj;
+}
+
+/**
+ * G-796ea6 / D-380 — arrowheads-missing-on-default-edges (drawio).
+ *
+ * drawio's implicit edge terminator is `classic` (mxConstants.ARROW_CLASSIC): an
+ * edge whose style omits `endArrow` still renders a solid arrowhead. maxGraph 0.23
+ * does NOT default `endArrow` (StyleDefaultsConfig has no such key — verified), so
+ * the head only appears if it is set on the cell style or inherited from the
+ * stylesheet default-edge style. Two source divergences dropped/thinned it:
+ *   1. The edge branch injected `classicThin` (createArrow widthFactor 3) for
+ *      unstyled `html=1` edges — a 1.5x-narrower head than drawio's `classic`
+ *      (widthFactor 2) that collapses to sub-pixel on fit-DOWNscaled tall diagrams.
+ *   2. Edges with NO style string were left as an empty style object, relying
+ *      SOLELY on the stylesheet default-edge merge; any path that bypasses that
+ *      merge drops the head entirely.
+ *
+ * This resolves an unstyled edge's terminator to `classic` explicitly, matching
+ * drawio. An author-specified endArrow (block/open/oval/diamond/ERmany/none) always
+ * wins. Terminator geometry strokes/fills in the EDGE colour, so the value is the
+ * same in light and dark — theme-independent. Mutates and returns styleObj.
+ */
+export function resolveDefaultEdgeArrow(
+    styleObj: Record<string, any>
+): Record<string, any> {
+    if (!styleObj || typeof styleObj !== 'object') return styleObj;
+    if (styleObj['endArrow'] == null || styleObj['endArrow'] === '') {
+        styleObj['endArrow'] = 'classic';
+    }
     return styleObj;
 }
 
@@ -611,8 +670,24 @@ const isDefinitionComplete = (definition: string): boolean => {
 export function sanitizeDrawioCoordinates(xml: string): string {
     const ABSOLUTE_LIMIT = 100000;   // hard finite backstop (NaN/Infinity/overflow)
     const POS_OUTLIER_K = 12;        // position window = max(MAD * K, MIN_POS_WINDOW)
-    const MIN_POS_WINDOW = 3000;     // floor; only binds when cells are tightly clustered
-    const MIN_DIM_CAP = 6000;        // keep legit large containers, kill absurd dimensions
+    // G-8caa71 / D-095 / D-383 — the floors below only BIND when the bulk of the
+    // diagram is tightly clustered (a spread-out or uniformly-large diagram has a
+    // large MAD/median that dominates the floor, so the floor never touches it).
+    // A LARGE fixed floor is therefore harmful exactly — and only — in the compact
+    // case: a ~200px cell set given a 6000px dimension cap lets a 20000px box
+    // survive at 30x the real cells, so fitCenter shrinks them to illegible slivers
+    // (w2-08); a ~600px cluster given a 3000px position window lets one outlier sit
+    // 5x the cluster away, squashing the cluster into a corner of a mostly-empty
+    // canvas (w2-13). Both were "verified" once (a 6000-cap render passed a judge)
+    // and re-tightening the floors moves strictly toward the real cells without
+    // touching spread/uniform diagrams. The dimension cap stays a MULTIPLE of the
+    // bulk median (NOT a MAD band: when the small cells are the majority, MAD(dims)
+    // collapses to 0 and would clamp every legitimately-large element to the bulk),
+    // so a legit container at a small multiple of the bulk survives while an absurd
+    // 50-100x dimension is pulled down toward it.
+    const MIN_POS_WINDOW = 1000;     // was 3000; floor only binds tight clusters, where a wide window is harmful
+    const DIM_BULK_FACTOR = 15;      // dim cap = bulkMedian * this; a legit container (<=~12x bulk) survives, an absurd (>=50x) box is pulled in
+    const MIN_DIM_CAP = 4000;        // was 6000; floor for small-count diagrams with a genuinely large single element
     // Shared value token: real numbers PLUS the non-finite literals Infinity/NaN, which
     // an upstream numeric computation can emit and which maxGraph's parseFloat would turn
     // into Infinity/NaN coordinates (→ fitCenter NaN scale). Matching them lets clampPos/
@@ -669,7 +744,7 @@ export function sanitizeDrawioCoordinates(xml: string): string {
     const my = median(ys);
     const rx = Math.max(mad(xs, mx) * POS_OUTLIER_K, MIN_POS_WINDOW);
     const ry = Math.max(mad(ys, my) * POS_OUTLIER_K, MIN_POS_WINDOW);
-    const dimCap = Math.min(Math.max(median(dims) * POS_OUTLIER_K, MIN_DIM_CAP), ABSOLUTE_LIMIT);
+    const dimCap = Math.min(Math.max(median(dims) * DIM_BULK_FACTOR, MIN_DIM_CAP), ABSOLUTE_LIMIT);
 
     const clampPos = (raw: string, center: number, radius: number): string => {
         let v = parseFloat(raw);
@@ -2093,11 +2168,22 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                 const originalFn = viewProto.updateFixedTerminalPoint || maxGraphModule.GraphView?.prototype?.updateFixedTerminalPoint;
                 if (originalFn) originalFn.apply(this, arguments);
 
-                // Use routing center for cleaner connection points
+                // Only fall back to the terminal's routing centre when the
+                // terminal has NO perimeter function (a shape maxGraph cannot
+                // compute a perimeter intersection for). For a normal vertex the
+                // point is left null so updateFloatingTerminalPoint anchors the
+                // edge to the box PERIMETER — otherwise every floating edge is
+                // pinned centre-to-centre, which strikes labels on transparent
+                // boxes and drives edges through vertex interiors
+                // (D-092 / D-382 / D-389). This restores mxGraph's canonical
+                // getPerimeterFunction() == null guard, dropped in the original copy.
                 const pts = edge.absolutePoints;
                 const pt = pts[source ? 0 : pts.length - 1];
+                const perimeterFn = (typeof this.getPerimeterFunction === 'function')
+                    ? this.getPerimeterFunction(terminal)
+                    : null;
 
-                if (terminal != null && pt == null) {
+                if (shouldPinTerminalToCenter(terminal != null, pt != null, perimeterFn != null)) {
                     edge.setAbsoluteTerminalPoint(
                         new maxGraphModule.Point(
                             this.getRoutingCenterX(terminal),
@@ -2305,9 +2391,10 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 // Arrow marker sizing: maxGraph computes marker extent
                                 // as (endSize + strokeWidth) * viewScale. With fit()
                                 // scaling the diagram ~2x, keep endSize small.
-                                if (!styleObj['endArrow']) {
-                                    styleObj['endArrow'] = 'classicThin';
-                                }
+                                // D-380: an unstyled edge gets drawio's default `classic`
+                                // terminator (was `classicThin`, 1.5x narrower and prone
+                                // to sub-pixel collapse). Author endArrow always wins.
+                                resolveDefaultEdgeArrow(styleObj);
                                 styleObj['endSize'] = 3;
                                 if (!styleObj['startArrow'] || styleObj['startArrow'] === 'none') {
                                     styleObj['startSize'] = 3;
@@ -2431,7 +2518,12 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                             console.log('📐 DEBUG: Set style object for cell', cellId, ':', styleObj);
                         } else {
-                            cell.setStyle({});
+                            // D-380: an edge with NO style string still needs an explicit
+                            // terminator. Relying only on the stylesheet default-edge merge
+                            // drops the arrowhead on any path that bypasses it; give edges
+                            // drawio's default `classic` head (+ small endSize) explicitly.
+                            // Vertices keep the empty style object.
+                            cell.setStyle(edge ? resolveDefaultEdgeArrow({ endSize: 3 }) : {});
                         }
                         // Get geometry if it exists
                         const geometryElement = cellElement.querySelector('mxGeometry');
@@ -4918,6 +5010,15 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         // Also re-run the main enhancer so any container-label
                         // clamps survive fitCenter's revalidation pass.
                         DrawIOEnhancer.fixAllForeignObjects(currentSvg, graph);
+                        // D-091: normalise arrow-marker sizes AFTER fitCenter, using the
+                        // FINAL view scale. The pre-fit pass (above) measures markers in
+                        // local coords while view.scale === 1, so it cannot see that a
+                        // fit-DOWNscaled wide diagram (w2-11/w2-15) collapses arrowheads to
+                        // sub-pixel — or that a fit-UPscaled narrow diagram amplifies them.
+                        // Here view.scale is settled, so screen-space normalisation rescues
+                        // collapsed markers and shrinks oversized ones. In-band markers (the
+                        // verified corpus) are left byte-for-byte unchanged. Geometry-only.
+                        DrawIOEnhancer.scaleDownArrowMarkers(currentSvg, 12, 4, graph.view?.scale || 1);
                     }
 
                     // Post-routing label offset correction. LABEL-AVOID

@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\n\\shade[left color=blue!60, right color=white] (-0.5,2.4) rectangle (9,3.4);\n\\shade[top color=gray!10, bottom color=gray!60] (-0.5,-1.4) rectangle (9,-0.4);\n\\draw[thick] (0,1.4) to[R=$R_1$] (3,1.4) to[L=$L_1$] (6,1.4) to[C=$C_1$] (8.5,1.4);\n\\node at (4.2,3.0) {axis shading, blue!60 to white};\n\\node at (4.2,-0.9) {axis shading, gray!10 to gray!60};\n",
+ "intent": "gradient / axis shading probe -- does \\shade work in this profile, and does the pale end survive dark"
+}

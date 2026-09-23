@@ -21,12 +21,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "702748bd3f29458a4672595465b2eaed73eeefddcc255a4d196d448adef34eb6",
-     "validated_at": "2026-09-16T10:15:45.285180Z"
+     "hash": "dd2fec2296eec082913c18224b98ca7f0fb9967b2b98e409aac69aeb52767004",
+     "validated_at": "2026-09-20T14:11:56.408343Z"
     },
     "dark": {
-     "hash": "a29938b986857542b3f87594ffa76ab1eb853ee126f2937942dbc255a6f03773",
-     "validated_at": "2026-09-16T10:15:45.295273Z"
+     "hash": "643aeb52e677881a18b1eb59edab011fb27638f5ae6d05fcdb08ab589cba6e0b",
+     "validated_at": "2026-09-20T14:11:56.417907Z"
     }
    }
   },
@@ -56,11 +56,11 @@
    "golden": {
     "light": {
      "hash": "c8914b95aad12b0c163954125fcb19d0eea1568d772e6fe279c3666bef53c6c3",
-     "validated_at": "2026-09-19T07:32:50.455021Z"
+     "validated_at": "2026-09-20T13:43:25.802643Z"
     },
     "dark": {
      "hash": "d59f155a6f6a912f79a17d76502a3ab5b3c31ce7b6e6f3fe408dbb6715023144",
-     "validated_at": "2026-09-19T07:32:50.462967Z"
+     "validated_at": "2026-09-20T13:43:25.815736Z"
     }
    }
   },
@@ -84,11 +84,11 @@
    "golden": {
     "light": {
      "hash": "047c0910a1315ba86c2ad85647e67a69ce8c1c48116ca68200041f2312427398",
-     "validated_at": "2026-09-19T07:32:50.611156Z"
+     "validated_at": "2026-09-20T13:44:14.995304Z"
     },
     "dark": {
      "hash": "92a60453d5126b6732de8d7b0641e87243fbac0d6679e8165e9f73e23717edb9",
-     "validated_at": "2026-09-19T07:32:50.619090Z"
+     "validated_at": "2026-09-20T13:44:15.009184Z"
     }
    }
   },
@@ -112,11 +112,11 @@
    "golden": {
     "light": {
      "hash": "664e6a0f754f21b3f8c2d38c0df3ca4da190f395140623465306eccf9b23d243",
-     "validated_at": "2026-09-19T07:35:29.516492Z"
+     "validated_at": "2026-09-20T14:09:43.206236Z"
     },
     "dark": {
      "hash": "c96e6f5a0a2ebc0649755a489af92d1ab93b77e623bb7285311134f3925f38a5",
-     "validated_at": "2026-09-19T07:35:29.527664Z"
+     "validated_at": "2026-09-20T14:09:43.219519Z"
     }
    }
   },
@@ -140,11 +140,11 @@
    "golden": {
     "light": {
      "hash": "f955f97b145ac5c066aa560f36964240862ed4cba990e3c9967e34cf896e1466",
-     "validated_at": "2026-09-19T07:35:30.016527Z"
+     "validated_at": "2026-09-20T14:09:43.442241Z"
     },
     "dark": {
      "hash": "37436ac36a51411d87c1161b5faaed5cebecc63d6dfa14449345bafdad905db5",
-     "validated_at": "2026-09-19T07:35:30.026761Z"
+     "validated_at": "2026-09-20T14:09:43.452051Z"
     }
    }
   },
@@ -168,11 +168,11 @@
    "golden": {
     "light": {
      "hash": "9c1a3b2b044420d0f237f29049e1e7a95944d28acaec903a3fe27b51844137d8",
-     "validated_at": "2026-09-19T07:35:30.580070Z"
+     "validated_at": "2026-09-20T14:11:08.352542Z"
     },
     "dark": {
      "hash": "81396c93cafc17317519b4b1afe3028bb77aa5e8d444782de22d1f0112f5cc9e",
-     "validated_at": "2026-09-19T07:35:30.606276Z"
+     "validated_at": "2026-09-20T14:11:08.365621Z"
     }
    }
   },
@@ -214,11 +214,11 @@
    "golden": {
     "light": {
      "hash": "14a3326a9cba830cd53f16ff1129efef164e43f09414c5593b4542499e2b952a",
-     "validated_at": "2026-09-19T07:48:31.275189Z"
+     "validated_at": "2026-09-20T14:15:13.358714Z"
     },
     "dark": {
      "hash": "3a78edc835091333fb456ad85911b46c8a5fc862e197dc9ca0c7579752c06450",
-     "validated_at": "2026-09-19T07:48:31.287102Z"
+     "validated_at": "2026-09-20T14:15:13.370406Z"
     }
    }
   },
@@ -247,11 +247,11 @@
    "golden": {
     "light": {
      "hash": "8942a170638780d8fd678d88f5e4d44ea6329b747908414b1cbcc19502921eaa",
-     "validated_at": "2026-09-19T07:48:31.468167Z"
+     "validated_at": "2026-09-20T14:16:01.261814Z"
     },
     "dark": {
      "hash": "085cca9b4723cabe1bea77ad4ea37d4ea4d501399894d5f737065512d9d192fc",
-     "validated_at": "2026-09-19T07:48:31.475739Z"
+     "validated_at": "2026-09-20T14:16:01.272614Z"
     }
    }
   },
@@ -275,11 +275,11 @@
    "golden": {
     "light": {
      "hash": "ab411e050ba5fa61358e2c0da99955aceebf9d7daef298d3681191278d07ec6e",
-     "validated_at": "2026-09-19T07:48:31.709603Z"
+     "validated_at": "2026-09-20T14:16:46.769090Z"
     },
     "dark": {
      "hash": "d1b73660d503bace8959ac23f8b9670be42e540a5f2de3a474c8c5a60e5d33bd",
-     "validated_at": "2026-09-19T07:48:31.735263Z"
+     "validated_at": "2026-09-20T14:16:46.786572Z"
     }
    }
   },
@@ -330,12 +330,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "8c9c2bfc2a883863db613214121e11c95d80773c3ccb46e64acd573d84cd300b",
-     "validated_at": "2026-09-19T08:06:51.645580Z"
+     "hash": "b6783f0fe4482a81cc7b7b4727f36afe50c7cd887a44560b8b5b8937f8cb82e6",
+     "validated_at": "2026-09-22T13:54:42.198259Z"
     },
     "dark": {
-     "hash": "dbd11f1cc80bc45ba8b9c8d517649f705a76bacd4a8e4c267646d5cf33ec2927",
-     "validated_at": "2026-09-19T08:06:51.659462Z"
+     "hash": "3d9798bbe9fd9e0f946bc057cc9898d39527ffe857365ea88a605cea4af2ff3e",
+     "validated_at": "2026-09-22T13:54:42.218057Z"
     }
    }
   },
@@ -358,12 +358,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "33cf81e40fbc9fb41d386d8e86d25bd92102c38d3d0effabe2a6b42a68d3bd97",
-     "validated_at": "2026-09-19T07:56:14.769468Z"
+     "hash": "3ef37c5e91c47667fd3d5c40fef68ae441946c07ae0d7fc4743a880351b04b15",
+     "validated_at": "2026-09-22T20:01:43.995771Z"
     },
     "dark": {
-     "hash": "3f735b3495a39210c302c65ab613267cad98fac1730e58b4367a0f2a11b20ec7",
-     "validated_at": "2026-09-19T07:56:14.777166Z"
+     "hash": "58b8fd3fead7dfdaec6f50b8d712807dcb509c4326bd5d0b722e5c598770a76a",
+     "validated_at": "2026-09-22T20:01:44.031124Z"
     }
    }
   },
@@ -404,12 +404,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "9962e11a3d7a212e76fb3310949ada3e18c9d7e79c01dc6ea37a74d851817904",
-     "validated_at": "2026-09-19T08:09:17.084693Z"
+     "hash": "c23aea30d68ab84b31bdcf615057605ceb2493c64abd32681c500e54d6a944ce",
+     "validated_at": "2026-09-22T13:59:04.752712Z"
     },
     "dark": {
-     "hash": "002de4981ccaf7e5c822e2dfd9014dca195e55c2c727f425ea6d026df24e6394",
-     "validated_at": "2026-09-19T08:09:17.105537Z"
+     "hash": "8aa61dca73f386c7ef94a4f4327573008b44d7b2d17cf8ead55bcaf407d696bb",
+     "validated_at": "2026-09-22T13:59:04.767390Z"
     }
    }
   },
@@ -456,11 +456,11 @@
    "golden": {
     "light": {
      "hash": "df6e9b4c2acf5b14a08192e2beda47812f7e33171516224148d5c963c4ad96d1",
-     "validated_at": "2026-09-19T08:11:15.456439Z"
+     "validated_at": "2026-09-22T13:52:54.577357Z"
     },
     "dark": {
      "hash": "22ed59bf1ed0f167e0ce30728ec05cbef8a8e31e87271255dfca0377a9700168",
-     "validated_at": "2026-09-19T08:11:15.475773Z"
+     "validated_at": "2026-09-22T13:52:54.590464Z"
     }
    }
   },
@@ -483,12 +483,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "70fe1a38f5d4e9f33c7595600ebb2a2d8da152967ae99fcf8d47d467a6b404ee",
-     "validated_at": "2026-09-19T08:19:15.616930Z"
+     "hash": "f38fe0dd3f1ecf8487b5be21c562493ef52d1eb0d9a6847a80984cc0e5d488e6",
+     "validated_at": "2026-09-22T14:05:25.424575Z"
     },
     "dark": {
-     "hash": "909bb87ee21459de0d7b9d695189fefe8c51cb04cd4a54e90d85050345611528",
-     "validated_at": "2026-09-19T08:19:15.643711Z"
+     "hash": "626f0b5f5e04b880f0fc44daeefffd5048f9f3dd4d556f93c0327c9d53a2cb08",
+     "validated_at": "2026-09-22T14:05:25.442087Z"
     }
    }
   },
@@ -609,12 +609,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "f84e5e49ce593de718ff24668a2a8e54dcba7a5313638de954f2f71d4138e79b",
-     "validated_at": "2026-09-19T07:54:22.101752Z"
+     "hash": "abc858f89ff41e74ad9dba4f639bc0bb0bfe930fd14afd1eb7cf527144d74bcf",
+     "validated_at": "2026-09-22T20:00:24.253630Z"
     },
     "dark": {
-     "hash": "5d27f0c1f1ef22dea3c058557fe2234c64f11dee0e1d5872962a00f3cbbe23b5",
-     "validated_at": "2026-09-19T07:54:22.114182Z"
+     "hash": "8cc29afc27457a45c0d9016e3091709b28e1c61e9fd362855341813786042058",
+     "validated_at": "2026-09-22T20:00:24.299008Z"
     }
    }
   },
@@ -754,11 +754,11 @@
    "golden": {
     "light": {
      "hash": "943a5d74dd5dbf0a4afb1d99b0fe5a12765a4b90fe8e09fbecd9bfadf8b233e9",
-     "validated_at": "2026-09-19T07:32:50.291289Z"
+     "validated_at": "2026-09-20T13:43:25.575262Z"
     },
     "dark": {
      "hash": "f2bc3e07c8b06f82241c020d2df7d2b958081cf47ba22dc6025b58139d0f9f5c",
-     "validated_at": "2026-09-19T07:32:50.301856Z"
+     "validated_at": "2026-09-20T13:43:25.588027Z"
     }
    }
   },
@@ -898,11 +898,11 @@
    "golden": {
     "light": {
      "hash": "0b90e01bd720272b725ea328f77a02e7c70ff9ae9734f1edf5f0564600bfa20d",
-     "validated_at": "2026-09-19T07:45:39.230630Z"
+     "validated_at": "2026-09-20T14:13:35.376983Z"
     },
     "dark": {
      "hash": "9f25224ad87fe5ec9e27b555209e1dbb3c4b6980dad3c1081e9a69caae7e637d",
-     "validated_at": "2026-09-19T07:45:39.250464Z"
+     "validated_at": "2026-09-20T14:13:35.387089Z"
     }
    }
   },
@@ -1127,11 +1127,11 @@
    "golden": {
     "light": {
      "hash": "54d1335c33805eb11bc46b4d9ba338cc4e8c02a5b04595a08abafacc7d060da0",
-     "validated_at": "2026-09-19T07:48:31.056778Z"
+     "validated_at": "2026-09-20T14:14:22.065375Z"
     },
     "dark": {
      "hash": "2dc4591f36465716e39c01e8b19d31a7cf4991c155b9f3a5f9fd233d0c0fd3f6",
-     "validated_at": "2026-09-19T07:48:31.070029Z"
+     "validated_at": "2026-09-20T14:14:22.077381Z"
     }
    }
   },
@@ -1213,11 +1213,11 @@
    "golden": {
     "light": {
      "hash": "de1452344fc23c03715b2c3e335f2e3caa9ca8916d8c8d417989ac02d03c028c",
-     "validated_at": "2026-09-19T07:48:31.987670Z"
+     "validated_at": "2026-09-20T14:17:39.779128Z"
     },
     "dark": {
      "hash": "712a7e043b52342a2e2684393b7c130f4fd348b2b0c564a88e3d04a305a53ee1",
-     "validated_at": "2026-09-19T07:48:32.000666Z"
+     "validated_at": "2026-09-20T14:17:39.788557Z"
     }
    }
   },

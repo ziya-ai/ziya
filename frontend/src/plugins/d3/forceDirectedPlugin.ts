@@ -709,6 +709,72 @@ export function normalizeForceCanvas(
 }
 
 /**
+ * Margin (px) subtracted from the capture viewport when sizing the SVG render
+ * frame: the harness container has 16px padding on each side plus a small
+ * border-radius / rounding allowance. Keeps the emitted SVG strictly inside the
+ * visible capture window so it is never cropped by the container's overflow.
+ */
+export const FORCE_FRAME_MARGIN = 48;
+
+/**
+ * Size the on-screen RENDER FRAME (the SVG's intrinsic width/height and viewBox)
+ * so it fits inside the actual capture viewport, preserving the declared canvas
+ * aspect ratio (D-368/D-392/D-107/D-108/D-369).
+ *
+ * The layout runs in the DECLARED (normalised) canvas space — up to
+ * FORCE_MAX_CANVAS_DIM (2000) — but the SVG must be DISPLAYED at a size the
+ * capture window can show. Previously the SVG was emitted at the declared canvas
+ * size and relied on CSS `max-width:100%/height:auto` to shrink-to-container;
+ * that (a) is defeated when the harness pins the container to the declared width
+ * (so the oversized SVG overflows the viewport and is cropped on the
+ * right/bottom), and (b) when it DOES shrink, the CSS downscale is invisible to
+ * the fit-to-extent scale `fit.k`, so the on-screen legibility floors
+ * (effectiveNodeRadius / effectiveLabelFontSize / effectiveLinkStrokeWidth),
+ * which assume on-screen px == user px * fit.k, are wrong and every node
+ * collapses to a sub-pixel dot.
+ *
+ * Framing the SVG to `min(declared, viewport - margin)` and fitting the settled
+ * graph INTO that frame makes the SVG display 1:1 (no CSS downscale), so
+ * `fit.k` reflects the true on-screen scale and the counter-scaling floors
+ * become correct, while nothing ever exceeds the capture window. A declared
+ * canvas already within the viewport passes through unchanged (s === 1), so the
+ * common 700x500 / sub-viewport case is byte-identical. Pure/testable — the
+ * viewport is injected so it is deterministic under test.
+ */
+export function fitFrameToViewport(
+  width: number,
+  height: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  margin: number = FORCE_FRAME_MARGIN,
+): { width: number; height: number } {
+  const w = Number.isFinite(width) && width > 0 ? width : 700;
+  const h = Number.isFinite(height) && height > 0 ? height : 500;
+  const vw = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1280;
+  const vh = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 960;
+  const m = Number.isFinite(margin) && margin >= 0 ? margin : 0;
+  const maxW = Math.max(FORCE_MIN_CANVAS_DIM, vw - m);
+  const maxH = Math.max(FORCE_MIN_CANVAS_DIM, vh - m);
+  const s = Math.min(1, maxW / w, maxH / h);
+  return { width: Math.round(w * s), height: Math.round(h * s) };
+}
+
+/**
+ * Read the current browser viewport (the headless capture window). Falls back to
+ * the golden-tier default (1280x960) when no DOM is present (unit test / SSR).
+ */
+export function currentViewport(): { width: number; height: number } {
+  if (typeof window !== 'undefined') {
+    const w = (window as any).innerWidth;
+    const h = (window as any).innerHeight;
+    if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
+      return { width: w, height: h };
+    }
+  }
+  return { width: 1280, height: 960 };
+}
+
+/**
  * Build the point set the fit-to-extent transform must contain (D-091).
  * computeFitTransform previously fitted only the node discs ({x,y,r}); a node
  * label is drawn to the RIGHT of the node (x = radius+4 rightward) with no width
@@ -754,6 +820,59 @@ export function labelRightExtent(len: number, r: number, fontSize: number): numb
   const rr = Number.isFinite(r) && r > 0 ? r : 0;
   const fs = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 10;
   return rr + 4 + L * fs * 0.6;
+}
+
+/**
+ * Fit that accounts for the on-screen legibility COUNTER-SCALING (D-394, extends
+ * D-091/D-369/D-393/D-122).
+ *
+ * computeFitTransform(forceFitPoints(nodes, radiusOf, fontSize)) frames the
+ * graph using the BASE node radii and the AUTHORED fontSize. But once fit.k is
+ * known the render path ENLARGES the drawn discs (effectiveNodeRadius) and
+ * labels (effectiveLabelFontSize) in USER space so their ON-SCREEN size clears
+ * the legibility floors — and at a small fit.k (a large settled extent, e.g. an
+ * extreme-aspect 200x3000 canvas or an oversized 6000x4000 one with 40 nodes)
+ * that enlargement is substantial (floor/k). The enlarged discs/labels then
+ * reach PAST the extent the first fit framed, so nodes and labels are clipped at
+ * the canvas edge even though the base-radius fit reported that it "fit"
+ * (force-directed w2-08 nodes-clipped; the label-edge clip of d3 w2-13).
+ *
+ * Refine the fit ONCE using the DRAWN (counter-scaled) radius and applied font
+ * at the first fit's k, so the enlarged content is contained. A SINGLE pass
+ * (not an iterate-to-convergence loop) is used deliberately: feeding the
+ * floor-driven label enlargement (which grows as 1/k) back into the fit
+ * repeatedly would spiral k toward zero, so exactly one correction is applied —
+ * it removes the dominant first-pass omission without collapsing the graph. It
+ * is a strict no-op at k≈1 (drawn radius == base, applied font == base), leaving
+ * ordinary small/medium graphs byte-identical. Pure/testable.
+ */
+export function computeCounterScaledFit(
+  nodes: Array<{ x?: number; y?: number; label?: string; id?: string }>,
+  radiusOf: (n: any) => number,
+  fontSize: number,
+  width: number,
+  height: number,
+  padding = 30,
+): FitTransform {
+  const base = computeFitTransform(forceFitPoints(nodes, radiusOf, fontSize), width, height, padding);
+  const k = base.k;
+  const drawRadiusOf = (n: any) => effectiveNodeRadius(radiusOf(n), k);
+  const appliedFont = effectiveLabelFontSize(fontSize, k);
+  // No-op fast path: when the floors do not enlarge anything (k≈1 / clamped),
+  // the refined extent equals the base extent, so return the base fit unchanged.
+  if (appliedFont <= fontSize + 1e-9) {
+    let enlarged = false;
+    for (const n of nodes || []) {
+      if (drawRadiusOf(n) > radiusOf(n) + 1e-9) { enlarged = true; break; }
+    }
+    if (!enlarged) return base;
+  }
+  return computeFitTransform(
+    forceFitPoints(nodes, drawRadiusOf, appliedFont),
+    width,
+    height,
+    padding,
+  );
 }
 
 /**
@@ -1290,11 +1409,25 @@ export const forceDirectedPlugin: D3RenderPlugin = {
     // canvas (with the fit-centred graph inside it) down to fit the viewport, so
     // nothing is clipped. Matches the renderer's documented expectation that
     // plugin SVGs use max-width:100%/height:auto to shrink-to-container.
+    // Render FRAME: the layout runs in the DECLARED canvas space (width/height,
+    // up to FORCE_MAX_CANVAS_DIM), but the SVG must be DISPLAYED at a size the
+    // capture window can actually show. Sizing the SVG to the declared canvas
+    // and leaning on `max-width:100%` to shrink-to-container fails two ways in
+    // the headless harness: an oversized canvas overflows the viewport and is
+    // cropped (D-107/D-108/D-368/D-392), and when CSS DOES downscale it the
+    // shrink is invisible to the fit scale `fit.k`, so the on-screen legibility
+    // floors (they assume on-screen px == user px * fit.k) are wrong and nodes
+    // collapse to sub-pixel dots (D-369). Frame the SVG to fit inside the actual
+    // capture viewport (preserving aspect) and fit the graph INTO that frame, so
+    // the SVG displays 1:1, `fit.k` is truthful and the counter-scaling floors
+    // hold. A canvas already within the viewport is unchanged (frame === canvas).
+    const viewport = currentViewport();
+    const frame = fitFrameToViewport(width, height, viewport.width, viewport.height);
     const svg = d3.select(container)
       .append('svg')
-      .attr('width', width)
-      .attr('height', height)
-      .attr('viewBox', [0, 0, width, height])
+      .attr('width', frame.width)
+      .attr('height', frame.height)
+      .attr('viewBox', [0, 0, frame.width, frame.height])
       .attr('preserveAspectRatio', 'xMidYMid meet')
       .style('max-width', '100%')
       .style('height', 'auto')
@@ -1482,11 +1615,19 @@ export const forceDirectedPlugin: D3RenderPlugin = {
     // are drawn to the right of the node with no width term, so fitting only the
     // discs clipped labels at the canvas edge for a graph that otherwise fits;
     // forceFitPoints adds the label corners so the fit contains them too.
-    const fit = computeFitTransform(
-      forceFitPoints(nodes, radiusOf, fontSize),
-      width,
-      height,
-    );
+    // computeCounterScaledFit refines the base fit ONCE using the DRAWN
+    // (counter-scaled) radius + applied font, so the enlarged discs/labels the
+    // legibility floors produce at small k (D-369/D-393/D-122) stay inside the
+    // framed extent instead of clipping at the canvas edge on an extreme-aspect
+    // or oversized canvas (D-394 w2-08 nodes-clipped; the label-edge clip of the
+    // d3 w2-13 long-label graph). No-op at k≈1, so ordinary graphs are unchanged.
+    // Fit the settled graph (laid out in DECLARED canvas coords) INTO the render
+    // FRAME (the SVG viewBox), not the declared canvas — so on an oversized
+    // canvas fit.k < 1 reflects the real on-screen shrink and the counter-scaling
+    // floors below keep discs/labels/links legible instead of sub-pixel
+    // (D-369). Frame === canvas for an in-viewport canvas, so ordinary graphs are
+    // unchanged.
+    const fit = computeCounterScaledFit(nodes, radiusOf, fontSize, frame.width, frame.height);
     svg.call(zoom.transform, d3.zoomIdentity.translate(fit.x, fit.y).scale(fit.k));
 
     // Labels live inside the zoom group scaled by fit.k, so a label authored at

@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\n\\definecolor{darkink}{HTML}{CCCCCC}\n\\definecolor{darkaccent}{HTML}{5AA9E6}\n\\begin{scope}[color=darkink, text=darkink]\n\\draw[darkink, thick] (0,3) to[V=$V_{cc}$] (0,0);\n\\draw[darkink, thick] (0,3) to[R=$R_b$] (3,3);\n\\draw[darkaccent, thick] (3,3) to[R=$R_c$] (6,3);\n\\draw[darkink, thick] (3,3) to[L=$L_1$] (3,0);\n\\draw[darkink, thick] (0,0) -- (7,0);\n\\node[ground, darkink] at (3,0) {};\n\\node[text=darkaccent] at (3.5,4.4) {hardcoded dark palette: \\#CCCCCC ink, no plate};\n\\node[text=darkink] at (6.6,1.5) {$v_o$};\n\\end{scope}\n",
+ "intent": "hardcoded DARK palette (#CCCCCC ink, no backing plate) -- inverse case, must survive a light page"
+}

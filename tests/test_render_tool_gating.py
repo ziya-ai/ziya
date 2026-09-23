@@ -54,7 +54,7 @@ def test_render_tools_absent_when_playwright_missing(monkeypatch):
 def test_render_tools_present_when_playwright_available():
     dr._playwright_available = True
     names = {t.__name__ for t in builtin_tools.get_diagram_render_tools()}
-    assert names == {"RenderDiagramTool", "RecallImageTool"}, (
+    assert names == {"RenderDiagramTool", "RecallImageTool", "ViewImageTool"}, (
         "positive control failed: gating must not remove the tools when the "
         "dependency IS present"
     )

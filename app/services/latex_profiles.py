@@ -308,7 +308,26 @@ class LatexProfile:
         # (xcolor is always present here: chemfig loads it explicitly and every
         # TikZ-family profile pulls it in via pgf.)
         if fmt != "svg":
+            # D-353: a DARK-theme body whose author drew a self-contained LIGHT
+            # card -- a white/pale ``\fill`` or pale ``\shade`` background with a
+            # light palette on top (circuitikz-w3-01/w3-04) -- must be repainted
+            # to that light surface with DARK ink, the exact mirror of the
+            # detect_dark_plate treatment a dark card gets on the light page
+            # below.  Otherwise the dark page bakes light default ink UNDER the
+            # light card, so uncoloured labels collapse (#EDEDED on the pale
+            # region: 1.2:1 w3-04) and the light strokes stay faint.  A detected
+            # light card falls through to the else-branch, whose plain white
+            # page + black ink IS that treatment (detect_dark_plate returns None
+            # for a light card).  No light card -> the dark page is unchanged
+            # (byte-identical), so no other dark render is affected.
+            _dark_light_card = False
             if theme == "dark":
+                try:
+                    from app.utils.latex_color import detect_light_plate
+                    _dark_light_card = detect_light_plate(body) is not None
+                except Exception:          # pragma: no cover - defensive
+                    _dark_light_card = False
+            if theme == "dark" and not _dark_light_card:
                 lines.append("\\pagecolor[HTML]{1F1F1F}")
                 lines.append("\\color[HTML]{EDEDED}")
                 # Per-engine dark remaps.  Some library-internal masks/fills

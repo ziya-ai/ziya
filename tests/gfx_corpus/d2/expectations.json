@@ -10,23 +10,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.257934Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.853222Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "a8dcbaeb20a4010e5c3297d709d40b51cbe9c4638040422e74c5940fd01c4ef6",
-     "validated_at": "2026-09-19T06:18:27.331203Z"
+     "hash": "2f1ab5f472c3e0f8c44a58a658f582a5c7b4314ac45ab7537cd54262ccb1c9dd",
+     "validated_at": "2026-09-22T12:52:25.273406Z"
     },
     "dark": {
-     "hash": "2ecd755494c0d176ae1c24f45ce8dd8bf13cabf5a791211b7ec4e793f2bc6522",
-     "validated_at": "2026-09-19T06:18:27.349799Z"
+     "hash": "50f549474360382f720ba2b42985df13e6627accdc21e5c0dcdeeaf9a51e0e60",
+     "validated_at": "2026-09-22T12:52:25.284625Z"
     }
    }
   },
@@ -38,23 +44,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.260238Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.875343Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "73fcd419bb8842aa9adf0a5d4e87158cfbdf88ac51248c7643d8e1d364ac5eaf",
-     "validated_at": "2026-09-19T06:19:14.106917Z"
+     "hash": "3cecb490284fcf017451af86e3c85f16ae343cfaae6a05f44f4290672ccc0c7e",
+     "validated_at": "2026-09-22T12:53:29.866417Z"
     },
     "dark": {
-     "hash": "be123290e71ec383e763626b969a5bd59359fc4c213098420135b542ae09aa93",
-     "validated_at": "2026-09-19T06:19:14.125613Z"
+     "hash": "68257e340a6908e83b5f374d419288d4d7fc3347f5f5b439e856a52c43fe3bb9",
+     "validated_at": "2026-09-22T12:53:29.880443Z"
     }
    }
   },
@@ -66,23 +78,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.262686Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.879730Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "0a05a5273fa289ff0065f1b2089ae15b893d5db4ae32e0e6806779e85b373e1f",
-     "validated_at": "2026-09-19T06:19:50.886174Z"
+     "hash": "a7b757eb2fbf2533ce0a3469fdcebe00b9170aad5f8749bb770364b0eb3ca251",
+     "validated_at": "2026-09-22T12:54:20.776756Z"
     },
     "dark": {
-     "hash": "619b271f5d706844bb83489fe4ea53a6a0ee23251c0fd19570a2360b7081866c",
-     "validated_at": "2026-09-19T06:19:50.899262Z"
+     "hash": "faaf1bc9dd0a0cac9e80f0fcbb5e47ad91040e14ef08e4856e87e65939d82148",
+     "validated_at": "2026-09-22T12:54:20.787929Z"
     }
    }
   },
@@ -94,23 +112,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.265451Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.883946Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "820ba58407c5cce013a4fccd3b8bafe029b89df32ca06a8ec47388aa413a77e2",
-     "validated_at": "2026-09-19T06:20:27.338638Z"
+     "hash": "d9c26ec14da8aad65a925c982e4d7c2409d1827794a40c5c34d50e7e90289507",
+     "validated_at": "2026-09-22T12:54:20.988883Z"
     },
     "dark": {
-     "hash": "ae59d372a03c6b3e9d9a9a399f0cfb610cd1ee5062b0e07f0eba58512d291f1e",
-     "validated_at": "2026-09-19T06:20:27.350348Z"
+     "hash": "a1f613e88ee7349b48c7137eb19f5cf671592d7cd84ae43704df10b236f5e07a",
+     "validated_at": "2026-09-22T12:54:21.002724Z"
     }
    }
   },
@@ -122,23 +146,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.268603Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.888480Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "820ba58407c5cce013a4fccd3b8bafe029b89df32ca06a8ec47388aa413a77e2",
-     "validated_at": "2026-09-19T06:21:04.245991Z"
+     "hash": "d9c26ec14da8aad65a925c982e4d7c2409d1827794a40c5c34d50e7e90289507",
+     "validated_at": "2026-09-22T12:54:21.225326Z"
     },
     "dark": {
-     "hash": "ae59d372a03c6b3e9d9a9a399f0cfb610cd1ee5062b0e07f0eba58512d291f1e",
-     "validated_at": "2026-09-19T06:21:04.263901Z"
+     "hash": "a1f613e88ee7349b48c7137eb19f5cf671592d7cd84ae43704df10b236f5e07a",
+     "validated_at": "2026-09-22T12:54:21.242764Z"
     }
    }
   },
@@ -151,23 +181,29 @@
     "renders",
     "no_console_errors",
     "ink_present",
-    "visual:min_text_size"
+    "visual:min_text_size",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-059",
      "signature": "recovered-fill-unconditional-theme-text-illegible:dark",
      "at": "2026-09-15T08:56:12.355214Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.845972Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "988241a6acc084015a55397469da0106b5042b344b3a9d0cb5533d1cd4aeb934",
-     "validated_at": "2026-09-18T08:23:56.101937Z"
+     "hash": "9e9acc1a84a2f59ae0fb30ed0b4a6129a04716cf9734790d42453012da2c0615",
+     "validated_at": "2026-09-22T12:52:25.073402Z"
     },
     "dark": {
-     "hash": "d1c82f42f0ecf50837b834fe92ef392ae465618139b0aecc15846f95859311ef",
-     "validated_at": "2026-09-18T08:23:56.110709Z"
+     "hash": "cb8aa8047c58d3cd2fbc94cba1d3673e89720af28d5f554072488def31044221",
+     "validated_at": "2026-09-22T12:52:25.091125Z"
     }
    }
   },
@@ -180,23 +216,29 @@
     "renders",
     "no_console_errors",
     "ink_present",
-    "visual:min_text_size"
+    "visual:min_text_size",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-059",
      "signature": "recovered-fill-unconditional-theme-text-illegible:dark",
      "at": "2026-09-15T08:56:12.366008Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.860625Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "87504cbc4fb70805b24d6ad7eb9a2d99601c27a04d59c8b49903e5db085ae0aa",
-     "validated_at": "2026-09-18T08:24:37.207156Z"
+     "hash": "7eb36ea82296040fecfc6785519acc711f48e5c73250390b6d7584f7d6ea27fd",
+     "validated_at": "2026-09-22T12:53:29.198066Z"
     },
     "dark": {
-     "hash": "11055984602c2255310d1282edaa3a6da42c59303bddf7c8cc43b39ddb033f76",
-     "validated_at": "2026-09-18T08:24:37.225223Z"
+     "hash": "ebb11f8c8fc78bc43cffdcac7fb923ac6c42b6fa76835a6a021fc9b8c8a72459",
+     "validated_at": "2026-09-22T12:53:29.210920Z"
     }
    }
   },
@@ -209,23 +251,29 @@
     "renders",
     "no_console_errors",
     "ink_present",
-    "visual:min_text_size"
+    "visual:min_text_size",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-059",
      "signature": "recovered-fill-unconditional-theme-text-illegible:dark",
      "at": "2026-09-15T08:56:12.384740Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.866074Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "2214be7e1b5f2deffe38e70385b6fcc3f4a597341c7d95c026417cf83ad827d8",
-     "validated_at": "2026-09-18T08:25:14.059460Z"
+     "hash": "1fcbb21b36bb36efa522f7af4f23a490554812136672960d8e197ed3a49104cc",
+     "validated_at": "2026-09-22T12:53:29.413326Z"
     },
     "dark": {
-     "hash": "79aa79a30d5ff2700cf114e4399d5892ee2fa39722873cf3d79c03053f914057",
-     "validated_at": "2026-09-18T08:25:14.071827Z"
+     "hash": "61f2365db450efce81619700c25e8be46e04cafe5fa3a28f809b04a8c015cd0f",
+     "validated_at": "2026-09-22T12:53:29.428815Z"
     }
    }
   },
@@ -238,23 +286,29 @@
     "renders",
     "no_console_errors",
     "ink_present",
-    "visual:min_text_size"
+    "visual:min_text_size",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-059",
      "signature": "recovered-fill-unconditional-theme-text-illegible:dark",
      "at": "2026-09-15T08:56:12.388001Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.870333Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "92d0b9c87e7ac91a1d2a8662bec0c75911bd445b085a07e7ccdc1b5517e3ba96",
-     "validated_at": "2026-09-18T08:25:14.280746Z"
+     "hash": "32f11a81a2b9e90e1d92a109c6958a3314ce065b07e764bb7c5bc431f2117053",
+     "validated_at": "2026-09-22T12:53:29.636425Z"
     },
     "dark": {
-     "hash": "adeb8541ace519c9c6a7362bf6642337e8ec0f0b6c9293e82a097e4a68361584",
-     "validated_at": "2026-09-18T08:25:14.290086Z"
+     "hash": "8140c349e681390adca8610c892e724a067c8aaef267ad12f39a9fb721be5052",
+     "validated_at": "2026-09-22T12:53:29.653474Z"
     }
    }
   },
@@ -266,7 +320,8 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
@@ -278,16 +333,21 @@
      "origin": "D-073",
      "signature": "edge-color-dominates-and-vanishes-on-node:dark",
      "at": "2026-09-15T08:56:12.517105Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.768081Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "86a04dad5cc9e989f1b2b88b42be7ab29b20cc8843176b2515956936a10c4d4e",
-     "validated_at": "2026-09-19T05:56:12.619604Z"
+     "hash": "638a644be322469574bb2c1a600fb6a41180ca3f6b997b7f697aa24bccf57daa",
+     "validated_at": "2026-09-22T12:31:59.451197Z"
     },
     "dark": {
-     "hash": "aaab9dd93e7d2c345d7f8a9ea3949451aa3c48509d6f1cd0ec36e698ce9ba23a",
-     "validated_at": "2026-09-19T05:56:12.635551Z"
+     "hash": "4016aa65b7a64002f64bba22b13f14423d36f10be8599b4e3279a6c1011fc5b5",
+     "validated_at": "2026-09-22T12:31:59.465244Z"
     }
    }
   },
@@ -299,23 +359,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-060",
      "signature": "arrowheads-hidden-under-node",
      "at": "2026-09-15T08:56:12.393908Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.773929Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "633c85715618972bf9d9f3379405c528ee2754efc56c5b06efacbe3d9e2f0ef9",
-     "validated_at": "2026-09-18T08:18:45.667530Z"
+     "hash": "078a0503e0ecf0b58c6c9b4049e1edd6e503667736ab21a6ddc736fe89cd8120",
+     "validated_at": "2026-09-22T12:32:51.117938Z"
     },
     "dark": {
-     "hash": "b2dd0e08ece6ac8aa1180b413fed58f53bed36b116708c36388dd2313e94d826",
-     "validated_at": "2026-09-18T08:18:45.676880Z"
+     "hash": "a7b207140abbf29fe083d0afb25f8a5c92ebf487b1ad29632ffef4ac3ab149d4",
+     "validated_at": "2026-09-22T12:32:51.132679Z"
     }
    }
   },
@@ -355,15 +421,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-061",
      "signature": "edge-label-parsed-as-node",
      "at": "2026-09-15T08:56:12.409048Z"
+    },
+    {
+     "origin": "D-362",
+     "signature": "edge-label-collides-with-arrow",
+     "at": "2026-09-22T12:54:31.901258Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "58dba80bc5872ffb63a6cafdae6fea43fd20c0102dd52663d9bda59351a3506d",
+     "validated_at": "2026-09-22T12:32:51.382304Z"
+    },
+    "dark": {
+     "hash": "b59e6ff336924e56523183c20fc4bef756fdba514bd5c3b3dc06aefa07fb5765",
+     "validated_at": "2026-09-22T12:32:51.407186Z"
+    }
+   }
   },
   "d2-w1-04": {
    "themes": [
@@ -373,7 +455,8 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
@@ -385,16 +468,21 @@
      "origin": "D-062",
      "signature": "edge-direction-and-bidirectional-not-rendered",
      "at": "2026-09-15T08:56:12.420041Z"
+    },
+    {
+     "origin": "D-362",
+     "signature": "edge-label-collides-with-arrow",
+     "at": "2026-09-22T12:54:31.904600Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "e9580343c86f7c4442b2462fc6818f662aede1a7996e94b483f1cf6e7f28e79a",
-     "validated_at": "2026-09-19T05:57:52.186816Z"
+     "hash": "af94cb89179a19b1c83f9afac9ad755a34c05ab059ea9479463cfa1f4db59a00",
+     "validated_at": "2026-09-22T12:32:51.578130Z"
     },
     "dark": {
-     "hash": "87afa05d9b071d553c7c65195a8df19b24fea79f54d97c39a62bbde4fc494b80",
-     "validated_at": "2026-09-19T05:57:52.212335Z"
+     "hash": "f56641ed40fb15d09c2777445fbb5948b7fd4e4f3f0dc96020f0abdb427e4bae",
+     "validated_at": "2026-09-22T12:32:51.588975Z"
     }
    }
   },
@@ -429,23 +517,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-062",
      "signature": "edge-direction-and-bidirectional-not-rendered",
      "at": "2026-09-15T08:56:12.422590Z"
+    },
+    {
+     "origin": "D-362",
+     "signature": "edge-label-collides-with-arrow",
+     "at": "2026-09-22T12:54:31.907661Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "6d7dd2f24549b4c83eb16c99d58477ec351dfeba871395fec84cc6edd46461c6",
-     "validated_at": "2026-09-19T05:58:26.560978Z"
+     "hash": "f2fba6e565306bbd869fd8800f917893e0bc6fcc354a3eecd863cbacbcc6bc65",
+     "validated_at": "2026-09-22T12:34:01.028907Z"
     },
     "dark": {
-     "hash": "7f1f1a02afd315a6e57b2eae670bf24bca5db14a072e527f11506082b7e82b94",
-     "validated_at": "2026-09-19T05:58:26.575892Z"
+     "hash": "6bd95dfd8ff627cbb23afd760d7a1f83ba1dff29d53e5097d425b0908715abb2",
+     "validated_at": "2026-09-22T12:34:01.052454Z"
     }
    }
   },
@@ -475,7 +569,8 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
@@ -487,16 +582,21 @@
      "origin": "D-066",
      "signature": "styling-parsed-as-nodes",
      "at": "2026-09-15T08:56:12.452422Z"
+    },
+    {
+     "origin": "D-362",
+     "signature": "edge-label-collides-with-arrow",
+     "at": "2026-09-22T12:54:31.913991Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "c6e60978662718f46b1c64e0aeeb91536799bcd337293ca6fd858dd972726750",
-     "validated_at": "2026-09-19T06:01:39.793409Z"
+     "hash": "d5375a67d87c9bdf9fe59b67e5148016ced902b539d291b6f104191e522cd088",
+     "validated_at": "2026-09-22T12:36:03.087654Z"
     },
     "dark": {
-     "hash": "f3e5b6918a91979f185f4264e19d1119a0232ac3c1969aff52ab58c4a9363a7d",
-     "validated_at": "2026-09-19T06:01:39.816377Z"
+     "hash": "def214e20c802fca0cd7331c501abdc13d49962174b6b055217bcdb1c27c5314",
+     "validated_at": "2026-09-22T12:36:03.099490Z"
     }
    }
   },
@@ -562,23 +662,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-065",
      "signature": "shape-keyword-and-sql_table-ignored",
      "at": "2026-09-15T08:56:12.443671Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.778498Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "37fe665b083616a51a8c081b13764b94f2982c65d9a1dad4686f91ed5c729ca9",
-     "validated_at": "2026-09-18T08:21:24.703097Z"
+     "hash": "271c0bc3f5c9936a2cbc6b0a8e6a01f9856fdb561d848c5f87fc284e9e499ed1",
+     "validated_at": "2026-09-22T12:35:03.647534Z"
     },
     "dark": {
-     "hash": "5bead549629730f18f9d2c1ba32a8ee9808d68763c82732ba4eaf8a383ba8c05",
-     "validated_at": "2026-09-18T08:21:24.713016Z"
+     "hash": "455b378d8aacbc1abdadd307e124a8c53c4fa8efd46400f93d75751d76ef162d",
+     "validated_at": "2026-09-22T12:35:03.660775Z"
     }
    }
   },
@@ -601,12 +707,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "b8f26b3c9bcf957faa0298052ae1716a9067de91e86e37c187ea8ee53be9094c",
-     "validated_at": "2026-09-19T06:17:16.655836Z"
+     "hash": "79395bb6664a79ce84eef8ccc98669ce29a2408721b942b40620bb02c949e83a",
+     "validated_at": "2026-09-20T12:29:23.342015Z"
     },
     "dark": {
      "hash": "c3bfffba3d12b1d092b8acc8b22bc2a9880f32e2b34f81c353f8489ec381b206",
-     "validated_at": "2026-09-19T06:17:16.667400Z"
+     "validated_at": "2026-09-20T12:29:23.358761Z"
     }
    }
   },
@@ -618,23 +724,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-066",
      "signature": "styling-parsed-as-nodes",
      "at": "2026-09-15T08:56:12.450445Z"
+    },
+    {
+     "origin": "D-362",
+     "signature": "edge-label-collides-with-arrow",
+     "at": "2026-09-22T12:54:31.910608Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "d877c0471573fe402f5fe8828d2df3d940bf049f3aafbcc4679397f402e60b42",
-     "validated_at": "2026-09-19T06:01:04.216307Z"
+     "hash": "53f3126cd10b55a94a8358ebb7becfa10890b7be3978a388f01fb54f2ae08467",
+     "validated_at": "2026-09-22T12:35:03.865064Z"
     },
     "dark": {
-     "hash": "18d5182ba8971eff7606ef83020f23b05ab053639af5d9fea820d11709eac302",
-     "validated_at": "2026-09-19T06:01:04.230391Z"
+     "hash": "b2a72a7c0997cc1d8e61ac9ced9ca7ece6e008473f924e0b8665ca031f8d9284",
+     "validated_at": "2026-09-22T12:35:03.876736Z"
     }
    }
   },
@@ -646,23 +758,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-066",
      "signature": "styling-parsed-as-nodes",
      "at": "2026-09-15T08:56:12.455229Z"
+    },
+    {
+     "origin": "D-362",
+     "signature": "edge-label-collides-with-arrow",
+     "at": "2026-09-22T12:54:31.918844Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "6f8ff255f4da2d7a3ca590060b2f2a007081639ee76fbc40a3423e350059f8d7",
-     "validated_at": "2026-09-19T06:02:11.774670Z"
+     "hash": "2111b11012a3735429d6450da93e8a5b435856c948dee795b86e309fce9145db",
+     "validated_at": "2026-09-22T12:36:03.274340Z"
     },
     "dark": {
-     "hash": "25ea5a2ee6758a6d6367cb1159d63cbf77c1bba1727183b43dc90b16f7cf99da",
-     "validated_at": "2026-09-19T06:02:11.799614Z"
+     "hash": "5c2ccb854c986f948eaf5d5fe9f00081da6f403ed233d1b986447513c25417ab",
+     "validated_at": "2026-09-22T12:36:03.289785Z"
     }
    }
   },
@@ -674,23 +792,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-067",
      "signature": "chained-connection-drops-edges-and-keyword-as-node",
      "at": "2026-09-15T08:56:12.458622Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.783106Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "6f5b521b19044bfffd54bccafe28c044a9a780cf9e0489d9096db86b09083e3a",
-     "validated_at": "2026-09-18T08:22:07.464603Z"
+     "hash": "caed8919e6828a980346c76260b1f1046772c6be5599c71fb97118cbc332323c",
+     "validated_at": "2026-09-22T12:36:02.900399Z"
     },
     "dark": {
-     "hash": "6954d328cc5f9b2e013b3413e4e285862cfb9fea9e935fe290ec0b460998b3f0",
-     "validated_at": "2026-09-18T08:22:07.477935Z"
+     "hash": "988983fe188819a47b8c6b72a84913b55b6240132e4eeb6d5c8a73c0ad84cb0a",
+     "validated_at": "2026-09-22T12:36:02.913661Z"
     }
    }
   },
@@ -702,23 +826,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-068",
      "signature": "trailing-comment-not-stripped",
      "at": "2026-09-15T08:56:12.466339Z"
+    },
+    {
+     "origin": "D-362",
+     "signature": "edge-label-collides-with-arrow",
+     "at": "2026-09-22T12:54:31.923483Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "1713fdc929df371b2c30b1a984eaa4cdf11f3646038978e1b917fa11fd64476e",
-     "validated_at": "2026-09-19T06:02:44.550713Z"
+     "hash": "78a5934f8398ce514962ce434dfdaf6f3fa9dd03cf316da2c26210cc368a4840",
+     "validated_at": "2026-09-22T12:36:03.608999Z"
     },
     "dark": {
-     "hash": "5cf59ba015bf61ee19c70cfc0d44e43e22e1362e4a195dd10932046ae038071d",
-     "validated_at": "2026-09-19T06:02:44.563369Z"
+     "hash": "2288ef7e792170145fac8c8185896d2801469a77cd6714e8c0a707d2330014df",
+     "validated_at": "2026-09-22T12:36:03.622683Z"
     }
    }
   },
@@ -750,23 +880,29 @@
     "renders",
     "no_console_errors",
     "ink_present",
-    "visual:contrast"
+    "visual:contrast",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-069",
      "signature": "viewbox-downscale-shrinks-fixed-12px-text",
      "at": "2026-09-15T08:56:12.473141Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.793128Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "e3fad7f6ebec5b7f95eaecfc66ec6b8ec19ebc79fbbf41302a8269160b7cce56",
-     "validated_at": "2026-09-19T06:07:10.695176Z"
+     "hash": "f65c83931911c9a7ef051f529c42a2a1e77990f54cc9dfebb7266f26506e12db",
+     "validated_at": "2026-09-22T12:47:18.454581Z"
     },
     "dark": {
-     "hash": "14da217291ce1a56c3833d625ca66c7c852186b7eba1d0864bf95dad9d79d194",
-     "validated_at": "2026-09-19T06:07:10.800857Z"
+     "hash": "f307671a4a69ad8ec89a2008cf0b7d0082abb6da01e4487649987f2eec8812f3",
+     "validated_at": "2026-09-22T12:47:18.474809Z"
     }
    }
   },
@@ -902,16 +1038,21 @@
      "origin": "D-070",
      "signature": "label-overflow-no-wrap-and-grid-overlap",
      "at": "2026-09-15T08:56:12.492348Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.798269Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "9867eedf22612689c03a85ffd6f1050b5d21f59b22d1c566d48d15ca5f23f3f7",
-     "validated_at": "2026-09-18T08:36:54.020218Z"
+     "hash": "3ffa62d07f1af83c7f0b2eaf3c721be525c8d338686cd9629f501d9670b64bd7",
+     "validated_at": "2026-09-22T12:41:22.887647Z"
     },
     "dark": {
-     "hash": "257b4dd3eac64628d617c6c004b79afd203fc201b9c670561cb4e89d4e319c91",
-     "validated_at": "2026-09-18T08:36:54.040656Z"
+     "hash": "d84366512d4d9bfe2f502fd6d1f1f3b27e5015d64f9dce4dd4b98de35c1084d3",
+     "validated_at": "2026-09-22T12:41:22.902425Z"
     }
    }
   },
@@ -975,23 +1116,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-071",
      "signature": "explicit-size-and-extreme-aspect-ignored",
      "at": "2026-09-15T08:56:12.506722Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.803588Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "fb95c88267e24938ba9f320fcdd911c499bf3ca98267df4390aa866cfdab7d10",
-     "validated_at": "2026-09-19T06:13:16.328800Z"
+     "hash": "d3a58e388b9766e620fed4c85937f0d979d42748489c94d5042bc56de2217320",
+     "validated_at": "2026-09-22T12:43:54.033278Z"
     },
     "dark": {
-     "hash": "1ed342bf36cb579851e0626b4adca9ff54e66ed359ec8e3ffaacdd6b3e606628",
-     "validated_at": "2026-09-19T06:13:16.354713Z"
+     "hash": "ba5530e0599d615e2cb5a555ed2c788e38c7b7dcfaf7c4b2cb77c2c86983ddca",
+     "validated_at": "2026-09-22T12:43:54.047987Z"
     }
    }
   },
@@ -1016,7 +1163,17 @@
      "signature": "edge-color-dominates-and-vanishes-on-node:dark",
      "at": "2026-09-15T08:56:12.521450Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a34cf3966a414ec0236667bb6ae8f33196aaa853466377f48cba89a16c138675",
+     "validated_at": "2026-09-22T12:48:36.494214Z"
+    },
+    "dark": {
+     "hash": "0462340404c0ccab467a7b592e63b2a1d7def38ba2d32b14fe25d7df38c3e8d9",
+     "validated_at": "2026-09-22T12:48:36.507892Z"
+    }
+   }
   },
   "d2-w2-02": {
    "themes": [
@@ -1027,23 +1184,29 @@
     "renders",
     "no_console_errors",
     "ink_present",
-    "visual:contrast"
+    "visual:contrast",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-072",
      "signature": "viewbox-downscale-shrinks-fixed-12px-text:dark",
      "at": "2026-09-15T08:56:12.513883Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.788376Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "c282020f755f1c0d19ee0e2588431654faea8309ac05701035d502bf1727c964",
-     "validated_at": "2026-09-18T08:31:49.637711Z"
+     "hash": "1ca114474f4e3fb450bb1be37d1f22642244518f524d858c7334b4677b28b79f",
+     "validated_at": "2026-09-22T12:39:00.407537Z"
     },
     "dark": {
-     "hash": "7e3cfd0922a9649ecc0d4438537001509b19d97159b879089e4e6056dbe718f6",
-     "validated_at": "2026-09-18T08:31:49.657669Z"
+     "hash": "e9dadad14076b9c04126584a899c06de7af37c7140e50d26cbc164451b08b88c",
+     "validated_at": "2026-09-22T12:39:00.425638Z"
     }
    }
   },
@@ -1055,23 +1218,29 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "D-074",
      "signature": "markdown-fence-not-stripped",
      "at": "2026-09-15T08:56:12.526590Z"
+    },
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.839256Z"
     }
    ],
    "golden": {
     "light": {
-     "hash": "820ba58407c5cce013a4fccd3b8bafe029b89df32ca06a8ec47388aa413a77e2",
-     "validated_at": "2026-09-18T08:24:36.886372Z"
+     "hash": "d9c26ec14da8aad65a925c982e4d7c2409d1827794a40c5c34d50e7e90289507",
+     "validated_at": "2026-09-22T12:52:24.799827Z"
     },
     "dark": {
-     "hash": "ae59d372a03c6b3e9d9a9a399f0cfb610cd1ee5062b0e07f0eba58512d291f1e",
-     "validated_at": "2026-09-18T08:24:36.902596Z"
+     "hash": "a1f613e88ee7349b48c7137eb19f5cf671592d7cd84ae43704df10b236f5e07a",
+     "validated_at": "2026-09-22T12:52:24.822011Z"
     }
    }
   },
@@ -1189,6 +1358,179 @@
      "at": "2026-09-18T08:43:56.169542Z"
     }
    ]
+  },
+  "d2-w3-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.808710Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "9e14382b834325117d3cf717770df3b8f1a36cbdc99301d4fbc2f5ccf10f2bdf",
+     "validated_at": "2026-09-22T12:50:03.855828Z"
+    },
+    "light": {
+     "hash": "4ff405d5e7e04bf7c80ef607bb990ee87b22ec1cf99b4970e70b8c69071a015b",
+     "validated_at": "2026-09-22T12:50:03.847855Z"
+    }
+   }
+  },
+  "d2-w3-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.814726Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "a88fe9eb380fa58e3326d106986f6184f426e10245cdf3c87bd518748d53216d",
+     "validated_at": "2026-09-22T12:50:04.067941Z"
+    },
+    "light": {
+     "hash": "c1f75659966e5128ed7b464c3a3a94388d78a04424410cbdb47368686ef8fea3",
+     "validated_at": "2026-09-22T12:50:04.060602Z"
+    }
+   }
+  },
+  "d2-w3-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.819589Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "effdfdadc58eb9281cddc2d3253af90767febf1aeda6b65bc573944e21619501",
+     "validated_at": "2026-09-22T12:50:04.249075Z"
+    },
+    "light": {
+     "hash": "72c7438f42e795611a515290998532a0343bf7a208bfe32ea7f3d444215fd0c1",
+     "validated_at": "2026-09-22T12:50:04.242095Z"
+    }
+   }
+  },
+  "d2-w3-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.825355Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "a245d1e7dfced9552a7d4130d35f1a1804e52662dcbc02d8266d87242c914179",
+     "validated_at": "2026-09-22T12:51:34.092139Z"
+    },
+    "light": {
+     "hash": "87ff5fdbd967c6f8a44e4114bdd1a45854cff7872331e39b6d4e89d715dfa2ea",
+     "validated_at": "2026-09-22T12:51:34.082872Z"
+    }
+   }
+  },
+  "d2-w3-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-361",
+     "signature": "nodes-overlap-edges-hidden",
+     "at": "2026-09-22T12:54:31.834403Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "da261ee6c2787747d3854fd926fa35ca841df37c9b6d1ab069ea98d6d80c1959",
+     "validated_at": "2026-09-22T12:51:34.546305Z"
+    },
+    "light": {
+     "hash": "f0384a9fe9c5d6ff2cea0b61da3e4c23bb29b551cb5fdad6c268b7c28d609c5d",
+     "validated_at": "2026-09-22T12:51:34.538920Z"
+    }
+   }
+  },
+  "d2-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-366",
+     "signature": "label-delimiter-collision",
+     "at": "2026-09-22T12:54:31.928428Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "d4890712127a508064f6054a2b3df6a3ed71f927a2b056cea3c567d0e8d4a7ce",
+     "validated_at": "2026-09-22T12:51:34.345121Z"
+    },
+    "light": {
+     "hash": "4608b1e96b649080db0b9f0304e08185384431cc36a885d9b6520ff7869ce46a",
+     "validated_at": "2026-09-22T12:51:34.335543Z"
+    }
+   }
   }
  }
 }
