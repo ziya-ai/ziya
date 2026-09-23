@@ -1,0 +1,176 @@
+{
+  "_comment": "Shared by tests/test_activation_resolver.py and frontend/src/utils/__tests__/activationParity.test.ts. Layers omitted mean inherit. dropped lists {key, layer, reason}. Change on one side only with the other.",
+  "resolve": [
+    {
+      "name": "discoverable skill pinned always at project",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
+      "layers": {"project": {"skill:a": "always"}},
+      "expect": {
+        "items": {"skill:a": {"effective": "always", "origin": "project", "default": "ondemand",
+                              "placements": {"conversation": null, "project": "always", "user": null}}},
+        "always": ["skill:a"], "catalog": [], "dropped": []
+      }
+    },
+    {
+      "name": "discoverable skill off at conversation is in neither the always-set nor the catalog",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
+      "layers": {"conversation": {"skill:a": "off"}},
+      "expect": {
+        "items": {"skill:a": {"effective": "off", "origin": "conversation", "default": "ondemand"}},
+        "always": [], "catalog": [], "dropped": []
+      }
+    },
+    {
+      "name": "inherit chain: only the user layer is set",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": false}],
+      "layers": {"conversation": {}, "project": {}, "user": {"skill:a": "always"}},
+      "expect": {
+        "items": {"skill:a": {"effective": "always", "origin": "user", "default": "off"}},
+        "always": ["skill:a"], "catalog": [], "dropped": []
+      }
+    },
+    {
+      "name": "layer precedence: conversation beats project beats user",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
+      "layers": {"conversation": {"skill:a": "off"}, "project": {"skill:a": "always"}, "user": {"skill:a": "always"}},
+      "expect": {
+        "items": {"skill:a": {"effective": "off", "origin": "conversation",
+                              "placements": {"conversation": "off", "project": "always", "user": "always"}}},
+        "always": [], "catalog": [], "dropped": []
+      }
+    },
+    {
+      "name": "defaults: discoverable => ondemand, user-selectable => off, mcp => always",
+      "items": [
+        {"key": "skill:disc", "kind": "skill", "discoverable": true},
+        {"key": "skill:pick", "kind": "skill", "discoverable": false},
+        {"key": "mcp:jira", "kind": "mcp"}
+      ],
+      "layers": {},
+      "expect": {
+        "items": {
+          "skill:disc": {"effective": "ondemand", "origin": "default", "default": "ondemand"},
+          "skill:pick": {"effective": "off", "origin": "default", "default": "off"},
+          "mcp:jira": {"effective": "always", "origin": "default", "default": "always"}
+        },
+        "always": ["mcp:jira"], "catalog": ["skill:disc"], "dropped": []
+      }
+    },
+    {
+      "name": "unknown key is dropped and reported, not resolved",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
+      "layers": {"conversation": {"skill:a": "always", "skill:ghost": "always"}},
+      "expect": {
+        "items": {"skill:a": {"effective": "always", "origin": "conversation"}},
+        "always": ["skill:a"], "catalog": [],
+        "dropped": [{"key": "skill:ghost", "layer": "conversation", "reason": "unknown_key"}]
+      }
+    },
+    {
+      "name": "environment item is always on and cannot be placed",
+      "items": [{"key": "mcp:shell", "kind": "mcp", "tier": "environment"}],
+      "layers": {"user": {"mcp:shell": "off"}},
+      "expect": {
+        "items": {"mcp:shell": {"effective": "always", "origin": "environment", "default": "always",
+                                "placements": {"conversation": null, "project": null, "user": null}}},
+        "always": ["mcp:shell"], "catalog": [],
+        "dropped": [{"key": "mcp:shell", "layer": "user", "reason": "environment_not_placeable"}]
+      }
+    },
+    {
+      "name": "stored mcp ondemand is ignored (slice 9 lifts this) and falls through",
+      "items": [{"key": "mcp:jira", "kind": "mcp"}],
+      "layers": {"project": {"mcp:jira": "ondemand"}, "user": {"mcp:jira": "off"}},
+      "expect": {
+        "items": {"mcp:jira": {"effective": "off", "origin": "user",
+                               "placements": {"conversation": null, "project": null, "user": "off"}}},
+        "always": [], "catalog": [],
+        "dropped": [{"key": "mcp:jira", "layer": "project", "reason": "mcp_ondemand_unsupported"}]
+      }
+    },
+    {
+      "name": "invalid state is ignored and reported",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
+      "layers": {"project": {"skill:a": "sometimes"}},
+      "expect": {
+        "items": {"skill:a": {"effective": "ondemand", "origin": "default"}},
+        "always": [], "catalog": ["skill:a"],
+        "dropped": [{"key": "skill:a", "layer": "project", "reason": "invalid_state"}]
+      }
+    },
+    {
+      "name": "explicit null in a layer means inherit, not off",
+      "items": [{"key": "mcp:jira", "kind": "mcp"}],
+      "layers": {"conversation": {"mcp:jira": null}, "project": {"mcp:jira": "off"}},
+      "expect": {
+        "items": {"mcp:jira": {"effective": "off", "origin": "project"}},
+        "always": [], "catalog": [], "dropped": []
+      }
+    },
+    {
+      "name": "same name under two kinds does not collide",
+      "items": [
+        {"key": "skill:shell", "kind": "skill", "discoverable": true},
+        {"key": "mcp:shell", "kind": "mcp"}
+      ],
+      "layers": {"project": {"skill:shell": "off"}},
+      "expect": {
+        "items": {
+          "skill:shell": {"effective": "off", "origin": "project"},
+          "mcp:shell": {"effective": "always", "origin": "default"}
+        },
+        "always": ["mcp:shell"], "catalog": [], "dropped": []
+      }
+    }
+  ],
+  "validate": [
+    {
+      "name": "mcp ondemand is refused until slice 9",
+      "items": [{"key": "mcp:jira", "kind": "mcp"}],
+      "key": "mcp:jira", "layer": "project", "state": "ondemand",
+      "reason": "mcp_ondemand_unsupported"
+    },
+    {
+      "name": "environment items are not placeable at any layer",
+      "items": [{"key": "mcp:shell", "kind": "mcp", "tier": "environment"}],
+      "key": "mcp:shell", "layer": "user", "state": "off",
+      "reason": "environment_not_placeable"
+    },
+    {
+      "name": "unknown key",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
+      "key": "skill:ghost", "layer": "project", "state": "always",
+      "reason": "unknown_key"
+    },
+    {
+      "name": "default is not a writable layer",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
+      "key": "skill:a", "layer": "default", "state": "always",
+      "reason": "invalid_layer"
+    },
+    {
+      "name": "unknown state",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
+      "key": "skill:a", "layer": "project", "state": "sometimes",
+      "reason": "invalid_state"
+    },
+    {
+      "name": "clearing a placement is always accepted",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
+      "key": "skill:a", "layer": "conversation", "state": null,
+      "reason": null
+    },
+    {
+      "name": "mcp off at project is accepted (maps to withheld tools)",
+      "items": [{"key": "mcp:jira", "kind": "mcp"}],
+      "key": "mcp:jira", "layer": "project", "state": "off",
+      "reason": null
+    },
+    {
+      "name": "skill ondemand at conversation is accepted",
+      "items": [{"key": "skill:a", "kind": "skill", "discoverable": false}],
+      "key": "skill:a", "layer": "conversation", "state": "ondemand",
+      "reason": null
+    }
+  ]
+}

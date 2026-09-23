@@ -35,6 +35,9 @@ import { ScrollIndicator } from './ScrollIndicator';
 import { FeedbackRecoveryWatcher } from './FeedbackRecoveryWatcher';
 import { ChatTurnReattachWatcher } from './ChatTurnReattachWatcher';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
+import { useHeaderAttention } from '../hooks/useHeaderAttention';
+import { attentionButtonStyle, attentionTooltip } from '../utils/headerAttention';
+import { layoutViewportWidth } from '../utils/uiScale';
 import Conversation from "./Conversation";
 const ShellConfigModal = lazyWithRetry(() => import("./ShellConfigModal"));
 const MCPStatusModal = lazyWithRetry(() => import("./MCPStatusModal"));
@@ -175,6 +178,10 @@ export const App: React.FC = () => {
     const [taskCardInitialId, setTaskCardInitialId] = useState<string | undefined>(undefined);
     const [showMemoryBrowser, setShowMemoryBrowser] = useState(false);
     const [mcpEnabled, setMcpEnabled] = useState(false);
+    // Red/orange outlines on the header buttons for state the user must act
+    // on (quarantined MCP servers, config errors, unsigned shell / task-card
+    // escalations). Severity policy lives in utils/headerAttention.ts.
+    const headerAttention = useHeaderAttention({ mcpEnabled, projectId: currentProject?.id });
 
     const {
         isAtActiveEnd,
@@ -203,8 +210,9 @@ export const App: React.FC = () => {
             console.error('Failed to load formatters:', error);
         });
 
-        // Set initial panel width to 33% of viewport width
-        const initialWidth = Math.round(window.innerWidth * 0.33);
+        // Set initial panel width to 33% of the layout viewport (window.innerWidth
+        // is unzoomed viewport px; under UI zoom the layout is wider — uiScale.ts).
+        const initialWidth = Math.round(layoutViewportWidth() * 0.33);
         document.documentElement.style.setProperty('--folder-panel-width', `${initialWidth}px`);
         document.documentElement.style.setProperty('--model-display-height', '35px');
 
@@ -270,7 +278,7 @@ export const App: React.FC = () => {
 
     const handlePanelResize = (newWidth: number) => {
         const minWidth = 200;
-        const maxWidth = Math.min(800, window.innerWidth - 350); // Leave at least 350px for chat
+        const maxWidth = Math.min(800, layoutViewportWidth() - 350); // Leave at least 350px for chat
         const constrainedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth));
 
         // Only update if width actually changed significantly (avoid micro-updates)
@@ -297,7 +305,7 @@ export const App: React.FC = () => {
             // Only update if panel is not being manually resized
             const currentWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--folder-panel-width'));
             if (currentWidth) {
-                const newWidth = Math.min(window.innerWidth * 0.25, Math.max(currentWidth, 300));
+                const newWidth = Math.min(layoutViewportWidth() * 0.25, Math.max(currentWidth, 300));
                 document.documentElement.style.setProperty('--folder-panel-width', `${newWidth}px`);
             }
         };
@@ -527,19 +535,25 @@ export const App: React.FC = () => {
                                 </Tooltip>
                                 {mcpEnabled && (
                                     <>
-                                        <Tooltip title="Shell Configuration">
-                                            <Button icon={<CodeOutlined />} onClick={() => setShowShellConfig(true)} />
+                                        <Tooltip title={attentionTooltip('Shell Configuration', headerAttention.shell)}>
+                                            <Button icon={<CodeOutlined />} onClick={() => setShowShellConfig(true)}
+                                                style={attentionButtonStyle(headerAttention.shell.level)}
+                                                data-attention={headerAttention.shell.level} />
                                         </Tooltip>
-                                        <Tooltip title="MCP Servers">
-                                            <Button icon={<ApiOutlined />} onClick={() => setShowMCPStatus(true)} />
+                                        <Tooltip title={attentionTooltip('MCP Servers', headerAttention.mcp)}>
+                                            <Button icon={<ApiOutlined />} onClick={() => setShowMCPStatus(true)}
+                                                style={attentionButtonStyle(headerAttention.mcp.level)}
+                                                data-attention={headerAttention.mcp.level} />
                                         </Tooltip>
                                         <Tooltip title="MCP Registry">
                                             <Button icon={<CloudServerOutlined />} onClick={() => setShowMCPRegistry(true)} />
                                         </Tooltip>
                                     </>
                                 )}
-                                <Tooltip title="Task Cards">
-                                    <Button icon={<AppstoreOutlined />} onClick={() => setShowTaskCards(true)} />
+                                <Tooltip title={attentionTooltip('Task Cards', headerAttention.taskCards)}>
+                                    <Button icon={<AppstoreOutlined />} onClick={() => setShowTaskCards(true)}
+                                        style={attentionButtonStyle(headerAttention.taskCards.level)}
+                                        data-attention={headerAttention.taskCards.level} />
                                 </Tooltip>
                                 {memoryEnabled && (
                                     <Tooltip title="Memory Browser">
@@ -566,7 +580,7 @@ export const App: React.FC = () => {
                     <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
                         style={{
                             display: 'flex',
-                            width: '100vw',
+                            width: '100%',
                             overflow: 'hidden'
                         }}>
                         <FolderTree isPanelCollapsed={isPanelCollapsed} />
@@ -620,11 +634,11 @@ export const App: React.FC = () => {
                             <>
                                 {showShellConfig && <ShellConfigModal
                                     visible={showShellConfig}
-                                    onClose={() => setShowShellConfig(false)}
+                                    onClose={() => { setShowShellConfig(false); headerAttention.refresh(); }}
                                 />}
                                 {showMCPStatus && <MCPStatusModal
                                     visible={showMCPStatus}
-                                    onClose={() => setShowMCPStatus(false)}
+                                    onClose={() => { setShowMCPStatus(false); headerAttention.refresh(); }}
                                     onOpenShellConfig={handleOpenShellConfig}
                                 />}
                                 {showMCPRegistry && <MCPRegistryModal
@@ -648,7 +662,7 @@ export const App: React.FC = () => {
                     {showTaskCards && <Suspense fallback={<ChunkLoadingFallback />}>
                         <TaskCardsLibrary
                             visible={showTaskCards}
-                            onClose={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); }}
+                            onClose={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); headerAttention.refresh(); }}
                             initialCardId={taskCardInitialId}
                             chatId={currentConversationId || undefined}
                             anchorMessageId={

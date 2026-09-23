@@ -23,6 +23,8 @@ import {
   effectiveActiveSkillIds as computeEffectiveActiveSkillIds,
   staleSkillIds,
 } from '../utils/skillActivation';
+import { isBenchLive, placementForLegacySkill } from '../utils/benchMigration';
+import { placeBench } from '../apis/benchApi';
 import * as syncApi from '../api/conversationSyncApi';
 import * as folderSyncApi from '../api/folderSyncApi';
 import FirstRunProjectDialog from '../components/FirstRunProjectDialog';
@@ -51,6 +53,9 @@ interface ProjectContextType {
   // Skill state
   skills: Skill[];
   isLoadingSkills: boolean;
+  // Which project ``skills`` describes; null until the first load.  Consumers
+  // that reconcile against ``skills`` must gate on this equalling currentProject.id.
+  skillsProjectId: string | null;
   createSkill: (data: SkillCreate) => Promise<Skill>;
   updateSkill: (id: string, updates: SkillUpdate) => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
@@ -155,6 +160,32 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const _activeSkillIdsRef = React.useRef(activeSkillIds);
   React.useEffect(() => { _activeContextIdsRef.current = activeContextIds; }, [activeContextIds]);
   React.useEffect(() => { _activeSkillIdsRef.current = activeSkillIds; }, [activeSkillIds]);
+
+  // Bench write-through (design/capabilities-hub.md, slice 4).  Once the bench
+  // is authoritative for this project the server ignores the client-assembled
+  // prompt, so a legacy toggle (SkillsSection / ContextsTab) would otherwise
+  // silently do nothing until slice 6 replaces those surfaces.  Translate each
+  // toggle into a project-layer placement with the migration's converter.
+  // Before the bench is live, only re-baseline: a page-load restore of the
+  // list must not be re-PUT (it could clobber another browser's clears).
+  const _writeThroughPrev = React.useRef<string[] | null>(null);
+  React.useEffect(() => {
+    const pid = currentProject?.id;
+    if (!pid || skillsProjectId !== pid) { _writeThroughPrev.current = null; return; }
+    const prev = _writeThroughPrev.current;
+    _writeThroughPrev.current = activeSkillIds;
+    if (!isBenchLive(pid) || prev === null) return;
+    const changed = [
+      ...activeSkillIds.filter(id => !prev.includes(id)).map(id => ({ id, on: true })),
+      ...prev.filter(id => !activeSkillIds.includes(id)).map(id => ({ id, on: false })),
+    ];
+    for (const { id, on } of changed) {
+      const skill = skills.find(s => s.id === id);
+      if (!skill) continue;
+      placeBench(pid, `skill:${skill.name}`, 'project', placementForLegacySkill(skill, on))
+        .catch((e: unknown) => console.warn('bench write-through failed', skill.name, e));
+    }
+  }, [activeSkillIds, skills, currentProject?.id, skillsProjectId]);
 
   const [additionalFiles, setAdditionalFiles] = useState<string[]>([]);
   const [additionalPrompt, setAdditionalPrompt] = useState<string | null>(null);
@@ -864,6 +895,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // Skills
     skills,
     isLoadingSkills,
+    skillsProjectId,
     createSkill: createSkillFn,
     updateSkill: updateSkillFn,
     deleteSkill: deleteSkillFn,
@@ -907,6 +939,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     deleteContextFn,
     skills,
     isLoadingSkills,
+    skillsProjectId,
     createSkillFn,
     updateSkillFn,
     deleteSkillFn,
