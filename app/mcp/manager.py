@@ -1565,8 +1565,11 @@ class MCPManager:
                     warning = check_fingerprint_change(server_name, old_fp, new_fp)
                     logger.error(
                         f"🚫 SECURITY: {warning} — quarantining '{server_name}' "
-                        f"tools pending re-authorization (see "
-                        f"reauthorize_server())."
+                        f"tools pending re-authorization. If you expected this "
+                        f"change (e.g. the server was upgraded), open the MCP "
+                        f"Servers panel (plug icon, top right of the web UI) and "
+                        f"click Re-authorize on '{server_name}'; otherwise leave "
+                        f"it quarantined and inspect the server."
                     )
                     self._quarantined_servers.add(server_name)
                     # Do NOT overwrite the stored baseline — keep the last
