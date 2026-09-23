@@ -182,6 +182,11 @@ def setup_environment(args: Any) -> None:
 
     if explicit_region:
         os.environ["AWS_REGION"] = explicit_region
+        # Ziya-owned record of the user's explicit choice. AWS_REGION is
+        # cleared by ModelManager._reset_state() on every model switch so a
+        # model-default region can be re-selected; this lets the reset tell
+        # an explicit --region apart from a default and restore it instead.
+        os.environ["ZIYA_AWS_REGION"] = explicit_region
         logger.info(f"Using AWS region from command line: {explicit_region}")
     elif model and model in config.MODEL_DEFAULT_REGIONS:
         region = config.MODEL_DEFAULT_REGIONS[model]
