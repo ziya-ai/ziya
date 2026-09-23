@@ -14,6 +14,7 @@ import { useSendPayload } from '../hooks/useSendPayload';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import SwarmFlowGraph from './SwarmFlowGraph';
 import type { SwarmNode } from './SwarmFlowGraph';
+import ConsentPanel from './ConsentPanel';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 const MarkdownRenderer = lazyWithRetry(() => import("./MarkdownRenderer"));
 
@@ -977,6 +978,10 @@ export const StreamedContent: React.FC<{}> = () => {
                                     )}
                                 </div>
                             )}
+                            {/* Tool-consent request(s) this turn is parked on.
+                                Self-sourcing (fetches open requests on mount), so
+                                it also covers reload / second-window reattach. */}
+                            <ConsentPanel conversationId={currentConversationId} />
 
                         </>
                     </Suspense>

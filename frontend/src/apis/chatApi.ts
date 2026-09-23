@@ -1671,6 +1671,21 @@ export const sendPayload = async (
                     return;
                 }
 
+                // Consent runtime (design/consent-runtime.md step 3): a tool
+                // call is parked on human approval.  Same out-of-band pattern
+                // as feedbackDelivered — these frames carry no content, so
+                // they must be dispatched here, not in the contentToAdd block.
+                // ConsentPanel (mounted in StreamedContent) listens and answers
+                // via POST /api/consent/{request_id}.
+                if (unwrappedData.type === 'consent_opened' || unwrappedData.type === 'consent_answered') {
+                    const evName = unwrappedData.type === 'consent_opened'
+                        ? 'ziyaConsentOpened' : 'ziyaConsentAnswered';
+                    document.dispatchEvent(new CustomEvent(evName, {
+                        detail: { ...unwrappedData, conversation_id: unwrappedData.conversation_id ?? conversationId },
+                    }));
+                    return;
+                }
+
                 // Handle throttling status messages
                 if (unwrappedData.type === 'throttling_status') {
                     showError(unwrappedData.message, conversationId, addMessageToConversation, 'warning', unwrappedData.type);

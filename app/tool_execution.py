@@ -212,6 +212,50 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         }
         return
 
+    # --- Consent gate (design/consent-runtime.md step 3) ---
+    # For a tool in ``ask`` mode with no standing grant, hold here until a
+    # human answers via POST /api/consent/{request_id}.  The gate yields
+    # ``consent_opened`` / ``consent_answered`` for the stream and finishes
+    # with a private decision item.  Any failure inside the gate degrades to
+    # "not gated" — the pre-gate behaviour — never to a stuck turn.
+    try:
+        from app.utils import consent_gate as _consent
+        _gate_tool = None
+        for _t in (ctx.all_tools or []):
+            if getattr(_t, "name", None) == ctx.actual_tool_name:
+                _gate_tool = _t
+                break
+        _cancel_check = None
+        if getattr(ctx, "peek_feedback_fn", None) is not None:
+            from app.utils.feedback_directives import is_stop_feedback as _is_stop
+
+            def _cancel_check() -> bool:  # noqa: E306
+                try:
+                    return any(_is_stop(fb) for fb in (ctx.peek_feedback_fn() or ()))
+                except Exception:  # noqa: BLE001
+                    return False
+        _decision = None
+        async for _ev in _consent.consent_gate(
+            tool_name=ctx.actual_tool_name, tool_id=ctx.tool_id, args=ctx.args,
+            conversation_id=ctx.conversation_id, tool=_gate_tool,
+            cancel_requested=_cancel_check,
+        ):
+            if _ev.get("type") == _consent.DECISION_EVENT:
+                _decision = _ev
+            else:
+                yield ctx.track_yield_fn(_ev)
+        if _decision is not None and not _decision.get("approved", True):
+            _op = _consent.op_for_call(_consent._unwrap(_gate_tool), ctx.args)
+            yield {
+                'type': '_tool_result',
+                'tool_id': ctx.tool_id,
+                'tool_name': ctx.tool_name,
+                'result': _consent.refusal_text(ctx.actual_tool_name, _op, _decision.get("answer") or {}),
+            }
+            return
+    except Exception as _gate_err:  # noqa: BLE001
+        logger.warning(f"consent gate failed for {ctx.actual_tool_name}; dispatching ungated: {_gate_err}")
+
     # --- Execute the tool ---
     try:
         TOOL_EXEC_TIMEOUT = int(os.environ.get('TOOL_EXEC_TIMEOUT', '300'))
