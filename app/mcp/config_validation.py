@@ -36,7 +36,24 @@ _KNOWN_SERVER_KEYS = frozenset({
     # produced eight findings on a config that works correctly.
     "registry_provider", "service_id", "version", "support_level",
     "installed_at", "cti", "bindle_id", "security_review_url",
+    # Kiro / Q Developer spelling of "transport"; the loader aliases it, so it
+    # is honoured and must not be reported.
+    "transportType",
 })
+
+# Keys other MCP clients (Kiro, Q Developer, Claude Desktop) write into the
+# same mcp_config.json shape.  Ziya does not act on them, but an imported
+# config carrying them is not broken and the user did not mistype anything, so
+# they are reported as warnings that say what Ziya does instead -- never as an
+# "unknown_key_typo" error, whose difflib guess ("disabled" for
+# "disabledTools") was confidently wrong and counted as blocking.
+_COMPAT_KEYS = {
+    "autoApprove": "Ziya has no per-call approval prompt; every enabled tool "
+                   "runs without asking. Tool permissions are managed in MCP "
+                   "Server Settings.",
+    "disabledTools": "Ziya does not read this list; the named tools stay "
+                     "enabled. Disable individual tools in MCP Server Settings.",
+}
 
 # Keys whose absence makes an entry unusable: the loader needs at least one way
 # to reach the server.
@@ -55,6 +72,20 @@ _KEY_ALIASES = {
     "envvars": "env",
     "endpoint": "url",
 }
+
+# Built-in servers Ziya launches from its own install location.  The loader
+# (MCPManager._load_server_configs) always replaces a user entry's ``command``
+# with sys.executable and its ``args`` with the packaged script path, so those
+# keys in user config are inert -- only env/enabled/description take effect.
+# Mirrors the names in MCPManager._get_builtin_server_definitions.
+_BUILTIN_SERVER_NAMES = frozenset({"shell", "time"})
+
+# Built-in servers Ziya launches from its own install location.  The loader
+# (MCPManager._load_server_configs) always replaces a user entry's ``command``
+# with sys.executable and its ``args`` with the packaged script path, so those
+# keys in user config are inert -- only env/enabled/description take effect.
+# Mirrors the names in MCPManager._get_builtin_server_definitions.
+_BUILTIN_SERVER_NAMES = frozenset({"shell", "time"})
 
 
 def _find_key_line(raw: str, server_name: str, key: str) -> Optional[int]:
@@ -143,6 +174,16 @@ def validate_server_entry(
         # config accuses itself, which trains users to ignore the panel.
         if key.startswith("_"):
             continue
+        if key in _COMPAT_KEYS:
+            findings.append(_finding(
+                server_name,
+                "compat_key_ignored",
+                f'"{key}" is a Kiro/Q Developer option',
+                _COMPAT_KEYS[key],
+                severity="warning",
+                line=_find_key_line(raw_text, server_name, key),
+            ))
+            continue
         lowered = key.lower()
         # Case-only mismatch ("COMMAND") and known abbreviations ("cmd") are
         # resolved directly; difflib scores both as unrelated.
@@ -176,8 +217,11 @@ def validate_server_entry(
                 line=_find_key_line(raw_text, server_name, key),
             ))
 
-    # A launch mechanism is mandatory.
-    if not any(k in entry for k in _LAUNCH_KEYS):
+    # A launch mechanism is mandatory -- except for built-in servers, whose
+    # command/args the loader supplies from Ziya's own installation.  The
+    # correct user entry for a built-in carries no launch key at all.
+    if (server_name not in _BUILTIN_SERVER_NAMES
+            and not any(k in entry for k in _LAUNCH_KEYS)):
         typo_hint = ""
         for f in findings:
             if f.get("suggestion") in _LAUNCH_KEYS:
@@ -258,10 +302,27 @@ def validate_server_entry(
                 line=_find_key_line(raw_text, server_name, k),
             ))
 
-    # Relative script paths are resolved against trusted roots only (F-024), so
-    # a relative path in user config almost never resolves.
     args = entry.get("args")
-    if isinstance(args, list):
+    if server_name in _BUILTIN_SERVER_NAMES:
+        # The loader discards command/args for built-ins, so a relative path
+        # here is harmless -- but the F-024 advice ("use an absolute path")
+        # would send the user hunting for a versioned site-packages path that
+        # Ziya already computes itself.  Say what actually happens instead.
+        inert = [k for k in ("command", "args") if k in entry]
+        if inert:
+            findings.append(_finding(
+                server_name, "builtin_launch_keys_ignored",
+                f"'{'/'.join(inert)}' ignored for built-in server",
+                f"'{server_name}' is a built-in server: Ziya launches it from "
+                f"its own installation with its own interpreter, and any "
+                f"'command' or 'args' in this entry are discarded at load. "
+                f"Remove them; keep 'env', 'enabled' and 'description'.",
+                severity="warning",
+                line=_find_key_line(raw_text, server_name, inert[0]),
+            ))
+    elif isinstance(args, list):
+        # Relative script paths are resolved against trusted roots only
+        # (F-024), so a relative path in user config almost never resolves.
         for a in args:
             if not isinstance(a, str):
                 continue
