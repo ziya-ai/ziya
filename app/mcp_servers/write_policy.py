@@ -159,15 +159,18 @@ class ShellWriteChecker:
         # splitting so body lines containing words like ``rm`` or ``sudo``
         # aren't mistaken for command segments.
         scan_command = _strip_heredoc_bodies(command)
-        # ``split_fn`` (the server's operator splitter) does not break on
-        # newlines, so a command hidden after a heredoc terminator —
-        # e.g. ``cat <<EOF\n..\nEOF\nrm /etc/passwd`` — would otherwise
-        # collapse into a single unchecked segment. Split on newlines too.
-        # A line boundary separates commands like ``;`` and is recorded as
-        # one, so the cwd simulation knows a command on the next line runs
-        # whether or not the ``cd`` before it succeeded.
+        # A command hidden after a heredoc terminator — e.g.
+        # ``cat <<EOF\n..\nEOF\nrm /etc/passwd`` — must not collapse into a
+        # single unchecked segment, so split on line boundaries here rather
+        # than relying on ``split_fn`` to do it. A line boundary separates
+        # commands like ``;`` and is recorded as one, so the cwd simulation
+        # knows a command on the next line runs whether or not the ``cd``
+        # before it succeeded. Only UNQUOTED newlines separate commands: a
+        # newline inside ``python3 -c "..."`` is data, and shredding it left
+        # later lines with no quote context, so ``if len(x)>1:`` in Python
+        # source was read as a shell redirection to a file named ``1:``.
         segments: List[Tuple[str, str]] = []
-        for raw_line in scan_command.split('\n'):
+        for raw_line in _split_unquoted_lines(scan_command):
             line = raw_line.strip()
             if not line or line.startswith('#'):
                 continue
@@ -602,6 +605,41 @@ _HEREDOC_OPENER_RE = re.compile(
 
 def _has_heredoc(command: str) -> bool:
     return bool(_HEREDOC_OPENER_RE.search(command))
+
+
+def _split_unquoted_lines(text: str) -> List[str]:
+    """Split *text* on newlines that are NOT inside a quoted string.
+
+    A bare newline is a shell command separator, but a newline inside a
+    quoted argument is data. ``str.split`` cannot tell the two apart, so a
+    multi-line quoted argument (``python3 -c "..."``) would be shredded into
+    fragments that lose their quote context. Walk the text tracking quote
+    state and break only on newlines seen outside quotes. Backslash escapes
+    are honoured outside single quotes so an escaped quote does not flip
+    the state (inside single quotes a backslash is literal).
+    """
+    lines: List[str] = []
+    current: List[str] = []
+    in_single = in_double = False
+    escaped = False
+    for ch in text:
+        if ch == '\n' and not (in_single or in_double):
+            lines.append(''.join(current))
+            current = []
+            escaped = False
+            continue
+        current.append(ch)
+        if escaped:
+            escaped = False
+            continue
+        if ch == '\\' and not in_single:
+            escaped = True
+        elif ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+    lines.append(''.join(current))
+    return lines
 
 
 def _strip_heredoc_bodies(command: str) -> str:
