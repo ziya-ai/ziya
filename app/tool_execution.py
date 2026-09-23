@@ -800,5 +800,15 @@ def _process_result(result: Any, tool_name: str, actual_tool_name: str) -> Any:
         else:
             return str(result)
 
+    elif isinstance(result, (dict, list)):
+        # A builtin returning a bare payload with no `content` envelope
+        # (task_card_stage / task_card_launch return {success, staged,
+        # binding_id, ...}).  str() yields Python repr — single quotes,
+        # True/None — which the frontend's JSON.parse rejects, so
+        # chatApi.ts never fired the task-binding refresh and a model-
+        # staged tile did not appear until a reload.  default=str keeps
+        # odd values (Path, datetime) from turning this into an exception.
+        return json.dumps(result, default=str)
+
     else:
         return str(result)
