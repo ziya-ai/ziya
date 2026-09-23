@@ -156,6 +156,10 @@ class MCPManager:
         self._workspace_instance_last_used: Dict[str, Dict[str, float]] = {}
         self._workspace_instance_timeout = 300  # 5 minutes
         self._last_workspace_cleanup = 0.0
+        # Background reaper for idle workspace-scoped subprocesses. Started
+        # lazily when the first instance is created; cancelled on shutdown.
+        self._workspace_reaper_task: Optional[asyncio.Task] = None
+        self._workspace_reaper_interval = 60.0
         self.config_search_paths: List[str] = []
         self.builtin_server_definitions = self._get_builtin_server_definitions()
         self.is_initialized = False
@@ -1189,6 +1193,10 @@ class MCPManager:
         if disconnect_tasks:
             await asyncio.gather(*disconnect_tasks, return_exceptions=True)
         
+        if self._workspace_reaper_task and not self._workspace_reaper_task.done():
+            self._workspace_reaper_task.cancel()
+        self._workspace_reaper_task = None
+
         self.clients.clear()
         self.workspace_scoped_clients.clear()
         self.invalidate_tools_cache()  # Invalidate cache when clients change
@@ -2256,6 +2264,7 @@ class MCPManager:
                 self.workspace_scoped_clients[server_name][instance_key] = client
                 self._workspace_instance_last_used[server_name][instance_key] = time.time()
                 logger.info(f"Created workspace-scoped client: {server_name} @ {workspace_path}")
+                self._ensure_workspace_reaper()
                 self.invalidate_tools_cache()
                 return client
             else:
@@ -2318,17 +2327,69 @@ class MCPManager:
             }
 
     async def cleanup_stale_workspace_instances(self):
-        """Clean up workspace-scoped instances that haven't been used recently."""
+        """Disconnect workspace-scoped instances idle longer than the timeout.
+
+        Every conversation gets its own shell subprocess (instance key
+        ``workspace::session_id``), so without reaping a server accumulates
+        one live subprocess per conversation ever touched. An instance with a
+        request still in flight is skipped: ``last_used`` is stamped when the
+        client is handed out, not when the call returns, so a long-running
+        command that started just under the timeout would otherwise be killed
+        mid-execution. Entries are removed with ``pop`` so a concurrent
+        restart/teardown that already dropped the key is not an error.
+        """
         now = time.time()
+        self._last_workspace_cleanup = now
         for server_name in list(self.workspace_scoped_clients.keys()):
-            for instance_key in list(self.workspace_scoped_clients[server_name].keys()):
+            instances = self.workspace_scoped_clients.get(server_name)
+            if not instances:
+                continue
+            for instance_key in list(instances.keys()):
                 last_used = self._workspace_instance_last_used.get(server_name, {}).get(instance_key, 0)
-                if now - last_used > self._workspace_instance_timeout:
-                    logger.info(f"Cleaning up stale workspace instance: {server_name} @ {instance_key}")
-                    client = self.workspace_scoped_clients[server_name][instance_key]
+                if now - last_used <= self._workspace_instance_timeout:
+                    continue
+                client = instances.get(instance_key)
+                if client is None:
+                    continue
+                if getattr(client, "_pending", None):
+                    logger.debug(f"Workspace instance {server_name} @ {instance_key} idle but has a request in flight; not reaping")
+                    continue
+                if instances.pop(instance_key, None) is None:
+                    continue
+                self._workspace_instance_last_used.get(server_name, {}).pop(instance_key, None)
+                logger.info(f"Cleaning up stale workspace instance: {server_name} @ {instance_key}")
+                try:
                     await client.disconnect()
-                    del self.workspace_scoped_clients[server_name][instance_key]
-                    del self._workspace_instance_last_used[server_name][instance_key]
+                except (OSError, RuntimeError, asyncio.TimeoutError) as e:
+                    logger.warning(f"Error disconnecting stale workspace instance {server_name} @ {instance_key}: {e}")
+
+    def _ensure_workspace_reaper(self) -> None:
+        """Start the idle-instance reaper loop if it is not already running.
+
+        The previous trigger was ``time.time() % 60 < 1`` evaluated after a
+        tool call: it fired only when a call happened to land in the first
+        second of a wall-clock minute, and never while the user was idle,
+        which is exactly when instances go stale. Subprocesses from days-old
+        conversations were still alive under the running server.
+        """
+        if self._workspace_reaper_task and not self._workspace_reaper_task.done():
+            return
+        try:
+            self._workspace_reaper_task = asyncio.get_running_loop().create_task(
+                self._workspace_reaper_loop()
+            )
+        except RuntimeError:
+            # No running loop (sync test context); the throttled call_tool
+            # trigger still reaps on the next tool call.
+            self._workspace_reaper_task = None
+
+    async def _workspace_reaper_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._workspace_reaper_interval)
+            try:
+                await self.cleanup_stale_workspace_instances()
+            except Exception as e:  # noqa: BLE001 — the loop must survive one bad pass
+                logger.warning(f"Workspace instance reaper pass failed: {e}")
 
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -2550,8 +2611,14 @@ class MCPManager:
                     }
                 result = await self._call_tool_with_timeout(workspace_client, internal_tool_name, arguments)
                 
-                # Trigger periodic cleanup
-                if time.time() % 60 < 1:
+                # Opportunistic reap, throttled deterministically; the
+                # background reaper covers idle periods with no tool calls.
+                # getattr: this is an optimisation on the hot path and must not
+                # depend on __init__ having run (tests build the manager via
+                # __new__ to exercise the guards in isolation).
+                _last = getattr(self, "_last_workspace_cleanup", 0.0)
+                _interval = getattr(self, "_workspace_reaper_interval", 60.0)
+                if time.time() - _last >= _interval:
                     asyncio.create_task(self.cleanup_stale_workspace_instances())
                 
                 return result
