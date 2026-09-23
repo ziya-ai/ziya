@@ -77,3 +77,32 @@ describe('conversationToServerChat projectId ownership', () => {
         expect(result.projectId).toBe('projectA');
     });
 });
+
+describe('conversationToServerChat server-owned handoff fields', () => {
+    // handoffDraft / handoff / handedOffTo are written by the backend (the
+    // handoff_write tool, the handoff endpoints) and only MIRRORED on the
+    // client.  The mirror goes stale the moment the model merges a draft
+    // mid-turn, so pushing it back would revert the model's write on the
+    // very next bulk-sync (same class of bug _beads had).  Strip them; user
+    // edits go through the PATCH endpoints.  lineageKind stays: the client
+    // legitimately authors it on a plain fork.
+    it('strips handoffDraft, handoff and handedOffTo from the outgoing payload', () => {
+        const conv = {
+            id: 'c1', title: 't', projectId: 'p', messages: [],
+            createdAt: 1, lastActiveAt: 1,
+            lineageKind: 'fork',
+            branchedFrom: 'parent',
+            handoffDraft: { document: 'stale v1', generatedAt: 1 },
+            handoff: { document: 'inherited', generatedAt: 1 },
+            handedOffTo: 'child',
+        };
+        const result: any = conversationToServerChat(conv, 'p');
+        expect('handoffDraft' in result).toBe(false);
+        expect('handoff' in result).toBe(false);
+        expect('handedOffTo' in result).toBe(false);
+        expect(result.lineageKind).toBe('fork');
+        expect(result.branchedFrom).toBe('parent');
+        // The input object is not mutated — the UI still renders from it.
+        expect(conv.handedOffTo).toBe('child');
+    });
+});

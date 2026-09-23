@@ -403,7 +403,10 @@ class TestRegistration:
         assert "chat_history" in bt.BUILTIN_TOOL_CATEGORIES
         assert bt.BUILTIN_TOOL_CATEGORIES["chat_history"]["enabled_by_default"] is True
         names = {cls().name for cls in bt.get_builtin_tools_for_category("chat_history")}
-        assert names == {"chat_search", "chat_read", "chat_list"}
+        # The handoff-draft pair lives in this category too (the one write:
+        # it touches only the current chat's own handoffDraft field).
+        assert names == {"chat_search", "chat_read", "chat_list",
+                         "handoff_read", "handoff_write"}
 
     def test_results_are_medium_trust(self):
         from app.mcp.tool_result_demarcation import classify_trust

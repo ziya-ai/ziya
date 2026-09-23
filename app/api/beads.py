@@ -150,6 +150,7 @@ async def fork_from_bead(project_id: str, chat_id: str, body: ForkBeadRequest, r
         "branchedFrom": chat_id,
         "branchedAtMessageIndex": seam,
         "branchedFromLabel": label,
+        "lineageKind": "branch",
         "_beads": [b.model_dump() for b in inherited],
     }
     storage._write_json(storage._chat_file(new_id), new_chat)

@@ -3471,6 +3471,61 @@ function handleSequentialThinkingDisplay(
 }
 */
 
+/**
+ * Run one NON-PERSISTED turn against a conversation's full context and drain
+ * the stream without surfacing it (design/conversation-handoff.md, "who
+ * drafts").  Same payload as a normal send — history, checked files, skills,
+ * model pin — so the model sees exactly what it would see in the
+ * conversation; but nothing is appended to the transcript and no streaming
+ * state is touched.  The turn's only durable effect is whatever tools the
+ * model calls server-side (for the handoff draft: handoff_write onto the
+ * chat record).  Resolves when the stream ends; rejects on a stream error.
+ */
+export async function runBackgroundTurn(
+    messages: any[],
+    question: string,
+    checkedItems: string[],
+    conversationId: string,
+    opts: {
+        currentProject?: { id: string; name: string; path: string } | null;
+        activeSkillPrompts?: string;
+        resolvedModelPin?: ResolvedModelPin | null;
+        signal?: AbortSignal;
+    } = {},
+): Promise<void> {
+    const response = await getApiResponse(
+        messages, question, checkedItems, conversationId, opts.signal,
+        opts.currentProject, opts.activeSkillPrompts, undefined, undefined, opts.resolvedModelPin,
+    );
+    if (!response.ok || !response.body) {
+        let detail = '';
+        try { detail = (await response.json())?.error || ''; } catch { /* ignore */ }
+        throw new Error(detail || `Background turn failed: ${response.status}`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const raw = line.slice(6).trim();
+            if (!raw || raw === '[DONE]') continue;
+            let evt: any;
+            try { evt = JSON.parse(raw); } catch { continue; }
+            // Tool-execution errors arrive as ordinary content; only a
+            // stream-level error means the turn itself failed.
+            if (evt && typeof evt === 'object' && 'error' in evt && evt.error_type !== 'tool_error') {
+                throw new Error(typeof evt.error === 'string' ? evt.error : 'Background turn failed');
+            }
+        }
+    }
+}
+
 async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null, activeSkillPrompts?: string, modelOverrides?: Record<string, any>, preferredToolIds?: string[], resolvedModelPin?: ResolvedModelPin | null) {
     const messageTuples: string[][] = [];
 
