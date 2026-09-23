@@ -465,6 +465,15 @@ def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optio
             logger.info("diff_preprocessor: diff was sanitized before pipeline entry")
             git_diff = preprocessed
             pipeline.current_diff = git_diff
+            # Only the additive-to-replace conversion is propagated to
+            # original_diff (which extract_remaining_hunks() feeds to the
+            # git_apply and difflib stages). The recount pass carries
+            # heuristics (blank-removal insertion, truncated-header handling)
+            # that are tuned for the system-patch stage and regress git apply
+            # when handed to it wholesale (MRE_hunk_header_parsing_error,
+            # mcp_registry_test_connection, prompts_manager_log_level_change).
+            # Header-count exactness for git is enforced separately, in
+            # sanitize_patch_for_git_apply, as a pure recount.
             if additive_converted:
                 pipeline.original_diff = git_diff
 

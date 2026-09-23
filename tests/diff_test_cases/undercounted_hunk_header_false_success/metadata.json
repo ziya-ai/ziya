@@ -1,0 +1,8 @@
+{
+  "target_file": "src/models_config.py",
+  "description": "Reproduction of the 2026-09-23 kimi-k3 half-apply, stage 1. A single hunk whose @@ header UNDERCOUNTS its body: declared -N,6 +N,9 for a body of 13 old / 16 new lines (3 ctx, 3 add, 7 ctx, 3 remove, 3 add). The model counted only through the first added block. git apply parses exactly the declared 6/9 lines, treats the remaining replacement lines as trailing garbage, and exits 0 -- so the pipeline reports SUCCESS while the -256000/+1048576 replacement was never applied. The comment lands, the old values stay. A count-repairing parser exists for exactly this ('header rescue') but the git_apply stage bypasses it. apply_twice: re-applying the same diff after a correct first apply must be a no-op (the user re-clicked apply in the original incident).",
+  "date_added": "2026-09-23",
+  "issue_reference": "kimi_k3_undercounted_header_2026_09_23",
+  "bug_class": "false_success_truncated_hunk",
+  "apply_twice": true
+}

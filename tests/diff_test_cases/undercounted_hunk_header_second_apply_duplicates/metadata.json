@@ -1,0 +1,7 @@
+{
+  "target_file": "src/models_config.py",
+  "description": "Reproduction of the 2026-09-23 kimi-k3 half-apply, stage 2. The file is in the state stage 1 left it (comment inserted, old 256000 triple still present) and the user re-applies the same undercounted-header diff. git apply --check now fails (the truncated 6/9 portion is already applied), the difflib stage takes the full hunk and INSERTS the +1048576 triple without removing the -256000 triple, yielding duplicate dict keys where Python's last-wins rule keeps the OLD value. Correct behaviour: the already-applied comment is recognised and the replacement is performed, giving the same file as a clean single apply.",
+  "date_added": "2026-09-23",
+  "issue_reference": "kimi_k3_undercounted_header_2026_09_23",
+  "bug_class": "additive_insert_instead_of_replace"
+}

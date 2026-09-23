@@ -423,6 +423,41 @@ def _apply_changes_by_structure(original_lines: List[str], hunk: Dict[str, Any],
     region_start = ctx_file_idx[0]
     region_end = ctx_file_idx[-1] + 1  # inclusive of last context line
 
+    # Removals that sit OUTSIDE the context-anchor span are not covered by the
+    # region rebuild below: it replaces only [first anchor, last anchor], so a
+    # hunk whose replacement is its tail (context ... then '-old' '+new' with
+    # no trailing context) would re-emit the '+' lines and leave the '-' lines
+    # in the file -- an additive insert instead of a replace (kimi-k3 half-apply,
+    # 2026-09-23: duplicate dict keys, last-wins kept the OLD value). Derive the
+    # leading/trailing removal runs from the raw old-side structure and widen
+    # the region to consume them, but only when the file actually holds those
+    # lines adjacent to the anchors. If it does not -- the file has drifted, or
+    # this part of the hunk is already applied -- bail so the caller's
+    # content-search and already-applied guards decide, rather than guess.
+    raw = [l for l in (hunk.get('lines') or []) if not l.startswith('\\')]
+    ctx_positions = [i for i, l in enumerate(raw) if not l.startswith(('+', '-'))]
+    if raw and ctx_positions:
+        lead_rm = [l[1:] for l in raw[:ctx_positions[0]] if l.startswith('-')]
+        trail_rm = [l[1:] for l in raw[ctx_positions[-1] + 1:] if l.startswith('-')]
+
+        def _matches(file_slice: List[str], wanted: List[str]) -> bool:
+            return len(file_slice) == len(wanted) and all(
+                normalize_line_for_comparison(a) == normalize_line_for_comparison(b)
+                for a, b in zip(file_slice, wanted)
+            )
+
+        if trail_rm:
+            if _matches(original_lines[region_end:region_end + len(trail_rm)], trail_rm):
+                region_end += len(trail_rm)
+            else:
+                return None
+        if lead_rm:
+            lo = region_start - len(lead_rm)
+            if lo >= 0 and _matches(original_lines[lo:region_start], lead_rm):
+                region_start = lo
+            else:
+                return None
+
     ending = '\n'
     if region_start < len(original_lines):
         anchor = original_lines[region_start]
