@@ -16,6 +16,22 @@ class Message(BaseModel):
     images: Optional[List[Any]] = None
     muted: Optional[bool] = False
 
+class HandoffDoc(BaseModel):
+    """The handoff document carried by a continuation conversation.
+
+    Stored on the CHILD record and injected as a per-turn prelude (not as a
+    message), so the user can edit it at any point in the child's life.
+    Only the model-authored parts are stored here; the "open threads"
+    section is derived live from the shared bead tree at prompt-build time.
+    See design/conversation-handoff.md.
+    """
+    model_config = {"extra": "allow"}
+    document: str
+    generatedAt: int
+    editedAt: Optional[int] = None
+    sourceMessageCount: int = 0
+    tokenEstimate: Optional[int] = None
+
 class Chat(BaseModel):
     model_config = {"extra": "allow"}
     
@@ -24,6 +40,9 @@ class Chat(BaseModel):
     groupId: Optional[str] = None
     contextIds: List[str] = []
     skillIds: List[str] = []
+    # Bench conversation-layer placements, ``kind:name -> always|ondemand|off``
+    # (design/capabilities-hub.md).  Absent means every item inherits.
+    placements: Optional[Dict[str, Optional[str]]] = None
     additionalFiles: List[str] = []
     additionalPrompt: Optional[str] = None
     messages: List[Message] = []
@@ -60,6 +79,25 @@ class Chat(BaseModel):
     # conversation in the lineage resolves to that one shared, state-synced
     # tree.  None on a root/trunk conversation (it is its own root).
     lineageRootId: Optional[str] = None
+    # How this conversation relates to branchedFrom: 'fork' (copy of the
+    # whole transcript), 'branch' (cut at a bead seam), or 'handoff' (empty
+    # transcript + HandoffDoc prelude).  None on a trunk conversation and on
+    # forks created before the discriminator existed (those never set
+    # branchedFrom either — see design/conversation-handoff.md, "new forks
+    # only").
+    lineageKind: Optional[str] = None
+    # Present only when lineageKind == 'handoff'.
+    handoff: Optional[HandoffDoc] = None
+    # The LIVING draft on a source conversation, maintained by the model via
+    # the handoff_write tool (and editable by the user in the drawer).
+    # Commit copies it to the child's `handoff`; it stays here afterwards so
+    # it keeps living if the user continues in this conversation.  See
+    # design/conversation-handoff.md, "the living draft".
+    handoffDraft: Optional[HandoffDoc] = None
+    # Set on the SOURCE when a continuation has been created from it, so the
+    # sidebar and the conversation view can dim it and link forward.  The
+    # source is never locked — it stays fully usable.
+    handedOffTo: Optional[str] = None
 
 class ChatCreate(BaseModel):
     model_config = {"extra": "allow"}
@@ -77,6 +115,7 @@ class ChatUpdate(BaseModel):
     groupId: Optional[str] = None
     contextIds: Optional[List[str]] = None
     skillIds: Optional[List[str]] = None
+    placements: Optional[Dict[str, Optional[str]]] = None
     additionalFiles: Optional[List[str]] = None
     additionalPrompt: Optional[str] = None
     messages: Optional[List[Message]] = None
@@ -97,6 +136,13 @@ class ChatSummary(BaseModel):
     branchedFrom: Optional[str] = None
     branchedAtMessageIndex: Optional[int] = None
     branchedFromLabel: Optional[str] = None
+    # Lineage kind + handoff linkage on the SUMMARY for the same reason as
+    # flags below: the sidebar renders chain rows and dimming from the
+    # listing and never sees the full record.  hasHandoff is a boolean
+    # rather than the document itself so listings stay small.
+    lineageKind: Optional[str] = None
+    handedOffTo: Optional[str] = None
+    hasHandoff: bool = False
     # Conversation triage flags (frontend-authored; see
     # frontend/src/utils/conversationFlags.ts).  Declared HERE and not only
     # on Chat because the sidebar renders them from the SUMMARY listing:

@@ -226,7 +226,8 @@ def _iter_chat_files(chats_dir: Path):
 def search_chats(ziya_home: Path, project_id: str, query: str,
                  all_projects: bool = False, case_sensitive: bool = False,
                  max_snippet_length: int = 150,
-                 sort: str = "relevance") -> List[dict]:
+                 sort: str = "relevance",
+                 conversation_ids: Optional[List[str]] = None) -> List[dict]:
     """Scan chat files for *query* and return SearchResult dicts.
 
     Streams one file at a time so peak memory is a single chat record
@@ -237,11 +238,17 @@ def search_chats(ziya_home: Path, project_id: str, query: str,
     ``newest`` or ``oldest`` (by last activity).  An unrecognised value falls
     back to ``relevance`` rather than erroring, so a stale client that sends
     a mode this server does not know still gets usable results.
+
+    ``conversation_ids``, when given and non-empty, restricts hits to those
+    conversations (within the project scope above).  This is what lets a
+    caller ask "where in *this* thread did we decide X" — without it every
+    search is project-wide.
     """
     if not query or not query.strip():
         return []
     if sort not in SORT_MODES:
         sort = "relevance"
+    id_filter = set(conversation_ids) if conversation_ids else None
 
     t0 = time.perf_counter()
     search_term = query if case_sensitive else query.lower()
@@ -265,6 +272,8 @@ def search_chats(ziya_home: Path, project_id: str, query: str,
                 continue
             chat_id = data.get("id")
             if not chat_id or chat_id in seen_ids:
+                continue
+            if id_filter is not None and chat_id not in id_filter:
                 continue
             n_files += 1
             result = _search_one_chat(

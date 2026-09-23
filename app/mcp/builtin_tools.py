@@ -290,12 +290,18 @@ def get_context_management_tools() -> List[Type[BaseMCPTool]]:
 
 
 def get_chat_history_tools() -> List[Type[BaseMCPTool]]:
-    """Get read-only chat-history tools (search / read / list past transcripts)."""
+    """Chat-history tools: read-only transcript search/read/list, plus the
+    handoff-draft pair (the one write in this category — it writes only the
+    current conversation's own `handoffDraft` field)."""
     try:
         from app.mcp.tools.chat_history_tools import (
             ChatSearchTool, ChatReadTool, ChatListTool
         )
-        return [ChatSearchTool, ChatReadTool, ChatListTool]
+        from app.mcp.tools.handoff_tools import (
+            HandoffReadTool, HandoffWriteTool
+        )
+        return [ChatSearchTool, ChatReadTool, ChatListTool,
+                HandoffReadTool, HandoffWriteTool]
     except ImportError as e:
         logger.warning(f"Could not import chat history tools: {e}")
         return []

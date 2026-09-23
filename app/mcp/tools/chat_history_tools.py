@@ -184,7 +184,7 @@ def _chat_meta(project_id: str, data: dict, messages: List[Any]) -> Dict[str, An
     }
     # Heritage: fork lineage, when present.
     for key in ("branchedFrom", "branchedAtMessageIndex", "branchedFromLabel",
-                "lineageRootId"):
+                "lineageRootId", "lineageKind", "handedOffTo"):
         if data.get(key) is not None:
             meta[key] = data.get(key)
     # Files this conversation carried in context.
@@ -221,6 +221,11 @@ class ChatSearchInput(BaseModel):
     include_current: bool = Field(False, description=(
         "Include the conversation this call is being made from.  Off by "
         "default: its content is already in context."))
+    conversation_ids: Optional[List[str]] = Field(None, description=(
+        "Restrict the search to these conversation ids (e.g. the predecessor "
+        "segments named in a handoff prelude).  An id listed here is searched "
+        "even if it is the current conversation.  Omit to search the whole "
+        "project scope."))
 
 
 class ChatSearchTool(BaseMCPTool):
@@ -256,6 +261,9 @@ class ChatSearchTool(BaseMCPTool):
         limit = max(1, min(int(kwargs.get("limit") or 10), 50))
         per_chat = max(1, min(int(kwargs.get("max_matches_per_chat") or 3), 20))
         include_current = bool(kwargs.get("include_current", False))
+        raw_ids = kwargs.get("conversation_ids")
+        conversation_ids = ([str(i) for i in raw_ids if i]
+                            if isinstance(raw_ids, list) else None) or None
 
         scope = _resolve_scope()
         project_id = scope["project_id"]
@@ -275,12 +283,16 @@ class ChatSearchTool(BaseMCPTool):
             case_sensitive=False,
             max_snippet_length=200,
             sort=sort,
+            conversation_ids=conversation_ids,
         )
 
         results: List[Dict[str, Any]] = []
         for r in raw:
             cid = r.get("conversationId")
-            if not include_current and cid and cid == scope["conversation_id"]:
+            # An explicitly listed id was asked for — do not drop it as
+            # "the current conversation".
+            if (not include_current and not conversation_ids
+                    and cid and cid == scope["conversation_id"]):
                 continue
             matches = r.get("matches") or []
             if side != "both":
@@ -317,6 +329,7 @@ class ChatSearchTool(BaseMCPTool):
             "side": side,
             "sort": sort,
             "count": len(results),
+            "conversation_ids": conversation_ids,
             "truncated": len(raw) > len(results),
             "elapsed_ms": int((time.perf_counter() - t0) * 1000),
             "results": results,

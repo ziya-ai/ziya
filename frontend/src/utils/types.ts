@@ -51,6 +51,13 @@ export type Message = {
         to: string;
         changeKey?: string;
     };
+    // Local-only handoff notice ("the model drafted a handoff document").
+    // Always authored with role 'system' AND muted: true, so every send path
+    // (which filters muted) excludes it — it is for the user, never the
+    // model.  See design/conversation-handoff.md.
+    handoffNotice?: {
+        kind: 'drafted' | 'updated';
+    };
     _timestamp?: number;
     _version?: number;
     isComplete?: boolean;
@@ -109,6 +116,25 @@ export interface Conversation {
     // itself a root, the source's id), so the whole lineage shares one
     // bead tree resolved on the backend.  Absent on root/trunk conversations.
     lineageRootId?: string;
+    // How this conversation relates to branchedFrom.  'fork' = full copy,
+    // 'branch' = cut at a bead seam, 'handoff' = empty transcript carrying a
+    // handoff document.  Absent on trunk conversations and on forks made
+    // before the discriminator existed.  See design/conversation-handoff.md.
+    lineageKind?: 'fork' | 'branch' | 'handoff';
+    // Handoff document — present only when lineageKind === 'handoff'.
+    handoff?: {
+        document: string;
+        generatedAt: number;
+        editedAt?: number;
+        sourceMessageCount?: number;
+        tokenEstimate?: number;
+    };
+    // Set on the SOURCE once a continuation exists (banner + dimming).
+    handedOffTo?: string;
+    // The living handoff draft on a SOURCE conversation (same shape as
+    // `handoff`), maintained by the model via handoff_write and editable in
+    // the drawer.  Read via the handoff API today, not off this object.
+    handoffDraft?: Conversation['handoff'];
     // ── Conversation flags (triage) ──────────────────────────────────────
     // Multi-select label attribute ids from conversationFlags.CONVERSATION_FLAG_LABELS
     // (e.g. "priority", "awaiting-verification"). Purely client-side triage —

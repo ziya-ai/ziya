@@ -85,6 +85,9 @@ def _chat_to_summary(chat: Chat) -> ChatSummary:
         branchedFrom=chat.branchedFrom,
         branchedAtMessageIndex=chat.branchedAtMessageIndex,
         branchedFromLabel=chat.branchedFromLabel,
+        lineageKind=chat.lineageKind,
+        handedOffTo=chat.handedOffTo,
+        hasHandoff=chat.handoff is not None,
         # Via the dump, not attribute access: Chat carries these as extras
         # (extra="allow"), so \`chat.flags\` raises AttributeError on any
         # record that has never been flagged.
@@ -491,6 +494,26 @@ def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                     # omits it.
                     if not merged.get('_beads') and existing_extra.get('_beads'):
                         merged['_beads'] = existing_extra['_beads']
+                    # Handoff fields are SERVER-OWNED on this path, exactly
+                    # like _beads: written by the handoff_write tool and the
+                    # handoff endpoints (user edits go through PATCH, never
+                    # bulk-sync).  The client's copy is a mirror that goes
+                    # stale the moment the model merges a draft mid-turn, so
+                    # the end-of-turn sync would revert that write if the
+                    # incoming value were honoured.  conversationToServerChat
+                    # strips them; this guard covers older clients and any
+                    # path that spreads a full record.  On-disk always wins.
+                    for _hk in ('handoffDraft', 'handoff', 'handedOffTo'):
+                        if existing_extra.get(_hk) is not None:
+                            merged[_hk] = existing_extra[_hk]
+                    # lineageKind IS client-authored (a plain fork stamps it),
+                    # so only an OMITTED field is carried forward: declared on
+                    # Chat, it dumps as None whether omitted or cleared, and
+                    # model_fields_set tells the two apart.
+                    if ('lineageKind' not in chat_data.model_fields_set
+                            and merged.get('lineageKind') is None
+                            and existing_extra.get('lineageKind') is not None):
+                        merged['lineageKind'] = existing_extra['lineageKind']
                     # Map frontend's folderId to server's groupId FIRST.  The
                     # frontend's authoritative field is folderId; groupId is
                     # absent from its payload.  This must run before the

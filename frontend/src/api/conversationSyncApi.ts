@@ -285,8 +285,17 @@ export function conversationToServerChat(conv: any, projectId: string): ServerCh
   // back to the viewing project for a genuinely new local chat that has no
   // owner yet.
   const ownerProjectId = conv.projectId || projectId;
+  // Server-owned handoff state (design/conversation-handoff.md).  The
+  // backend writes handoffDraft (handoff_write tool), handoff and
+  // handedOffTo (commit endpoint); this object only MIRRORS them from the
+  // last full fetch.  Pushing the mirror back would revert a draft the
+  // model merged mid-turn on the very next sync — the same class of bug
+  // _beads had, which is why the frontend never carries _beads at all.
+  // User edits go through the handoff PATCH endpoints, not bulk-sync.
+  // Destructure rather than delete so the rendered object is untouched.
+  const { handoffDraft: _hd, handoff: _h, handedOffTo: _hto, ...pushable } = conv;
   return {
-    ...conv,
+    ...pushable,
     projectId: ownerProjectId,
     folderId: resolvedFolderId,
     groupId: resolvedFolderId,

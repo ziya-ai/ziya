@@ -9,6 +9,8 @@ import { useActiveChat } from '../context/ActiveChatContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { CheckCircleOutlined, CloseCircleOutlined, DashboardOutlined } from '@ant-design/icons';
 import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
+import { folderTotalTokens, expandCheckedKeysToFiles } from '../utils/contextTokenTotals';
+import { dispatchHandoffOpen } from '../utils/handoffOpen';
 // Global request deduplication cache
 const activeRequests = new Map<string, Promise<any>>();
 
@@ -124,6 +126,16 @@ export const TokenCountDisplay = memo(() => {
     const [mcpEnabled, setMcpEnabled] = useState(false);
     const [mcpTokenCount, setMcpTokenCount] = useState(0);
     const [mcpServerCount, setMcpServerCount] = useState(0);
+    // Server-side estimate of what the prompt builder will actually send:
+    // files rendered with line-number prefixes, priced at the model's learned
+    // ratio, plus MCP + builtin tool overhead. The tree walk above is the
+    // instant first paint; this refines it. Files the server could not read
+    // are listed rather than counted as zero.
+    const [serverEstimate, setServerEstimate] = useState<{
+        file_tokens: number; overhead_tokens: number; overhead_source: string;
+        unreadable: string[]; model_key: string | null;
+    } | null>(null);
+    const estimateSeqRef = useRef(0);
     const builtinServerNames = ['time', 'shell'];
 
     const lastMuteSignatureRef = useRef<string>('');
@@ -568,59 +580,19 @@ export const TokenCountDisplay = memo(() => {
     }, [modelLimits]);
 
     const astCountsInTotal = astInPrompt && astEnabled;
-    const combinedTokenCount = totalTokenCount + chatTokenCount + (astCountsInTotal ? astTokenCount : 0) + (mcpEnabled && mcpServerCount > 0 ? mcpTokenCount : 0);
+    // Prefer the server's figures when present: the tree walk can't see files
+    // under ignored directories or the prefix overhead, and mcpTokenCount omits
+    // builtin tools and uses an uncalibrated tokenizer.
+    const fileTokens = serverEstimate ? serverEstimate.file_tokens : totalTokenCount;
+    const toolTokens = serverEstimate ? serverEstimate.overhead_tokens : (mcpEnabled && mcpServerCount > 0 ? mcpTokenCount : 0);
+    const combinedTokenCount = fileTokens + chatTokenCount + (astCountsInTotal ? astTokenCount : 0) + toolTokens;
 
     const performTokenCalculation = useCallback(() => {
-        // Helper to recursively calculate total tokens for a folder, using accurate counts when available
-        // This matches the logic used by the file explorer tree
-        const calculateFolderTotal = (path: string, folderData: any): number => {
-            if (!folderData) return 0;
-
-            // Navigate to the folder in the structure
-            let current = folderData;
-            const parts = path.split('/').filter(p => p.length > 0);
-
-            for (const part of parts) {
-                if (!current || !current[part]) {
-                    return 0;
-                }
-                current = current[part];
-
-                // If not the last part, descend into children
-                if (parts.indexOf(part) < parts.length - 1) {
-                    current = current.children;
-                    if (!current) return 0;
-                }
-            }
-
-            // If it's a file, use accurate count if available
-            if (!current.children) {
-                const accurateData = accurateTokenCounts[path];
-                return (accurateData && accurateData.count > 0) ? accurateData.count : (current.token_count || 0);
-            }
-
-            // For directories, recursively sum all children using accurate counts
-            let total = 0;
-            const children = current.children || {};
-
-            for (const [childName, childNode] of Object.entries(children) as [string, any][]) {
-                const childPath = path ? `${path}/${childName}` : childName;
-
-                if (childNode.children) {
-                    // Subdirectory - recurse
-                    total += calculateFolderTotal(childPath, folderData);
-                } else {
-                    // File - use accurate count if available, skip tool-backed (-1)
-                    const accurateData = accurateTokenCounts[childPath];
-                    const fileTokens = (accurateData && accurateData.count > 0) ? accurateData.count : (childNode.token_count || 0);
-                    if (fileTokens > 0) {
-                        total += fileTokens;
-                    }
-                }
-            }
-
-            return total;
-        };
+        // Pure helper so the rule is unit-tested; see utils/contextTokenTotals.ts
+        // for why a path absent from the tree must still consult the server's
+        // accurate count before being credited zero.
+        const calculateFolderTotal = (path: string, folderData: any): number =>
+            folderTotalTokens(path, folderData, accurateTokenCounts);
 
         console.log('Token calculation triggered');
         if (!folders) return;
@@ -704,6 +676,43 @@ export const TokenCountDisplay = memo(() => {
     useEffect(() => {
         tokenCalculationEffect();
     }, [tokenCalculationEffect]);
+
+    // Fetch the server estimate, debounced, whenever the selection, tree, or
+    // effective model changes. Stale responses are dropped by sequence number.
+    useEffect(() => {
+        if (!checkedKeys || checkedKeys.length === 0) {
+            setServerEstimate(null);
+            return;
+        }
+        const seq = ++estimateSeqRef.current;
+        const timer = setTimeout(async () => {
+            try {
+                const files = expandCheckedKeysToFiles(checkedKeys.map(String), folders as any);
+                const body: Record<string, unknown> = { files };
+                if (activeModelPin?.model) body.model = activeModelPin.model;
+                if (currentConversationId) body.conversation_id = currentConversationId;
+                const response = await fetch('/api/context-estimate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getProjectHeaders() },
+                    body: JSON.stringify(body),
+                });
+                if (!response.ok) throw new Error(`context-estimate ${response.status}`);
+                const data = await response.json();
+                if (seq !== estimateSeqRef.current) return;
+                setServerEstimate({
+                    file_tokens: data.file_tokens ?? 0,
+                    overhead_tokens: data.overhead_tokens ?? 0,
+                    overhead_source: data.overhead_source ?? '',
+                    unreadable: Array.isArray(data.unreadable) ? data.unreadable : [],
+                    model_key: data.model_key ?? null,
+                });
+            } catch (error) {
+                // Leave whatever estimate we had; the tree walk remains the floor.
+                console.debug('context-estimate unavailable:', error);
+            }
+        }, 800);
+        return () => clearTimeout(timer);
+    }, [checkedKeys, folders, activeModelPin?.model, currentConversationId]);
 
     const getTokenColor = (count: number): string => {
         if (count >= dangerThreshold) return '#ff4d4f';  // Red
@@ -863,27 +872,39 @@ export const TokenCountDisplay = memo(() => {
         const isFullyAccurate = selectedFiles > 0 && accurateCount === selectedFiles;
         const hasAnyAccurate = accurateCount > 0;
 
-        return `${totalTokenCount.toLocaleString()}${hasToolBackedFiles ? '(*)' : ''}${isFullyAccurate ? '✓' : (hasAnyAccurate ? '~' : '')}`;
+        if (serverEstimate) {
+            // Server figure is the prompt-rendered count; mark it distinctly.
+            return `${fileTokens.toLocaleString()}${hasToolBackedFiles ? '(*)' : ''}✓`;
+        }
+        return `${fileTokens.toLocaleString()}${hasToolBackedFiles ? '(*)' : ''}${isFullyAccurate ? '✓' : (hasAnyAccurate ? '~' : '')}`;
     };
 
     // Build breakdown items (Files, MCP, AST, Chat)
     const breakdownItems: React.ReactElement[] = [];
 
     // Always show Files
+    const unreadable = serverEstimate?.unreadable ?? [];
     breakdownItems.push(
-        <Tooltip key="files" title="Tokens from selected files">
+        <Tooltip key="files" title={serverEstimate
+            ? `Tokens from selected files as the prompt will render them (line prefixes included, ${serverEstimate.model_key || 'current model'} ratio)`
+                + (unreadable.length ? `\n${unreadable.length} selected path(s) could not be read and are not counted: ${unreadable.slice(0, 5).join(', ')}${unreadable.length > 5 ? '…' : ''}` : '')
+            : 'Tokens from selected files (tree estimate)'}>
             <span style={{ fontSize: '10px' }}>
-                Files: <span style={getTokenStyle(totalTokenCount)}>{getFileTokenDisplay()}</span>
+                Files: <span style={getTokenStyle(fileTokens)}>{getFileTokenDisplay()}</span>
+                {unreadable.length > 0 && <span style={{ color: '#faad14', marginLeft: 3 }}>⚠{unreadable.length}</span>}
             </span>
         </Tooltip>
     );
 
-    // Add MCP if enabled and has non-builtin servers
-    if (mcpEnabled && mcpServerCount > 0) {
+    // Tools: server overhead (MCP + builtin, calibrated) when available,
+    // else the legacy MCP-only figure.
+    if (toolTokens > 0) {
         breakdownItems.push(
-            <Tooltip key="mcp" title={`MCP tool tokens from ${mcpServerCount} server${mcpServerCount !== 1 ? 's' : ''}`}>
+            <Tooltip key="mcp" title={serverEstimate
+                ? `Tool schema + fixed system overhead (${serverEstimate.overhead_source === 'learned_baseline' ? 'learned from billed usage' : 'estimated from schema size'})`
+                : `MCP tool tokens from ${mcpServerCount} server${mcpServerCount !== 1 ? 's' : ''}`}>
                 <span style={{ fontSize: '10px' }}>
-                    MCP: <span style={getTokenStyle(mcpTokenCount)}>{mcpTokenCount.toLocaleString()}</span>
+                    {serverEstimate ? 'Tools' : 'MCP'}: <span style={getTokenStyle(toolTokens)}>{toolTokens.toLocaleString()}</span>
                 </span>
             </Tooltip>
         );
@@ -1077,6 +1098,29 @@ export const TokenCountDisplay = memo(() => {
                         padding: '4px 8px',
                         gap: '8px'
                     }}>
+                        {/* Handoff affordance (design/conversation-handoff.md): an
+                            offer once context passes the warning threshold, never
+                            automatic.  Opens the same drawer as the sidebar row's
+                            "Hand off…" — the one surface a user at 90% actually sees. */}
+                        {currentConversationId && combinedTokenCount >= warningThreshold && (
+                            <Tooltip title={combinedTokenCount >= dangerThreshold
+                                ? 'Context is nearly full. Hand off to a fresh conversation — the original stays intact and searchable.'
+                                : 'Context is getting large. Review or start a handoff draft.'}>
+                                <span
+                                    role="button"
+                                    data-testid="handoff-affordance"
+                                    onClick={() => dispatchHandoffOpen(currentConversationId)}
+                                    style={{
+                                        cursor: 'pointer', fontSize: 12, lineHeight: '18px', padding: '0 8px',
+                                        borderRadius: 6, whiteSpace: 'nowrap',
+                                        border: `1px solid ${combinedTokenCount >= dangerThreshold ? '#ff4d4f' : '#1890ff'}`,
+                                        color: combinedTokenCount >= dangerThreshold ? '#ff4d4f' : '#1890ff',
+                                    }}
+                                >
+                                    ⇢ Hand off…
+                                </span>
+                            </Tooltip>
+                        )}
                         {cacheHealthIndicator}
 
                         <Tooltip title="Open Telemetry Dashboard">

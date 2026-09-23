@@ -8,6 +8,7 @@ import type { TaskBinding } from '../types/task_binding';
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import * as syncMerge from '../utils/syncMerge';
+import { forkLineageFields } from '../utils/lineage';
 import { detectIncompleteResponse } from '../utils/responseUtils';
 import { importWithRetry } from '../utils/lazyWithRetry';
 // `uiMessage` alias for scopes where a local `message` parameter shadows the
@@ -4677,11 +4678,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
             id: newId,
             title: `Fork: ${source.title}`,
             lastAccessedAt: Date.now(),
-            // Shared-root bead lineage (b2): inherit the source's root, or
-            // adopt the source's own id as root when the source is itself a
-            // trunk.  Flat — a fork of a fork points at the SAME ultimate
-            // root, never chains — so the whole lineage shares one bead tree.
-            lineageRootId: (source as any).lineageRootId || source.id,
+            // branchedFrom + lineageKind='fork' (sidebar nesting, LineageBar)
+            // and the shared-root bead lineage (b2).  A fork of a branch must
+            // not inherit the branch's seam fields — the helper clears them.
+            // See forkLineageFields for the full set of invariants.
+            ...forkLineageFields(source as any),
             _version: Date.now(),
             hasUnreadResponse: false,
             isActive: true,

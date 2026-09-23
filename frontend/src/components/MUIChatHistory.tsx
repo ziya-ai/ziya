@@ -4,6 +4,7 @@ import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } 
 import { ConversationHealthDebugModal } from './ConversationHealthDebug';
 import ExportConversationModal from './ExportConversationModal';
 import ConversationInfoModal from './ConversationInfoModal';
+import HandoffDrawer from './HandoffDrawer';
 import { useConversationList } from '../context/ConversationListContext';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useStreamingContext } from '../context/StreamingContext';
@@ -13,6 +14,8 @@ import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import { db } from '../utils/db';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal, globalMenuItemState } from '../utils/folderUtil';import { v4 as uuidv4 } from 'uuid';
+import { buildHandoffChains } from '../utils/lineage';
+import { subscribeHandoffOpen } from '../utils/handoffOpen';
 import { sortComparator } from '../utils/chatTreeSort';
 import { computeStructuralHash, fnv1a } from '../utils/chatTreeHash';
 import { folderBadge, countDirectSubfolders, isTargetFolderRow, withParentExpanded } from '../utils/chatTreeFolderBadge';
@@ -59,6 +62,7 @@ import AddCommentIcon from '@mui/icons-material/AddComment';
 import RunStatusGears from './TaskCard/RunStatusGears';
 import type { TaskBinding } from '../types/task_binding';
 import { useRunStatusIndex } from '../hooks/useRunStatusIndex';
+import { toLayoutPx } from '../utils/uiScale';
 // Ant Design Icons for the menu items
 import {
   EditOutlined,
@@ -119,6 +123,11 @@ interface ChatTreeItemProps {
   taskPlanProgress?: string;   // e.g. "3/4"
   onSwarmRecovery?: (folderId: string) => void;
   delegateStatus?: DelegateStatus | 'orchestrator' | null;
+  // Handoff trail (design/conversation-handoff.md).  isHandedOff: this
+  // segment has been continued in another conversation — dimmed + ⇢, never
+  // disabled.  isHandoffContinuation: this row IS a continuation (⛓).
+  isHandedOff?: boolean;
+  isHandoffContinuation?: boolean;
   onDelegateRetry?: (nodeId: string) => void;
   onDelegateSkip?: (nodeId: string) => void;
   isPinned?: boolean;
@@ -173,6 +182,7 @@ interface ChatTreeItemProps {
   onExport?: (id: string) => void;
   onInfo?: (id: string) => void;
   onMove: (id: string, folderId: string | null) => void;
+  onHandoff?: (id: string) => void;
   onToggleGlobal?: (id: string) => void;
   onMoveToProject?: (id: string, anchorEl: HTMLElement) => void;
   onCopyToProject?: (id: string, anchorEl: HTMLElement) => void;
@@ -188,6 +198,11 @@ interface ChatTreeItemProps {
   depth?: number;
   isExpanded?: boolean;
   hasChildren?: boolean;
+  // Handoff chain row (design/conversation-handoff.md): this conversation is
+  // the newest segment of a chain of N; the earlier segments are its
+  // collapsed children.  The pill toggles them.
+  handoffSegmentCount?: number;
+  onToggleChain?: (id: string) => void;
   children?: React.ReactNode;
   isDragOver?: boolean;
   className?: string;
@@ -206,6 +221,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     isTaskPlanFolder = false,
     taskPlanProgress,
     delegateStatus,
+    isHandedOff = false,
+    isHandoffContinuation = false,
     isPinned = false,
     isCurrentItem = false,
     onDelegateRetry,
@@ -236,6 +253,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onToggleGlobal,
     onMoveToProject,
     onFork,
+    onHandoff,
     onCompress,
     onMove,
     onOpenMoveMenu,
@@ -255,6 +273,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     depth,
     isExpanded,
     hasChildren,
+    handoffSegmentCount,
+    onToggleChain,
     ...other
   } = props;
 
@@ -409,10 +429,31 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
                     ...(isEphemeralItem ? { opacity: 0.55, fontStyle: 'italic' } : {}),
+                    ...(isHandedOff && !isCurrentItem ? { opacity: 0.6 } : {}),
                   }}
                   onDoubleClick={handleLabelDoubleClick}
                 >
+                  {isHandoffContinuation && (
+                    <span title="Continuation of an earlier segment" style={{ marginRight: 4, opacity: 0.8 }}>⛓</span>
+                  )}
                   {labelText}
+                  {!!handoffSegmentCount && (
+                    <span
+                      role="button"
+                      title={isExpanded ? 'Hide earlier segments' : 'Show earlier segments'}
+                      onClick={(e) => { e.stopPropagation(); onToggleChain && onToggleChain(nodeId); }}
+                      style={{
+                        marginLeft: 6, fontSize: 10, lineHeight: '14px', padding: '0 6px',
+                        border: '1px solid currentColor', borderRadius: 8, opacity: 0.7,
+                        cursor: 'pointer', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {handoffSegmentCount} segments {isExpanded ? '▾' : '▸'}
+                    </span>
+                  )}
+                  {isHandedOff && (
+                    <Typography component="span" variant="caption" sx={{ ml: 0.5, opacity: 0.7 }} title="Continued in a later segment">⇢</Typography>
+                  )}
                   {isEphemeralItem && (
                     <Typography component="span" variant="caption" sx={{ ml: 0.5, opacity: 0.7, fontStyle: 'italic' }}>· ephemeral</Typography>
                   )}
@@ -522,7 +563,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                       nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder} onCopyToProject={props.onCopyToProject}
                       delegateStatus={delegateStatus} onDelegateRetry={props.onDelegateRetry} onDelegateSkip={props.onDelegateSkip}
                       onSwarmRecovery={props.onSwarmRecovery}
-                      onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport} onInfo={props.onInfo}
+                      onEdit={onEdit} onDelete={onDelete} onFork={onFork} onHandoff={onHandoff} onCompress={onCompress} onExport={onExport} onInfo={props.onInfo}
                       onOpenMoveMenu={onOpenMoveMenu}
                       onToggleGlobal={onToggleGlobal} onMoveToProject={onMoveToProject} isGlobalItem={isGlobalItem}
                       isEphemeralItem={isEphemeralItem}
@@ -615,7 +656,7 @@ const GlobalUnshareIcon = () => (
     }} />
   </span>
 );
-const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, onCopyToProject, isGlobalItem, isGlobalByInheritanceOnly, isEphemeralItem, onPromoteEphemeral, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip, flags, flagColor, onToggleFlag, onSetFlagColor, onInfo }) => {
+const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onHandoff, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, onCopyToProject, isGlobalItem, isGlobalByInheritanceOnly, isEphemeralItem, onPromoteEphemeral, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip, flags, flagColor, onToggleFlag, onSetFlagColor, onInfo }: any) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
     actionCallback(nodeId);
@@ -648,6 +689,9 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
     items.push(
       { key: 'edit', label: 'Rename', icon: <EditOutlined />, onClick: (e) => handleAntAction(onEdit, e.domEvent) },
       { key: 'fork', label: 'Fork', icon: <AntCopyOutlined />, onClick: (e) => handleAntAction(onFork, e.domEvent) },
+      ...(onHandoff ? [
+        { key: 'handoff', label: 'Hand off…', icon: <span style={{ display: 'inline-block', width: 14 }}>⇢</span>, onClick: (e) => handleAntAction(onHandoff, e.domEvent) },
+      ] : []),
       { key: 'compress', label: 'Compress', icon: <AntCompressOutlined />, onClick: (e) => handleAntAction(onCompress, e.domEvent) },
       {
         key: 'flags',
@@ -830,9 +874,11 @@ function flattenVisibleNodes(
     // Only real folders (with node.folder or node.taskPlan) are collapsible.
     // Conversations may have children (e.g. delegate swarm anchoring) but
     // should always render their children inline, not require expansion.
+    // Exception: a handoff chain row's earlier SEGMENTS are collapsed by
+    // default (its other children — forks, task-plan folders — stay inline).
     const isFolder = Boolean(node.folder) || Boolean(node.taskPlan);
     const hasChildren = Boolean(node.children?.length);
-    const isExpanded = isFolder && expandedSet.has(node.id);
+    const isExpanded = (isFolder || Boolean(node.handoffChain)) && expandedSet.has(node.id);
     result.push({
       id: node.id,
       name: node.name,
@@ -842,11 +888,11 @@ function flattenVisibleNodes(
       hasChildren,
       node,
     });
-    // Only recurse into children if this node is expanded
-    // For non-folder nodes with children (e.g. conversations with delegates),
-    // always show children inline.
-    if (hasChildren && (!isFolder || isExpanded)) {
-      result.push(...flattenVisibleNodes(node.children, expandedSet, depth + 1, seen));
+    let kids: any[] = hasChildren ? node.children : [];
+    if (isFolder && !isExpanded) kids = [];
+    else if (node.handoffChain && !isExpanded) kids = kids.filter((k: any) => !k.handoffSegment);
+    if (kids.length) {
+      result.push(...flattenVisibleNodes(kids, expandedSet, depth + 1, seen));
     }
   }
   return result;
@@ -1103,6 +1149,7 @@ const MUIChatHistory = () => {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportConversationId, setExportConversationId] = useState<string | null>(null);
   const [infoConversationId, setInfoConversationId] = useState<string | null>(null);
+  const [handoffConversationId, setHandoffConversationId] = useState<string | null>(null);
   const [showHealthDebug, setShowHealthDebug] = useState(false);
   const [swarmRecoveryFolderId, setSwarmRecoveryFolderId] = useState<string | null>(null);
   const [showSwarmRecovery, setShowSwarmRecovery] = useState(false);
@@ -1781,8 +1828,11 @@ const MUIChatHistory = () => {
         return;
       }
 
-      customDragState.ghostElement.style.left = (e.clientX + 10) + 'px';
-      customDragState.ghostElement.style.top = (e.clientY + 10) + 'px';
+      // The ghost is positioned in layout px under the body UI zoom, while
+      // clientX/Y are viewport px (uiScale.ts).  elementFromPoint calls
+      // below take viewport px and are left as-is.
+      customDragState.ghostElement.style.left = (toLayoutPx(e.clientX) + 10) + 'px';
+      customDragState.ghostElement.style.top = (toLayoutPx(e.clientY) + 10) + 'px';
 
       // Clear all highlighting first
       document.querySelectorAll<HTMLElement>('[data-node-id]').forEach((item) => {
@@ -2413,6 +2463,14 @@ const MUIChatHistory = () => {
     // - projectSync broadcast to sibling tabs
     await forkConversation(conversationId);
   };
+
+  // Hand off: open the drawer (draft review / edit / commit).  The drawer
+  // owns the commit and the shell insert; see HandoffDrawer.
+  const handleHandoffConversation = (id: string) => {
+    setHandoffConversationId(id.startsWith('conv-') ? id.substring(5) : id);
+  };
+  // The token bar's pressure affordance opens the same drawer.
+  useEffect(() => subscribeHandoffOpen(id => setHandoffConversationId(id)), []);
 
   // Handle compressing a conversation (placeholder)
   const handleCompressConversation = (conversationId: string) => {
@@ -3252,9 +3310,36 @@ const MUIChatHistory = () => {
     // the hierarchy, directly under its origin.  If the parent isn't present
     // in this view (filtered out / not yet synced), the branch is left at its
     // computed position so it never disappears entirely.
+    //
+    // Handoff CHAINS are the exception to nesting: continuation is linear, so
+    // A→B→C collapses to ONE row owned by the newest segment (C), with B and
+    // A as its collapsed children (flattenVisibleNodes hides handoffSegment
+    // children until the row is expanded).  Nesting each hop a level deeper
+    // would walk a long-running track off the right edge.  Every id placed
+    // by a chain is skipped by the generic pass below — otherwise the tail
+    // would be nested under a predecessor that is now its own child (a cycle).
+    const chainPlaced = new Set<string>();
+    buildHandoffChains(activeConversations as any).forEach((predIds, tailId) => {
+      const tailNode = convNodeMap.get(tailId);
+      if (!tailNode) return;
+      const moved: any[] = [];
+      for (const pid of predIds) {
+        const predNode = convNodeMap.get(pid);
+        if (!predNode || predNode === tailNode) continue;
+        if (removeNodeFromTree(rootItems, predNode)) {
+          predNode.handoffSegment = true;
+          moved.push(predNode);
+        }
+      }
+      if (!moved.length) return;
+      tailNode.handoffChain = moved.length + 1;
+      tailNode.children = [...(tailNode.children || []), ...moved];
+      chainPlaced.add(tailId);
+      moved.forEach(n => chainPlaced.add(n.conversation?.id));
+    });
     activeConversations.forEach(conv => {
       const parentId = (conv as any).branchedFrom;
-      if (!parentId) return;
+      if (!parentId || chainPlaced.has(conv.id)) return;
       const childNode = convNodeMap.get(conv.id);
       const parentNode = convNodeMap.get(parentId);
       if (!childNode || !parentNode || childNode === parentNode) return;
@@ -4162,6 +4247,9 @@ const MUIChatHistory = () => {
                 const subfolderCount = isFolder ? countDirectSubfolders(node.children) : 0;
                 const openBeadCount = isFolder ? 0 : (node.conversation?.openBeadCount || 0);
                 const openWorkItemCount = isFolder ? 0 : (node.conversation?.openWorkItemCount || 0);
+                const rowHandedOff = !isFolder && !!node.conversation?.handedOffTo;
+                const rowIsContinuation = !isFolder && node.conversation?.lineageKind === 'handoff';
+                const rowChainCount: number | undefined = !isFolder ? node.handoffChain : undefined;
                 const rowFlags = isFolder ? [] : (node.conversation?.flags || []);
                 const rowFlagColor = isFolder ? null : (node.conversation?.flagColor || null);
                 const isEditingNode = editingId === (isFolder ? nodeId : nodeId.substring(5));
@@ -4200,6 +4288,12 @@ const MUIChatHistory = () => {
                     // Don't navigate on icon button clicks
                     if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('.MuiIconButton-root')) return;
                     if (nodeId.startsWith('conv-')) {
+                      // Move the target-folder pointer with the click, from
+                      // the node we already hold.  loadConversation also sets
+                      // this (ChatContext) but does so asynchronously and
+                      // indirectly; the row that renders the highlight should
+                      // not depend on that to stay consistent with itself.
+                      setCurrentFolderId(node.conversation?.folderId ?? null);
                       handleConversationClick(nodeId.substring(5));
                     } else {
                       setCurrentFolderId(nodeId);
@@ -4231,6 +4325,13 @@ const MUIChatHistory = () => {
                       nodeId={nodeId} labelText={labelText} isFolder={isFolder}
                       isTaskPlanFolder={isTaskPlanFolder} taskPlanProgress={taskPlanProgress}
                       delegateStatus={delegateStatus} isPinned={isPinned}
+                      isHandedOff={rowHandedOff} isHandoffContinuation={rowIsContinuation}
+                      handoffSegmentCount={rowChainCount}
+                      onToggleChain={(id) => setExpandedNodes(prev => {
+                        const s = new Set(prev.map(String));
+                        if (s.has(id)) { s.delete(id); } else { s.add(id); }
+                        return Array.from(s);
+                      })}
                       isCurrentItem={isCurrentItem} isGlobalItem={isGlobalItem}
                       isEphemeralItem={isEphemeralItem}
                       isStreaming={isStreamingConv} hasUnreadResponse={hasUnreadResponse}
@@ -4245,7 +4346,7 @@ const MUIChatHistory = () => {
                       onToggleFlag={handleToggleFlag} onSetFlagColor={handleSetFlagColor}
                       onEdit={handleEdit} onDelete={handleDelete} onInfo={handleShowInfo} onAddChat={handleAddChat}
                       onExport={handleExportConversation} onPin={togglePinFolder}
-                      onConfigure={handleConfigureFolder} onFork={handleForkConversation}
+                      onConfigure={handleConfigureFolder} onFork={handleForkConversation} onHandoff={handleHandoffConversation}
                       onCompress={handleCompressConversation} onMove={handleMoveConversation}
                       onDelegateRetry={delegateStatus === 'failed' || delegateStatus === 'interrupted' ? handleDelegateRetry : undefined}
                       onDelegateSkip={delegateStatus === 'failed' || delegateStatus === 'interrupted' ? handleDelegateSkip : undefined}
@@ -4320,6 +4421,16 @@ const MUIChatHistory = () => {
       )}
 
       {/* Conversation Info modal — id, project id, and storage statistics */}
+      {/* Handoff drawer — draft review / edit / commit to a continuation */}
+      <HandoffDrawer
+        conversationId={handoffConversationId}
+        onClose={() => setHandoffConversationId(null)}
+      />
+      {/* Handoff drawer — draft review / edit / commit to a continuation */}
+      <HandoffDrawer
+        conversationId={handoffConversationId}
+        onClose={() => setHandoffConversationId(null)}
+      />
       {infoConversationId && (
         <ConversationInfoModal
           visible={!!infoConversationId}

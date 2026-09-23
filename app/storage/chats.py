@@ -242,6 +242,9 @@ class ChatStorage(BaseStorage[Chat]):
                 branchedFrom=data.get('branchedFrom'),
                 branchedAtMessageIndex=data.get('branchedAtMessageIndex'),
                 branchedFromLabel=data.get('branchedFromLabel'),
+                lineageKind=data.get('lineageKind'),
+                handedOffTo=data.get('handedOffTo'),
+                hasHandoff=isinstance(data.get('handoff'), dict),
                 # Read defensively: a hand-edited or pre-feature record can
                 # carry a non-list flags value, and a summary build must not
                 # fail the whole listing over one malformed field.

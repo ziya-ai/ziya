@@ -25,6 +25,9 @@ export interface ServerChatSummary {
     branchedFrom?: string;
     branchedAtMessageIndex?: number;
     branchedFromLabel?: string;
+    lineageKind?: 'fork' | 'branch' | 'handoff';
+    handedOffTo?: string;
+    hasHandoff?: boolean;
     // Triage flags. Unlike the open-work counts below, these are VERSIONED:
     // a flag change goes through mutateConversationMeta, which stamps a new
     // _version. That is why they are adopted only on the server-newer
@@ -50,6 +53,8 @@ export interface LocalShell {
     branchedFrom?: string;
     branchedAtMessageIndex?: number;
     branchedFromLabel?: string;
+    lineageKind?: 'fork' | 'branch' | 'handoff';
+    handedOffTo?: string;
     flags?: string[];
     flagColor?: string | null;
     _isShell?: boolean;
@@ -278,6 +283,8 @@ export function mergeServerChat(
                     branchedFrom: sc.branchedFrom,
                     branchedAtMessageIndex: sc.branchedAtMessageIndex,
                     branchedFromLabel: sc.branchedFromLabel,
+                    lineageKind: sc.lineageKind,
+                    handedOffTo: sc.handedOffTo,
                     // This branch enumerates fields rather than spreading, so
                     // an unlisted field is silently dropped — the shell then
                     // renders unflagged until a full fetch happens to land.
@@ -406,6 +413,8 @@ export function mergeServerChat(
                 branchedFrom: sc.branchedFrom ?? local.branchedFrom,
                 branchedAtMessageIndex: sc.branchedAtMessageIndex ?? local.branchedAtMessageIndex,
                 branchedFromLabel: sc.branchedFromLabel ?? local.branchedFromLabel,
+                lineageKind: sc.lineageKind ?? local.lineageKind,
+                handedOffTo: sc.handedOffTo ?? local.handedOffTo,
                 // The server is newer, so its flags win — including an
                 // explicit CLEAR. \`??\` and not \`||\`: an empty array (all
                 // flags removed) and a null flagColor (color cleared) are

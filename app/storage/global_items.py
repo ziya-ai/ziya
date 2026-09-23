@@ -370,6 +370,9 @@ def collect_global_chat_summaries(
                     branchedFrom=data.get("branchedFrom"),
                     branchedAtMessageIndex=data.get("branchedAtMessageIndex"),
                     branchedFromLabel=data.get("branchedFromLabel"),
+                    lineageKind=data.get("lineageKind"),
+                    handedOffTo=data.get("handedOffTo"),
+                    hasHandoff=isinstance(data.get("handoff"), dict),
                     # Mirror of ChatStorage.list_summaries — a global chat
                     # must render its flags in every project, not only its own.
                     flags=data.get("flags") if isinstance(data.get("flags"), list) else [],

@@ -9,6 +9,8 @@ import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlin
 import { DocumentChip, ImageChip } from './FileChip';
 import ModelChangeNotification from './ModelChangeNotification';
 import LineageBar from './LineageBar';
+import HandoffBanner from './HandoffBanner';
+import { dispatchHandoffOpen } from '../utils/handoffOpen';
 import SeamRibbon from './SeamRibbon';
 import { getSeamHighlight, SEAM_HIGHLIGHT_EVENT, SeamHighlight } from '../utils/seamHighlight';
 import { useSetQuestion } from '../context/QuestionContext';
@@ -959,6 +961,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     conversations={conversations}
                     onNavigate={(id) => activeChat.loadConversation(id)}
                 />
+                {/* Handoff trail: source notice ("continued in …") or the
+                    continuation's inherited-document card.  Renders nothing
+                    on an ordinary conversation.  See design/conversation-handoff.md */}
+                <HandoffBanner
+                    conversation={conversations.find(c => c.id === currentConversationId) as any}
+                    conversations={conversations as any}
+                    onNavigate={(id) => activeChat.loadConversation(id)}
+                    onDocumentSaved={(id, handoff) => convList.setConversations(prev =>
+                        prev.map(c => (c.id === id ? ({ ...c, handoff } as any) : c)))}
+                />
                 {/* Raw mode indicator banner */}
                 {isRawMode && (
                     <div className="raw-mode-banner">
@@ -1034,6 +1046,19 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                 changeKey={msg.modelChange.changeKey}
                                 newModel={msg.modelChange.to}
                             />
+                        ) : msg.role === 'system' && msg.handoffNotice ? (
+                            // Local-only notice: muted, never sent to the model.
+                            <div data-testid="handoff-notice" style={{
+                                display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', margin: '6px 0',
+                                borderRadius: 8, fontSize: 13,
+                                background: 'rgba(24, 144, 255, 0.08)', border: '1px solid rgba(24, 144, 255, 0.25)',
+                            }}>
+                                <span>⇢</span>
+                                <span style={{ flex: 1 }}>{msg.content}</span>
+                                <Button size="small" type="link" onClick={() => dispatchHandoffOpen(currentConversationId)}>
+                                    Review handoff
+                                </Button>
+                            </div>
                         ) : (
                             // Skip rendering empty messages entirely
                             msg.content ? (
