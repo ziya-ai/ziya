@@ -49,7 +49,10 @@ user wants the artifact.
 ---
 ziya-doc: 1
 title: "Queue Depth Analysis"
-author: "..."             # optional; becomes the PDF /Author
+author: "Jane Doe"        # optional; a person or team ONLY. Becomes the PDF
+                          # /Author and repeats in the running footer of every
+                          # page — never append the repo, workspace, project
+                          # or model name to it.
 layout: report            # report = title block page header; plain = no chrome
 page:
   margin: 18mm            # optional; one value or {top, bottom, left, right}
@@ -74,6 +77,10 @@ at full fidelity in the PDF.
    role labels, no tool chatter. When asked to turn an analysis into a
    document, EXTRACT and RESTRUCTURE the content into authored prose — do
    not paste the conversation.
+   Local session context is not document content: the repo / workspace /
+   project name, `.ziya/` paths, model or tool names, and conversation IDs
+   do not belong in the title, author, headings or running header/footer.
+   Cite them only in a sources appendix when the reader needs them.
 4. `<!-- ziya:pagebreak -->` on its own line forces a page break; it is an
    invisible HTML comment in every other markdown viewer.
 5. To render a PDF, POST to the local server (default port 6969):

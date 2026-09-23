@@ -226,7 +226,25 @@ def split_sections(body: str) -> List[str]:
     produced by adjacent/leading/trailing directives are dropped; a body with
     no directive returns a single section.  Always returns at least one
     element so the renderer never receives an empty list.
+
+    Before splitting, the body passes through
+    :func:`app.utils.document_preprocess.preprocess_document_body`, the single
+    hook for GENERIC pre-render body transforms (currently the linear-chain
+    diagram re-layout, D-001).  Both exporter entry points — the inline
+    ``markdown=`` path and the stored ``name=`` path — funnel through
+    ``split_sections``, so wiring the pass here (rather than in the
+    non-writable exporter) ships it to the real /print pipeline.  The transform
+    is a no-op on any body without a linear mermaid/graphviz chain, so plain
+    documents are unaffected.  Import is local to avoid any import-time cycle.
     """
+    try:
+        from app.utils.document_preprocess import preprocess_document_body
+        body = preprocess_document_body(body or '')
+    except Exception:
+        # Pre-processing is a cosmetic enhancement: a failure must never break
+        # export.  Fall back to the raw body.
+        logger.warning("Document body pre-processing failed; using raw body",
+                       exc_info=True)
     parts = _PAGEBREAK_RE.split(body or '')
     sections = [p.strip('\n') for p in parts]
     sections = [s for s in sections if s.strip()]
