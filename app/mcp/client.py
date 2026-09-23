@@ -1310,17 +1310,20 @@ class MCPClient:
                 is_external_server = any(keyword in server_name.lower() 
                                        for keyword in ['fetch', 'web', 'http', 'api', 'external'])
                 timeout_duration = 60.0 if is_external_server else 30.0
-                # A server may declare its own ceiling in mcp_config.json
-                # ("tool_timeout": 120). Servers that proxy a slow backend
-                # (leolens-mcp streams from AgentCore for 20-60 s) are
-                # otherwise abandoned here while the answer is still arriving,
-                # and nothing about their name matches the heuristic above.
+                # A server may declare its own ceiling via the "timeout" key
+                # in mcp_config.json. The key was already accepted by
+                # config_validation and written by the manager for npx/uvx
+                # servers, but nothing read it, so it had no effect. Servers
+                # that proxy a slow backend (leolens-mcp streams from
+                # AgentCore for 20-60 s) were abandoned here while the answer
+                # was still arriving, and nothing about their name matches
+                # the heuristic above.
                 try:
-                    cfg_timeout = self.server_config.get('tool_timeout')
+                    cfg_timeout = self.server_config.get('timeout')
                     if cfg_timeout is not None:
                         timeout_duration = max(timeout_duration, float(cfg_timeout))
                 except (ValueError, TypeError):
-                    logger.warning(f"Ignoring non-numeric tool_timeout for server {server_name}")
+                    logger.warning(f"Ignoring non-numeric timeout for server {server_name}")
 
                 # For tool calls, extract the tool's own timeout so long-running
                 # commands aren't killed by the readline timeout before the
