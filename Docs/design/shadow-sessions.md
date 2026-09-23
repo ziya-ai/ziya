@@ -556,6 +556,25 @@ Non-negotiable before any release:
   of the literal sequence available via double-press.
 - On start, one dim line: `⏺ shadow session a3f21e ("ssh prod-42") —
   journaling locally. C-x C-z for menu.` Then silence.
+- **Terminal tint (always on).** The window title is only visible if
+  the emulator shows a title bar, and the start banner scrolls away, so
+  neither is "glance and know". The frontend sets the *local* emulator's
+  background colour (OSC 11) for the life of the session and restores it
+  (OSC 111) on exit; under an active control lease the tint deepens and
+  the cursor is recoloured (OSC 12 / 112) so it is visible at a glance
+  that a chat may type here. Because this is the local emulator's state
+  it survives scrolling, `clear`, and ssh hops — the remote host cannot
+  undo it short of emitting OSC 11 itself, which shells essentially never
+  do. iTerm2 and ghostty honour all four sequences. Display path only;
+  the journal never sees these bytes. Colours are overridable
+  (`ZIYA_SHADOW_TINT`, `ZIYA_SHADOW_TINT_CONTROL`,
+  `ZIYA_SHADOW_CURSOR_CONTROL`, `#rrggbb`) and the whole thing is
+  disabled with `ZIYA_SHADOW_TINT=off`. A prompt marker is the
+  complementary, dotfile-side recipe: the child receives
+  `ZIYA_SHADOW_SESSION=<id>` in its environment, so
+  `[[ -n $ZIYA_SHADOW_SESSION ]] && PROMPT="%F{yellow}⏺%f $PROMPT"`
+  marks every prompt of a shadowed local shell (it does not follow an
+  ssh hop, which is exactly where the tint takes over).
 - **Terminal title (always on).** The one persistent indicator that a
   terminal is shadowed. The frontend rewrites the child's title
   sequences (OSC 0 and OSC 2, BEL or ST terminated, carried across
