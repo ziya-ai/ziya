@@ -18,6 +18,36 @@ from ..core.utils import normalize_escapes
 # for legitimate input.
 _MAX_HUNK_LINE_COUNT = 1_000_000
 
+# Roots that indicate a path was absolute before git folded its leading
+# slash into the a/ b/ prefix. Git encodes the target path *inside* that
+# prefix, and the prefix swallows a leading '/': a file at
+# '/Users/x/y.py' appears as '+++ b/Users/x/y.py', indistinguishable from a
+# project-relative 'Users/x/y.py' except by convention. Keep this list in
+# sync with restoreLeadingSlash() in frontend/src/utils/diffUtils.ts so the
+# diff viewer and every apply site agree on the same path.
+_ABSOLUTE_PATH_ROOTS: Tuple[str, ...] = (
+    'Users/', 'home/', 'opt/', 'var/', 'usr/', 'tmp/', 'etc/', 'srv/', 'private/',
+)
+
+
+def restore_leading_slash(path: str) -> str:
+    """Re-attach the leading slash git strips from an absolute diff path.
+
+    The author's expressed target must survive the round-trip: a path written
+    as absolute has to be recognized as absolute on the way back out. That
+    decision is made from the fixed root allowlist above, NOT from
+    os.path.exists(): keying on disk state made the restored path depend on
+    unrelated files, and -- fatally for new-file creation -- never restored
+    the slash for a target that does not exist yet, so it got silently nested
+    under the project root instead of created where it was asked for.
+
+    A path already absolute, empty, or not matching a known root is returned
+    unchanged.
+    """
+    if not path or path.startswith('/'):
+        return path
+    return '/' + path if path.startswith(_ABSOLUTE_PATH_ROOTS) else path
+
 def _decide_backtick_escaping_from_file(diff_text: str, file_content: str) -> Optional[str]:
     """Decide preserve-vs-unescape for backslash-backtick sequences by
     checking the diff against the target file's actual content.
@@ -138,13 +168,13 @@ def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
     if is_deletion:
         for line in lines:
             if line.startswith('--- a/'):
-                return line[6:]
+                return restore_leading_slash(line[6:])
             if line.startswith('diff --git'):
                 if ' a/' in line:
                     a_part = line.split(' a/', 1)[1]
                     if ' b/' in a_part:
-                        return a_part.split(' b/')[0]
-                    return a_part
+                        return restore_leading_slash(a_part.split(' b/')[0])
+                    return restore_leading_slash(a_part)
         return None
 
     # Priority 1: +++ header — the canonical target path.
@@ -152,14 +182,10 @@ def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
     # appear before +++ b/ (line 2) and would preempt it in a single pass.
     for line in lines:
         if line.startswith('+++ b/'):
-            path = line[6:]
-            # Restore leading slash for absolute paths encoded as '+++ b/Users/...'
-            # This happens when diffing files outside the project root.
-            if path and not path.startswith('/'):
-                candidate = '/' + path
-                if os.path.exists(candidate):
-                    return candidate
-            return path
+            # restore_leading_slash re-attaches the '/' git stripped from an
+            # absolute target (deterministically, by root allowlist) so the
+            # extracted path matches what the diff viewer shows.
+            return restore_leading_slash(line[6:])
 
         if line.startswith('+++ ') and not line.startswith('+++ b/') and not line.startswith('+++ /dev/null'):
             return line[4:].strip()
@@ -167,19 +193,14 @@ def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
     # Priority 2: --- a/ header (for diffs without +++ b/, e.g. truncated diffs)
     for line in lines:
         if line.startswith('--- a/'):
-            return line[6:]
+            return restore_leading_slash(line[6:])
 
     # Priority 3: diff --git header as last resort
     for line in lines:
         if line.startswith('diff --git'):
             parts = line.split(' b/', 1)
             if len(parts) > 1:
-                path = parts[1]
-                if path and not path.startswith('/'):
-                    candidate = '/' + path
-                    if os.path.exists(candidate):
-                        return candidate
-                return path
+                return restore_leading_slash(parts[1])
 
     return None
 

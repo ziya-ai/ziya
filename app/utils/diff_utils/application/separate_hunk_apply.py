@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from app.utils.logging_utils import logger
 from ..application.git_diff import parse_patch_output
 from ..core.exceptions import PatchApplicationError
-from ..parsing.diff_parser import parse_unified_diff_exact_plus
+from ..parsing.diff_parser import parse_unified_diff_exact_plus, restore_leading_slash
 
 def try_separate_hunks(pipeline, user_codebase_dir: str, separate_hunks: List[int]) -> bool:
     """
@@ -363,6 +363,9 @@ def extract_hunk_from_diff(diff_content: str, hunk_id: int, line_adjustment: int
                 target_file = line[4:].strip()
                 if target_file.startswith('b/'):
                     target_file = target_file[2:]
+                # Restore an absolute target's leading slash so it matches the
+                # path used everywhere else in the apply pipeline.
+                target_file = restore_leading_slash(target_file)
             elif line.startswith('--- '):
                 source_path = line[4:].strip()
                 

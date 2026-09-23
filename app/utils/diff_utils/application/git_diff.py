@@ -15,7 +15,7 @@ from app.utils.logging_utils import logger
 from ..validation.validators import is_hunk_already_applied, detect_malformed_state
 from ..application.patch_apply import apply_diff_with_difflib
 from ..core.exceptions import PatchApplicationError
-from ..parsing.diff_parser import extract_target_file_from_diff, split_combined_diff
+from ..parsing.diff_parser import extract_target_file_from_diff, split_combined_diff, restore_leading_slash
 from ..validation.validators import is_new_file_creation
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
 from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts, remove_reject_file_if_exists
@@ -1216,7 +1216,10 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
     for line in diff_lines:
         if line.startswith('diff --git'):
             _, _, path = line.partition(' b/')
-            file_path = os.path.join(user_codebase_dir, path)
+            # Restore an absolute target's leading slash before resolving;
+            # os.path.join leaves an absolute path unchanged.
+            restored = restore_leading_slash(path)
+            file_path = restored if restored.startswith('/') else os.path.join(user_codebase_dir, restored)
             break
 
     # Handle new file creation

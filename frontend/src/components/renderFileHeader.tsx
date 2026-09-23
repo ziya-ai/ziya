@@ -13,6 +13,17 @@ const isDevNull = (path: string | null | undefined): boolean => {
     return normalized === '/dev/null' || normalized === 'dev/null';
 };
 
+// Re-attach the leading slash git strips from an absolute path into the a/ b/
+// prefix, so the displayed header matches the path the diff actually targets
+// on apply. Keep the root list in sync with restore_leading_slash() in
+// app/utils/diff_utils/parsing/diff_parser.py.
+const restoreLeadingSlash = (p: string | null | undefined): string | null => {
+    if (!p) return p ?? null;
+    if (p.startsWith('/')) return p;
+    const absoluteRoots = ['Users/', 'home/', 'opt/', 'var/', 'usr/', 'tmp/', 'etc/', 'srv/', 'private/'];
+    return absoluteRoots.some(r => p.startsWith(r)) ? '/' + p : p;
+};
+
 export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], originalDiffSegment?: string, fileIndex?: number): string => {
     if (DEBUG_RENDER_FILE_HEADER) {
         console.log('[renderFileHeader] Input:', {
@@ -41,13 +52,13 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
         for (const line of lines) {
             if (line.startsWith('diff --git')) {
                 const match = line.match(/diff --git a\/(.*?) b\/(.*?)$/);
-                if (match) return match[2] || match[1];
+                if (match) return restoreLeadingSlash(match[2] || match[1]);
             }
             if (line.startsWith('+++ b/')) {
-                return line.substring(6);
+                return restoreLeadingSlash(line.substring(6));
             }
             if (line.startsWith('--- a/') && !line.includes('/dev/null')) {
-                return line.substring(6);
+                return restoreLeadingSlash(line.substring(6));
             }
         }
         return null;
@@ -60,7 +71,7 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
             if (line.trim() === '--- /dev/null' || line.trim() === '+++ /dev/null') {
                 return null;
             }
-            return match[1] || null;
+            return match[1] ? restoreLeadingSlash(match[1]) : null;
         }
         return null;
     };
@@ -69,8 +80,8 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
     const extractPathsFromDiffSegmentInternal = (diffStr: string): [string | null, string | null, string | null] => {
         const gitMatch = diffStr.match(/^diff --git a\/(.*?) b\/(.*?)$/m);
         if (gitMatch) {
-            const oldP = isDevNull(gitMatch[1]) ? null : gitMatch[1].trim();
-            const newP = isDevNull(gitMatch[2]) ? null : gitMatch[2].trim();
+            const oldP = isDevNull(gitMatch[1]) ? null : restoreLeadingSlash(gitMatch[1].trim());
+            const newP = isDevNull(gitMatch[2]) ? null : restoreLeadingSlash(gitMatch[2].trim());
             let detectedType: string | null = null;
             if (oldP === null && newP !== null) detectedType = 'add';
             else if (oldP !== null && newP === null) detectedType = 'delete';
