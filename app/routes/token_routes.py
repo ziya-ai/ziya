@@ -51,6 +51,13 @@ class AccurateTokenCountRequest(BaseModel):
     model_config = {"extra": "allow"}
     file_paths: List[str]
 
+class ContextEstimateRequest(BaseModel):
+    model_config = {"extra": "allow"}
+    files: List[str]
+    # Model alias (e.g. "fable5.1") or id; None = the server's current model.
+    model: Optional[str] = None
+    conversation_id: Optional[str] = None
+
 def count_tokens_fallback(text: str) -> int:
     """Fallback methods for counting tokens when primary method fails."""
     try:
@@ -209,6 +216,76 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
     except Exception as e:
         logger.error(f"Error getting accurate token counts: {str(e)}")
         return {"error": str(e), "results": {}}
+
+def _current_tool_definitions():
+    """(mcp_defs, builtin_defs) as name/description/input_schema dicts."""
+    mcp_defs: List[Dict[str, Any]] = []
+    builtin_defs: List[Dict[str, Any]] = []
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mgr = get_mcp_manager()
+        if mgr.is_initialized:
+            for t in mgr.get_all_tools():
+                mcp_defs.append({"name": t.name, "description": t.description,
+                                 "input_schema": t.inputSchema})
+    except Exception as e:
+        logger.debug(f"context-estimate: MCP tools unavailable: {e}")
+    try:
+        from app.mcp.builtin_tools import get_enabled_builtin_tools
+        for t in get_enabled_builtin_tools():
+            schema_cls = getattr(t, "InputSchema", None)
+            schema = schema_cls.model_json_schema() if hasattr(schema_cls, "model_json_schema") else {}
+            builtin_defs.append({"name": t.name, "description": getattr(t, "description", "") or "",
+                                 "input_schema": schema})
+    except Exception as e:
+        logger.debug(f"context-estimate: builtin tools unavailable: {e}")
+    return mcp_defs, builtin_defs
+
+
+def _resolve_model_identity(model: Optional[str]):
+    """(model_id, model_family) for an alias/id, else the process's current model."""
+    from app.utils.token_calibrator import get_token_calibrator
+    cal = get_token_calibrator()
+    model_id = None
+    if model:
+        model_id = model
+        try:
+            from app.agents.models import ModelManager
+            cfg = ModelManager.get_model_config(os.environ.get("ZIYA_ENDPOINT", "bedrock"), model)
+            mid = cfg.get("model_id")
+            if isinstance(mid, dict):
+                mid = next(iter(mid.values()), None)
+            model_id = mid or model
+        except Exception as e:
+            logger.debug(f"context-estimate: could not resolve model alias {model!r}: {e}")
+    family = cal._infer_model_family(model_id) if model_id else cal._get_current_model_family()
+    if not model_id:
+        model_id = cal._get_current_model_key()
+    return model_id, family
+
+
+@router.post('/api/context-estimate')
+async def context_estimate(request: ContextEstimateRequest) -> Dict[str, Any]:
+    """Price the files as the prompt builder will render them, plus tool overhead.
+
+    Files the tree does not carry (ignored directories) are counted here like
+    any other; files that cannot be read are listed in ``unreadable`` with a
+    status rather than silently contributing zero.
+    """
+    from app.context import get_project_root
+    from app.services.context_estimate import estimate_context
+    from app.utils.token_calibrator import get_token_calibrator
+    base_dir = get_project_root()
+    model_id, family = _resolve_model_identity(request.model)
+    mcp_defs, builtin_defs = _current_tool_definitions()
+
+    def _run():
+        return estimate_context(
+            request.files, base_dir, get_token_calibrator(),
+            model_family=family, model_id=model_id,
+            mcp_tool_defs=mcp_defs, builtin_tool_defs=builtin_defs,
+        ).to_dict()
+    return await asyncio.to_thread(_run)
 
 @router.get('/api/cache-stats')
 async def get_cache_stats():

@@ -4,6 +4,8 @@
 import React from 'react';
 import { useProject } from '../context/ProjectContext';
 import { useTheme } from '../context/ThemeContext';
+import { useBench } from '../hooks/useBench';
+import { placementForLegacySkill } from '../utils/benchMigration';
 import { CloseOutlined } from '@ant-design/icons';
 
 export const ActiveContextBar: React.FC = () => {
@@ -27,10 +29,30 @@ export const ActiveContextBar: React.FC = () => {
     removeSkillFromLens,
     tokenInfo,
     isCalculatingTokens,
+    currentProject,
+    skillsProjectId,
   } = useProject();
   
   const activeContexts = contexts.filter(c => activeContextIds.includes(c.id));
-  const activeSkills = skills.filter(s => activeSkillIds.includes(s.id));
+  // Skills come from the bench view-model (design/capabilities-hub.md §Problem
+  // 1): only ``effective === 'always'`` is active.  The legacy activeSkillIds
+  // list carried two meanings by visibility and showed SUPPRESSED discoverable
+  // skills as active.  Until the bench has answered, fall back to the legacy
+  // list read through its real semantics (never as raw membership).
+  const bench = useBench({
+    projectId: currentProject?.id,
+    legacy: {
+      skillIds: activeSkillIds,
+      skills,
+      skillsLoadedForProject: !!currentProject && skillsProjectId === currentProject.id,
+    },
+  });
+  const activeSkills = bench.ready
+    ? bench.alwaysItems
+        .filter(i => i.kind === 'skill')
+        .map(i => skills.find(s => s.name === i.name))
+        .filter((s): s is typeof skills[number] => !!s)
+    : skills.filter(s => activeSkillIds.includes(s.id) && placementForLegacySkill(s, true) === 'always');
   const hasAdditionalFiles = additionalFiles.length > 0;
   const hasAnySelection = activeContexts.length > 0 || activeSkills.length > 0 || hasAdditionalFiles;
   

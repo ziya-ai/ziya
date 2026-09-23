@@ -11,6 +11,7 @@ import { getTabState, setTabState } from '../utils/tabState';
 import {
   filterByAutoAddTokenLimit, DEFAULT_AUTO_ADD_TOKEN_LIMIT,
   filterByAggregateAutoAddBudget, DEFAULT_AUTO_ADD_AGGREGATE_BUDGET,
+  measureForAutoAdd, TokenMeasure,
 } from '../utils/autoAddTokenLimit';
 import { resolveDocSeed } from '../utils/docSeedDismissal';
 
@@ -1146,9 +1147,38 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     return () => window.removeEventListener('projectSwitched', handleProjectSwitch as unknown as EventListener);
   }, [fetchFolders, seedDefaultIncludedFolders]);
 
+  // Measure every auto-add candidate BEFORE the token-limit filters run.
+  // The filters used to read a cached accurate count and fall back to the
+  // tree estimate, treating 0 as "unknown, never block" — so a file with no
+  // tree node (anything under a .gitignore'd directory) whose accurate count
+  // had not arrived yet (debounced, batches of 20) sailed through both
+  // limits.  One synchronous request for the batch closes that window; the
+  // fetched counts are merged into the shared cache so the gauge sees them.
+  const measureAutoAddCandidates = useCallback(async (paths: string[]): Promise<(p: string) => TokenMeasure> => {
+    const { measure, fetched } = await measureForAutoAdd(
+      paths,
+      accurateTokenCountsRef.current,
+      async (batch) => {
+        const response = await fetch('/api/accurate-token-count', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_paths: batch }),
+        });
+        if (!response.ok) throw new Error(`accurate-token-count ${response.status}`);
+        const data = await response.json();
+        return data?.results ?? {};
+      },
+      (p) => getFolderTokenCount(p, foldersRef.current),
+    );
+    if (Object.keys(fetched).length > 0) {
+      setAccurateTokenCounts(prev => ({ ...prev, ...fetched }));
+    }
+    return measure;
+  }, [getFolderTokenCount]);
+
   // Listen for context sync events from backend
   useEffect(() => {
-    const handleContextSync = (event: CustomEvent) => {
+    const handleContextSync = async (event: CustomEvent) => {
       const { addedFiles, removedFiles, reason } = event.detail;
       const added = Array.isArray(addedFiles) ? addedFiles : [];
       const removed = Array.isArray(removedFiles) ? removedFiles : [];
@@ -1173,16 +1203,19 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       if (added.length > 0 && reason !== 'model_context_management') {
         const limit = currentProjectRef.current?.settings?.contextManagement?.auto_add_token_limit
           ?? DEFAULT_AUTO_ADD_TOKEN_LIMIT;
-        const { allowed, skipped } = filterByAutoAddTokenLimit(added, limit, (p) => {
-          const accurate = accurateTokenCountsRef.current[p]?.count;
-          if (accurate && accurate > 0) return accurate;
-          return getFolderTokenCount(p, foldersRef.current);
-        });
+        const measure = await measureAutoAddCandidates(added);
+        const { allowed, skipped, unmeasured } = filterByAutoAddTokenLimit(added, limit, measure);
         if (skipped.length > 0) {
           console.warn(
             '📂 CONTEXT_SYNC: Skipped ' + skipped.length + ' backend auto-add file(s) over the ' +
             limit + '-token limit:',
             skipped.map(s => s.path + ' (~' + s.tokens + ' tokens)')
+          );
+        }
+        if (unmeasured.length > 0) {
+          console.warn(
+            '📂 CONTEXT_SYNC: Held back ' + unmeasured.length + ' backend auto-add file(s) that could not be measured:',
+            unmeasured
           );
         }
         addedToApply = allowed;
@@ -1206,7 +1239,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
     window.addEventListener('syncContextFromBackend', handleContextSync as unknown as EventListener);
     return () => window.removeEventListener('syncContextFromBackend', handleContextSync as unknown as EventListener);
-  }, []);
+  }, [measureAutoAddCandidates]);
 
   // Listen for context activation/deactivation from ProjectContext
   useEffect(() => {
@@ -1264,16 +1297,21 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       if (options?.isAutoAdd) {
         const limit = currentProjectRef.current?.settings?.contextManagement?.auto_add_token_limit
           ?? DEFAULT_AUTO_ADD_TOKEN_LIMIT;
-        const getTokenCount = (p: string) => {
-          const accurate = accurateTokenCountsRef.current[p]?.count;
-          if (accurate && accurate > 0) return accurate;
-          return getFolderTokenCount(p, foldersRef.current);
-        };
-        const { allowed, skipped } = filterByAutoAddTokenLimit(validPaths, limit, getTokenCount);
+        // Measure the candidates AND the files already auto-added, so the
+        // aggregate running total below is real rather than "0 = unknown".
+        const priorAutoAdded = Array.from(autoAddedFilesRef.current);
+        const getTokenCount = await measureAutoAddCandidates([...validPaths, ...priorAutoAdded]);
+        const { allowed, skipped, unmeasured } = filterByAutoAddTokenLimit(validPaths, limit, getTokenCount);
         if (skipped.length > 0) {
           console.warn(
             '📁 CONTEXT: Skipped ' + skipped.length + ' auto-add file(s) over the ' + limit + '-token limit:',
             skipped.map(s => s.path + ' (~' + s.tokens + ' tokens)')
+          );
+        }
+        if (unmeasured.length > 0) {
+          console.warn(
+            '📁 CONTEXT: Held back ' + unmeasured.length + ' auto-add file(s) that could not be measured:',
+            unmeasured
           );
         }
         pathsToAdd = allowed;
@@ -1286,8 +1324,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         // and stop accepting new ones once the budget is gone.
         const aggregateBudget = currentProjectRef.current?.settings?.contextManagement?.auto_add_aggregate_budget
           ?? DEFAULT_AUTO_ADD_AGGREGATE_BUDGET;
-        const currentAutoAddedTotal = Array.from(autoAddedFilesRef.current)
-          .reduce((sum, p) => sum + Math.max(0, getTokenCount(p)), 0);
+        const currentAutoAddedTotal = priorAutoAdded
+          .reduce((sum, p) => sum + Math.max(0, getTokenCount(p) ?? 0), 0);
         const aggResult = filterByAggregateAutoAddBudget(
           pathsToAdd, currentAutoAddedTotal, aggregateBudget, getTokenCount,
         );
@@ -1329,7 +1367,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       console.error('Error adding files to context:', error);
       throw error;
     }
-  }, [setCheckedKeys, getFolderTokenCount]);
+  }, [setCheckedKeys, measureAutoAddCandidates]);
 
   // Remove all auto-added files from context and return stats
   const removeAutoAddedFiles = useCallback((): { removedCount: number; tokensRecovered: number } => {
