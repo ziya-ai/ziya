@@ -995,6 +995,32 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
         },
+        "kimi-k3": {
+            # Live-verified 2026-09-23: moonshotai.kimi-k3 "Kimi K3" invocable
+            # via Converse on bedrock-runtime (us./global. CRIS, us-east-1 +
+            # us-west-2); TEXT+IMAGE in. No wrapper_class -> NovaBedrockProvider
+            # (Converse), unlike kimi-k2.5/k2-thinking which use the
+            # OpenAIBedrock invoke path. Emits reasoningContent by default.
+            # Output ceiling 128000 (probed); temperature/topP rejected (400).
+            # Context window LIVE-PROBED 2026-09-23: a ~1.08M-token input was
+            # rejected with "maximum (1048576)"; 900k succeeded — so the
+            # window is 1048576, NOT the 256k first inferred.
+            "model_id": {
+                "us": "us.moonshotai.kimi-k3",
+                "global": "global.moonshotai.kimi-k3"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "oss_openai_gpt",
+            "token_limit": 1048576,
+            "max_input_tokens": 1048576,
+            "context_window": 1048576,
+            "max_output_tokens": 120000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
         "minimax-m2.1": {
             "model_id": {
                 "us": "minimax.minimax-m2.1"
@@ -1071,6 +1097,34 @@ MODEL_CONFIGS = {
             "context_window": 200000,
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
+        },
+        "grok-4.6": {
+            # Live-verified 2026-09-23: xai.grok-4.6 "Grok 4.6" invocable via
+            # Converse on bedrock-runtime (us./global. CRIS, us-east-1 +
+            # us-west-2); TEXT+IMAGE in. First xAI model in Ziya. No
+            # wrapper_class -> NovaBedrockProvider (Converse). Emits redacted
+            # reasoningContent by default. temperature/topP rejected (400);
+            # probe accepted maxTokens up to 200000, so the 131072 ceiling
+            # here is a conservative cap, not the model's hard limit.
+            # Context window LIVE-PROBED 2026-09-23: a 900,019-token input was
+            # rejected with "prompt tokens (900019) exceed model maximum
+            # (524288) for xai.grok-4.6" — so the window is 524288, NOT the
+            # 256k first inferred (a 500k input succeeded, 900k did not).
+            "model_id": {
+                "us": "us.xai.grok-4.6",
+                "global": "global.xai.grok-4.6"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "oss_openai_gpt",
+            "token_limit": 524288,
+            "max_input_tokens": 524288,
+            "context_window": 524288,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "llama4-scout": {
             "model_id": {
@@ -1439,6 +1493,69 @@ MODEL_CONFIGS = {
             "mantle_api": "openai-responses",
             "requires_provider_data_share": True,
             "unsupported_parameters": ["temperature"],
+        },
+        # GPT-6 family (Sol/Astra/Luna) — unlike the gpt-5.6 family above,
+        # GPT-6 is served NATIVELY on bedrock-runtime via plain Converse
+        # (us./global. CRIS in us-east-1 + us-west-2), NOT through the mantle
+        # OpenAI Responses gateway. So no endpoint_override / mantle_api and
+        # no wrapper_class -> NovaBedrockProvider (Converse). Live-verified
+        # 2026-09-23: TEXT+IMAGE in, output ceiling 131072, temperature/topP
+        # rejected (400). Context window LIVE-PROBED 2026-09-23 via Converse:
+        # accepts >=900,005-token input, rejects >=950,005; consistent with a
+        # 1,048,576 total window minus the reserved 131072 output budget
+        # (900005+131072 fits; 950005+131072 does not).
+        "gpt-6-sol": {
+            "model_id": {
+                "us": "us.openai.gpt-6-sol",
+                "global": "global.openai.gpt-6-sol"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "oss_openai_gpt",
+            "token_limit": 1048576,
+            "max_input_tokens": 1048576,
+            "context_window": 1048576,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-6-astra": {
+            # See gpt-6-sol above for the shared GPT-6 routing/verification note.
+            "model_id": {
+                "us": "us.openai.gpt-6-astra",
+                "global": "global.openai.gpt-6-astra"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "oss_openai_gpt",
+            "token_limit": 1048576,
+            "max_input_tokens": 1048576,
+            "context_window": 1048576,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-6-luna": {
+            # See gpt-6-sol above for the shared GPT-6 routing/verification note.
+            "model_id": {
+                "us": "us.openai.gpt-6-luna",
+                "global": "global.openai.gpt-6-luna"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "oss_openai_gpt",
+            "token_limit": 1048576,
+            "max_input_tokens": 1048576,
+            "context_window": 1048576,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
     },
     "google": {
