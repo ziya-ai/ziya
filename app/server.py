@@ -344,6 +344,19 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     except Exception as e:
         logger.warning(f"Handoff prelude injection failed (non-fatal): {e}")
 
+    # Files this conversation wrote that are too large to include
+    # (app/utils/auto_context.py).  Per-turn state, so it rides with the
+    # volatile turn part on the final user message, never the cached system
+    # prompt.
+    try:
+        from app.utils.auto_context import format_tracked_files_notice
+        _tracked_notice = format_tracked_files_notice(conversation_id)
+        if _tracked_notice:
+            _handoff_turn_part = "\n\n".join(
+                p for p in (_handoff_turn_part, _tracked_notice) if p)
+    except Exception as e:
+        logger.warning(f"Tracked-file notice failed (non-fatal): {e}")
+
     # SDO-183: Strip hidden characters from user input before it reaches the model.
     # This prevents Unicode tag smuggling attacks where invisible instructions
     # are embedded in user prompts.

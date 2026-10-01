@@ -2982,6 +2982,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
     // Get current project path for diff application
     const { currentProject } = useProject();
+    const { currentConversationId } = useStreamingContext();
     const buttonInstanceId = useRef(`button-${diffElementId}-${Date.now()}`).current;
 
     // Track processed request IDs to prevent infinite update loops
@@ -3064,7 +3065,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             // headers the server parser can't read (0 hunks -> silent
             // "already_applied" no-op). This is a no-op for normal diffs.
             const applyReadyDiff = synthesizeMissingHunkHeaders(diff);
-            const result = await applyDiff(applyReadyDiff, filePath, requestId, diffElementId, buttonInstanceId, currentProject);
+            const result = await applyDiff(applyReadyDiff, filePath, requestId, diffElementId, buttonInstanceId, currentProject, currentConversationId);
 
             if (result.success || result.status === 'partial') {
                 const data = result.data!;

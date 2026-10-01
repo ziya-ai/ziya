@@ -1211,6 +1211,23 @@ export const sendPayload = async (
                     }
                 }
 
+                // file_write auto-added a small file it wrote to this
+                // conversation's context (app/utils/auto_context.py); show it
+                // in the file tree. Large files are only tracked, not added.
+                if (unwrappedData.type === 'tool_display'
+                    && unwrappedData.tool_name === 'file_write') {
+                    const raw = unwrappedData.result;
+                    const result = typeof raw === 'string'
+                        ? (() => { try { return JSON.parse(raw); } catch { return null; } })()
+                        : raw;
+                    const auto = result && result.auto_context;
+                    if (auto && auto.tier === 'included' && auto.path) {
+                        window.dispatchEvent(new CustomEvent('syncContextFromBackend', {
+                            detail: { addedFiles: [auto.path], removedFiles: [], reason: 'auto_context_write' },
+                        }));
+                    }
+                }
+
                 // Live UI sync for model-staged / model-launched task cards.
                 // task_card_stage creates a card + a staged binding, and
                 // task_card_launch a run + a bound binding, server-side
@@ -3093,7 +3110,8 @@ export async function applyDiff(
     requestId: string,
     elementId: string,
     buttonInstanceId: string,
-    currentProject: Project | null
+    currentProject: Project | null,
+    conversationId?: string | null
 ): Promise<ApplyDiffResult> {
     try {
         // Extract and clean the diff content
@@ -3118,7 +3136,10 @@ export async function applyDiff(
                 requestId,
                 elementId,
                 buttonInstanceId,
-                projectRoot: currentProject?.path
+                projectRoot: currentProject?.path,
+                // Lets the server add the written file to this conversation's
+                // context, or track it if it is too large (auto_context.py).
+                conversation_id: conversationId || undefined
             }),
         });
 
@@ -3131,6 +3152,11 @@ export async function applyDiff(
         if (response.ok || response.status === 207) {
             const data = await response.json();
             console.log('Apply changes response data:', data);
+            if (data?.auto_context?.tier === 'included' && data.auto_context.path) {
+                window.dispatchEvent(new CustomEvent('syncContextFromBackend', {
+                    detail: { addedFiles: [data.auto_context.path], removedFiles: [], reason: 'auto_context_write' },
+                }));
+            }
 
             return {
                 success: response.ok,
