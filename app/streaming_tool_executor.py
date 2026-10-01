@@ -4184,7 +4184,7 @@ Please retry the tool call with valid JSON. Ensure:
                     iteration_usages.append(iteration_usage)
                     # Usage ledger: estimate -> actual for this iteration.
                     from app.cost.meter import close_iteration as _usage_close
-                    _usage_close(_usage_record_id, iteration_usage)
+                    _usage_close(_usage_record_id, iteration_usage, model_id=self.model_id)
 
                     total_input = iteration_usage.input_tokens + iteration_usage.cache_read_tokens
                     fresh = iteration_usage.input_tokens

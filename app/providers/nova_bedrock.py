@@ -120,6 +120,7 @@ class NovaBedrockProvider(LLMProvider):
                 yield ErrorEvent(message=str(err), error_type=ct,
                                  retryable=ct in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED))
                 return
+        _service_tier.note_call(self.model_id, params.get("serviceTier"), response)
         if "serviceTier" in params:
             logger.info(f"NovaBedrockProvider: {self.model_id} service tier requested="
                         f"{params['serviceTier']['type']} resolved="
