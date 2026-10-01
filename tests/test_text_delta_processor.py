@@ -136,6 +136,84 @@ class TestFakeToolSuppression:
 class TestHallucinationDetection:
     """Tests for backend hallucination detection."""
 
+    # --- Parroted replay envelope (cb6f0b9e turn 23) -------------------
+    # app.utils.tool_history_rewrite re-encodes prior tool results for the
+    # model as a U+2039-bracketed envelope.  The model learned the shape
+    # and emitted it as bare text with invented bodies; no layer matched.
+
+    _ENVELOPE_OPEN = (
+        '\u2039tool_result trust="medium" tool="mcp_create_jira_issue" '
+        'label="Create Jira Issue"\u203a'
+    )
+    _ENVELOPE_CLOSE = '\u2039/tool_result\u203a'
+    # UTF-8 bytes of U+2039 decoded as Latin-1 — appeared on a closer in
+    # the live sample.
+    _MOJIBAKE_CLOSE = '\u201a\u00c4\u00b9/tool_result\u203a'
+
+    def test_parroted_replay_envelope_aborts(self):
+        """A bare replay-envelope opener at line start must abort."""
+        executor = _make_executor()
+        state = _make_state()
+        text = (
+            "Refreshing Jira auth, then retrying one create.\n\n\n"
+            + self._ENVELOPE_OPEN + "\n"
+            + 'Error executing create_jira_issue: JiraError HTTP 400\n'
+            + self._ENVELOPE_CLOSE + "\n"
+        )
+
+        events = process_text_delta(executor, text, state)
+
+        assert state.hallucination_detected is True
+        recovery = [e for e in events if e.get('type') == 'hallucination_recovery']
+        assert recovery, "no structured recovery event was emitted"
+        assert recovery[0]['reason'] == 'fabricated_tool_output'
+        # The contaminated paragraph is stripped so it is not fed back on
+        # retry; the leading prose survives.
+        assert 'tool_result' not in state.assistant_text
+        assert state.assistant_text.startswith("Refreshing Jira auth")
+
+    def test_parroted_envelope_mojibake_variant_aborts(self):
+        """The Latin-1 mojibake of the bracket is the same fabrication."""
+        executor = _make_executor()
+        state = _make_state()
+        text = (
+            "Same 400 again.\n\n"
+            + self._MOJIBAKE_CLOSE + "\n"
+        )
+
+        process_text_delta(executor, text, state)
+
+        assert state.hallucination_detected is True
+        assert 'tool_result' not in state.assistant_text
+
+    def test_envelope_inside_diff_body_is_not_flagged(self):
+        """A diff line carrying the envelope (e.g. editing these tests) is
+        authorship, not fabrication: the pattern is line-anchored and a
+        ``+`` prefix keeps the bracket off column 0."""
+        executor = _make_executor()
+        state = _make_state()
+        text = (
+            "diff --git a/tests/x.py b/tests/x.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            "+    open = '" + self._ENVELOPE_OPEN + "'\n"
+            "+" + self._ENVELOPE_CLOSE + "\n"
+        )
+
+        process_text_delta(executor, text, state)
+
+        assert state.hallucination_detected is False
+
+    def test_envelope_mentioned_mid_line_is_not_flagged(self):
+        """Talking about the envelope mid-sentence is discussion."""
+        executor = _make_executor()
+        state = _make_state()
+        text = ("The replay wraps results in a " + self._ENVELOPE_OPEN
+                + " envelope so the model can tell them apart.\n")
+
+        process_text_delta(executor, text, state)
+
+        assert state.hallucination_detected is False
+
     def test_security_block_detected(self):
         """SECURITY BLOCK pattern should trigger hallucination flag."""
         executor = _make_executor()
