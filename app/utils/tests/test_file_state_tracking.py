@@ -241,8 +241,16 @@ def new_function():
         annotated_lines, success = file_state_manager.get_annotated_content(conv_id, "test_file1.py")
         assert success
         
+        # Annotation prefix is "[NNN<state>] " (7 chars), the format the
+        # system prompt documents to the model. The original slice was [6:],
+        # which left the separator space on every line, so this test had
+        # failed since it was written. Strip by pattern, not by width.
+        import re
+        prefix = re.compile(r"^\[\d{3,}[ +*]\] ")
+        assert annotated_lines, "no annotated lines returned"
         for i, line in enumerate(annotated_lines):
-            content_part = line[6:]
+            assert prefix.match(line), line
+            content_part = prefix.sub("", line, count=1)
             expected_line = original_content.splitlines()[i] if i < len(original_content.splitlines()) else ""
             assert content_part == expected_line
     
