@@ -56,8 +56,13 @@ export type Message = {
     // Always authored with role 'system' AND muted: true, so every send path
     // (which filters muted) excludes it — it is for the user, never the
     // model.  See design/conversation-handoff.md.
+    //   drafted     the model wrote/updated the draft (Review handoff link)
+    //   handed_off  a continuation was created; targetId is its conversation
+    //               id, so the transcript's last item links forward even
+    //               before the record's handedOffTo has synced.
     handoffNotice?: {
-        kind: 'drafted' | 'updated';
+        kind: 'drafted' | 'updated' | 'handed_off';
+        targetId?: string;
     };
     _timestamp?: number;
     _version?: number;
