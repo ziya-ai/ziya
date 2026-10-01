@@ -374,18 +374,34 @@ Beyond shell detection, a separate defense layer prevents *any* merge or sync op
 
 | Layer | Location | Mechanism |
 |---|---|---|
-| Server bulk-sync | `app/api/chats.py` | Rejects incoming updates that have fewer messages than the existing server copy (threshold: existing > 2 messages) |
-| SERVER_SYNC merge | `ChatContext.tsx` syncWithServer | When server version wins by `_version` but has fewer messages, keeps local messages while accepting server metadata |
+| Server bulk-sync | `app/api/chats.py`, `app/utils/chat_message_ops.py` | Merges messages **by id**: can add messages and update client-owned metadata (mute, feedback flags) but never removes a message or changes its content (`id`, `role`, `content`, `images`, `timestamp`). See "Message-level operations" below |
+| SERVER_SYNC merge | `utils/syncMerge.ts` mergeServerChat | Works from the chat-list summary only: it overlays server metadata and never replaces local messages. Bodies arrive through bulk hydration, which adopts the server copy; that is safe because the server record can only shrink through the explicit delete/rewind endpoints (see "Message-level operations"). A server-only chat titled "New Conversation" counts as an empty shell (skipped, and GC-deleted on the server once stale) only when the summary reports `messageCount === 0` |
 | In-memory preservation | `ChatContext.tsx` setConversations updater | Compares merged conversation message count against React state; keeps whichever has more |
 | Lazy-load guard | `ChatContext.tsx` loadConversation | IDB and server lazy-load only accepted when loaded message count ≥ current count |
 | Delegate fetch guard | `ChatContext.tsx` loadConversation | Background delegate fetches won't overwrite local messages if server has fewer |
 | Shell append guard | `ChatContext.tsx` addMessageToConversation | Detects when a message is being appended to a shell conversation and triggers async recovery from IDB before appending |
 | IDB dedup guard | `db.ts` _saveConversationsWithLock | Shell entries never overwrite non-shell entries in the same save batch |
-| Cross-tab merge guard | `ChatContext.tsx` mergeConversations | Cross-tab BroadcastChannel merge rejects remote versions with fewer messages even if `_version` is newer |
+| Cross-tab merge guard | `ChatContext.tsx` mergeConversations | Cross-tab BroadcastChannel merge rejects remote versions with fewer messages even if `_version` is newer, unless every missing message is listed in the remote record's `_deletedMessages` (an explicit delete or rewind in the other tab; `utils/syncMerge.ts` `shrinkExplainedByTombstones`) |
 | IDB read-before-write guard | `db.ts` _saveConversationsWithLock | Before every IDB write, reads existing record and preserves messages for any conversation where the write would reduce count |
 | Retention timestamp | `retentionPurge.ts` | Retention decisions use `lastAccessedAt` (most recent activity), not `createdAt` — an old conversation still in active use is never purged |
 
-The threshold of `> 2` messages allows shell conversations (which legitimately have only first+last) to be freely replaced, while protecting any conversation with meaningful history.
+### Message-level operations
+
+Because bulk-sync can no longer shrink or edit messages, every user action that does has its own endpoint, and the frontend calls it directly:
+
+| User action | Frontend site | Endpoint |
+|---|---|---|
+| Resubmit an earlier question | `Conversation.handleResubmit` | `POST /chats/{id}/rewind` |
+| Edit a question and resubmit | `EditSection.handleSubmit` | `POST /chats/{id}/rewind` with `text`/`images` |
+| Edit a message in place | `EditSection.handleSave` | `PATCH /chats/{id}/messages/{mid}` |
+| Delete a muted message / discard an unanswered question | `Conversation.handleDiscard` | `DELETE /chats/{id}/messages/{mid}` |
+
+- **Rewind before the new turn.** The frontend awaits `rewind` before starting the resubmitted turn. bulk-sync only adds messages, so a rewind that landed after the new answer had synced would remove that answer too.
+- **Tombstones.** Removed messages are recorded on the chat record in the server-owned `_deletedMessages` field (ids, plus content fingerprints for legacy messages), so an older copy pushed by another tab cannot bring them back. bulk-sync always keeps the on-disk value.
+- **Legacy messages without a stable id.** `conversationToServerChat` mints a new `msg-…` id on every push for a local message that has none. The merge matches those by role and content against server messages not yet matched, and adopts the server id. The merged list then differs from what the client sent, so the record's `_version` moves past the client's, and the next pull hands the client the server ids. Endpoints accept a locator (`index`, `role`, `contentHead`, `contentLength`, counted in code points) for a message whose server id the client doesn't know, and refuse with 409 when it is ambiguous.
+- **Locking.** Every read-modify-write (bulk-sync per chat, and each endpoint) holds `chats/.messages.lock` (flock), because two servers can share `~/.ziya`.
+
+This is step 1 of "Turn authorship" in `design/conversation-single-writer.md`. The resubmit/edit rewind becomes the first step of the server turn endpoint in step 3.
 
 ### Read-Purity of Chat Endpoints
 

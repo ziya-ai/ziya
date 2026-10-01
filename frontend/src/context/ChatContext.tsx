@@ -3163,7 +3163,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // background as fetches complete.  needFullFetch IDs are
                     // recorded in pendingHydration; the actual fetches kick off
                     // after the first commit lands.
-                    const fullFetchMap = new Map<string, any>();
                     const pendingHydration = needFullFetch.slice();
                     // Server-side empty-shell IDs we'll DELETE after the commit.
                     // These are stale "New Conversation" entries the server still
@@ -3185,8 +3184,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                     // Merge server conversations
                     // Merge-decision core extracted to utils/syncMerge.ts
-                    // (pure + unit-testable).  Behavior unchanged: see
-                    // mergeServerChat for the empty-shell / adopt-full /
+                    // (pure + unit-testable).  See
+                    // mergeServerChat for the empty-shell /
                     // shell-placeholder / summary-overlay rules and their
                     // rationale comments.  Orchestration policies stay
                     // here: the per-cycle GC staging cap and the tab-scoped
@@ -3196,7 +3195,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         const decision = syncMerge.mergeServerChat(
                             sc,
                             mergedMap.get(sc.id),
-                            fullFetchMap.get(sc.id),
                             {
                                 projectId,
                                 isActiveConv: sc.id === currentConversationRef.current,
