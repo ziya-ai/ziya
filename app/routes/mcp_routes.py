@@ -1007,6 +1007,19 @@ async def discard_session_grant():
         logger.error(f"Error discarding session grant: {e}")
         raise HTTPException(status_code=500, detail=f"Error discarding session request: {str(e)}")
 
+class GitGrantHazardsRequest(BaseModel):
+    commands: List[str] = Field(default_factory=list)
+
+
+@router.post("/git-grant-hazards")
+async def git_grant_hazards(req: GitGrantHazardsRequest):
+    """What each explicit ``git <sub>`` entry in an allowlist admits
+    (design/git-tool.md step 6).  Read-only; the shell-config modal calls it
+    as the user edits so the warning shows before Save."""
+    from app.utils.git_grant_hazards import assess_all
+    return {"hazards": [h.to_dict() for h in assess_all(req.commands)]}
+
+
 @router.post("/shell-config")
 async def update_shell_config(config: ShellConfig):
     """
