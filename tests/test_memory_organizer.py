@@ -355,8 +355,9 @@ class TestCleanupCorpus:
             result = await cleanup_corpus(tmp_store)
 
         assert result["removed"] == 2
-        assert tmp_store.get(m2.id) is None
-        assert tmp_store.get(m4.id) is None
+        # Archived, not deleted (see tests/test_memory_organizer_well.py).
+        assert tmp_store.get(m2.id).status == "archived"
+        assert tmp_store.get(m4.id).status == "archived"
         assert tmp_store.get(m1.id) is not None
         assert tmp_store.get(m3.id) is not None
 
@@ -382,7 +383,7 @@ class TestCleanupCorpus:
             result = await cleanup_corpus(tmp_store)
 
         assert result["merged"] == 1
-        assert tmp_store.get(m2.id) is None  # absorbed
+        assert tmp_store.get(m2.id).status == "archived"  # absorbed, recoverable
         updated_m1 = tmp_store.get(m1.id)
         assert "VXLAN" in updated_m1.content  # merged content
         assert "networking" in updated_m1.tags  # tags merged

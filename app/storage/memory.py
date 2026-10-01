@@ -637,8 +637,107 @@ class MemoryStorage:
         self._save_mindmap(nodes)
         return True
 
-    def place_memory_in_mindmap(self, memory: Memory) -> Optional[str]:
-        """Auto-place a memory in the mind-map based on tag overlap.
+    # Placement tuning.  Tag overlap is normalised by the node's tag-set
+    # size, so a node cannot win placement merely by having accumulated
+    # tags (a 500-tag root overlaps nearly every memory on a raw count,
+    # and every memory it wins adds more tags — a gravity well).
+    # Provenance gating keeps a memory off nodes populated by other
+    # projects when a node of its own project fits at all.  The gate is
+    # soft: with no compatible candidate, the best topical node wins.
+    PLACEMENT_PROVENANCE_MIN_SHARE = 0.2
+    # A placed memory is moved by repair only when a compatible node beats
+    # its current node's score by this factor (or the current node is
+    # provenance-incompatible), so near-ties do not churn.
+    REBALANCE_SCORE_MARGIN = 2.0
+    # Part C: recompute node tags from members on repair, so tags cannot
+    # accrete without bound (app/utils/memory_collections.member_node_tags).
+    # Off by default until the replay measures it; the harness flips it per
+    # arm through --overrides.
+    NODE_TAGS_FROM_MEMBERS = False
+    NODE_TAGS_MIN_SHARE = 0.5
+    NODE_TAGS_MAX = 12
+
+    def _provenance(self, rows: Optional[List[dict]] = None,
+                    nodes: Optional[Dict[str, dict]] = None
+                    ) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """``(memory id -> collection key, project -> collection key)``.
+
+        Provenance is compared by *collection* (projects inferred to hold
+        the same knowledge; see app/utils/memory_collections.py), not by
+        raw project path: gating on paths judged a topic spread across
+        several repos incompatible with its own node."""
+        from app.utils.memory_collections import infer_collections, keys_by_memory_id
+        proj_by_id = self._project_by_memory_id(rows)
+        coll = infer_collections(self._load_mindmap() if nodes is None else nodes, proj_by_id)
+        return keys_by_memory_id(proj_by_id, coll), coll
+
+    def _project_by_memory_id(self, rows: Optional[List[dict]] = None) -> Dict[str, str]:
+        """Map memory id -> its first ``scope.project_paths`` entry."""
+        rows = self._load_memories() if rows is None else rows
+        out: Dict[str, str] = {}
+        for r in rows:
+            pp = (r.get("scope") or {}).get("project_paths") or []
+            if pp and r.get("id"):
+                out[r["id"]] = pp[0]
+        return out
+
+    @classmethod
+    def _provenance_compatible(cls, ndata: dict, mem_projects: set,
+                               proj_by_id: Dict[str, str]) -> bool:
+        """True when ``mem_projects`` hold at least
+        PLACEMENT_PROVENANCE_MIN_SHARE of the node's members with known
+        provenance.  A memory or node without provenance is compatible
+        with everything."""
+        if not mem_projects:
+            return True
+        known = [proj_by_id[r] for r in ndata.get("memory_refs", []) if r in proj_by_id]
+        if not known:
+            return True
+        share = sum(1 for p in known if p in mem_projects) / len(known)
+        return share >= cls.PLACEMENT_PROVENANCE_MIN_SHARE
+
+    def _rank_placement(self, memory: Memory, nodes: Dict[str, dict],
+                        proj_by_id: Dict[str, str],
+                        coll_of_project: Optional[Dict[str, str]] = None
+                        ) -> List[Tuple[float, bool, str]]:
+        """Candidate nodes for ``memory``, best first, as
+        ``(score, provenance_compatible, node_id)``.
+
+        score = |mem_tags ∩ node_tags| / sqrt(|node_tags|).  Compatible
+        nodes rank ahead of incompatible ones; then higher score; then the
+        node with fewer tags.  Nodes with no tag overlap are omitted.
+        """
+        mem_tags = set(t.lower() for t in memory.tags)
+        if not mem_tags:
+            return []
+        from app.utils.memory_collections import memory_keys
+        mem_projects = memory_keys(memory.scope.project_paths, coll_of_project or {})
+        cands: List[Tuple[bool, float, int, str]] = []
+        for nid, ndata in nodes.items():
+            node_tags = set(t.lower() for t in ndata.get("tags", []))
+            parent = nodes.get(ndata.get("parent") or "")
+            if parent:
+                # Cell division copies parent tags onto a child; they mark
+                # the child as belonging to its parent, not what it is
+                # about.  Scored on them, a small child out-ranks its
+                # large parent for every generic parent-topic memory.
+                own = node_tags - {t.lower() for t in parent.get("tags", [])}
+                if own:
+                    node_tags = own
+            overlap = len(mem_tags & node_tags)
+            if not overlap:
+                continue
+            score = overlap / math.sqrt(len(node_tags))
+            compat = self._provenance_compatible(ndata, mem_projects, proj_by_id)
+            cands.append((compat, score, -len(node_tags), nid))
+        cands.sort(reverse=True)
+        return [(score, compat, nid) for compat, score, _neg, nid in cands]
+
+    def place_memory_in_mindmap(self, memory: Memory,
+                                _prov: Optional[Tuple[Dict[str, str], Dict[str, str]]] = None
+                                ) -> Optional[str]:
+        """Auto-place a memory in the mind-map by normalised tag overlap,
+        preferring nodes whose members share the memory's project.
 
         Returns the node ID it was placed under, or None if no match.
         """
@@ -647,23 +746,104 @@ class MemoryStorage:
         nodes = self._load_mindmap()
         if not nodes:
             return None
-        mem_tags = set(t.lower() for t in memory.tags)
-        best_id, best_score = None, 0
-        for nid, ndata in nodes.items():
-            node_tags = set(t.lower() for t in ndata.get("tags", []))
-            overlap = len(mem_tags & node_tags)
-            if overlap > best_score:
-                best_score = overlap
-                best_id = nid
-        if best_id and best_score > 0:
-            if memory.id not in nodes[best_id].get("memory_refs", []):
-                nodes[best_id].setdefault("memory_refs", []).append(memory.id)
-                self._save_mindmap(nodes)
-            # Also update the memory's scope.domain_node
-            memory.scope.domain_node = best_id
-            self.save(memory)
-            return best_id
-        return None
+        proj_by_id, coll = self._provenance(nodes=nodes) if _prov is None else _prov
+        ranked = self._rank_placement(memory, nodes, proj_by_id, coll)
+        if not ranked:
+            return None
+        best_id = ranked[0][2]
+        if memory.id not in nodes[best_id].get("memory_refs", []):
+            nodes[best_id].setdefault("memory_refs", []).append(memory.id)
+            self._save_mindmap(nodes)
+        # Also update the memory's scope.domain_node
+        memory.scope.domain_node = best_id
+        self.save(memory)
+        return best_id
+
+    @staticmethod
+    def _move_ref(nodes: Dict[str, dict], mid: str, src: str, dst: str) -> None:
+        nodes[src]["memory_refs"] = [r for r in nodes[src].get("memory_refs", []) if r != mid]
+        refs = nodes[dst].setdefault("memory_refs", [])
+        if mid not in refs:
+            refs.append(mid)
+
+    def _retag_from_members(self, rows: List[dict]) -> int:
+        """Replace each populated node's tags with the tags its members
+        share (part C).  Returns the number of nodes whose tags changed.
+        Nodes with no tagged members keep their tags."""
+        from app.utils.memory_collections import member_node_tags
+        nodes = self._load_mindmap()
+        tags_by_id = {r.get("id"): list(r.get("tags") or []) for r in rows}
+        changed = 0
+        for n in nodes.values():
+            new = member_node_tags(
+                [tags_by_id[r] for r in n.get("memory_refs", []) if r in tags_by_id],
+                self.NODE_TAGS_MIN_SHARE, self.NODE_TAGS_MAX)
+            if new is not None and set(new) != {t.lower() for t in n.get("tags", [])}:
+                n["tags"] = new
+                changed += 1
+        if changed:
+            self._save_mindmap(nodes)
+        return changed
+
+    def _split_foreign_collections(self, rows: List[dict], key_by_id: Dict[str, str],
+                                   coll_of_project: Dict[str, str]) -> int:
+        """Move every group of members whose collection is not their node's
+        owner.  Each member goes to the best tag-matching node that its own
+        collection owns; the rest of the group, when still >= 2, becomes a
+        new root whose tags and handle come from the group's own tags.
+        Returns the number of memories moved.
+
+        This is what drains a gravity well: a foreign collection that holds
+        the majority of a node's members is provenance-compatible there, so
+        neither the placement gate nor the rebalance margin ever moves it.
+        """
+        from app.utils.memory_collections import (
+            CATCH_ALL_NODE_IDS, MIN_SPLIT_GROUP, derive_tags, handle_from_tags,
+            owner_collection, plan_collection_splits)
+        nodes = self._load_mindmap()
+        plans = plan_collection_splits(nodes, key_by_id)
+        if not plans:
+            return 0
+        row_by_id = {r.get("id"): r for r in rows}
+        owners = {nid: owner_collection(nid, nodes, key_by_id) for nid in nodes}
+        moved: Dict[str, str] = {}
+        for src, coll, mids in plans:
+            leftovers = []
+            for mid in mids:
+                row = row_by_id.get(mid)
+                if row is None or mid in moved:
+                    continue
+                ranked = self._rank_placement(Memory(**row), nodes, key_by_id, coll_of_project)
+                dst = next((nid for _score, _compat, nid in ranked
+                            if nid != src and owners.get(nid) == coll
+                            and nid not in CATCH_ALL_NODE_IDS), None)
+                if dst:
+                    self._move_ref(nodes, mid, src, dst)
+                    moved[mid] = dst
+                else:
+                    leftovers.append(mid)
+            if len(leftovers) < MIN_SPLIT_GROUP:
+                continue
+            tags = derive_tags(row_by_id[m].get("tags", []) for m in leftovers)
+            handle = handle_from_tags(tags)
+            base = "domain_" + (re.sub(r"[^a-z0-9]+", "_", handle.lower()).strip("_")[:30] or "split")
+            nid, i = base, 0
+            while nid in nodes:
+                i += 1
+                nid = f"{base}_{i}"
+            nodes[nid] = MindMapNode(id=nid, handle=handle, tags=tags).model_dump()
+            owners[nid] = coll
+            for m in leftovers:
+                self._move_ref(nodes, m, src, nid)
+                moved[m] = nid
+        if moved:
+            self._save_mindmap(nodes)
+            for mid, dst in moved.items():
+                mem = self.get(mid)
+                if mem and mem.scope.domain_node != dst:
+                    mem.scope.domain_node = dst
+                    self.save(mem)
+        return len(moved)
 
     def _detach_from_mindmap(self, memory_id: str) -> int:
         """Remove ``memory_id`` from every node's memory_refs.
@@ -685,18 +865,26 @@ class MemoryStorage:
     def repair_mindmap(self) -> Dict[str, int]:
         """Restore the invariant  ``memory_refs ⊆ active memory ids``.
 
-        Four idempotent passes:
+        Six idempotent passes:
           1. drop refs to memories that are deleted or not active;
           1b. merge root nodes whose handles are the same domain
               (case/whitespace-insensitive) into one node;
           2. place active memories that no node references (before
              pruning, so a tag-matching empty node receives them);
+          2b. rebalance placed memories whose node is populated by other
+              projects, or that a same-project node clearly out-scores,
+              so a node cannot keep what it won by mass alone;
+          2c. split out of each node every group (>= 2) of members whose
+              collection is not the node's owner: to a node that
+              collection owns when one shares a tag, else to a new root
+              built from the group's own tags;
           3. prune nodes with no refs and no children, repeating until
              stable so a subtree that only ever referenced deleted
              memories disappears root and all.
         """
         result = {"dangling_refs_removed": 0, "empty_nodes_removed": 0,
-                  "placed": 0, "roots_merged": 0}
+                  "placed": 0, "roots_merged": 0, "rebalanced": 0,
+                  "collection_splits": 0}
         nodes = self._load_mindmap()
         if not nodes:
             return result
@@ -718,11 +906,71 @@ class MemoryStorage:
         self._save_mindmap(nodes)
 
         # 2. Place unplaced active memories.
+        prov = self._provenance(active_rows, nodes)
+        proj_by_id, coll = prov
         placed_ids = {r for n in nodes.values() for r in n.get("memory_refs", [])}
         for row in active_rows:
             if row.get("id") not in placed_ids:
-                if self.place_memory_in_mindmap(Memory(**row)):
+                if self.place_memory_in_mindmap(Memory(**row), _prov=prov):
                     result["placed"] += 1
+
+        from app.utils.memory_collections import CATCH_ALL_NODE_IDS
+        # 2b. Rebalance.  Decisions are made against one snapshot so the
+        #     pass is deterministic; shares shift as memories move, so a
+        #     large migration converges over successive repairs.
+        #     Memories referenced by more than one node (cross-placed)
+        #     are left alone.
+        nodes = self._load_mindmap()
+        holders: Dict[str, List[str]] = {}
+        for nid, n in nodes.items():
+            for r in n.get("memory_refs", []):
+                holders.setdefault(r, []).append(nid)
+        moves: List[Tuple[str, str, str]] = []
+        for row in active_rows:
+            mid = row.get("id")
+            if len(holders.get(mid, [])) != 1:
+                continue
+            cur = holders[mid][0]
+            mem = Memory(**row)
+            # The catch-all root never receives a memory from a real
+            # topic node (see memory_collections.CATCH_ALL_NODE_IDS).
+            ranked = [c for c in self._rank_placement(mem, nodes, proj_by_id, coll)
+                      if c[2] == cur or c[2] not in CATCH_ALL_NODE_IDS]
+            if not ranked:
+                continue
+            best_score, best_compat, best_id = ranked[0]
+            if best_id == cur or not best_compat:
+                continue
+            cur_entry = next((c for c in ranked if c[2] == cur), None)
+            cur_compat = self._provenance_compatible(
+                nodes[cur], {coll.get(p, p) for p in mem.scope.project_paths or []},
+                proj_by_id)
+            # No tag overlap with the current node means it was placed by
+            # something other than tags (organizer); only provenance may
+            # move it.
+            clearly_better = cur_entry is not None and \
+                best_score >= cur_entry[0] * self.REBALANCE_SCORE_MARGIN
+            if not cur_compat or clearly_better:
+                moves.append((mid, cur, best_id))
+        for mid, src, dst in moves:
+            nodes[src]["memory_refs"] = [r for r in nodes[src].get("memory_refs", []) if r != mid]
+            nodes[dst].setdefault("memory_refs", []).append(mid)
+        if moves:
+            self._save_mindmap(nodes)
+            for mid, _src, dst in moves:
+                mem = self.get(mid)
+                if mem and mem.scope.domain_node != dst:
+                    mem.scope.domain_node = dst
+                    self.save(mem)
+        result["rebalanced"] = len(moves)
+
+        # 2c. Collection split.
+        result["collection_splits"] = self._split_foreign_collections(
+            active_rows, proj_by_id, coll)
+
+        # 2d. Member-derived node tags (part C; see NODE_TAGS_FROM_MEMBERS).
+        result["retagged"] = (self._retag_from_members(active_rows)
+                              if self.NODE_TAGS_FROM_MEMBERS else 0)
 
         # 3. Prune empty leaves until stable.
         nodes = self._load_mindmap()

@@ -167,6 +167,14 @@ class ProposalsStore:
             elif kind == EVENT_STATUS and pid in state:
                 state[pid]["status"] = ev["status"]
                 state[pid]["status_changed_at"] = ev.get("ts", int(time.time() * 1000))
+                # Lineage.  mark_promoted / mark_archived write these on the
+                # event; the projection dropped them, so a promoted row never
+                # said which memory it became (the 2026-09-26 restore had to
+                # match on text instead).
+                if ev.get("target_memory_id"):
+                    state[pid]["target_memory_id"] = ev["target_memory_id"]
+                if ev.get("reason"):
+                    state[pid]["archive_reason"] = ev["reason"]
             elif kind == EVENT_CORROBORATE and pid in state:
                 conv = ev.get("conversation_id")
                 # Corroboration is evidence of independent observation.  The

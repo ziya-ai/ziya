@@ -317,10 +317,15 @@ class MemorySaveTool(BaseMCPTool):
         except Exception as e:
             logger.warning(f"Post-save maintenance failed (non-fatal): {e}")
 
+        # Echo what was stored so the model (and the tool widget) can confirm
+        # the exact text, layer and tags without a second lookup.
         return {
             "success": True,
             "message": f"Memory saved: [{saved.id}] ({saved.layer}) {saved.content[:80]}",
             "memory_id": saved.id,
+            "content": saved.content,
+            "layer": saved.layer,
+            "tags": list(saved.tags or []),
         }
 
 

@@ -255,7 +255,8 @@ class TestRepairMindMap:
         storage.repair_mindmap()
         second = storage.repair_mindmap()
         assert second == {"dangling_refs_removed": 0, "empty_nodes_removed": 0,
-                          "placed": 0, "roots_merged": 0}
+                          "placed": 0, "roots_merged": 0, "rebalanced": 0,
+                          "collection_splits": 0, "retagged": 0}
 
     def test_repair_restores_invariant(self, storage):
         live = Memory(content="Live fact")
