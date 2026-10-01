@@ -695,6 +695,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // in steps so the browser can paint between batches and stay responsive.
     const INITIAL_WINDOW = 8;
     const [messageWindow, setMessageWindow] = useState<number>(INITIAL_WINDOW);
+    // Muted turns auto-collapse (see .message.muted-collapsed in index.css); a
+    // message id lands here only when the user clicks its caret to re-expand it.
+    const [expandedMutedIds, setExpandedMutedIds] = useState<Set<string>>(new Set());
+    const toggleMutedExpanded = useCallback((id: string) => {
+        setExpandedMutedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
+    }, []);
     const scrollToMessageIndexRef = useRef<number | null>(null);
     const windowConvRef = useRef(currentConversationId);
     const expandTimerRef = useRef<number | null>(null);
@@ -1054,10 +1064,12 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     const anchorBindings = (explicitAnchored || unanchoredHere)
                         ? [...(explicitAnchored ?? []), ...(unanchoredHere ?? [])]
                         : undefined;
+                    // Muted messages render collapsed until the user expands them.
+                    const mutedCollapsed = !!msg.muted && !!msg.id && !expandedMutedIds.has(msg.id);
                     return <React.Fragment key={`msg-frag-${msg.id || actualIndex}`}><div
                         // Use message ID as key instead of index
                         data-message-index={actualIndex}
-                        className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}${needsResponse
+                        className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}${mutedCollapsed ? ' muted-collapsed' : ''}${needsResponse
                             ? ' needs-response' : ''
                             }`}
                     >
@@ -1093,12 +1105,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                         fontStyle: 'italic'
                                                     }}>(pending feedback)</span>
                                                 )}{msg.muted && (
-                                                    <span style={{
+                                                    <span
+                                                        onClick={() => msg.id && toggleMutedExpanded(msg.id)}
+                                                        title={mutedCollapsed ? 'Show muted message' : 'Hide muted message'}
+                                                        style={{
                                                         fontSize: '12px',
                                                         marginLeft: '4px',
                                                         fontStyle: 'italic',
-                                                        fontWeight: 'normal'
-                                                    }}>(muted · ~{Math.ceil((msg.content?.length || 0) / 4).toLocaleString()} tokens)</span>
+                                                        fontWeight: 'normal',
+                                                        cursor: 'pointer'
+                                                    }}>{mutedCollapsed ? '▸' : '▾'} (muted · ~{Math.ceil((msg.content?.length || 0) / 4).toLocaleString()} tokens)</span>
                                                 )}:
                                             </div>
                                             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
