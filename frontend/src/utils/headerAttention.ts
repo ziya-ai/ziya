@@ -34,6 +34,15 @@ export function maxLevel(a: AttentionLevel, b: AttentionLevel): AttentionLevel {
     return RANK[a] >= RANK[b] ? a : b;
 }
 
+/** One indicator for several sources: the worst level, every reason kept.
+ *  The Bench button carries shell + MCP attention since those panels are
+ *  reached from inside the Bench rather than from their own buttons. */
+export function mergeAttention(...parts: Attention[]): Attention {
+    return parts.reduce<Attention>(
+        (acc, p) => ({ level: maxLevel(acc.level, p.level), reasons: [...acc.reasons, ...p.reasons] }),
+        NO_ATTENTION);
+}
+
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** From GET /api/mcp/status. */
@@ -65,7 +74,7 @@ export function deriveMcpAttention(status: any): Attention {
         level = maxLevel(level, 'warning');
         reasons.push(
             `Tool definitions changed for ${quarantined.join(', ')} — ` +
-            'open MCP Servers and click Re-authorize to accept them',
+            'open the Bench, select the server\'s card and click Re-authorize to accept them',
         );
     }
 

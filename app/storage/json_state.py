@@ -57,7 +57,8 @@ class JsonStateStore:
     # -- read-modify-write -------------------------------------------------
 
     @contextmanager
-    def _locked(self) -> Iterator[None]:
+    def locked(self) -> Iterator[None]:
+        """Hold this store's lock; also usable around a sibling read-modify-write."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_name(self.path.name + ".lock")
         with open(lock_path, "a+") as fh:
@@ -73,7 +74,7 @@ class JsonStateStore:
         ``fn`` may mutate its argument in place and return None, or return a
         replacement dict.  Returns the persisted document.
         """
-        with self._locked():
+        with self.locked():
             current = self.read()
             result = fn(current)
             new = current if result is None else result

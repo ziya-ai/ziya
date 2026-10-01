@@ -27,6 +27,8 @@ interface MCPStatusModalProps {
     visible: boolean;
     onClose: () => void;
     onOpenShellConfig?: () => void;
+    /** Pre-expand this server's panel (opened from a Bench card back). */
+    focusServer?: string;
 }
 
 interface MCPServer {
@@ -164,7 +166,7 @@ interface MCPPermissions {
     }>;
 }
 
-const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpenShellConfig }) => {
+const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpenShellConfig, focusServer }) => {
     const [status, setStatus] = useState<MCPStatus | null>(null);
     const { isDarkMode } = useTheme();
     const [builtinTools, setBuiltinTools] = useState<Record<string, BuiltinToolCategory>>({});
@@ -493,6 +495,15 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
             }
         });
     };
+
+    // Opened from a Bench card: land on that server, details already loading.
+    useEffect(() => {
+        if (visible && focusServer) {
+            setExpandedKeys([focusServer]);
+            fetchServerDetails(focusServer);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible, focusServer]);
 
     const getServerDisplayName = (serverName: string) => {
         const serverConfig = status?.server_configs?.[serverName];

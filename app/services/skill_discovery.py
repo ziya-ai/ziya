@@ -254,7 +254,10 @@ def _skill_from_dir(
         description=description,
         prompt=prompt,
         color=generate_color(name),
-        tokenCount=token_service.count_tokens(prompt) if prompt else 0,
+        # The body is already read (for the frontmatter), so its weight is
+        # known even when the prompt is left unloaded; a bench list must show
+        # every skill's tokens, not only the loaded ones'.
+        tokenCount=token_service.count_tokens(body) if body else 0,
         isBuiltIn=False,
         source=source,
         visibility=visibility,

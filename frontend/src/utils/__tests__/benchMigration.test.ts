@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import {
     convertActiveSkillIds, placementForLegacySkill, projectLayerIsEmpty,
     runBenchMigration, clearLegacySkillIds,

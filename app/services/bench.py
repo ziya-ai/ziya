@@ -19,6 +19,7 @@ for per-layer metadata without a migration.
 """
 from __future__ import annotations
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -72,6 +73,33 @@ def _skill_items(project_id: str) -> List[BenchItem]:
     return out
 
 
+# -- authorization gates ----------------------------------------------------
+# A placement says where a capability SITS; a gate says whether it may RUN.
+# Today the one gate is the rug-pull quarantine (manager.py): the server's
+# tool definitions changed since a human approved them, so its tools are
+# withheld until someone re-authorizes.  Moving the card never lifts a gate.
+
+QUARANTINE_GATE = {"state": "quarantined",
+                   "reason": "Tool definitions changed since they were approved; "
+                             "re-authorize to accept the new ones"}
+
+
+def _quarantined(mgr) -> set:
+    return set(getattr(mgr, "_quarantined_servers", None) or ())
+
+
+def _client_tools(mgr, name: str) -> List[Any]:
+    """Raw tools from the server's client; get_all_tools() withholds a
+    quarantined server's, so this is how the bench can still list them."""
+    client = (getattr(mgr, "clients", None) or {}).get(name)
+    return list(getattr(client, "tools", None) or []) if client else []
+
+
+def _tool_dict(t: Any) -> Dict[str, Any]:
+    return {"name": t.name, "description": getattr(t, "description", "") or "",
+            "inputSchema": getattr(t, "inputSchema", None) or {}}
+
+
 def _mcp_items() -> List[BenchItem]:
     out: List[BenchItem] = []
     try:
@@ -86,32 +114,256 @@ def _mcp_items() -> List[BenchItem]:
             for t in mgr.get_all_tools():
                 srv = getattr(t, "_server_name", None)
                 if srv:
-                    tools_by_server.setdefault(srv, []).append(
-                        {"name": t.name, "description": t.description, "inputSchema": t.inputSchema})
+                    tools_by_server.setdefault(srv, []).append(_tool_dict(t))
     except Exception as e:
         logger.debug("bench: MCP tools unavailable: %s", e)
+    # A quarantined server IS connected; get_all_tools() just withholds it.
+    # Without this the card said "not connected" for a server that was
+    # connected and blocked.  Its tokens are not counted (see api._view_model).
+    quarantined = _quarantined(mgr)
+    for srv in quarantined:
+        if srv not in tools_by_server:
+            tools_by_server[srv] = [_tool_dict(t) for t in _client_tools(mgr, srv)]
+    # get_all_tools() keeps permission-disabled tools as inert entries; the
+    # request path drops them, so the bench must cost only what is sent.
+    perms: Dict[str, Any] = {}
+    try:
+        from app.mcp.permissions import get_permissions_manager
+        perms = get_permissions_manager().get_permissions() or {}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("bench: permissions unavailable: %s", e)
+    default_perm = perms.get("defaults", {}).get("tool", "enabled")
     for name, cfg in sorted((mgr.server_configs or {}).items()):
-        tokens = 0
+        all_tools = tools_by_server.get(name, [])
+        per = perms.get("servers", {}).get(name, {}).get("tools", {})
+        enabled = [t for t in all_tools
+                   if per.get(t["name"], {}).get("permission", default_perm) != "disabled"]
+        tokens = withheld = 0
         try:
             from app.routes.mcp_routes import count_server_tool_tokens
-            tokens = count_server_tool_tokens(tools_by_server.get(name, []))
+            tokens = count_server_tool_tokens(enabled)
+            if len(enabled) < len(all_tools):
+                withheld = count_server_tool_tokens(all_tools) - tokens
         except Exception:
             pass
-        builtin = bool(cfg.get("builtin", False))
+        spec = _mcp_spec(name, cfg)
         out.append(BenchItem(
-            spec=ItemSpec(key=make_key("mcp", name), kind="mcp",
-                          tier="environment" if builtin else "placeable"),
+            spec=spec,
             name=name,
-            provenance="builtin" if builtin else "user",
+            provenance="builtin" if spec.tier == "environment" else "user",
             tokens=tokens,
             health={"enabled": cfg.get("enabled", True),
-                    "connected": name in tools_by_server},
+                    "connected": name in tools_by_server,
+                    "tool_count": len(all_tools), "enabled_count": len(enabled),
+                    "withheld_tokens": withheld,
+                    "quarantined": name in quarantined,
+                    "gate": dict(QUARANTINE_GATE) if name in quarantined else None},
         ))
     return out
 
 
+def _mcp_spec(name: str, cfg: Dict[str, Any]) -> ItemSpec:
+    """One tier rule for the hub view and the per-request tool filter."""
+    builtin = bool(cfg.get("builtin", False))
+    return ItemSpec(key=make_key("mcp", name), kind="mcp",
+                    tier="environment" if builtin else "placeable")
+
+
+def _mcp_specs() -> List[ItemSpec]:
+    """MCP specs from config alone: no tool listing, no token counting.
+
+    Used on the request path, where ``_mcp_items``' per-server tokenization
+    would cost every turn for a number nobody reads there.
+    """
+    try:
+        from app.mcp.manager import get_mcp_manager
+        configs = get_mcp_manager().server_configs or {}
+    except Exception as e:
+        logger.debug("bench: MCP manager unavailable: %s", e)
+        return []
+    return [_mcp_spec(n, c) for n, c in sorted(configs.items())]
+
+
+def withheld_mcp_servers(project_id: str, conversation_id: Optional[str]) -> set:
+    """MCP server names whose tools must not reach the model this request.
+
+    Design rule (capabilities-hub.md, Model): project/conversation ``off``
+    keeps the server connected but withholds its tools.  User ``off`` also
+    unspawns it (api/bench.py ``_sync_mcp_enabled``) and is included here
+    too, so a failed sync cannot leak the tools.  Only MCP specs are built:
+    skill discovery walks the disk and is irrelevant to this answer, so
+    skill-layer entries resolve as unknown and are ignored with ``dropped``.
+    """
+    result = resolve_activation(load_layers(project_id, conversation_id), _mcp_specs())
+    return {r.key.partition(":")[2] for r in result.items
+            if r.kind == "mcp" and r.tier == "placeable" and r.effective == "off"}
+
+
+def _builtin_items() -> List[BenchItem]:
+    """BUILTIN_TOOL_CATEGORIES as environment items (never placeable).
+
+    ``health.enabled`` is the persisted toggle; a disabled category is still
+    listed (so it can be re-enabled from the row) but weighs nothing.
+    """
+    try:
+        from app.mcp.builtin_tools import describe_builtin_categories
+        from app.routes.mcp_routes import count_server_tool_tokens
+        cats = describe_builtin_categories()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("bench: builtin categories unavailable: %s", e)
+        return []
+    out: List[BenchItem] = []
+    for c in cats:
+        try:
+            tokens = count_server_tool_tokens(c["tools"])
+        except Exception:
+            tokens = 0
+        out.append(BenchItem(
+            spec=ItemSpec(key=make_key("builtin", c["category"]), kind="builtin", tier="environment"),
+            name=c["name"],
+            provenance="builtin",
+            tokens=tokens,
+            health={"enabled": c["enabled"], "default": c["enabled_by_default"],
+                    "toggleable": True, "tool_count": len(c["tools"])},
+        ))
+    return out
+
+
+def set_environment_enabled(category: str, enabled: bool) -> None:
+    """Toggle a builtin category; KeyError for an unknown one."""
+    from app.mcp.builtin_tools import set_builtin_category_enabled
+    set_builtin_category_enabled(category, enabled)
+
+
+def set_tool_enabled(server: str, tool: str, enabled: bool) -> None:
+    """Per-tool switch on an MCP server (the permissions store's ``disabled``).
+
+    A finer knob than placement: the server stays where it sits, one tool is
+    withheld.  ``update_tool_permission`` saves and invalidates the tool cache.
+    """
+    from app.mcp.permissions import get_permissions_manager
+    get_permissions_manager().update_tool_permission(server, tool, "enabled" if enabled else "disabled")
+
+
+def reauthorize_mcp(server: str, force: bool = False) -> Dict[str, Any]:
+    """Lift a rug-pull quarantine: the manager's human-initiated re-auth.
+    Returns its result dict verbatim ({success, message} or the refusal with
+    blocking_tools / advisory_tools / can_force)."""
+    from app.mcp.manager import get_mcp_manager
+    mgr = get_mcp_manager()
+    if not getattr(mgr, "is_initialized", False):
+        return {"success": False, "message": "MCP manager not initialized"}
+    return mgr.reauthorize_server(server, force=force)
+
+
+# Turning this category off removes get_skill_details, so every within-reach
+# skill becomes dead weight in the catalog.  Allowed (it is the user's
+# environment) but the row must say so.
+SKILLS_CATEGORY = "skills"
+
+
 def collect_items(project_id: str) -> List[BenchItem]:
-    return _skill_items(project_id) + _mcp_items()
+    return _skill_items(project_id) + _mcp_items() + _builtin_items()
+
+
+class ItemNotFound(LookupError):
+    pass
+
+
+def item_detail(project_id: str, key: str) -> Dict[str, Any]:
+    """What the card back shows, loaded on demand.
+
+    GET /bench stays light (one skill body can be 13K tokens) and the request
+    path never pays for it.  Skills load their body via ``storage.get``;
+    MCP reports config-level facts and connected tool names, never env/args.
+    """
+    kind, _, name = key.partition(":")
+    if kind == "skill":
+        storage = _skill_storage(project_id)
+        s = next((s for s in storage.list() if s.name == name), None)
+        if s is None:
+            raise ItemNotFound(key)
+        full = storage.get(s.id) or s
+        from app.services.skill_sources import read_provenance, update_available
+        prov = read_provenance(full.skillPath)
+        return {
+            "key": key, "kind": "skill", "name": full.name,
+            "description": full.description or "",
+            "prompt": full.prompt or "",
+            "path": full.skillPath,
+            "source": "builtin" if full.isBuiltIn else (full.source or "custom"),
+            "tokens": full.tokenCount or 0,
+            "keywords": list(full.keywords or []),
+            "provenance_record": prov,
+            "update_available": update_available(prov),
+        }
+    if kind == "mcp":
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mgr = get_mcp_manager()
+            cfg = (mgr.server_configs or {}).get(name)
+        except Exception as e:
+            logger.debug("bench: MCP manager unavailable: %s", e)
+            cfg = None
+        if cfg is None:
+            raise ItemNotFound(key)
+        raw: List[Any] = []
+        try:
+            if mgr.is_initialized:
+                raw = sorted((t for t in mgr.get_all_tools() if getattr(t, "_server_name", None) == name),
+                             key=lambda t: t.name)
+        except Exception as e:
+            logger.debug("bench: MCP tools unavailable: %s", e)
+        held = name in _quarantined(mgr)
+        if held and not raw:
+            # Held tools are listed so the user can see what re-authorizing accepts.
+            raw = sorted(_client_tools(mgr, name), key=lambda t: t.name)
+        tools = [t.name for t in raw]
+        # Per-tool rows for the detail drawer: description, own token cost
+        # (the estimator the server total uses) and the permission switch from
+        # the existing store.  The drawer is where a server's tools are read,
+        # so it is where they are judged and toggled.
+        default = "enabled"
+        per: Dict[str, Any] = {}
+        try:
+            from app.mcp.permissions import get_permissions_manager
+            p = get_permissions_manager().get_permissions() or {}
+            default = p.get("defaults", {}).get("tool", "enabled")
+            per = p.get("servers", {}).get(name, {}).get("tools", {})
+        except Exception as e:  # noqa: BLE001
+            logger.debug("bench: permissions unavailable: %s", e)
+        rows: List[Dict[str, Any]] = []
+        for t in raw:
+            desc = getattr(t, "description", "") or ""
+            try:
+                from app.routes.mcp_routes import count_server_tool_tokens
+                tokens = count_server_tool_tokens([{"name": t.name, "description": desc,
+                                                    "inputSchema": getattr(t, "inputSchema", None) or {}}])
+            except Exception:  # noqa: BLE001
+                tokens = 0
+            rows.append({"name": t.name, "description": desc, "tokens": tokens,
+                         "enabled": per.get(t.name, {}).get("permission", default) != "disabled"})
+        perms = {r["name"]: r["enabled"] for r in rows}
+        return {
+            "key": key, "kind": "mcp", "name": name,
+            "description": str(cfg.get("description") or ""),
+            "tools": tools, "tool_permissions": perms, "tool_details": rows,
+            "enabled": bool(cfg.get("enabled", True)),
+            "connected": bool(tools) or held,
+            "gate": dict(QUARANTINE_GATE) if held else None,
+            "builtin": bool(cfg.get("builtin", False)),
+        }
+    if kind == "builtin":
+        from app.mcp.builtin_tools import describe_builtin_categories
+        c = next((c for c in describe_builtin_categories(include_hidden=True) if c["category"] == name), None)
+        if c is None:
+            raise ItemNotFound(key)
+        return {
+            "key": key, "kind": "builtin", "name": c["name"], "description": c["description"],
+            "tools": [t["name"] for t in c["tools"]],
+            "enabled": c["enabled"], "default": c["enabled_by_default"], "category": name,
+        }
+    raise ItemNotFound(key)
 
 
 # -- layers ----------------------------------------------------------------
@@ -144,6 +396,24 @@ def load_layers(project_id: str, conversation_id: Optional[str]) -> Dict[str, Di
         "conversation": _conversation_placements(project_id, conversation_id),
         "project": dict(_project_store(project_id).get("placements", {}) or {}),
         "user": dict(_user_store().get("placements", {}) or {}),
+    }
+
+
+PLACEMENT_VIAS = ("hub", "migration", "palette", "api")
+
+
+def placement_meta(project_id: str) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Who/when/how each user- and project-layer placement was written.
+
+    ``{layer: {key: {"via": ..., "at": epoch_seconds}}}``.  Stored beside
+    ``placements`` in the layer document so the resolver's input is unchanged.
+    The conversation layer lives on the chat record, which has no such field;
+    it reports no meta rather than an invented one.
+    """
+    return {
+        "project": dict(_project_store(project_id).get("meta", {}) or {}),
+        "user": dict(_user_store().get("meta", {}) or {}),
+        "conversation": {},
     }
 
 
@@ -255,19 +525,27 @@ class ChatNotFound(LookupError):
 
 def place(project_id: str, conversation_id: Optional[str],
           key: str, layer: str, state: Optional[str],
-          items: Optional[List[BenchItem]] = None) -> None:
+          items: Optional[List[BenchItem]] = None, via: str = "hub") -> None:
     """Validate then persist one placement.  Raises PlacementRejected (409),
-    ConversationRequired (400), ChatNotFound (404)."""
+    ConversationRequired (400), ChatNotFound (404).
+
+    ``via`` names the writer (PLACEMENT_VIAS) so the hub can say "pinned by
+    migration from your previous settings" instead of an unexplained +1."""
     items = collect_items(project_id) if items is None else items
     validate_placement([i.spec for i in items], key, layer, state)
+    if via not in PLACEMENT_VIAS:
+        via = "api"
 
     def _apply(doc: Dict[str, Any]) -> Dict[str, Any]:
         placements = dict(doc.get("placements") or {})
+        meta = dict(doc.get("meta") or {})
         if state is None:
             placements.pop(key, None)
+            meta.pop(key, None)
         else:
             placements[key] = state
-        return {**doc, "placements": placements}
+            meta[key] = {"via": via, "at": int(time.time())}
+        return {**doc, "placements": placements, "meta": meta}
 
     if layer == "user":
         _user_store().update(_apply)
@@ -277,9 +555,13 @@ def place(project_id: str, conversation_id: Optional[str],
         if not conversation_id:
             raise ConversationRequired("conversation layer needs conversation_id")
         storage = _chat_storage(project_id)
-        chat = storage.get(conversation_id)
-        if chat is None:
-            raise ChatNotFound(conversation_id)
-        from app.models.chat import ChatUpdate
-        new = _apply({"placements": getattr(chat, "placements", None) or {}})["placements"]
-        storage.update(conversation_id, ChatUpdate(placements=new))
+        # The chat record has no lock of its own; two rapid drags in the hub
+        # would race get -> update and lose one.  Borrow the project store's
+        # flock so every placement write in this project is serialised.
+        with _project_store(project_id).locked():
+            chat = storage.get(conversation_id)
+            if chat is None:
+                raise ChatNotFound(conversation_id)
+            from app.models.chat import ChatUpdate
+            new = _apply({"placements": getattr(chat, "placements", None) or {}})["placements"]
+            storage.update(conversation_id, ChatUpdate(placements=new))

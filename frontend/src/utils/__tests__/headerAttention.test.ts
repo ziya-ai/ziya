@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
     deriveMcpAttention, deriveShellAttention, deriveTaskCardAttention,
-    attentionButtonStyle, attentionTooltip, ATTENTION_COLORS, NO_ATTENTION,
+    attentionButtonStyle, attentionTooltip, mergeAttention, ATTENTION_COLORS, NO_ATTENTION,
 } from '../headerAttention';
 
 const mcpBase = { initialized: true, disabled: false, servers: {} };
@@ -127,32 +127,51 @@ describe('button presentation', () => {
     });
 });
 
-describe('wiring: App.tsx actually mounts the indicator on all three buttons', () => {
+describe('mergeAttention', () => {
+    it('takes the worst level and keeps every reason; identity on nothing', () => {
+        const shell = { level: 'warning' as const, reasons: ['escalation unsigned'] };
+        const mcp = { level: 'error' as const, reasons: ['config error', 'fetch quarantined'] };
+        expect(mergeAttention(shell, mcp)).toEqual({ level: 'error', reasons: ['escalation unsigned', 'config error', 'fetch quarantined'] });
+        expect(mergeAttention(NO_ATTENTION, shell)).toEqual(shell);
+        expect(mergeAttention()).toEqual(NO_ATTENTION);
+    });
+});
+
+describe('wiring: App.tsx mounts the indicator on the Bench and Task Cards buttons', () => {
     // A derivation that exists but is never applied to the header would pass
-    // every assertion above.  Assert the seam: the hook is called, and each
-    // of the three buttons reads its own attention slot.
+    // every assertion above.  Assert the seam: the hook is called; the Bench
+    // button (which absorbed Shell Configuration and MCP Servers, slice 6b)
+    // reads the MERGED shell+mcp slot; Task Cards reads its own.
     const src = fs.readFileSync(path.join(__dirname, '../../components/App.tsx'), 'utf8');
 
     it('calls useHeaderAttention with the MCP flag and the project id', () => {
         expect(src).toMatch(/useHeaderAttention\(\{\s*mcpEnabled,\s*projectId:\s*currentProject\?\.id\s*\}\)/);
     });
 
-    it.each([
-        ['Shell Configuration', 'shell', 'CodeOutlined'],
-        ['MCP Servers', 'mcp', 'ApiOutlined'],
-        ['Task Cards', 'taskCards', 'AppstoreOutlined'],
-    ])('%s button is styled and titled from headerAttention.%s', (label, slot, icon) => {
-        const tooltip = new RegExp(`attentionTooltip\\('${label}',\\s*headerAttention\\.${slot}\\)`);
-        expect(src).toMatch(tooltip);
-        // The style must sit on the SAME Button as the icon that identifies it.
-        // Bounded lazy match: the onClick arrow (=>) between them defeats [^>]*.
-        const button = new RegExp(
-            `<Button icon=\\{<${icon} />\\}[\\s\\S]{0,160}?style=\\{attentionButtonStyle\\(headerAttention\\.${slot}\\.level\\)\\}`,
-            's');
-        expect(src).toMatch(button);
+    it('Bench button is styled and titled from the merged shell + mcp attention', () => {
+        const merged = 'mergeAttention\\(headerAttention\\.shell,\\s*headerAttention\\.mcp\\)';
+        expect(src).toMatch(new RegExp(`attentionTooltip\\('Bench[^']*',\\s*${merged}\\)`));
+        expect(src).toMatch(new RegExp(
+            `<Button icon=\\{<ToolOutlined />\\}[\\s\\S]{0,240}?style=\\{attentionButtonStyle\\(${merged}\\.level\\)\\}`, 's'));
     });
 
-    it('re-polls when any of the three panels closes (signing happened out of band)', () => {
+    it('Task Cards button is styled and titled from headerAttention.taskCards', () => {
+        expect(src).toMatch(/attentionTooltip\('Task Cards',\s*headerAttention\.taskCards\)/);
+        expect(src).toMatch(
+            /<Button icon=\{<AppstoreOutlined \/>\}[\s\S]{0,160}?style=\{attentionButtonStyle\(headerAttention\.taskCards\.level\)\}/s);
+    });
+
+    it('the Shell Configuration, MCP Servers and MCP Registry toolbar buttons are gone', () => {
+        for (const gone of ['CodeOutlined', 'ApiOutlined', 'CloudServerOutlined']) {
+            expect({ gone, present: new RegExp(`<Button icon=\\{<${gone} />`).test(src) }).toEqual({ gone, present: false });
+        }
+        // ...but their panels are still mounted, reached from the Bench.
+        expect(src).toMatch(/openMcpServers:/);
+        expect(src).toMatch(/openRegistry:/);
+        expect(src).toMatch(/focusServer=\{mcpFocusServer\}/);
+    });
+
+    it('re-polls when any attention-bearing panel closes (signing happened out of band)', () => {
         const closes = src.match(/headerAttention\.refresh\(\)/g) || [];
         expect(closes.length).toBeGreaterThanOrEqual(3);
     });
