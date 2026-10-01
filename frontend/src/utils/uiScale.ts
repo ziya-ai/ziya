@@ -128,3 +128,61 @@ export function layoutViewportWidth(): number {
 export function layoutViewportHeight(): number {
     return window.innerHeight / currentZoom;
 }
+
+export const UI_ZOOM_MEASURE_HOST_CLASS = 'ziya-unzoomed-measure-host';
+
+/**
+ * Counteract the body zoom on one element so its subtree lays out at
+ * effective zoom 1 (nested `zoom` multiplies: z × 1/z = 1).
+ *
+ * Why this exists: layout libraries that size geometry from measured text
+ * (mermaid's htmlLabels, for one) append a scratch element to <body>, read
+ * getBoundingClientRect() and write the result back as CSS / SVG lengths.
+ * getBoundingClientRect() reports VIEWPORT px, so under body zoom z the
+ * text measures z × its CSS size and every derived length is short by z:
+ * a label needing 200×48 CSS px gets a 134×16 foreignObject at z = 0.67,
+ * and the second line is clipped once the diagram is displayed. Measuring
+ * under effective zoom 1 makes viewport px equal CSS px again; the finished
+ * output is then zoomed uniformly with the rest of the page.
+ */
+export function neutralizeUiZoom(el: HTMLElement): void {
+    if (currentZoom === 1) {
+        el.style.removeProperty('zoom');
+    } else {
+        el.style.setProperty('zoom', String(1 / currentZoom));
+    }
+}
+
+/**
+ * Append a hidden, zoom-neutral host to <body> for a library to render and
+ * measure in. visibility:hidden keeps full layout (getBoundingClientRect,
+ * getBBox and getComputedTextLength all work) without a flash of content;
+ * left/right:0 give it the body's width, matching what a library gets when
+ * it appends its own scratch div to <body>. The caller removes it.
+ */
+export function createUnzoomedMeasureHost(doc: Document = document): HTMLElement {
+    const host = doc.createElement('div');
+    host.className = UI_ZOOM_MEASURE_HOST_CLASS;
+    host.setAttribute('aria-hidden', 'true');
+    host.style.cssText =
+        'position:absolute;top:0;left:0;right:0;visibility:hidden;pointer-events:none;';
+    neutralizeUiZoom(host);
+    doc.body.appendChild(host);
+    return host;
+}
+
+/**
+ * Run `fn` with a zoom-neutral measurement host that is removed afterwards
+ * even if `fn` throws. Use this around any library call that lays out from
+ * measured DOM text and accepts a container element.
+ */
+export async function withUnzoomedMeasureHost<T>(
+    fn: (host: HTMLElement) => T | Promise<T>,
+): Promise<T> {
+    const host = createUnzoomedMeasureHost();
+    try {
+        return await fn(host);
+    } finally {
+        host.remove();
+    }
+}

@@ -599,6 +599,21 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   white-space: pre-wrap;
 }
 
+/* Diagram HTML labels (mermaid htmlLabels, maxGraph) live in <foreignObject>
+   inside the message. The library laid them out with its own white-space
+   and wrap settings and sized the clip box to match, so the prose resets
+   above (and the wrap affordances in messageContentOverflow.css) must not
+   reach them: wrapping a label the library measured as one nowrap line
+   turns a harmless overflow into a second line clipped by the box. */
+.message .message-content foreignObject p,
+.message.human .message-content foreignObject p,
+.message .message-content foreignObject li,
+.message .message-content foreignObject blockquote {
+  white-space: inherit;
+  overflow-wrap: inherit;
+  word-break: inherit;
+}
+
 .dark .message.human {
   background-color: #1f1f1f;
   color: #e6e6e6;
