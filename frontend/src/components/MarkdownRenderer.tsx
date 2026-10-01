@@ -5915,7 +5915,14 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'link':
                     const linkToken = token as Tokens.Link;
-                    return <a key={sk} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</a>;
+                    // ziya://chat|project links are followed in-app by
+                    // ZiyaLinkNavigator (document-level click handler); mark
+                    // them so they read as "opens a conversation", not a URL.
+                    const isInAppLink = typeof linkToken.href === 'string' && linkToken.href.startsWith('ziya://');
+                    return <a key={sk} href={linkToken.href}
+                        className={isInAppLink ? 'ziya-link' : undefined}
+                        title={linkToken.title ?? (isInAppLink ? 'Open in Ziya' : undefined)}
+                    >{isInAppLink && '↪ '}{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</a>;
 
                 case 'escape':
                     if (!hasText(tokenWithText)) return null;
