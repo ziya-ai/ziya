@@ -194,16 +194,15 @@ def find_best_chunk_position(
         # Return the best ratio from all strategies
         best_ratio = max(ratios) if ratios else 0.0
         
-        # Log the different ratios for debugging
-        logger.debug(f"Similarity ratios - Direct: {direct_ratio:.3f}, "
-                    f"Normalized: {normalized_ratio:.3f}, "
-                    f"Content: {ratios[2] if len(ratios) > 2 else 'N/A':.3f}, "
-                    f"Token: {ratios[3] if len(ratios) > 3 else 'N/A':.3f}, "
-                    f"Line: {ratios[4] if len(ratios) > 4 else 'N/A':.3f}, "
-                    f"Struct: {ratios[5] if len(ratios) > 5 else 'N/A':.3f}, "
-                    f"Logical: {ratios[6] if len(ratios) > 6 else 'N/A':.3f}, "
-                    f"Semantic: {ratios[7] if len(ratios) > 7 else 'N/A':.3f}, "
-                    f"Best: {best_ratio:.3f}")
+        # Log the ratios for debugging. Strategies 3-8 append only when they
+        # apply, so list positions do not map to fixed strategy names; log the
+        # list as-is. The previous per-name f-string formatted 'N/A' with
+        # ':.3f' -- evaluated eagerly at any log level -- and raised ValueError
+        # whenever a strategy was skipped (e.g. a blank line in the window),
+        # which failed the whole hybrid-forced difflib stage.
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Similarity ratios (applicable strategies, in order): %s; best: %.3f",
+                         [round(r, 3) for r in ratios], best_ratio)
         
         return best_ratio
     
