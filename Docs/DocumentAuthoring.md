@@ -29,7 +29,8 @@ numbering:                # optional; `numbering: true|false` sets all
   figures: true           # "Figure N" under every diagram/image
   tables: true            # "Table N" above every table
 page:
-  margin: 18mm            # one value, or {top, bottom, left, right}
+  margin: 19mm            # one value, or {top, bottom, left, right};
+                          # keep left/right at 19-20mm
 ---
 
 # Executive Summary
@@ -98,6 +99,103 @@ automatic; the front-matter above is the only control surface.
   on the right, with a small Ziya credit (version · model) on a lighter
   second line. Chromium draws the same footer on every page, including a
   title page.
+
+### Figures that print well
+
+The pipeline keeps figures whole, never up-scales them, and — since the
+doc-aesthetics loop iteration 3 — wraps an over-long chart title/subtitle
+line, shrinks an overflowing text mark (never below 6.5pt) and grows the
+drawing so nothing is clipped by the page, and trims dead margins of a
+down-scaled drawing. Those are safety nets; a figure sized for print is
+still the author's job. The text column is ~673 px (178 mm) and a figure's
+smallest text should stay >= 6.5pt at print size.
+
+1. **Mermaid flowcharts** — a subgraph's `direction` is honoured only if no
+   edge crosses the subgraph boundary. Connect subgraphs to each other
+   (`GROUND -->|feeder RF| SPACE`), not node-to-node across them, or every
+   node stacks into one tall column. Then pick the outer direction so each
+   subgraph is short: with wide multi-line labels use `flowchart LR` with
+   `direction TB` subgraphs (one column per stage), at most 4–5 nodes per
+   subgraph. A row of four wide-label nodes is ~1400 px and prints below
+   6.5pt (measured 5.8pt); the same eight nodes as two columns printed at
+   7.3pt with the caption on the same page. Split a figure that is still
+   taller than half a page.
+2. **Mermaid `timeline`** — every period line (`Name : event : event`) is
+   its own ~250 px column, whatever section it sits in, and labels do not
+   wrap. Keep at most 4 periods in total (so at most 4 sections of one
+   period each) and 3 short events per period; for more milestones use two
+   timelines (each with its own `**Figure N — …**` title line) or a table
+   (Phase | When | What), which prints at body size. A 7-period timeline
+   printed at 4.0pt; split 4 + 3 it printed at 6.9pt.
+3. **Vega-lite titles** — give `title.subtitle` as an array of lines, each
+   at most ~80 characters for a 560 px wide chart (roughly width / 7).
+   Longer explanations belong in the caption.
+4. **Vega-lite text marks** — explain series in the legend or caption; an
+   essential text mark stays under 40 characters, in empty plot space,
+   inside the plotted domain.
+5. **Back-to-back figures and stacked charts** — a figure prints as one
+   unbreakable unit (title + drawing + caption), so the page before it ends
+   early whenever the unit does not fit. Do not end a section with figures
+   back to back: follow each figure with the prose that discusses it. Since
+   doc-aesthetics iteration 8 the PDF fills a large gap (>= 20% of the
+   page) above a figure that moved to the next page with the prose that
+   follows the figure — whole paragraphs, same section, never across a
+   heading — and keeps the result only if the gaps shrink overall and no
+   page is added. Split a stacked chart (vega-lite `vconcat`) taller than
+   about half a page into separate figures only when prose goes between the
+   parts. Measured on the mir-shaper document: its two-panel Figure 5
+   (~0.8 page) ends section 2 and leaves p6 a third blank; split into two
+   back-to-back figures it left p6 unchanged (0.32), added a 0.51 band on
+   p7 and one page. Floating the paragraph after Figure 6 closed the p12
+   gap (0.26 -> 0.06) but left Figures 6 and 7 back to back, which opened
+   a 0.32 gap on p13, so the float was declined.
+
+### Tables and notes
+
+Since doc-aesthetics iteration 4 the pipeline also sets table column
+widths itself: it estimates how many lines each cell wraps to and gives
+width to the columns that most shorten the table. The widths are fixed
+with a `<colgroup>`, and if the result would make the table taller, the
+original layout is kept. Tables whose columns already have widths set, and
+tables with fewer than three columns, are left alone. Blockquotes that
+start with a note label print as a tinted amber call-out.
+
+1. **Tables** — at most 5 columns and short cells (a label, a number, a
+   phrase). Put qualifiers and citations in the prose after the table.
+   Column balancing cut the mir-shaper Table 1 from 8 to 6 cells wrapping 5
+   or more lines, but its ~190-character cell still wraps to about 11 lines
+   in a 5-column table.
+2. **Editorial notes** — start the blockquote with its label in bold:
+   `> **Reviewer note:** …`, `> **Note:** …` or `> **TODO:** …` (also
+   *Editorial comment*, *FIXME*, *Draft*). These print as a note call-out.
+   Any other blockquote, such as a glossary, prints as a quotation.
+3. **Lists and notes** — Never interrupt a list with a column-0
+   blockquote or paragraph: markdown ends the list there, and the items
+   after it restart as a new top-level list. Put the note after the whole
+   list, or indent it under its item (`  > **Note:** …`) so it stays inside
+   the list.
+
+### Page margins and line length
+
+The PDF body prints at 11pt, the largest size the heading scale allows,
+so the side margins are the only thing that sets the line length. On A4,
+16mm side margins (which is also what you get when the front-matter sets no
+margin) give 95-98 characters per line, past the 95-character limit for
+comfortable reading. In doc-aesthetics iteration 6 the mir-shaper document
+ran 95.5-98 characters on five pages at 16mm and still 96 on one page at
+18mm. At 19mm side margins every page was at or under 95 characters (median
+92), with the same 16 pages.
+
+1. **Side margins** — set `page: margin:` explicitly with left and right at
+   19-20mm, for example
+   `margin: {top: 16mm, bottom: 16mm, left: 19mm, right: 19mm}`. Never
+   narrow the side margins to save pages; cut words instead.
+
+A related pipeline behaviour: if a document ends on a near-empty page (fewer
+than 80 words) that no page break put there, the export recaptures it with
+about 25% less paragraph, list and caption spacing, and then with
+line-height 1.40. It keeps a recapture only if it has fewer pages. The font
+size never changes.
 
 ## Exporting
 
