@@ -27,6 +27,15 @@ from app.utils.task_tool_floor import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _chromium_present():
+    # These tests describe the floor WITH the render tools; make that true
+    # regardless of the host. The Chromium-less floor has its own tests in
+    # test_install_limitations_prompt.py.
+    with patch("app.utils.optional_features.playwright_status", return_value=None):
+        yield
+
+
 def _tool(name: str):
     t = MagicMock()
     t.name = name

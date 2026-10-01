@@ -207,10 +207,10 @@ def _format_tools_section(task_scope: Optional[Any]) -> List[str]:
         return []
     try:
         from app.utils.task_tool_floor import (
-            ALWAYS_AVAILABLE_TOOLS, effective_tool_names,
+            always_available_tools, effective_tool_names,
         )
         effective = sorted(effective_tool_names(tools))
-        floor = sorted(ALWAYS_AVAILABLE_TOOLS)
+        floor = sorted(always_available_tools())
     except ImportError:
         effective, floor = sorted(tools), []
     lines = ["### Allowed tools (task scope)"]

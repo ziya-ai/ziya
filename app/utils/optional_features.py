@@ -162,6 +162,101 @@ def tex_status() -> Optional[str]:
     return "dvisvgm or ghostscript"
 
 
+# The tools that exist only when Playwright's Chromium is installed; see
+# builtin_tools.get_diagram_render_tools, which registers all three or none.
+RENDER_TOOLS = ("render_diagram", "recall_image", "view_image")
+
+
+def chromium_blocked_reason() -> Optional[str]:
+    """Why Chromium can NEVER be installed on this host, or None if it could be.
+
+    Mirrors install_extras.sh's PW_BLOCKED rule: Playwright's bundled Node
+    needs glibc >= 2.28, so on an older Linux (Amazon Linux 2 is 2.26) the
+    install fails with a linker error and no retry can change that.  The
+    difference matters for what we tell the model: "run the installer" is
+    right on a fresh host and a dead end here -- observed as a model advising
+    ``playwright install chromium`` and ``install-deps`` on an AL2 desktop.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import platform
+        name, ver = platform.libc_ver()
+        major, minor = (int(x) for x in ver.split(".")[:2])
+    except (ValueError, OSError):
+        return None
+    if name != "glibc":
+        return None
+    if (major, minor) < (2, 28):
+        return f"glibc {ver} (Playwright's Chromium needs glibc 2.28 or newer)"
+    return None
+
+
+def headless_browser_unavailable_message(feature: str) -> str:
+    """One sentence for an error surface: what is missing and the real remedy.
+
+    Names ``ziya-install-extras --browser`` when the browser can be added, and
+    the platform limit when it cannot -- never the raw ``playwright install``
+    recipe, which on a blocked host sends the user (and the model) chasing a
+    fix that does not exist.
+    """
+    missing = playwright_status() or "Chromium browser for Playwright"
+    blocked = chromium_blocked_reason()
+    if blocked:
+        return (f"{feature} needs a headless Chromium, which cannot be installed on "
+                f"this host: {blocked}. Use a newer host for this feature.")
+    return (f"{feature} needs the {missing}, which is not installed. "
+            f"{browser_hint()} (then restart Ziya).")
+
+
+def install_limitations_prompt() -> str:
+    """System-prompt text naming what THIS install cannot do; "" if nothing.
+
+    Withholding render_diagram from the tool list is not enough on its own:
+    skills, saved memories and imported conversations all name it, and a model
+    that has read those calls the tool anyway -- observed on an AL2 dev desktop
+    as repeated render_diagram attempts, then a PDF-export attempt diagnosed
+    over six tool calls, then advice to run an installer that cannot succeed
+    there.  Only a positive statement in the prompt overrides what the model
+    has read elsewhere, and it must say whether the gap is fixable.  Contains
+    no braces: the text is appended to a langchain ChatPromptTemplate.
+    """
+    missing = playwright_status()
+    if missing is None:
+        return ""
+    names = ", ".join(f"`{t}`" for t in RENDER_TOOLS)
+    blocked = chromium_blocked_reason()
+    if blocked:
+        remedy = (
+            f"This is a platform limit, not a missing install step: the host has {blocked}, "
+            "so Chromium cannot be installed here at all. Do not suggest `playwright install "
+            "chromium`, `install-deps`, `ziya-install-extras --browser` or any other install "
+            "command; the only remedy is running Ziya on a newer host, and you should say so."
+        )
+    else:
+        remedy = (
+            f"The operator can add it with `{INSTALL_CMD} --browser` followed by a Ziya "
+            "restart; if asked, name exactly that command and nothing else."
+        )
+    return (
+        "\n\nINSTALL LIMITATIONS (this host):\n"
+        f"This installation lacks the {missing}. Consequences, none of them fixable from "
+        "inside a conversation:\n"
+        f"- The {names} tools do not exist here. They are not in your tool list and a call "
+        "cannot succeed; do not call them, and do not narrate an intent to, even when a "
+        "skill, a saved memory, or an earlier turn refers to them. You cannot look at your "
+        "own rendered output on this host.\n"
+        "- PDF export -- of a conversation, or of a document from .ziya/documents/ via "
+        "/api/export/document -- and chat-message screenshots need the same browser and "
+        "fail here. Do not attempt them or probe why they fail; when asked for a PDF, say "
+        "plainly that this install cannot produce one and offer the markdown source, or the "
+        "HTML export (which needs no browser), instead.\n"
+        "- Diagrams still reach the user normally: emit the fenced block (mermaid, graphviz, "
+        "vega-lite, drawio, ...) and the user's browser renders it inline.\n"
+        f"{remedy}\n"
+    )
+
+
 def browser_hint() -> str:
     return f"Run: {INSTALL_CMD} --browser"
 

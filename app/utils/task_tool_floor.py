@@ -63,6 +63,27 @@ ALWAYS_AVAILABLE_TOOLS: frozenset = frozenset({
 })
 
 
+def always_available_tools() -> Set[str]:
+    """The floor as it exists on THIS install.
+
+    render_diagram / recall_image / view_image are registered only when
+    Playwright's Chromium is present (builtin_tools.get_diagram_render_tools).
+    Listing them in the floor on a host that never registered them is the
+    exact prompt-contradicts-payload failure this module exists to prevent,
+    in the other direction: the model is told it holds a tool it does not,
+    and calls it.  Same source of truth as the registration gate and the
+    startup banner.  Falls back to the full floor if the probe is missing.
+    """
+    floor = set(ALWAYS_AVAILABLE_TOOLS)
+    try:
+        from app.utils import optional_features
+        if optional_features.playwright_status() is not None:
+            floor -= set(optional_features.RENDER_TOOLS)
+    except ImportError:
+        pass
+    return floor
+
+
 def normalize_tool_name(name: str) -> str:
     """Strip ``mcp_`` prefixes so scope entries match registered names.
 
@@ -89,7 +110,7 @@ def effective_tool_names(scope_tools: Optional[Iterable[str]]) -> Set[str]:
     requested = {t for t in (scope_tools or []) if t}
     if not requested:
         return set()
-    return requested | set(ALWAYS_AVAILABLE_TOOLS)
+    return requested | always_available_tools()
 
 
 def tool_is_allowed(tool_name: str, allowed: Set[str]) -> bool:
