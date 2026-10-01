@@ -224,7 +224,152 @@ export interface FormattedOutput {
   // When set to 'diff', `content` is a unified-diff string suitable for
   // react-diff-view's parseDiff().  ToolBlock routes this to the diff
   // renderer instead of marked.parse / pre.
-  renderAs?: 'diff';
+  // When set to 'memory', `memory` carries the structured card data and
+  // ToolBlock renders <MemoryCard> instead of the generic tool chrome.
+  renderAs?: 'diff' | 'memory';
+  memory?: MemoryCardData;
+}
+
+export interface MemoryCardData {
+  kind: 'proposed' | 'saved';
+  content: string;
+  layer: string;
+  tags: string[];
+  id: string;
+  pendingCount?: number;
+}
+
+/**
+ * Parse a Python literal (dict / list / tuple / str / bool / None / number)
+ * as emitted by `repr()`.  Builtin tool results reach the renderer as the
+ * Python repr of the return dict, e.g. `{'success': True, 'content': "it's"}`.
+ * The naive quote-swap fallback in ToolBlock corrupts any string containing
+ * a quote or the words True/False/None, so memory content (free prose) needs
+ * a real parser.  Throws on malformed input.
+ */
+export function parsePythonLiteral(src: string): any {
+  const s = src;
+  let i = 0;
+  const fail = (msg: string): never => { throw new Error(`parsePythonLiteral: ${msg} at ${i}`); };
+  const ws = () => { while (i < s.length && /\s/.test(s[i])) i++; };
+
+  const str = (): string => {
+    const q = s[i];
+    const close = s.startsWith(q + q + q, i) ? q + q + q : q;
+    i += close.length;
+    let out = '';
+    while (i < s.length) {
+      if (s.startsWith(close, i)) { i += close.length; return out; }
+      const c = s[i++];
+      if (c !== '\\') { out += c; continue; }
+      const e = s[i++];
+      switch (e) {
+        case 'n': out += '\n'; break;
+        case 't': out += '\t'; break;
+        case 'r': out += '\r'; break;
+        case '\\': out += '\\'; break;
+        case "'": out += "'"; break;
+        case '"': out += '"'; break;
+        case 'x': out += String.fromCharCode(parseInt(s.substr(i, 2), 16)); i += 2; break;
+        case 'u': out += String.fromCharCode(parseInt(s.substr(i, 4), 16)); i += 4; break;
+        default: out += e === undefined ? '' : e;
+      }
+    }
+    return fail('unterminated string');
+  };
+
+  const value = (): any => {
+    ws();
+    const c = s[i];
+    if (c === undefined) return fail('unexpected end');
+    if (c === '{') {
+      i++;
+      const obj: Record<string, any> = {};
+      ws();
+      if (s[i] === '}') { i++; return obj; }
+      for (;;) {
+        const k = value();
+        ws();
+        if (s[i] !== ':') fail('expected :');
+        i++;
+        obj[String(k)] = value();
+        ws();
+        if (s[i] === ',') { i++; ws(); if (s[i] === '}') { i++; return obj; } continue; }
+        if (s[i] === '}') { i++; return obj; }
+        fail('expected , or }');
+      }
+    }
+    if (c === '[' || c === '(') {
+      const end = c === '[' ? ']' : ')';
+      i++;
+      const arr: any[] = [];
+      ws();
+      if (s[i] === end) { i++; return arr; }
+      for (;;) {
+        arr.push(value());
+        ws();
+        if (s[i] === ',') { i++; ws(); if (s[i] === end) { i++; return arr; } continue; }
+        if (s[i] === end) { i++; return arr; }
+        fail(`expected , or ${end}`);
+      }
+    }
+    if (c === '"' || c === "'") return str();
+    if (s.startsWith('True', i)) { i += 4; return true; }
+    if (s.startsWith('False', i)) { i += 5; return false; }
+    if (s.startsWith('None', i)) { i += 4; return null; }
+    const num = /^-?\d+(\.\d+)?([eE][-+]?\d+)?/.exec(s.slice(i));
+    if (num) { i += num[0].length; return Number(num[0]); }
+    return fail('unexpected token');
+  };
+
+  const v = value();
+  ws();
+  if (i !== s.length) fail('trailing content');
+  return v;
+}
+
+/** Object result, or JSON / Python-repr string result parsed to an object; null otherwise. */
+export function coerceToolResultObject(result: any): Record<string, any> | null {
+  if (result && typeof result === 'object') return result;
+  if (typeof result !== 'string') return null;
+  const t = result.trim();
+  if (!t.startsWith('{')) return null;
+  try { return JSON.parse(t); } catch { /* not JSON */ }
+  try { return parsePythonLiteral(t); } catch { /* not a Python literal either */ }
+  return null;
+}
+
+const MEMORY_TOOL_KIND: Record<string, MemoryCardData['kind']> = {
+  memory_propose: 'proposed', mcp_memory_propose: 'proposed',
+  memory_save: 'saved', mcp_memory_save: 'saved',
+};
+
+function formatMemoryResult(toolName: string, result: any, input: any): FormattedOutput {
+  const kind = MEMORY_TOOL_KIND[toolName];
+  const obj = coerceToolResultObject(result);
+  const raw = typeof result === 'string' ? result : JSON.stringify(result);
+  if (!obj) return { content: raw, type: 'text', collapsed: false };
+  if (obj.error) {
+    const errText = typeof obj.error === 'string' ? obj.error : (obj.message || 'Unknown error');
+    return { content: `❌ Error: ${errText}`, type: 'error', collapsed: false };
+  }
+  // Content comes from the result (backend echoes it) or, failing that, the
+  // tool input.  Results persisted before the echo was added have neither;
+  // those keep the plain message line rather than an empty card.
+  const content = typeof obj.content === 'string' ? obj.content
+    : (typeof input?.content === 'string' ? input.content : '');
+  if (!content) return { content: obj.message || raw, type: 'text', collapsed: false };
+  const tagsSrc = Array.isArray(obj.tags) ? obj.tags : (Array.isArray(input?.tags) ? input.tags : []);
+  const layer = typeof obj.layer === 'string' && obj.layer ? obj.layer : (input?.layer || 'domain_context');
+  const id = String(obj.proposal_id || obj.memory_id || '');
+  const pendingCount = typeof obj.pending_count === 'number' ? obj.pending_count : undefined;
+  return {
+    content: obj.message || content,
+    type: 'text',
+    collapsed: false,
+    renderAs: 'memory',
+    memory: { kind, content, layer, tags: tagsSrc.map(String), id, pendingCount },
+  };
 }
 
 /**
@@ -460,6 +605,11 @@ export function formatMCPOutput(
   // Handle file_read outputs (builtin tool)
   if (toolName === 'file_read' || toolName === 'mcp_file_read') {
     return formatFileRead(result, input, options);
+  }
+
+  // Handle memory_propose / memory_save outputs (builtin tools)
+  if (MEMORY_TOOL_KIND[toolName]) {
+    return formatMemoryResult(toolName, result, input);
   }
 
   // Handle file_write outputs (builtin tool)
