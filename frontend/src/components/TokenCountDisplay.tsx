@@ -56,10 +56,14 @@ const getTokenCount = async (text: string): Promise<number> => {
 // it can estimate tokens including inline images and document attachments.
 // The base64 image `data` field is deliberately stripped — only dimensions
 // and size metadata are needed for the estimate.
+// `role` is sent because assistant history is not replayed as saved: the
+// server rewrites tool blocks and elides inline rendered images before the
+// model sees them, and the estimate must count that form.
 const getTokenCountForMessages = async (messages: Message[]): Promise<number> => {
     const payloadMessages = messages
         .filter(msg => msg.muted !== true)
         .map(msg => ({
+            role: msg.role,
             content: msg.content || '',
             muted: false,
             images: (msg.images || []).map(img => ({
@@ -839,7 +843,10 @@ export const TokenCountDisplay = memo(() => {
     // This ensures we always use the current muted state
     useEffect(() => {
         if (currentMessages && currentMessages.length > 0) {
-            const currentSignature = currentMessages.map(m => `⟨MATH_INLINE:{m.id}:⟩{m.muted || false}`).join('|');
+            // Per-message id:muted pairs. The interpolations were once rewritten
+            // by the inline-math preprocessor into a constant string, which made
+            // this effect fire exactly once and never again on mute changes.
+            const currentSignature = currentMessages.map(m => `${m.id}:${m.muted || false}`).join('|');
             if (currentSignature !== lastMuteSignatureRef.current) {
                 lastMuteSignatureRef.current = currentSignature;
                 updateChatTokens();
