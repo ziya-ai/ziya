@@ -216,14 +216,54 @@ class TestCmdTask:
         output = capsys.readouterr().out
         assert "flush" in output
 
+    @patch("app.plugins.initialize")
+    @patch("app.cli_card_runner.resolve_card", return_value=(None, "proj-1"))
     @patch("app.cli.setup_env")
     @patch("app.task_runner.load_tasks", return_value=SAMPLE_TASKS)
-    def test_unknown_task_name_exits(self, mock_load, mock_setup):
+    def test_unknown_task_name_exits(self, mock_load, mock_setup, mock_resolve,
+                                     mock_plugins, capsys):
+        """A name that is neither a file task nor a deck card exits 1 and
+        says so -- the deck WAS consulted (resolve_card called with the
+        name), so the message can honestly point at both listings."""
         from app.cli import cmd_task
         args = self._make_args(task_name="nonexistent")
         with pytest.raises(SystemExit) as exc_info:
             cmd_task(args)
         assert exc_info.value.code == 1
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args.args[1] == "nonexistent"
+        err = capsys.readouterr().err
+        assert "Unknown task or card" in err
+        assert "--list-cards" in err
+
+    @patch("app.cli._run_with_mcp", new_callable=AsyncMock, return_value=0)
+    @patch("app.cli._init_and_authenticate")
+    @patch("app.plugins.initialize")
+    @patch("app.cli_card_runner.run_card")
+    @patch("app.cli_card_runner.resolve_card")
+    @patch("app.cli.setup_env")
+    @patch("app.task_runner.load_tasks", return_value=SAMPLE_TASKS)
+    def test_unknown_task_name_falls_through_to_a_deck_card(
+            self, mock_load, mock_setup, mock_resolve, mock_run_card,
+            mock_plugins, mock_init_auth, mock_run_mcp):
+        """`ziya task <name>` reaches a deck card of that name when no file
+        task claims it.  This is what lets a card supersede a file task
+        (the orchestrated sweep replacing the linear `sweep`) without the
+        operator learning a second spelling.  The seam asserted: the SAME
+        name is handed to run_card, and the process exits with its code."""
+        from app.cli import cmd_task
+        mock_resolve.return_value = (MagicMock(name="card"), "proj-1")
+        mock_run_card.return_value = "coro-sentinel"
+        mock_run_mcp.return_value = 3
+        args = self._make_args(task_name="Sweep (orchestrated)")
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_task(args)
+        assert exc_info.value.code == 3
+        mock_run_card.assert_called_once()
+        assert mock_run_card.call_args.args[1] == "Sweep (orchestrated)"
+        mock_init_auth.assert_called_once()
+        # The deck store may be encrypted: plugins load before the lookup.
+        mock_plugins.assert_called()
 
     @patch("app.cli._run_with_mcp", new_callable=AsyncMock, return_value=None)
     @patch("app.cli._init_and_authenticate")

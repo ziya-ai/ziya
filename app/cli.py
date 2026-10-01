@@ -4528,9 +4528,31 @@ def cmd_task(args):
         return
 
     if task_name not in tasks:
-        print(f"\033[31mUnknown task: {task_name}\033[0m", file=sys.stderr)
-        print(f"Run \033[36mziya task --list\033[0m to see available tasks.", file=sys.stderr)
-        sys.exit(1)
+        # No file task claims the name: fall through to the deck so a card
+        # can supersede a tasks.yaml task under the same spelling (the
+        # orchestrated sweep replacing the linear `sweep`).  File tasks win
+        # on a name collision — tasks.yaml is operator-local and explicit.
+        # Plugins load first for the same reason as --list-cards: the deck
+        # store may be encrypted and only the plugin-registered provider can
+        # derive the key to read it.
+        from app.plugins import initialize as initialize_plugins
+        initialize_plugins()
+        from app.cli_card_runner import resolve_card, run_card
+        card, _project_id = resolve_card(root, task_name)
+        if card is None:
+            print(f"\033[31mUnknown task or card: {task_name}\033[0m",
+                  file=sys.stderr)
+            print(f"Run \033[36mziya task --list\033[0m for file tasks or "
+                  f"\033[36mziya task --list-cards\033[0m for deck cards.",
+                  file=sys.stderr)
+            sys.exit(1)
+        # Same execution path as --card.  Escalation is gated inside
+        # execute_task_block against the signed ledger, so a card approved
+        # from the deck tile is already authorized here.
+        _init_and_authenticate(args, skip_setup_env=True)
+        rc = asyncio.run(_run_with_mcp(
+            run_card(root, task_name, stream=not args.no_stream)))
+        sys.exit(rc)
 
     task_def = tasks[task_name]
 

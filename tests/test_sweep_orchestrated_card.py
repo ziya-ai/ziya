@@ -734,3 +734,105 @@ def test_the_roster_still_keys_on_a_field_every_group_carries():
         "roster completeness was relaxed along with the grouping rule, which "
         "is a different concession than the one being made here"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. The announce stages are gated on the push, independently of block status
+# ---------------------------------------------------------------------------
+#
+# Observed on the linear ``sweep`` task: a run that never finished committing
+# still posted its announcement to Slack.  The orchestrated card's root is
+# ``on_failure: stop``, but that gate fires only if the push stage MARKED its
+# artifact failed -- a stage that narrates "push failed" and ends its turn
+# succeeded lets the announce group run.  So each announce stage must verify
+# the push from git itself, before touching any external surface.
+
+ANNOUNCE_STAGES = ("P10a - GitHub Release", "P10b - Announce in Slack")
+GATE_CHECKS = ("git tag -l v<TARGET>", "git status -sb", "git log -1 --format=%s")
+
+
+@pytest.mark.parametrize("stage", ANNOUNCE_STAGES)
+def test_each_announce_stage_carries_its_own_push_gate(stage):
+    text = find_block(load_root(), stage).instructions or ""
+    assert "PUSH GATE" in text, f"{stage}: no push gate"
+    for check in GATE_CHECKS:
+        assert check in text, f"{stage}: gate does not verify with `{check}`"
+    assert "mode == 'pushed'" in text, f"{stage}: gate ignores the ledger's pushed marker"
+    assert "post NOTHING" in text, f"{stage}: gate failure does not forbid posting"
+    assert "fail this block" in text, f"{stage}: a failed gate does not fail the block"
+
+
+def test_the_gate_runs_before_the_announcement_not_after():
+    """A gate placed after the posting steps would verify a release that was
+    already announced.  'PUSH GATE' must precede the first external action."""
+    for stage, action in ((ANNOUNCE_STAGES[0], "gh release create"),
+                          (ANNOUNCE_STAGES[1], "Post, in order")):
+        text = find_block(load_root(), stage).instructions or ""
+        assert text.index("PUSH GATE") < text.index(action), (
+            f"{stage}: the gate appears after the external action"
+        )
+
+
+def test_the_gate_is_stated_as_independent_of_upstream_prose():
+    """The gate's whole point is to not trust the push stage's self-report."""
+    for stage in ANNOUNCE_STAGES:
+        text = find_block(load_root(), stage).instructions or ""
+        assert "not from the ledger or any earlier stage's prose" in text, (
+            f"{stage}: gate may be satisfied by what an earlier stage said"
+        )
+    state = next(b for b in iter_blocks(load_root()) if b.block_type == "state")
+    assert "ANNOUNCE RULE" in (state.state_context or "")
+
+
+def test_the_push_stage_fails_its_block_when_the_push_did_not_land():
+    """Belt to the gate's braces: the structural stop only fires on a FAILED
+    artifact, so the push stage must be told that narrating is not enough."""
+    text = find_block(load_root(), "P9 - Push").instructions or ""
+    assert "git tag -l v<TARGET>" in text
+    assert "fail this block" in text
+    assert "Do not merely report it" in text
+
+
+# ---------------------------------------------------------------------------
+# 8. Planning is mechanical where it can be; judgement is recorded as data
+# ---------------------------------------------------------------------------
+#
+# The v0.8.9.0 sweep stalled on a tree with 86 contended files (app/server.py
+# claimed by eleven entries).  Hand-writing per-entry diffs for that is where
+# hunk-header and context errors come from, and the only tooling in the tree
+# was scratch hardcoded for the previous release.  The card now drives two
+# release-agnostic scripts and the agent's output shrinks to a {hunk: entry}
+# mapping that the splitter validates with git apply --cached --check.
+
+def test_the_index_stage_runs_the_release_agnostic_indexer():
+    text = find_block(load_root(), "P2a").instructions or ""
+    assert "scripts/release_plan.py index" in text
+    assert "--ledger {{var.ledger}}" in text, "the index is not written to the ledger"
+    assert "Do NOT re-derive the partition by hand" in text
+
+
+def test_the_attribution_stage_records_a_mapping_and_lets_the_splitter_write_patches():
+    text = find_block(load_root(), "Attribute the hunks of one file").instructions or ""
+    assert "scripts/release_hunks.py dump {{item}}" in text
+    assert "scripts/release_hunks.py split --file {{item}}" in text
+    assert "{{var.attrib_dir}}" in text, "the attribution mapping has no declared home"
+    assert "Do not hand-write patch files" in text
+    # The merge escape goes through the same tool so a generic reason is refused.
+    assert "scripts/release_hunks.py merge --file {{item}}" in text
+    assert MERGE_DIR_TOKEN in text
+
+
+def test_the_tooling_the_card_names_exists_and_is_release_agnostic():
+    """The seam: a card that names a script which is not there, or which is
+    scratch for one release, is the exact failure being fixed."""
+    repo = CARD_PATH.parents[1]
+    for rel in ("scripts/release_plan.py", "scripts/release_hunks.py"):
+        src = (repo / rel).read_text(encoding="utf-8")
+        for literal in ("AFFINITY", "EXCLUSIONS", "HUNK_CENSUS", "0.8.7.0"):
+            assert literal not in src, f"{rel} carries release-specific literal {literal!r}"
+    plan = (repo / "scripts/release_plan.py").read_text(encoding="utf-8")
+    assert 'add_parser("index"' in plan
+    hunks = (repo / "scripts/release_hunks.py").read_text(encoding="utf-8")
+    for sub in ("dump", "split", "merge"):
+        assert f'add_parser("{sub}"' in hunks, f"release_hunks.py has no {sub} mode"
+    assert "--cached" in hunks and "--check" in hunks

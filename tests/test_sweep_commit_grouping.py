@@ -52,16 +52,35 @@ import yaml
 
 TASKS_PATH = Path(".ziya/tasks.yaml")
 
+
+def _linear_sweep_prompt():
+    """The linear ``sweep`` prompt, or None when the operator has retired it.
+
+    ``.ziya/tasks.yaml`` is operator-local and gitignored.  Since the
+    orchestrated card (``design/sweep-orchestrated.task-card.json``) became
+    the maintained sweep -- reachable as ``ziya task sweep`` once the linear
+    entry is removed -- a tasks.yaml without a ``sweep`` prompt is the
+    expected steady state, not a broken checkout.  The grouping discipline
+    pinned here is pinned on the card's state block by
+    ``tests/test_sweep_orchestrated_card.py``.
+    """
+    if not TASKS_PATH.exists():
+        return None
+    data = yaml.safe_load(TASKS_PATH.read_text(encoding="utf-8")) or {}
+    task = data.get("sweep") if isinstance(data, dict) else None
+    return task.get("prompt") if isinstance(task, dict) else None
+
+
 pytestmark = pytest.mark.skipif(
-    not TASKS_PATH.exists(),
-    reason="run from the repository root",
+    _linear_sweep_prompt() is None,
+    reason="no linear `sweep` file task in .ziya/tasks.yaml (retired in favour "
+           "of the orchestrated card, or not run from the repository root)",
 )
 
 
 @pytest.fixture(scope="module")
 def sweep_prompt() -> str:
-    data = yaml.safe_load(TASKS_PATH.read_text(encoding="utf-8"))
-    return data["sweep"]["prompt"]
+    return _linear_sweep_prompt()
 
 
 @pytest.fixture(scope="module")

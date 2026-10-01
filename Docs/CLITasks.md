@@ -220,8 +220,38 @@ completeness asserted rather than requested. It resumes from
 `.ziya/sweep/ledger.json` rather than a markdown checklist, so an interrupted
 run restarts at the lowest genuinely incomplete phase.
 
-It is a card, not a registered task — save it to the deck, sign the escalating
-blocks (the analysis half needs no signature), then Start. See
+Two things the card does that the linear prompt cannot:
+
+- **Contended files are split by a script, not by hand.** A file named by
+  several changelog entries has its hunks listed by
+  `scripts/release_hunks.py dump`; the agent records a `{hunk: entry}` mapping
+  and `release_hunks.py split` writes the per-entry patches and validates each
+  with `git apply --cached --check`. The entry/path index itself comes from
+  `scripts/release_plan.py index`. Both scripts are release-agnostic — nothing
+  in them names a version, a file or an entry — and neither touches the index
+  or the working tree. The linear task cannot do this: its `allow` block never
+  granted `git apply`, and `git add -p` is interactive, so for a shared file it
+  had no legal non-interactive staging path at all.
+- **Nothing is announced until the push is verified in git.** Each announce
+  stage (GitHub Release, Slack) first checks that the tag exists, the branch is
+  not ahead of its upstream and `HEAD` is the version-bump commit, and posts
+  nothing if any check fails. This closes an observed defect where the linear
+  task posted its Slack announcement for a release that had not finished
+  committing.
+
+It is a card, so it lives in the deck rather than in `tasks.yaml`: install it
+(see `design/sweep-orchestrated.md` → *Using it*), sign the escalating blocks
+(the analysis half needs no signature), then run it either from the deck tile or
+from the command line:
+
+```bash
+ziya task "Sweep (orchestrated)"
+```
+
+`ziya task <name>` looks for a file task in `tasks.yaml` first and falls through
+to a deck card of that name (case-insensitive, or by id) when none matches. If
+you remove the linear `sweep` entry from your local `tasks.yaml` and name the
+deck card `sweep`, `ziya task sweep` keeps working and now runs the card. See
 `design/sweep-orchestrated.md` for the shape, the measured failure it responds
 to, and its known limits.
 
