@@ -129,6 +129,7 @@ class ChatStorage(BaseStorage[Chat]):
                 if self._is_chat_expired(chat):
                     logger.info(f"Purging expired chat {chat.id}")
                     chat_file.unlink()
+                    self._remove_orphaned_bindings(chat.id)
                     purged += 1
         return purged
     
@@ -376,6 +377,7 @@ class ChatStorage(BaseStorage[Chat]):
         if not chat_file.exists():
             return False
         chat_file.unlink()
+        self._remove_orphaned_bindings(chat_id)
         # Drop from the cross-project chat index.  Stale entries would
         # self-heal on next lookup, but eager removal saves a failed
         # file-stat per stale lookup.
@@ -385,6 +387,71 @@ class ChatStorage(BaseStorage[Chat]):
         except Exception as e:
             logger.debug("chat_index.on_chat_deleted failed: %s", e)
         return True
+
+    def _remove_orphaned_bindings(self, chat_id: str) -> None:
+        """Remove ``chats/{chat_id}.bindings.json`` once the chat file is gone.
+
+        Task bindings are per-chat pointers at cards and runs; with the chat
+        deleted nothing can render them, and a lingering file also keeps the
+        chat's conversation-only card from being pruned
+        (``TaskCardStorage._bound_card_ids``).
+
+        Skipped when the same chat id exists in a SIBLING project: from the
+        source side that is what a move-in-progress looks like (the legacy
+        client move is bulk-sync to target, then DELETE from source), and the
+        bindings must stay with the card and run they point at.  GET
+        /task-bindings resolves them from here for the moved conversation.
+        Best-effort: a failure here must not fail the delete.
+        """
+        try:
+            bindings = contained_path(self.chats_dir, f"{chat_id}.bindings.json")
+            if not bindings.exists():
+                return
+            project_dir = self.chats_dir.parent
+            for sibling in project_dir.parent.iterdir():
+                if sibling == project_dir or not sibling.is_dir():
+                    continue
+                if (sibling / "chats" / f"{chat_id}.json").exists():
+                    logger.debug("Keeping bindings for %s: chat now lives in %s",
+                                 chat_id[:8], sibling.name)
+                    return
+            bindings.unlink()
+        except Exception as e:
+            logger.debug("Bindings cleanup failed for %s: %s", chat_id, e)
+
+    def move_to(self, chat_id: str, target: "ChatStorage",
+                target_project_id: str) -> Optional[dict]:
+        """Move a chat into another project's storage.
+
+        Returns the moved record, or None when the chat is not here.
+
+        Replaces the client's bulk-sync-then-DELETE sequence, which could
+        delete the only copy (bulk-sync drops shell conversations silently)
+        and left ``chat_index`` without an entry (bulk-sync never updates
+        it).  Ownership fields are rewritten: ``projectId`` to the target;
+        ``isGlobal``, ``groupId`` and ``folderId`` cleared, since visibility
+        and folders are per-project and a source folder id would dangle in
+        the target (the client's copy path already clears it).  The
+        task-bindings file is deliberately left in place, next to the card
+        and run it points at — see ``_remove_orphaned_bindings``.
+        """
+        src = self._chat_file(chat_id)
+        raw = self._read_json(src)
+        if not raw:
+            return None
+        raw["projectId"] = target_project_id
+        raw["isGlobal"] = False
+        raw["groupId"] = None
+        raw["folderId"] = None
+        raw["_version"] = int(time.time() * 1000)
+        target._write_json(target._chat_file(chat_id), raw)
+        src.unlink()
+        try:
+            from app.storage import chat_index
+            chat_index.on_chat_written(chat_id, target_project_id)
+        except Exception as e:
+            logger.debug("chat_index.on_chat_written failed: %s", e)
+        return raw
     
     def add_message(self, chat_id: str, message: Message) -> Optional[Chat]:
         """Add a message to a chat."""

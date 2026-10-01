@@ -4829,6 +4829,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         projectId: targetProjectId,
                         lastAccessedAt: Date.now(),
                         isGlobal: false,
+                        folderId: null,
                         _version: Date.now()
                     };
                 }
@@ -4860,35 +4861,30 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         }
 
-        // Server-side move: push to target first, THEN delete from source.
-        // This ordering ensures the conversation exists on the target before
-        // we remove it from the source, preventing data loss on partial failure.
+        // Server-side move in one step (POST .../move).  The previous
+        // bulk-sync-to-target + DELETE-from-source pair could delete the only
+        // copy: bulkSync silently drops shell conversations and returned
+        // success with created: 0, after which the source delete ran anyway.
+        // The server also keeps its chat index current on this path.
         if (sourceProjectId && sourceProjectId !== targetProjectId && capturedConv) {
-            const serverChat = syncApi.conversationToServerChat(
-                { ...capturedConv, projectId: targetProjectId, lastAccessedAt: Date.now(), isGlobal: false, _version: Date.now() },
-                targetProjectId
-            );
             try {
-                // 1. Push to target project on server
-                await syncApi.bulkSync(targetProjectId, [serverChat]);
-                console.log(`📡 Move: pushed conversation to target project ${targetProjectId}`);
-
-                // 2. Delete from source project on server (best-effort, ignore 404)
-                const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-                const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
-                if (projectPath) headers['X-Project-Root'] = projectPath;
-
-                const deleteRes = await fetch(
-                    `/api/v1/projects/${sourceProjectId}/chats/${conversationId}`,
-                    { method: 'DELETE', headers }
-                );
-                if (deleteRes.ok) {
-                    console.log(`📡 Move: deleted conversation from source project ${sourceProjectId}`);
+                const outcome = await syncApi.moveChat(sourceProjectId, targetProjectId, conversationId);
+                if (outcome === 'moved') {
+                    console.log(`📡 Move: server moved conversation ${sourceProjectId} → ${targetProjectId}`);
                 } else {
-                    console.log(`📡 Move: source delete returned ${deleteRes.status} (non-fatal)`);
+                    // Never synced from the source project: nothing to move, so
+                    // push the local copy to the target instead.  No source
+                    // delete — there is nothing there to delete.
+                    const serverChat = syncApi.conversationToServerChat(
+                        { ...capturedConv, projectId: targetProjectId, folderId: null, lastAccessedAt: Date.now(), isGlobal: false, _version: Date.now() },
+                        targetProjectId
+                    );
+                    await syncApi.bulkSync(targetProjectId, [serverChat]);
+                    console.log(`📡 Move: conversation was not on the server; pushed local copy to ${targetProjectId}`);
                 }
             } catch (e) {
-                console.warn('📡 Move: server-side move failed (non-fatal):', e);
+                console.warn('📡 Move: server-side move failed:', e);
+                message.error('Conversation moved locally, but the server move failed — it may reappear in the source project after a reload.');
             }
         } else if (sourceProjectId && sourceProjectId !== targetProjectId && !capturedConv) {
             console.error(`📡 Move: conversation ${conversationId} not found in state — server-side move skipped!`);

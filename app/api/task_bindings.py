@@ -107,17 +107,42 @@ async def list_task_bindings(project_id: str, chat_id: str) -> List[TaskBinding]
     # launched from their home project (confirmed workflow), so the chat
     # owner is always the correct binding source; the mixed case (a card
     # launched against a global chat from a *third* project) is out of scope.
+    #
+    # A chat MOVED to another project is the other case.  The client move is
+    # bulkSync-to-target then DELETE-from-source, so only the chat file
+    # changes project; the binding file, the conversation-only card and the
+    # run stay under the project the card was launched in.  chat_index then
+    # names the DESTINATION as owner — the viewing project itself — and the
+    # owner lookup alone finds nothing, so the tile (and a live run) vanished
+    # from the moved conversation.  Try the owner first, then every other
+    # project's chats dir for a bindings file.  One stat per project, only on
+    # the empty-local path, and storage is constructed only for a hit (its
+    # base class mkdirs).
     if not bindings and chat_id:
         try:
             from app.storage import chat_index
-            owner = chat_index.lookup(get_ziya_home(), chat_id)
+            ziya_home = get_ziya_home()
+            candidates: List[str] = []
+            owner = chat_index.lookup(ziya_home, chat_id)
             if owner and owner[0] != project_id:
-                owner_pid = owner[0]
-                owner_dir = get_project_dir(owner_pid)
-                bindings = TaskBindingStorage(owner_dir).list_for_chat(chat_id)
-                if bindings:
-                    source_project_id = owner_pid
-                    run_dir = owner_dir
+                candidates.append(owner[0])
+            projects_dir = ziya_home / "projects"
+            if projects_dir.exists():
+                for p in sorted(projects_dir.iterdir()):
+                    if p.is_dir() and p.name != project_id and p.name not in candidates:
+                        candidates.append(p.name)
+            for pid in candidates:
+                pdir = get_project_dir(pid)
+                # chat_id was already containment-checked by the local
+                # list_for_chat above; this is only a cheap pre-filter.
+                if not (pdir / "chats" / f"{chat_id}.bindings.json").exists():
+                    continue
+                found = TaskBindingStorage(pdir).list_for_chat(chat_id)
+                if found:
+                    bindings = found
+                    source_project_id = pid
+                    run_dir = pdir
+                    break
         except Exception as e:
             logger.debug(
                 f"cross-project binding resolution failed for "

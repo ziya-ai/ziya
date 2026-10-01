@@ -835,6 +835,34 @@ def delete_chat(project_id: str, chat_id: str):
     
     return {"deleted": True}
 
+
+class ChatMoveBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    targetProjectId: str
+
+
+@router.post("/api/v1/projects/{project_id}/chats/{chat_id}/move")
+def move_chat(project_id: str, chat_id: str, body: ChatMoveBody):
+    """Move a chat to another project in one server-side step.
+
+    Supersedes the client's bulk-sync-to-target + DELETE-from-source pair
+    (see ``ChatStorage.move_to`` for why that pair lost data).  400 for a
+    same-project move (folder moves go through bulk-sync's ``folderId``),
+    404 when either project or the chat is missing.  Task bindings stay
+    under this project with the card and run they reference; GET
+    /task-bindings finds them from the chat's new home.
+    """
+    if body.targetProjectId == project_id:
+        raise HTTPException(status_code=400, detail="Target is the source project")
+    source = get_chat_storage(project_id)
+    target = get_chat_storage(body.targetProjectId)
+    with chat_record_lock(source):
+        moved = source.move_to(chat_id, target, body.targetProjectId)
+    if moved is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    logger.info(f"Moved chat {chat_id[:8]} from project {project_id[:8]} to {body.targetProjectId[:8]}")
+    return {"moved": True, "chatId": chat_id, "projectId": body.targetProjectId}
+
 @router.post("/api/v1/projects/{project_id}/chats/{chat_id}/messages", response_model=Chat)
 def add_message(project_id: str, chat_id: str, message_data: Message):
     """Add a message to a chat."""
