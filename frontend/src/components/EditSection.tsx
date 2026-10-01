@@ -7,6 +7,7 @@ import { useProject } from "../context/ProjectContext";
 import { Button, Tooltip, Input, Space, message, Image as AntImage } from "antd";
 import { modelCapabilitiesService } from '../services/modelCapabilitiesService';
 import { useSendPayload } from '../hooks/useSendPayload';
+import { messageLocator, ownerProjectId, rewindMessages, patchMessage } from '../api/conversationSyncApi';
 import {
     EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined,
     PictureOutlined, PaperClipOutlined, DeleteOutlined
@@ -29,8 +30,13 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         setStreamedContentMap,
         setEditingMessageIndex,
         removeStreamingConversation,
+        replaceMessages,
     } = useActiveChat();
-    const { setConversations } = useConversationList();
+    const { setConversations, conversations } = useConversationList();
+    // Project that owns this conversation's server record (a global chat
+    // lives in its home project, not the one being viewed).
+    const ownerPid = () => ownerProjectId(
+        conversations.find(c => c.id === currentConversationId));
 
     const { send } = useSendPayload();
     const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
@@ -374,6 +380,10 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
     const handleSubmit = async () => {
         setEditingMessageIndex(null);
         setAttachedImages([]);
+        // Captured before any local truncation below.
+        const locator = messageLocator(currentMessages, index);
+        const pid = ownerPid();
+        const images = attachedImages.length > 0 ? attachedImages : null;
 
         // Clear any existing streamed content
         setStreamedContentMap(new Map());
@@ -392,29 +402,27 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
             _truncatedAfter: true
         };
 
-        // Set conversation to just the truncated messages
-        setConversations(prev => prev.map(conv =>
-            conv.id === currentConversationId
-                ? { ...conv, messages: truncatedMessages, _version: Date.now(), _editInProgress: true }
-                : conv
-        ));
+        // Set conversation to just the truncated messages, persisted so IDB
+        // cannot restore the pre-edit tail.
+        replaceMessages(currentConversationId, () => truncatedMessages);
 
         addStreamingConversation(currentConversationId);
         try {
+            // Server-side truncate + edit BEFORE the new answer can sync:
+            // bulk-sync only adds messages, so without this the edit never
+            // reaches disk, and a rewind landing after the answer would
+            // remove the answer too.  404 = chat not synced yet; nothing to do.
+            const rw = await rewindMessages(pid, currentConversationId, locator,
+                { text: editedMessage, images });
+            if (!rw.ok && rw.status !== 404) {
+                console.warn('Edit: server rewind failed; the server record keeps the pre-edit history', rw.status);
+            }
             const result = await send({
                 messages: truncatedMessages,
                 question: editedMessage,
             });
-            // sendPayload already adds the message to conversation, so we just need to clear the flag
-            if (result) {
-                // Clear the edit in progress flag after the response is complete
-                // Note: The message is already added by sendPayload, so we don't add it again
-                setConversations(prev => prev.map(conv =>
-                    conv.id === currentConversationId
-                        ? { ...conv, _editInProgress: false }
-                        : conv
-                ));
-            }
+            // sendPayload already adds the response to the conversation.
+            void result;
         } catch (error) {
             console.error('Error sending message:', error);
             removeStreamingConversation(currentConversationId);

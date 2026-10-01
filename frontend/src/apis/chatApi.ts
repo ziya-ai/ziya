@@ -2,7 +2,8 @@ import { SetStateAction, Dispatch } from 'react';
 import { message } from 'antd';
 import { Message, ImageAttachment } from '../utils/types';
 import { AppConfig, DEFAULT_CONFIG } from '../types/config';
-import { formatMCPOutput, enhanceToolDisplayHeader, stripRedundantCdForDisplay } from '../utils/mcpFormatter';
+import { enhanceToolDisplayHeader, stripRedundantCdForDisplay } from '../utils/mcpFormatter';
+import { renderToolPart, toolPartFromEvent } from '../utils/renderToolPart';
 import { handleToolStart, handleToolDisplay, ToolEventContext } from '../utils/mcpToolHandlers';
 import { Project } from '../types/project';
 import { projectSync } from '../utils/projectSync';
@@ -2181,9 +2182,6 @@ export const sendPayload = async (
                 // Handle MCP tool display events
                 if (unwrappedData.type === 'tool_display') {
 
-                    // Extract verification status if present
-                    const isVerified = unwrappedData.verified === true;
-                    const verificationError = unwrappedData.verification_error;
 
                     // Check for MCP tool errors in the result.
                     // 'Content truncated' is NOT an error — it's the fetch/read
@@ -2215,138 +2213,16 @@ export const sendPayload = async (
                         return; // Handler processed the event, return from function
                     }
 
-                    let toolName = unwrappedData.tool_name;
-                    const storedInput = toolInputsMap.get(unwrappedData.tool_id);
+                    // The tool block is built by the same function the saved-message
+                    // renderer uses (utils/renderToolPart.ts), so a turn renders identically
+                    // live and after reload.  Only the placeholder splice below is live-only.
+                    const rendered = renderToolPart(
+                        toolPartFromEvent(unwrappedData, toolInputsMap), currentContent);
+                    const toolName = rendered.toolName;
+                    const displayHeader = rendered.displayHeader;
+                    const isShellCommandTool = rendered.isShellCommandTool;
                     const storedHeader = toolInputsMap.get(`${unwrappedData.tool_id}_header`);
-
-                    // Normalize tool name
-                    if (!toolName.startsWith('mcp_')) {
-                        toolName = `mcp_${toolName}`;
-                    }
-                    toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
-
-                    const actualToolName = toolName.replace('mcp_', '');
-
-                    // Define isShellCommandTool here so it's available throughout the handler
-                    const isShellCommandTool = actualToolName === 'run_shell_command';
-
-                    // Build display header with proper fallback chain
-                    let displayHeader = storedHeader;
-                    if (!displayHeader) {
-                        displayHeader = unwrappedData.display_header;
-                    }
-                    if (!displayHeader) {
-                        displayHeader = toolName.replace('mcp_', '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
-                    }
-
-                    // Enhance shell command headers with the actual command
-                    if (isShellCommandTool && storedInput?.command) {
-                        // Truncate long commands for the header
-                        const displayCommand = stripRedundantCdForDisplay(storedInput.command);
-                        const cmdPreview = displayCommand.length > 50
-                            ? displayCommand.substring(0, 47) + '...'
-                            : displayCommand;
-                        // Add "Shell: " prefix to make the tool type clear in the header
-                        displayHeader = `Shell: ${cmdPreview}`;
-                    }
-
-                    // CRITICAL: Always sanitize displayHeader for shell commands AFTER all header logic
-                    // This ensures newlines are removed regardless of header source (stored, enhanced, etc.)
-                    // Newlines in displayHeader break HTML comments and regex matching
-                    if (isShellCommandTool && displayHeader) {
-                        displayHeader = displayHeader
-                            .replace(/\n/g, ' ') // Replace newlines with spaces
-                            .replace(/\s+/g, ' ') // Collapse multiple spaces
-                            // A backtick in the header lands in the ````tool:…|<header>|syntax
-                            // fence info string, which CommonMark (and our fenceScanner /
-                            // marked.js) reject as an opener — inverting fence state so the
-                            // block never closes and following prose is absorbed into it.
-                            .replace(/`/g, "'")
-                            .trim();
-                    }
-
-                    // Non-shell tools reach the same ````tool:…|<header>|syntax fence
-                    // info string, so a backtick in ANY tool's header (e.g. a search
-                    // query) poisons it identically. The shell branch above already
-                    // strips backticks for shell tools — this is idempotent there and
-                    // closes the non-shell result-path gap that branch's
-                    // isShellCommandTool gate left open.
-                    if (displayHeader) {
-                        displayHeader = displayHeader.replace(/`/g, "'");
-                    }
-
-                    // Prepare content for display
-                    let displayContent = unwrappedData.result;
-
-                    // Parse result if it's a JSON string to extract the actual content
-                    if (typeof displayContent === 'string' && (displayContent.startsWith('{') || displayContent.startsWith('['))) {
-                        try {
-                            displayContent = JSON.parse(displayContent);
-                        } catch (e) {
-                            // Keep as string if parsing fails
-                        }
-                    }
-
-                    // For shell commands, add command as first line if not present
-                    if (actualToolName === 'run_shell_command' && storedInput?.command && !displayContent.startsWith('$ ')) {
-                        displayContent = `$ ${stripRedundantCdForDisplay(storedInput.command)}\n${displayContent}`;
-                    }
-
-                    // Add lock icon if cryptographically verified (verified flag from backend)
-                    // This ensures the lock symbol only appears when the tool response has been cryptographically verified
-                    if (isVerified) {
-                        displayHeader = `🔐 ${displayHeader}`;
-                    }
-
-                    // Prepare content for display
-                    // (displayContent already set above)
-
-                    // Format the content
-                    const inputForFormatter = unwrappedData.args || storedInput;
-                    const imageDataUri: string | undefined = unwrappedData.image_data;
-
-                    const formatted = formatMCPOutput(toolName, displayContent, inputForFormatter, {
-                        showInput: false,
-                        maxLength: 10000,
-                        defaultCollapsed: true
-                    });
-
-                    // Create tool display with header - handle hierarchical results
-                    let toolResultContent: string;
-                    let toolResultDisplay: string;
-                    // Backend syntax hint for Prism highlighting
-                    const resultSyntax = unwrappedData.syntax || 'text';
-                    const resultFence = '`'.repeat(4);
-                    const needsExtraNewline = !currentContent.endsWith('\n\n');
-
-                    if (formatted.hierarchicalResults && formatted.hierarchicalResults.length > 0) {
-                        // Add verification status to metadata
-                        // Store for MarkdownRenderer to display lock icon
-                        // CRITICAL: Pass hierarchicalResults as JSON structure, NOT as serialized markdown.
-                        toolResultContent = JSON.stringify({
-                            _isStructuredToolResult: true,
-                            _verified: isVerified,
-                            _verificationError: verificationError,
-                            summary: formatted.summary || formatted.content,
-                            type: formatted.type,
-                            hierarchicalResults: formatted.hierarchicalResults
-                        });
-                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n${toolResultContent}\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
-                    } else {
-                        // Default for ALL tools: code fence with syntax hint
-                        toolResultContent = formatted.content;
-                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}` +
-                            `${resultFence}tool:${toolName}|${displayHeader}|${resultSyntax}\n${toolResultContent}\n${resultFence}\n\n`;
-                    }
-
-                    // Inline image display for diagram render results.
-                    // The image_data field is a base64 data URI sent by the backend
-                    // on the tool_display event — it is NOT stored in conversation
-                    // history or model context (compacted to text summary there).
-                    if (imageDataUri) {
-                        const imgTag = `\n\n<img src="${imageDataUri}" alt="Rendered diagram" style="max-width:100%;border-radius:8px;margin:8px 0;" />\n\n`;
-                        toolResultDisplay = imgTag + toolResultDisplay;
-                    }
+                    const toolResultDisplay = rendered.display;
 
                     // STRATEGY 1: Use tool_id marker (most reliable)
                     const toolMarker = `<!-- TOOL_MARKER:${unwrappedData.tool_id} -->`;

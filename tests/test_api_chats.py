@@ -208,8 +208,12 @@ class TestBulkSync:
         assert resp.json()["updated"] == 1
 
         resp = tc.get(f"/api/v1/projects/{pid}/chats/chat-tiny")
-        # Regression blocked: the two original messages are preserved.
-        assert len(resp.json()["messages"]) == 2
+        # Regression blocked: the two original messages are preserved.  Since
+        # bulk-sync merges by id (app/utils/chat_message_ops.py), the pushed
+        # message it has never seen is ADDED rather than discarded with the
+        # rest of the payload; removal only happens via the message endpoints.
+        contents = [m["content"] for m in resp.json()["messages"]]
+        assert contents == ["a", "b", "only one"]
 
     def test_explicit_null_folder_clears_group(self, client):
         """Move-to-root regression: an explicit folderId/groupId null must WIN.
