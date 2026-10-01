@@ -260,9 +260,17 @@ def documents_dir(create: bool = True) -> Path:
 
     Documents live in the PROJECT'S ``.ziya`` (model-writable, versionable
     alongside the code they describe), not the global ``~/.ziya`` home.
+
+    Resolved through app.context.get_project_root -- the per-request root the
+    X-Project-Root header sets, falling back to ZIYA_USER_CODEBASE_DIR / cwd --
+    because that is the root file_write resolves against.  Reading the env var
+    directly pinned the store to the directory the SERVER was started in: on a
+    dev desktop launched from $HOME, the model wrote <project>/.ziya/documents/
+    x.md and the export route looked in ~/.ziya/documents/ ("Document not
+    found"), then spent tool calls diagnosing a mismatch of our own making.
     """
-    from app.config.env_registry import ziya_env
-    root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+    from app.context import get_project_root
+    root = get_project_root()
     d = Path(root) / '.ziya' / 'documents'
     if create:
         d.mkdir(parents=True, exist_ok=True)
