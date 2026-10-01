@@ -232,19 +232,13 @@ class ShellWriteChecker:
         # checked separately and not bypassable per-task.
         if self._task_scope_grants_command(cmd):
             return True, ""
-        args = [t for t in tok[1:] if not t.startswith('-')]
-        # For cp/mv, only the last argument is the write target;
-        # earlier arguments are read-only sources.
-        if tok[0] in ('cp', 'mv') and len(args) >= 2:
-            targets = args[-1:]
-        else:
-            targets = args
+        targets = _destructive_write_targets(tok[0], tok[1:])
         if not targets:
             return False, f"Command '{tok[0]}' requires a target path."
         for t in targets:
             if not self._is_write_allowed(t):
                 return False, (f"'{tok[0]} {t}' blocked — use git diffs for project file changes."
-                               + self._target_detail(t))
+                               + self._target_detail(t) + self._writable_hint(t))
         return True, ""
 
     def _inplace_edit(self, cmd: str) -> Tuple[bool, str]:
@@ -279,7 +273,7 @@ class ShellWriteChecker:
                     return False, (
                         f"In-place editing with '{prog} {matched_flag}' targeting '{t}' is not allowed. "
                         f"Use git diffs, or target a path approved by write policy."
-                        + self._target_detail(t)
+                        + self._target_detail(t) + self._writable_hint(t)
                     )
         return True, ""
 
@@ -386,7 +380,8 @@ class ShellWriteChecker:
                         target, end = _extract_target(command, i)
                         if target and not self._is_write_allowed(target):
                             return False, (f"Redirection to '{target}' blocked."
-                                           + self._target_detail(target))
+                                           + self._target_detail(target)
+                                           + self._writable_hint(target))
                         i = end
                 continue
             i += 1
@@ -458,6 +453,59 @@ class ShellWriteChecker:
         if len(resolved) == 1:
             return f" (resolves to {resolved[0]})"
         return f" (may resolve to any of: {', '.join(resolved)})"
+
+    def _writable_hint(self, target_path: str) -> str:
+        """Denial suffix: the safety posture, and how the user can widen it.
+
+        A new user reads a bare "blocked" as "this command is broken".  Say
+        why (writes are confined to safe paths; project files change through
+        reviewed diffs) and name the Project Settings entry that would admit
+        this target.  Project entries reach the shell only when it spawns
+        (manager._apply_project_write_paths), so a restart is part of it.
+        """
+        safe = [p for p in self.policy.get('safe_write_paths', [])
+                if not _is_special_device(p)]
+        return (
+            " Shell writes are limited to safe paths (currently: "
+            + (", ".join(safe) or "none")
+            + "); project files change through git diffs you review."
+            + f" To let the shell write here, add {self._writable_entry(target_path)}"
+            " in Project Settings (Manage Projects), then restart the shell"
+            " server (Shell Configuration)."
+        )
+
+    def _writable_entry(self, target_path: str) -> str:
+        """The Project Settings entry that would admit *target_path*.
+
+        Suggests the narrowest useful entry: the target's directory as an
+        Additional Safe Write Path, or, for a file directly in the project
+        root, the file name as an Allowed Write Pattern (a root prefix would
+        open the whole project).  Falls back to a generic phrase when the
+        target cannot be pinned to a single path.
+        """
+        generic = "the target's directory under Additional Safe Write Paths"
+        cands = self._resolve_targets(target_path)
+        if not cands or len(cands) != 1:
+            return generic
+        raw = (target_path or "").strip().strip("'\"")
+        path = os.path.expanduser(cands[0])
+        root = os.path.normpath(self._project_root) if self._project_root else ""
+        if not os.path.isabs(path):
+            if not root:
+                return generic
+            path = os.path.join(root, path)
+        path = os.path.normpath(path)
+        is_dir = raw.endswith("/") or os.path.isdir(path)
+        directory = path if is_dir else os.path.dirname(path)
+        if root and (directory == root or directory.startswith(root + os.sep)):
+            rel = os.path.relpath(directory, root)
+            if rel == ".":
+                name = os.path.basename(path)
+                if is_dir or not name:
+                    return generic
+                return f"'{name}' under Allowed Write Patterns"
+            return f"'{rel}/' under Additional Safe Write Paths"
+        return f"'{directory.rstrip(os.sep)}/' under Additional Safe Write Paths"
 
     def _task_scope_grants_write(self, target_path: str) -> bool:
         if not self._task_scope:
@@ -772,6 +820,126 @@ def _strip_redirections(tokens: List[str]) -> List[str]:
             continue
         out.append(t)
     return out
+
+
+# GNU cp/mv/ln options that take a value.  GNU getopt permutes, so a value
+# may sit anywhere on the line and must not be read as an operand: in
+# ``cp /tmp/a src/x -S /tmp/z`` the destination is ``src/x``, not the
+# backup suffix ``/tmp/z``.
+_GNU_SHORT_VALUE_OPTS = "St"
+_GNU_LONG_VALUE_OPTS = {
+    "cp": ("suffix", "target-directory", "sparse", "no-preserve"),
+    "mv": ("suffix", "target-directory"),
+    "ln": ("suffix", "target-directory"),
+}
+
+
+def _gnu_operands(prog: str, args: List[str]) -> Tuple[List[str], List[str]]:
+    """Operands and ``-t`` directories of *args* as GNU getopt_long reads them.
+
+    Options may appear anywhere until ``--``, and a long option may be
+    abbreviated to any unambiguous prefix (``--t`` is ``--target-directory``).
+    Commands without value-taking options get the plain reading: every
+    non-dash token before ``--``, and every token after it.
+    """
+    longs = _GNU_LONG_VALUE_OPTS.get(prog, ())
+    shorts = _GNU_SHORT_VALUE_OPTS if longs else ""
+    operands: List[str] = []
+    target_dirs: List[str] = []
+    i = 0
+    while i < len(args):
+        t = args[i]
+        i += 1
+        if t == "--":
+            operands.extend(args[i:])
+            break
+        if t.startswith("--"):
+            name, eq, value = t[2:].partition("=")
+            matches = [o for o in longs if o.startswith(name)]
+            if not matches:
+                continue
+            if not eq:
+                if i >= len(args):
+                    continue  # value missing: GNU refuses to run
+                value = args[i]
+                i += 1
+            if matches == ["target-directory"]:
+                target_dirs.append(value)
+            continue
+        if t.startswith("-") and t != "-":
+            # A short cluster (``-rt``); a value option ends it, taking the
+            # rest of the cluster (``-tDIR``) or the next token as its value.
+            for j in range(1, len(t)):
+                if t[j] not in shorts:
+                    continue
+                if j + 1 < len(t):
+                    value = t[j + 1:]
+                elif i < len(args):
+                    value = args[i]
+                    i += 1
+                else:
+                    value = None
+                if t[j] == "t" and value is not None:
+                    target_dirs.append(value)
+                break
+            continue
+        operands.append(t)
+    return operands, target_dirs
+
+
+def _bsd_operands(prog: str, args: List[str]) -> Optional[List[str]]:
+    """Operands of *args* as a non-permuting (BSD/macOS) getopt reads them.
+
+    Option parsing stops at the first operand or ``--``; everything after
+    is an operand, dash-words included, so macOS ``cp /tmp/a -v`` writes
+    ``./-v``.  Returns None when the command is refused before it writes:
+    BSD cp/mv/ln reject ``-t`` and long options ("illegal option", verified
+    on macOS), so a leading one means only the GNU reading can write.
+    """
+    for i, t in enumerate(args):
+        if t == "--":
+            return args[i + 1:]
+        if not t.startswith("-") or t == "-":
+            return args[i:]
+        if prog in _GNU_LONG_VALUE_OPTS and (t.startswith("--") or "t" in t[1:]):
+            return None
+    return []
+
+
+def _destination(prog: str, operands: List[str]) -> List[str]:
+    """The path a cp/mv/ln with these operands creates or overwrites."""
+    if len(operands) >= 2:
+        return [operands[-1]]
+    if len(operands) == 1 and prog == "ln":
+        # One-operand ln creates ./basename(TARGET).
+        return [os.path.basename(operands[0].rstrip("/")) or operands[0]]
+    return []
+
+
+def _destructive_write_targets(prog: str, args: List[str]) -> List[str]:
+    """Every path *prog* may write, under either getopt convention.
+
+    Which implementation is on PATH is not known here (macOS ships BSD,
+    Linux and Homebrew coreutils are GNU) and they read the same line
+    differently, so the targets of BOTH readings are returned and every one
+    must pass the write policy.  cp writes only its destination.  mv also
+    REMOVES each source, which is ``rm SOURCE`` in effect, so its sources
+    must be writable too; ``mv src/x /tmp/y`` deletes a project file just
+    as ``rm src/x`` would.  ln keeps its operands, as before, since a link
+    into the project can be written through later.  Other commands write
+    every operand.
+    """
+    gnu_ops, target_dirs = _gnu_operands(prog, args)
+    bsd_ops = _bsd_operands(prog, args)
+    if prog not in _GNU_LONG_VALUE_OPTS:
+        targets = gnu_ops + (bsd_ops or [])
+    else:
+        targets = list(target_dirs) or _destination(prog, gnu_ops)
+        if bsd_ops is not None:
+            targets += _destination(prog, bsd_ops)
+        if prog in ("mv", "ln"):
+            targets += gnu_ops + (bsd_ops or [])
+    return list(dict.fromkeys(targets))
 
 
 def _extract_target(cmd: str, pos: int) -> Tuple[str, int]:
