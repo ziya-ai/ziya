@@ -108,6 +108,23 @@ something risky without asking. The trust model in Ziya inverts that. Safe
 operations are trusted from the start; less safe ones can be approved globally,
 or per-project, per-conversation, or per-file, with reasonable inheritance.
 
+**Default-permit for safe work is a deliberate choice, not an oversight.**
+Approval prompts only protect anyone while someone reads them, and the quickest
+way to stop people reading them is to show too many. When everything is
+gated, users click through every prompt, turn on auto-approve, or reach for
+the equivalent of `--dangerously-skip-permissions`, and at that point the gate
+protects nothing. When safe work goes through without a prompt, an approval
+request is rare enough to get real attention, and the exceptions a user
+grants are ones they actually considered. This goes further than read-only
+shell commands: it covers tool availability, reads within the project, writes
+to scratch space (`.ziya/`, `/tmp/`), and the allowlisted shell floor. Anything
+past that line needs a signed escalation (next section), because the default
+has to stay safe for this to work. A default-deny design, where each resource
+is introduced to the agent one at a time, is a legitimate alternative, and some
+competitors build their whole security story on it. Ziya chooses not to,
+because it moves the burden onto the user's attention on every task and gets
+the same click-through failure in return.
+
 ### Privilege Has Tiers, But Always a Trust Anchor
 
 The same instinct shows up in how the shell tool grants extra privilege. The
