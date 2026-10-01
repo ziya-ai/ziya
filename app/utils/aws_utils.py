@@ -3,6 +3,7 @@ AWS utility functions for Ziya.
 """
 import os
 import sys
+from typing import Optional
 import boto3
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError, NoCredentialsError, ProfileNotFound
@@ -23,27 +24,19 @@ def create_fresh_boto3_session(profile_name=None, is_server_startup: bool = Fals
         boto3.Session: A fresh boto3 session
     """
     logger.debug(f"create_fresh_boto3_session called with profile_name={profile_name}")
-    # Convenience default for internal Amazon users who follow the
-    # TROUBLESHOOTING.md setup and create a profile literally named "ziya"
-    # (via `ada profile add --profile=ziya ...`). Only applied when the
-    # caller passed NO profile at all — never overrides an explicit
-    # --profile/ZIYA_AWS_PROFILE/AWS_PROFILE value — and only when that
-    # profile actually exists on this machine, so users who never set it
-    # up (the common case) fall through silently to boto3's normal
-    # default credential chain instead of erroring on a profile they
-    # never asked for.
-    # The env vars MUST be checked here, not just the argument: many
+    # Implicit profile (see implicit_aws_profile): the "ziya" convenience
+    # profile, or the only profile on the machine.  Applied only when the
+    # caller passed NO profile and none is named in the environment, so an
+    # explicit --profile/ZIYA_AWS_PROFILE/AWS_PROFILE always wins.  The env
+    # vars are checked inside the helper, not just the argument: many
     # request-time callers (e.g. check_aws_credentials() with no args)
     # reach this with profile_name=None while the user's --profile is
-    # carried in AWS_PROFILE. Preempting that env value hijacked the
-    # session onto the "ziya" profile even when a different profile was
-    # explicitly requested at startup.
-    _env_profile = (os.environ.get("AWS_PROFILE")
-                    or os.environ.get("AWS_DEFAULT_PROFILE")
-                    or os.environ.get("ZIYA_AWS_PROFILE"))
-    if not profile_name and not _env_profile and "ziya" in _get_available_profiles():
-        profile_name = "ziya"
-        logger.debug("No profile specified; using convenience profile 'ziya' (found in AWS config)")
+    # carried in AWS_PROFILE, and preempting that hijacked the session.
+    if not profile_name:
+        implicit = implicit_aws_profile()
+        if implicit:
+            profile_name = implicit
+            logger.debug(f"No profile specified; using implicit profile {implicit!r} from AWS config")
     try:
         if profile_name:
             return boto3.Session(profile_name=profile_name)
@@ -96,6 +89,41 @@ def _get_available_profiles():
         return list(session.available_profiles)
     except Exception:
         return []
+
+
+def implicit_aws_profile() -> Optional[str]:
+    """The profile to use when the user named none anywhere, or None.
+
+    Returns None as soon as a profile IS named — ``AWS_PROFILE``,
+    ``AWS_DEFAULT_PROFILE`` or ``ZIYA_AWS_PROFILE`` (``--profile`` lands in
+    the latter two) — so an explicit choice is never overridden.  Also None
+    when static credentials sit in the environment (``AWS_ACCESS_KEY_ID``):
+    boto3's default chain honours those ahead of any profile, and picking a
+    profile here would silently switch the user onto a different identity.
+
+    Otherwise, in order:
+
+    * ``ziya`` — the convenience profile internal users create by following
+      TROUBLESHOOTING.md (``ada profile add --profile=ziya ...``).
+    * The sole profile in ``~/.aws``, when there is exactly one.  Without
+      this a user with a single profile not literally named ``default`` hit
+      the empty default chain and was told to pass ``--profile`` naming the
+      only profile they have.  ``default`` itself is excluded because boto3
+      already uses it implicitly.
+    * None when several profiles exist: choosing between them is the
+      user's call, and the ProfileNotFound message lists them.
+    """
+    if (os.environ.get("AWS_PROFILE") or os.environ.get("AWS_DEFAULT_PROFILE")
+            or os.environ.get("ZIYA_AWS_PROFILE")):
+        return None
+    if os.environ.get("AWS_ACCESS_KEY_ID"):
+        return None
+    profiles = _get_available_profiles()
+    if "ziya" in profiles:
+        return "ziya"
+    if len(profiles) == 1 and profiles[0] != "default":
+        return profiles[0]
+    return None
 
 def _create_fallback_session():
     """Attempt to create a session without any profile configuration."""
@@ -246,7 +274,8 @@ def check_aws_credentials(is_server_startup=True, profile_name=None, region_name
         from app.plugins import get_active_auth_provider
         auth_provider = get_active_auth_provider()
         
-        if auth_provider and auth_provider.is_auth_error(error_msg):
+        from app.utils.infra_errors import is_auth_failure
+        if is_auth_failure(e, auth_provider):
             return False, auth_provider.get_credential_help_message(error_context=error_msg)
             
         # Standard error detection for non-Amazon environments

@@ -395,12 +395,26 @@ class MemoryProposeTool(BaseMCPTool):
         # other open proposal toward archival.  Same reasoning as the
         # passive-sweep read in lifecycle.run_lifecycle_pass.
         from app.memory.lifecycle import current_activity_count
+        # Per-domain aging stamp (app/utils/memory_clock.py).  Proposing is
+        # not a session; extraction ticks the clock for this conversation.
+        try:
+            from app.utils.memory_clock import snapshot as clock_snapshot
+            proposal.domain_clock = clock_snapshot()
+        except Exception:
+            pass
         proposal.id = store.add(proposal, activity_count=current_activity_count())
         pending_count = len(store.list_open())
+        _tags = proposal.tags
+        if isinstance(_tags, str):
+            _tags = [t.strip() for t in _tags.split(",") if t.strip()]
         return {
             "success": True,
             "message": f"Memory proposed for review ({pending_count} pending).",
             "proposal_id": proposal.id,
+            "content": proposal.content,
+            "layer": proposal.layer,
+            "tags": list(_tags or []),
+            "pending_count": pending_count,
         }
 
 

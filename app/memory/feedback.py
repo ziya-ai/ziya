@@ -316,6 +316,10 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b))
 
 
+from app.utils.memory_pause import guarded as _pause_guarded
+
+
+@_pause_guarded("feedback")
 async def apply_feedback(
     conversation_id: Optional[str],
     response_text: str,

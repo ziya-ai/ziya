@@ -166,6 +166,11 @@ def _memory_organize_gate() -> bool:
     from app.config.env_registry import ziya_env
     if not ziya_env("ZIYA_ENABLE_MEMORY"):
         return False
+    # should_skip, not is_paused: once the probe wait has elapsed the run
+    # goes through guarded(), which retries for real and auto-resumes.
+    from app.utils.memory_pause import should_skip
+    if should_skip():
+        return False
     try:
         from app.storage.memory import get_memory_storage
         from app.memory import get_review_summary, load_organize_history
@@ -190,7 +195,10 @@ def _memory_organize_gate() -> bool:
 
 async def _memory_organize_run() -> None:
     from app.memory import reorganize
-    result = await reorganize()
+    from app.utils.memory_pause import guarded
+    result = await guarded("organize")(reorganize)()
+    if isinstance(result, dict) and result.get("reason") == "memory_paused":
+        return
     bootstrap = result.get("bootstrap", {}) if isinstance(result, dict) else {}
     cross = len(result.get("cross_links", []) or []) if isinstance(result, dict) else 0
     logger.info(
@@ -231,6 +239,9 @@ def _memory_lifecycle_gate() -> bool:
     from app.config.env_registry import ziya_env
     if not ziya_env("ZIYA_ENABLE_MEMORY"):
         return False
+    from app.utils.memory_pause import should_skip
+    if should_skip():
+        return False
     try:
         from app.storage.proposals import get_proposals_store
         # Cheapest possible gate: the projection is already cached against
@@ -243,7 +254,10 @@ def _memory_lifecycle_gate() -> bool:
 
 async def _memory_lifecycle_run() -> None:
     from app.memory.lifecycle import run_lifecycle_pass
-    counts = await run_lifecycle_pass()
+    from app.utils.memory_pause import guarded
+    counts = await guarded("lifecycle")(run_lifecycle_pass)()
+    if counts.get("reason") == "memory_paused":
+        return
     logger.info(
         f"⏰ system-job memory_lifecycle: "
         f"scanned {counts.get('scanned', 0)}, "

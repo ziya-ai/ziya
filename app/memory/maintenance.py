@@ -55,6 +55,10 @@ INTERFERENCE_RETROACTIVE_WEIGHT = 0.6
 INTERFERENCE_PROACTIVE_WEIGHT = 0.4
 
 
+from app.utils.memory_pause import guarded as _pause_guarded
+
+
+@_pause_guarded("maintenance")
 def run_post_save_maintenance(memory_id: str) -> Dict[str, any]:
     """Run after every memory_save.  Lightweight — O(nodes × tags)."""
     from app.storage.memory import get_memory_storage

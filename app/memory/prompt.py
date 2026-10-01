@@ -266,6 +266,9 @@ def get_memory_prompt_sections() -> "tuple[str, str]":
         lines.append(f"*{len(memories)} total memories across {len(root_nodes)} domains.*")
         if pending_count > 0:
             lines.append(f"*{pending_count} memory proposal(s) on probation — these promote or expire automatically; no review needed.*")
+        from app.utils.memory_pause import prompt_notice
+        if (_pn := prompt_notice()):
+            lines.append(_pn)
         return stable, "\n" + "\n".join(lines)
 
     # ── Flat dump (Phase 0 fallback) ───────────────────────────────
@@ -332,6 +335,9 @@ def get_memory_prompt_sections() -> "tuple[str, str]":
 
     if pending_count > 0:
         lines.append(f"*{pending_count} memory proposal(s) on probation — these promote or expire automatically; no review needed.*")
+    from app.utils.memory_pause import prompt_notice
+    if (_pn := prompt_notice()):
+        lines.append(_pn)
 
     return stable, ("\n" + "\n".join(lines)) if lines else ""
 

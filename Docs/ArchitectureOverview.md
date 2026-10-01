@@ -542,7 +542,18 @@ right amount of knowledge at the right granularity:
    to decay unread (~88% of proposals). All other layers keep the existing
    corroboration-or-use bar; corroboration is a confidence bonus everywhere.
    Decay still archives low-grade, contradicted, or non-fast-track proposals
-   after `ARCHIVAL_AGE_THRESHOLD` activity ticks. The fast-track layer set,
+   after `ARCHIVAL_AGE_THRESHOLD` activity ticks.
+   Ticks are counted **per domain** (`app/utils/memory_clock.py`,
+   `~/.ziya/memory/domain_clocks.json`): each project has its own clock,
+   which advances at most once per conversation per day, and each proposal
+   is stamped with every clock when it is made.  Its age is the sessions
+   since then across the projects in its provenance collection, so a
+   proposal learned in one domain does not age while you work in another,
+   and parallel jobs in one domain each count once.  Proposals with no
+   project use the global session count.  A proposal whose domain has had
+   no session for 90 days is archived as `dormant`.  Unstamped (legacy)
+   proposals keep the old global counter.  The Proposals API reports the
+   same per-domain age and `would_promote` that the next sweep will use. The fast-track layer set,
    quality threshold, and minimum age are overridable via
    `ZIYA_MEMORY_FAST_TRACK_LAYERS`, `ZIYA_MEMORY_FAST_TRACK_THRESHOLD`, and
    `ZIYA_MEMORY_FAST_TRACK_MIN_AGE`.
@@ -685,12 +696,81 @@ $$\text{score} = \text{keyword\_match} \times (0.5 + \text{importance}) \times (
 Memories that are frequently retrieved naturally become "core" knowledge
 (importance → 1.0), while stale memories decay in ranking without being deleted.
 
+### Outage handling: pause with automatic retry
+
+An infrastructure failure (expired credentials, network, throttling) is
+never treated as a model answer.  `app/utils/infra_errors.py` is the one
+classifier shared by the service-model resolver, the embedding provider,
+the task system and the memory replay harness; `call_service_model` and
+`embed_text` raise `ServiceInfraError` (a `BaseException`, so the memory
+pipeline's fail-open `except Exception` handlers cannot turn it into
+AGREES / ADD / "no embedding").  The memory entry points (extraction,
+feedback, post-save maintenance, the lifecycle and organize jobs) abandon
+the pass with nothing recorded, undo the domain-clock session tick, and
+write `~/.ziya/memory/paused.json`.  The pause is a circuit breaker: while
+it is open every entry point returns `skipped: memory_paused` without
+calling anything and the system prompt says so, but after a probe wait
+(`PROBE_BASE_S` = 5 min, doubling per consecutive failure up to 1 h) the
+next entry point runs for real.  Success clears the pause automatically;
+another outage re-arms it with the longer wait.  `POST /api/v1/memory/resume`
+(the Health tab's **Resume memory**; `GET /api/v1/memory/pause` to inspect)
+only skips the wait.  A network-shaped credential failure classifies as
+`connection_error`, not `authentication_error` (`infra_errors.is_auth_failure`).
+
 ### Auto-Maintenance (Phase 2)
 
 Every `memory_save` call triggers automatic maintenance:
 
 1. **Auto-placement** — the new memory is filed into the best-matching
-   mind-map node by tag overlap.
+   mind-map node.  Score is tag overlap **normalised by the node's tag-set
+   size** (`overlap / sqrt(|node_tags|)`), so a node cannot win merely by
+   having accumulated tags — raw overlap is monotone in node size and
+   produced a "gravity well" root that held 145 of 252 memories with a
+   509-tag tag set.  Placement also prefers nodes whose members share the
+   memory's project (`scope.project_paths`): a node is *compatible* when
+   the memory's project accounts for ≥20% of its members with known
+   provenance (an empty node, or a memory without provenance, is
+   compatible with everything); compatible nodes always outrank
+   incompatible ones.  The gate is soft — with no compatible candidate the
+   best topical node still wins, so the first memory of a new project is
+   never left unplaced.  `repair_mindmap` (run before every placement and
+   by the organizer) includes a **rebalance** pass that moves an
+   already-placed memory when its node is provenance-incompatible, or when
+   a compatible node out-scores it by ≥2× — near-ties are left alone so it
+   does not fight organizer placement.  Moves are decided against one
+   snapshot per run, so a large migration converges over successive repairs.
+
+   Provenance is compared by **collection**, not raw project path
+   (`app/utils/memory_collections.py`).  Projects join a collection when
+   their memories sit together in small nodes (≤12 members, each project
+   holding ≥25% of the node, summed `min(count)` ≥2), so one topic spread
+   over several repositories is one collection, and a stray memory cannot
+   fuse two unrelated projects.  Nothing but the mind-map is consulted.
+   A node's **owner** collection is the plurality of its descendants'
+   members (children were divided out of the node's own cluster), else of
+   its own members.  Repair pass **2c** moves a group of ≥2 members whose
+   collection is not the owner **only when it outnumbers the owner's own
+   members on that node** (a flood) — to the best tag-matching node that
+   collection owns, otherwise into a new root whose tags and handle come
+   from the group's own tags.  This drains a well even when the foreign
+   collection is the node's majority, which the ≥20% gate alone never does.
+   A minority stays put: inference can miss a small repo of the same topic
+   (one that never shares a small node with its siblings), and splitting
+   it would strand topic knowledge.  The catch-all `domain_general` root
+   is never a rebalance or split destination.
+   A child node is scored only on tags its parent lacks: cell division
+   copies parent tags onto the child, and scoring on those would pull
+   generic parent-topic memories into an arbitrary child.  The organizer's
+   `_find_matching_node` scales its tag-overlap term by
+   `sqrt(|domain tags| / |node tags|)` for the same reason as placement.
+   Part C, **member-derived node tags**, exists behind
+   `MemoryStorage.NODE_TAGS_FROM_MEMBERS` (default off): repair pass 2d
+   replaces a populated node's tags with the tags carried by ≥50% of its
+   members (`member_node_tags`, capped at 12; `derive_tags` fallback when
+   nothing is that widely shared), so tags stop accreting and cell division
+   is no longer blocked by them.  The replay harness enables it as an
+   ablation arm (`--overrides`) and sweeps `NODE_TAGS_MIN_SHARE`; it is
+   turned on in production only once that measurement supports it.
 2. **Cell division** — if the target node now exceeds 12 memories, the
    strongest tag cluster is split into a new child node.
 3. **Cross-link discovery** — nodes in different branches sharing ≥2
