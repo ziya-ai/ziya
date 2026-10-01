@@ -11,6 +11,8 @@
  * preserved because they document hard-won invariants.
  */
 
+import { isPushMintedId, messageFingerprint } from './messageFingerprint';
+
 /** Server chat summary as returned by syncApi.listChats(projectId, false). */
 export interface ServerChatSummary {
     id: string;
@@ -199,6 +201,158 @@ export function shouldFetchFull(
         return true;
     }
     return false;
+}
+
+/**
+ * Push-side twin of shouldFetchFull's `serverShrank` branch.
+ *
+ * The push filter sends a local conversation with MORE messages than the
+ * server reports regardless of version, so a local copy that ran ahead with a
+ * coincident _version still corrects the server.  A server record, however,
+ * only shrinks through an explicit rewind/delete, and every such op bumps the
+ * server _version; bulk-sync never removes a message.  So a server that is
+ * NEWER and SHORTER than local means local's extras were removed there and
+ * local is stale, not ahead.  Pushing in that state can only re-send
+ * tombstoned messages: bulk_sync_chats drops them and, since the merge then
+ * differs from what was sent, bumps _version again, re-arming the count rule
+ * on the next cycle ("msg-count divergence (local=18 server=13) — pushing"
+ * every 30 s).  Return true to leave the record to the pull side instead.
+ */
+export function serverShrankPastLocal(p: {
+    localMsgCount: number;
+    serverMsgCount: number;
+    localVer: number;
+    serverVer: number;
+}): boolean {
+    return p.serverMsgCount < p.localMsgCount && p.serverVer > p.localVer;
+}
+
+// ---------------------------------------------------------------------------
+// Message tombstones
+// ---------------------------------------------------------------------------
+
+/** Record field listing ids of messages removed by an explicit delete or
+ *  rewind.  Same name and shape as the server's (TOMBSTONE_FIELD in
+ *  app/utils/chat_message_ops.py).  The browser writes it when the user
+ *  deletes or rewinds, so other tabs can tell a deliberate shrink from a
+ *  stale copy; the server never adopts a client's copy of it. */
+export const TOMBSTONE_FIELD = '_deletedMessages';
+const TOMBSTONE_CAP = 1000;
+
+export function tombstonedIds(record: any): Set<string> {
+    const ids = record?.[TOMBSTONE_FIELD]?.ids;
+    return new Set(Array.isArray(ids) ? ids.filter((x: any) => typeof x === 'string' && x) : []);
+}
+
+/** Content fingerprints tombstoned on the record: the server's `fps`, and
+ *  the browser's since addTombstones started writing them. */
+export function tombstonedFps(record: any): Set<string> {
+    const fps = record?.[TOMBSTONE_FIELD]?.fps;
+    return new Set(Array.isArray(fps) ? fps.filter((x: any) => typeof x === 'string' && x) : []);
+}
+
+/** The record's tombstone field with the removed messages added: by id for
+ *  those that have one, and by content fingerprint for every one of them
+ *  (same sha1(role\0content) the server writes).  The fingerprint is what
+ *  lets a message that predates per-message ids — or carries only a
+ *  push-minted `msg-…` placeholder — be recognised as deliberately removed
+ *  rather than merely missing from a stale copy.  Before this, id-less
+ *  messages dropped by an edit-and-resubmit were never tombstoned, so the
+ *  IDB guards kept the pre-edit tail forever and every later reply written
+ *  from state was discarded in favour of it (observed for conv e04a626a). */
+export function addTombstones(record: any, removed: any[]): any {
+    const prev = record?.[TOMBSTONE_FIELD];
+    const present = removed.filter(m => m && typeof m === 'object');
+    if (present.length === 0) return prev;
+    const ids = present.map(m => m.id).filter((x: any) => typeof x === 'string' && x);
+    const fps = present.map(messageFingerprint);
+    const prevIds = Array.isArray(prev?.ids) ? prev.ids : [];
+    const prevFps = Array.isArray(prev?.fps) ? prev.fps : [];
+    return {
+        ids: [...prevIds, ...ids].slice(-TOMBSTONE_CAP),
+        fps: [...prevFps, ...fps].slice(-TOMBSTONE_CAP),
+    };
+}
+
+/** Messages in `before` that `after` no longer carries, by id for messages
+ *  with a real id and by content fingerprint otherwise.  An id-less message
+ *  edited in place is therefore reported (its old content is gone), which
+ *  is what lets the guards accept the edited copy over the stale one. */
+export function droppedMessages(before: any[], after: any[]): any[] {
+    const keptIds = new Set(after.map(m => m?.id).filter((id: any) => !isPushMintedId(id)));
+    let keptFps: Set<string> | null = null;
+    return before.filter(m => {
+        if (!m) return false;
+        if (!isPushMintedId(m.id)) return !keptIds.has(m.id);
+        if (keptFps === null) keptFps = new Set(after.map(messageFingerprint));
+        return !keptFps.has(messageFingerprint(m));
+    });
+}
+
+/** True when every message in `fuller` that `shorterRecord` lacks is
+ *  tombstoned on `shorterRecord`, and at least one is.  A message is
+ *  identified by its id when it has a real one, otherwise (no id, or a
+ *  push-minted `msg-…` placeholder) by content fingerprint, as the server
+ *  does.  Any message that is neither present nor tombstoned means the
+ *  shorter record may be stale or partial, so the caller must keep `fuller`.
+ *  Fingerprinting is lazy: most conversations have ids throughout. */
+function extraExplainedByTombstones(fuller: any[] | undefined, shorterRecord: any): boolean {
+    if (!Array.isArray(fuller)) return false;
+    const tombIds = tombstonedIds(shorterRecord);
+    const tombFps = tombstonedFps(shorterRecord);
+    if (tombIds.size === 0 && tombFps.size === 0) return false;
+    const shorterMsgs: any[] = Array.isArray(shorterRecord?.messages) ? shorterRecord.messages : [];
+    const presentIds = new Set(shorterMsgs.map((m: any) => m?.id).filter(Boolean));
+    let presentFps: Set<string> | null = null;
+    let removedAny = false;
+    for (const m of fuller) {
+        const id = m?.id;
+        if (!isPushMintedId(id)) {
+            if (presentIds.has(id)) continue;
+            if (tombIds.has(id)) { removedAny = true; continue; }
+            return false;
+        }
+        const fp = messageFingerprint(m);
+        if (presentFps === null) presentFps = new Set(shorterMsgs.map(messageFingerprint));
+        if (presentFps.has(fp)) continue;
+        if (tombFps.has(fp)) { removedAny = true; continue; }
+        return false;
+    }
+    return removedAny;
+}
+
+/** True when the remote's shorter message list is an explicit delete or
+ *  rewind: every local message the remote lacks is tombstoned on the
+ *  remote record (by id, or by content fingerprint for id-less messages),
+ *  and at least one is.  A local message the remote neither has nor
+ *  tombstoned means the remote may be stale or partial, so the count
+ *  guards must keep local. */
+export function shrinkExplainedByTombstones(localMsgs: any[] | undefined, remote: any): boolean {
+    return extraExplainedByTombstones(localMsgs, remote);
+}
+
+/**
+ * Whether an IndexedDB write may replace a longer EXISTING message list
+ * with the caller's shorter one — the decision behind db.ts's three
+ * message-count guards (FAST_PATH_TOMBSTONE, IDB_WRITE_GUARD, SAVE_GUARD).
+ *
+ * Those guards predate explicit delete/rewind, when a shorter caller list
+ * could only mean a stale or partial copy, so they kept the existing
+ * messages and stamped the incoming `_version`.  After an edit-and-resubmit
+ * that left IDB holding the whole old history under the truncation's
+ * version — longer than state and no older — and every IDB reader adopted
+ * it, restoring the removed tail on screen a second after it vanished.
+ *
+ * Returns true to KEEP the existing messages.  Same thresholds as before
+ * (caller shorter, existing > 2), except that a shrink is let through when
+ * every existing message the caller lacks is tombstoned on the caller's
+ * record.
+ */
+export function shouldPreserveExistingMessages(existingMsgs: any[] | undefined, incoming: any): boolean {
+    const existingLen = Array.isArray(existingMsgs) ? existingMsgs.length : 0;
+    const callerLen = Array.isArray(incoming?.messages) ? incoming.messages.length : 0;
+    if (!(existingLen > callerLen && existingLen > 2)) return false;
+    return !shrinkExplainedByTombstones(existingMsgs, incoming);
 }
 
 // ---------------------------------------------------------------------------
