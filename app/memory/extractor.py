@@ -1626,6 +1626,10 @@ def _next_activity_count() -> int:
     return new_count
 
 
+from app.utils.memory_pause import guarded as _pause_guarded
+
+
+@_pause_guarded("extraction")
 async def run_post_conversation_extraction(
     messages: List[Dict[str, Any]],
     conversation_id: Optional[str] = None,
@@ -1634,11 +1638,29 @@ async def run_post_conversation_extraction(
 ) -> Dict[str, Any]:
     """Orchestrate post-conversation memory extraction.
 
-    Fire-and-forget after a conversation stream completes.
+    Fire-and-forget after a conversation stream completes.  Skipped while
+    memory is paused; a ServiceInfraError anywhere below abandons the turn
+    (nothing recorded, no session tick) and pauses memory
+    (app/utils/memory_pause.py).
     """
     from app.mcp.builtin_tools import is_builtin_category_enabled
     if not is_builtin_category_enabled("memory"):
         return {"skipped": True, "reason": "memory_disabled"}
+
+    # One session per (conversation, day) on this project's clock.  Every
+    # proposal below carries the post-tick stamp, so it ages only with
+    # later sessions in its own domain (app/utils/memory_clock.py).
+    try:
+        from app.utils.memory_clock import tick_session
+        _domain_clock = tick_session(conversation_id, project_path)
+        # Undone if this turn is abandoned on an outage: a session whose
+        # extraction never ran is not a chance to confirm anything.
+        from app.utils.memory_clock import revert_session
+        from app.utils.memory_pause import on_infra_revert
+        on_infra_revert(lambda k=_domain_clock.get("session_key"): revert_session(k, project_path))
+    except Exception as e:
+        logger.debug(f"domain clock tick failed (non-fatal): {e}")
+        _domain_clock = None
 
     # Reference detection runs BEFORE salience and length gates because
     # the signal is different: salience asks "does this conversation
@@ -1668,6 +1690,7 @@ async def run_post_conversation_extraction(
                 )
                 if _ref_project_label:
                     proposal.scope.project_paths = [project_path or _ref_project_label]
+                proposal.domain_clock = _domain_clock
                 try:
                     proposals_store.add(proposal, activity_count=activity_counter)
                     references_proposed += 1
@@ -1979,6 +2002,7 @@ async def run_post_conversation_extraction(
                     }
             if _project_label:
                 proposal.scope.project_paths = [project_path or _project_label]
+            proposal.domain_clock = _domain_clock
             try:
                 proposals_store.add(proposal, activity_count=activity_counter)
                 proposed += 1

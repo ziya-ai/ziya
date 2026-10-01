@@ -434,6 +434,7 @@ async def run_lifecycle_pass() -> Dict[str, int]:
     try:
         from app.storage.proposals import get_proposals_store
         from app.memory.extractor import _next_activity_count
+        from app.utils.memory_clock import build_context, effective_counter, is_dormant
         proposals = get_proposals_store()
     except Exception as e:
         logger.debug(f"Lifecycle: dependencies unavailable: {e}")
@@ -448,18 +449,32 @@ async def run_lifecycle_pass() -> Dict[str, int]:
 
     current_counter = current_activity_count()
 
+    # Per-domain aging: a stamped proposal ages only with sessions in its
+    # own collection (app/utils/memory_clock.py).  Without a context every
+    # proposal falls back to the global counter.
+    clock_ctx = None
+    try:
+        from app.storage.memory import get_memory_storage
+        _key_by_id, _coll = get_memory_storage()._provenance()
+        clock_ctx = build_context(_coll)
+    except Exception as e:
+        logger.debug(f"Lifecycle: domain clocks unavailable, using global counter: {e}")
+
     embedding_lookup = _make_active_embedding_lookup()
 
     for proposal in open_proposals:
         counts["scanned"] += 1
 
-        promote_reason = _evaluate_promotion(proposal, current_counter)
+        counter = effective_counter(proposal, current_counter, clock_ctx)
+        promote_reason = _evaluate_promotion(proposal, counter)
         if promote_reason:
             if _promote_proposal(proposal, promote_reason):
                 counts["promoted"] += 1
             continue
 
-        archive_reason = _evaluate_archival(proposal, current_counter, embedding_lookup)
+        archive_reason = _evaluate_archival(proposal, counter, embedding_lookup)
+        if not archive_reason and is_dormant(proposal, clock_ctx):
+            archive_reason = "dormant"
         if archive_reason:
             if _archive_proposal(proposal, archive_reason):
                 counts["archived"] += 1

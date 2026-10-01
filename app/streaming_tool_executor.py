@@ -1801,10 +1801,11 @@ class StreamingToolExecutor:
             or "invalid sequence as part of ToolUse" in error_str)
         
         auth_provider = get_active_auth_provider()
-        is_auth = (
-            isinstance(error, KnownCredentialException) or
-            (auth_provider and auth_provider.is_auth_error(error_str))
-        )
+        # Network-shaped credential-retrieval failures are excluded before the
+        # provider is consulted (app/utils/infra_errors.is_auth_failure); the
+        # enterprise provider's own is_auth_error has no such exclusion.
+        from app.utils.infra_errors import is_auth_failure
+        is_auth = is_auth_failure(error, auth_provider)
         
         if is_auth:
             # KnownCredentialException already carries a specific, actionable

@@ -106,6 +106,11 @@ class BedrockTitanProvider(EmbeddingProvider):
                 vec /= norm
             return vec
         except Exception as e:
+            # An outage is not "no embedding": returning None here let a
+            # memory persist without a vector and skip dedup for good.
+            from app.utils.infra_errors import ServiceInfraError, is_infra_error
+            if is_infra_error(e):
+                raise ServiceInfraError(e, where="embed_text") from e
             if not self._warned:
                 logger.warning(f"Embedding API call failed (will use keyword fallback): {e}")
                 self._warned = True
