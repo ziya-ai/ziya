@@ -2841,6 +2841,25 @@ export function initMermaidEnhancer(): void {
           },
         );
 
+        // Mask complete author-quoted node labels (`["..."]`, `("...")`,
+        // `{"..."}`) as a unit before the node scan. The node regex below is
+        // lazy and line-wide: on `A["full_sync()<br/>clear(&transaction)"]` it
+        // matches `A["full_sync(` … `)` first (skipped, starts with a quote)
+        // and then RESUMES inside the same label, matching `clear(&transaction)`
+        // as though `clear` were a node id. The `&` trips `needsQuotes` and it
+        // emits `clear("&transaction")` — quotes injected inside an already
+        // quoted label, which Mermaid rejects with `got 'STR'`. Only a single
+        // balanced quote pair immediately inside the brackets is masked, so
+        // malformed labels such as `[""text""]` still reach the repair path.
+        const maskedQuotedLabels: string[] = [];
+        processedLine = processedLine.replace(
+          /([\{\[\(])("[^"\n]*")([\}\]\)])/g,
+          (_m, open: string, label: string, close: string) => {
+            maskedQuotedLabels.push(label);
+            return `${open}\u0000QL${maskedQuotedLabels.length - 1}\u0000${close}`;
+          },
+        );
+
         processedLine = processedLine.replace(/(\w+)([\{\[\(])([^\}\]\)]*?)([\}\]\)])/g, (match, nodeId, openBracket, content, closeBracket) => {
           // Skip special shape nodes
           if (specialNodes.has(nodeId)) {
@@ -2897,6 +2916,10 @@ export function initMermaidEnhancer(): void {
           }
         });
 
+        processedLine = processedLine.replace(
+          /\u0000QL(\d+)\u0000/g,
+          (_m, index: string) => maskedQuotedLabels[Number(index)],
+        );
         processedLine = processedLine.replace(
           /\u0000EL(\d+)\u0000/g,
           (_m, index: string) => maskedEdgeLabels[Number(index)],
