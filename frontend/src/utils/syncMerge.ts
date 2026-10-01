@@ -382,11 +382,15 @@ export type MergeDecision =
 /**
  * Decide the merge outcome for one server chat against the local copy.
  * Mirrors the per-chat body of the three-way-merge forEach.
+ *
+ * Works from the summary alone.  Full bodies arrive afterwards through bulk
+ * hydration, which adopts the server copy.  (A 'full' parameter used to
+ * exist here; the one call site always passed undefined, so its branches,
+ * including a message-count SYNC_GUARD, never ran.)
  */
 export function mergeServerChat(
     sc: ServerChatSummary,
     local: LocalShell | undefined,
-    full: any | undefined,
     ctx: MergeDecisionCtx
 ): MergeDecision {
     const serverVersion = sc._version || 0;
@@ -399,8 +403,14 @@ export function mergeServerChat(
         // Exception: if the shell IS the user's active conversation,
         // dropping it strands currentConversationId pointing at a
         // conversation that's not in state.
+        //
+        // Emptiness comes from the summary's messageCount.  It used to come
+        // from the full body, which was never supplied, so every server-only
+        // chat still titled "New Conversation" counted as empty whatever it
+        // held, and once stale it was DELETED from the server.  An unknown
+        // count is not empty: nothing is deleted on a guess.
         const isEmptyShell = sc.title === 'New Conversation'
-            && (!full?.messages || full.messages.length === 0);
+            && sc.messageCount === 0;
         if (isEmptyShell && !ctx.isActiveConv) {
             // Stage for server-side delete if this empty shell belongs to
             // the current project (don't delete cross-project globals) and
@@ -413,25 +423,7 @@ export function mergeServerChat(
                     && shellAge > ctx.staleShellAgeMs,
             };
         }
-        if (full) {
-            return {
-                action: 'set',
-                record: {
-                    ...full,
-                    _isShell: false,
-                    _fullMessageCount: undefined,
-                    projectId: full.projectId || ctx.projectId,
-                    folderId: full.groupId || full.folderId || sc.groupId || sc.folderId || null,
-                    delegateMeta: full.delegateMeta || null,
-                    lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
-                    isActive: full.isActive !== false,
-                    _version: full._version || ctx.now,
-                    openBeadCount: sc.openBeadCount ?? 0,
-                    openWorkItemCount: sc.openWorkItemCount ?? 0,
-                },
-            };
-        }
-        // Server-only conversation, full fetch deferred (or failed).
+        // Server-only conversation; its body arrives through bulk hydration.
         // Add as a SHELL with the server's _version so the sidebar
         // populates immediately.  Marking _isShell prevents the IDB write
         // step from saving a zero-message record (FAST_PATH_TOMBSTONE)
@@ -484,48 +476,14 @@ export function mergeServerChat(
                 },
             };
         }
-        // Empty shell that IS the active conversation with no full body:
-        // fall through to keep-local (matches inline behavior, where
-        // neither set() branch fired).
+        // Empty shell that IS the active conversation: keep-local, since
+        // dropping it would strand currentConversationId.
         return { action: 'keep-local' };
     }
 
     if (serverVersion > localVersion) {
-        // Server is newer — use full-fetched data if available,
-        // otherwise update metadata only from summary.
-        if (full) {
-            // Message-count guard: if the server has fewer messages than
-            // local, keep local messages but update metadata from server.
-            // This prevents partial syncs from destroying conversation
-            // history.  For shell entries (messages stripped for memory),
-            // _fullMessageCount carries the real on-disk count.
-            const localMsgCount = local._isShell
-                ? (local._fullMessageCount || 0)
-                : (local.messages?.length || 0);
-            const serverMsgCount = full.messages?.length || 0;
-            const merged = { ...full };
-            if (serverMsgCount < localMsgCount && localMsgCount > 2) {
-                console.warn(`🛡️ SYNC_GUARD: Keeping ${localMsgCount} local messages for ${sc.id?.substring(0, 8)} (server had ${serverMsgCount})`);
-                merged.messages = local.messages;
-            }
-            return {
-                action: 'set',
-                record: {
-                    ...merged,
-                    _isShell: false,
-                    _fullMessageCount: undefined,
-                    projectId: merged.projectId || ctx.projectId,
-                    folderId: merged.groupId || merged.folderId || null,
-                    delegateMeta: merged.delegateMeta || null,
-                    lastAccessedAt: merged.lastAccessedAt || merged.lastActiveAt,
-                    isActive: merged.isActive !== false,
-                    _version: merged._version || ctx.now,
-                    openBeadCount: sc.openBeadCount ?? 0,
-                    openWorkItemCount: sc.openWorkItemCount ?? 0,
-                },
-            };
-        }
-        // Summary-only update (full fetch wasn't needed or failed).
+        // Server is newer: overlay its metadata from the summary.  Bodies
+        // arrive separately through bulk hydration.
         // 'local' came from getConversationShells() which strips
         // 'messages', so we must preserve '_isShell' on the merged entry —
         // otherwise the saveConversations step will write it as a real
