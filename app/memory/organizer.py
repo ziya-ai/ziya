@@ -310,6 +310,32 @@ async def extract_relations(
         return []
 
 
+def _archive_memory(store, memory_id: str, reason: str) -> bool:
+    """Soft-delete for corpus cleanup: status -> ``archived`` with the
+    reason recorded on the memory itself, and detached from the mind-map.
+
+    Cleanup is an LLM judgement over batches of the whole corpus.  With a
+    hard delete every wrong call was unrecoverable and its reason was
+    discarded; on 2026-09-25..26 the ~6-hourly runs removed 89 memories and
+    merged 33, and sampling the deleted set showed mostly durable decisions
+    and negative constraints.  Archived memories are already excluded from
+    the prompt, search and mind-map refs, so this changes what is
+    recoverable, not what the model sees.
+    """
+    mem = store.get(memory_id)
+    if not mem or mem.status != "active":
+        return False
+    mem.status = "archived"
+    mem.archive_reason = reason
+    mem.archived_at = int(time.time() * 1000)
+    store.save(mem)
+    try:
+        store._detach_from_mindmap(memory_id)
+    except Exception as e:
+        logger.debug(f"Mind-map detach after archive failed (non-fatal): {e}")
+    return True
+
+
 async def cleanup_corpus(store) -> Dict[str, Any]:
     """Review existing memories and remove/merge junk.
 
@@ -730,7 +756,12 @@ def _find_matching_node(handle, tags, existing_nodes):
         node_content = node_words - _GENERIC_HANDLE_WORDS
         node_tags = set(t.lower() for t in node.tags)
         shared_content = content_words & node_content
-        score = len(shared_content) * 2 + len(tag_set & node_tags) * 3
+        # Scale tag overlap down when the node carries more tags than the
+        # incoming domain: a raw count let a root that had accreted 500+
+        # tags accept any batch sharing two of them (the organizer's own
+        # route into the mind-map gravity well).
+        tag_scale = min(1.0, (len(tag_set) / len(node_tags)) ** 0.5) if node_tags else 1.0
+        score = len(shared_content) * 2 + len(tag_set & node_tags) * 3 * tag_scale
         h_jac = _jaccard(handle_words, node_words)
         t_jac = _jaccard(tag_set, node_tags)
         accept = (

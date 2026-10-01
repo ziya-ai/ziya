@@ -266,12 +266,14 @@ async def get_feedback_stats():
 
 @router.post("/api/v1/memory/maintenance")
 async def run_maintenance():
-    """Trigger a full maintenance pass: cell division + cross-links for all nodes."""
+    """Trigger a full maintenance pass: mind-map repair (including the
+    provenance/score rebalance), then cell division + cross-links for all
+    nodes."""
     from app.storage.memory import get_memory_storage
     from app.memory import maybe_divide_node, discover_cross_links
     from app.memory.maintenance import discover_cross_links_by_embedding
     store = get_memory_storage()
-    results = {"divided": [], "cross_linked": []}
+    results = {"repaired": store.repair_mindmap(), "divided": [], "cross_linked": []}
     _centroids = {}
     # PenPal #53: share the node list + branch cache across the loop so the
     # tag-overlap cross-linker is O(n) disk reads instead of O(n^2).
