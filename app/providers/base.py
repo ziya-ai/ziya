@@ -288,6 +288,26 @@ class LLMProvider(ABC):
         ``content`` (str), and optionally ``is_error`` (bool).
         """
 
+    def measure_baseline_tokens(
+        self,
+        system_text: str,
+        tools: List[Dict[str, Any]],
+    ) -> Optional[int]:
+        """Measure how many input tokens ``system_text`` + ``tools`` cost on
+        this backend, or return None if the backend cannot tell us.
+
+        The orchestrator calls this once per model family to calibrate its
+        token estimates. Only the provider knows the wire format its backend
+        accepts and whether a counting endpoint exists, so the probe (if
+        any) lives here; the orchestrator falls back to a size-based
+        estimate on None and owns persistence of the result.
+
+        May block on network I/O; callers run it off the event loop.
+        Implementations must swallow backend errors and return None rather
+        than raise — a failed calibration must never abort a user request.
+        """
+        return None
+
     def prepare_cache_control(
         self,
         messages: List[Dict[str, Any]],

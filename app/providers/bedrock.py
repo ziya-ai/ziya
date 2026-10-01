@@ -19,6 +19,7 @@ import copy
 import os
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
+from botocore.exceptions import BotoCoreError, ClientError
 
 from app.providers.base import (
     ErrorEvent,
@@ -136,6 +137,60 @@ class BedrockProvider(LLMProvider):
     # ------------------------------------------------------------------
     # LLMProvider interface
     # ------------------------------------------------------------------
+
+    def measure_baseline_tokens(
+        self,
+        system_text: str,
+        tools: List[Dict[str, Any]],
+    ) -> Optional[int]:
+        """Framework-overhead baseline via a tiny invoke_model probe.
+
+        The body mirrors a real request (Anthropic Messages shape, system
+        block with cache_control, same tool definitions) so the usage it
+        reports — fresh + cache_read + cache_creation — is what production
+        requests will pay. Returns None on any backend error or an
+        implausible count; the caller estimates instead.
+        """
+        body: Dict[str, Any] = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "system": [{
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }],
+        }
+        if tools:
+            body["tools"] = tools
+
+        # Bypass the throttle/retry wrapper: a calibration probe should fail
+        # fast, not consume the production retry budget.
+        raw_client = self.bedrock.unwrap() if hasattr(self.bedrock, "unwrap") else self.bedrock
+        try:
+            response = raw_client.invoke_model(modelId=self.model_id, body=json.dumps(body))
+            usage = json.loads(response["body"].read()).get("usage") or {}
+        except (ClientError, BotoCoreError, KeyError, ValueError, OSError) as e:
+            logger.warning(f"BedrockProvider: baseline probe failed ({e})")
+            return None
+
+        total = (
+            int(usage.get("input_tokens", 0) or 0)
+            + int(usage.get("cache_read_input_tokens", 0) or 0)
+            + int(usage.get("cache_creation_input_tokens", 0) or 0)
+        )
+        logger.info(f"BedrockProvider: baseline probe usage={usage} total={total:,}")
+
+        # Plausibility window: ~1 token per 2-6 chars of text, 300-1500 per tool.
+        expected_min = len(system_text) // 6 + len(tools) * 300
+        expected_max = len(system_text) // 2 + len(tools) * 1500
+        if total < expected_min or total > expected_max:
+            logger.warning(
+                f"BedrockProvider: baseline probe {total:,} outside "
+                f"{expected_min:,}-{expected_max:,}; discarding"
+            )
+            return None
+        return total
 
     async def stream_response(
         self,
