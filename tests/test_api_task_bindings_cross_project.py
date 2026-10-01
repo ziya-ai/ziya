@@ -147,6 +147,41 @@ def test_unknown_chat_returns_empty(env):
     assert res.json() == []
 
 
+def test_moved_chat_keeps_its_binding(env):
+    """A conversation MOVED to another project must not lose its task tile.
+
+    The client-side move is bulkSync-to-target then DELETE-from-source, so
+    only the chat file changes project.  The binding file, the
+    conversation-only card and the run all stay under the project the card
+    was launched in.  After the move chat_index names the DESTINATION as
+    owner, so the owner-only fallback finds nothing — the bug: GET from the
+    new home returned [] and the tile (and any live run) vanished from view.
+    """
+    client, chat_id, card_id, run_id = env
+    owner_dir = get_project_dir(OWNER_PID)
+    viewer_dir = get_project_dir(VIEWER_PID)
+
+    # Simulate the move: same chat id appears in VIEWER, disappears from OWNER.
+    src = json.loads((owner_dir / "chats" / f"{chat_id}.json").read_text())
+    ChatStorage(viewer_dir)._write_json(viewer_dir / "chats" / f"{chat_id}.json", src)
+    from app.storage import chat_index
+    chat_index.on_chat_written(chat_id, VIEWER_PID)
+    assert ChatStorage(owner_dir).delete(chat_id)
+    # Move left the binding behind, as the real client flow does.
+    assert (owner_dir / "chats" / f"{chat_id}.bindings.json").exists()
+    assert not (viewer_dir / "chats" / f"{chat_id}.bindings.json").exists()
+
+    res = _get(client, VIEWER_PID, chat_id)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body) == 1, "binding must survive the chat's move to another project"
+    assert body[0]["card_id"] == card_id
+    assert body[0]["run_id"] == run_id
+    assert body[0]["run_status"] == "done"
+    # Card and run still live under OWNER; the client must be told so.
+    assert body[0]["project_id"] == OWNER_PID
+
+
 def test_viewer_unknown_project_still_404s(env):
     """The viewing project must still exist — the fallback doesn't
     paper over a bad project id."""
