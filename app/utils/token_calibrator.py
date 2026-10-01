@@ -313,6 +313,35 @@ class TokenCalibrator:
             Baseline overhead tokens, or 0 if not measured yet
         """
         return self.baseline_overhead_tokens.get(model_family, 0)
+
+    def estimate_tokens_from_chars(
+        self,
+        total_chars: int,
+        model_family: Optional[str] = None,
+        include_baseline: bool = False,
+    ) -> int:
+        """Calibrated whole-payload estimate from a character total.
+
+        For callers that already hold a char count for an assembled payload
+        (the context-pressure nudge, the overflow failure record) and only
+        need the learned chars/token ratio for the current model family,
+        optionally plus the measured fixed overhead (tool schemas + static
+        system prompt).  Several such callers hardcoded ``chars // 4``; on
+        line-numbered code the learned ratio is ~2.4, so they reported half
+        the real size (509k for a payload Bedrock rejected at 1,017,040).
+
+        Ratio resolution mirrors estimate_tokens tiers 3-5: calibrated
+        model-wide global, release default for the family, global fallback.
+        """
+        family = model_family or self._get_current_model_family()
+        ratio = self.global_by_model.get(family)
+        if ratio is None:
+            ratio = self.release_defaults.get(family, {}).get('default', self.global_fallback)
+        ratio = max(float(ratio), self.MIN_CHARS_PER_TOKEN)
+        tokens = int(max(0, total_chars) / ratio)
+        if include_baseline:
+            tokens += max(0, self.get_baseline_overhead(family))
+        return tokens
     
     def record_actual_usage(
         self,

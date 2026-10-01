@@ -83,13 +83,17 @@ def test_unknown_conversation_returns_empty_list():
     assert context_debug.get_history("never-seen") == []
 
 
-def test_per_conversation_ring_buffer_caps_length():
-    for i in range(context_debug._MAX_ITERATIONS_PER_CONVERSATION + 50):
-        context_debug.record_iteration("conv-long", i, total_input_tokens=i)
+def test_per_request_ring_buffer_caps_length():
+    """Buffers are per REQUEST (one stream invocation), so the cap applies
+    within one request_id; eviction is counted, not silent."""
+    cap = context_debug._MAX_ITERATIONS_PER_REQUEST
+    for i in range(cap + 50):
+        context_debug.record_iteration("conv-long", i, request_id="r1", total_input_tokens=i)
     history = context_debug.get_history("conv-long")
-    assert len(history) == context_debug._MAX_ITERATIONS_PER_CONVERSATION
+    assert len(history) == cap
     # Oldest entries were evicted; the buffer holds the most recent ones.
-    assert history[-1]["iteration"] == context_debug._MAX_ITERATIONS_PER_CONVERSATION + 49
+    assert history[-1]["iteration"] == cap + 49
+    assert context_debug.get_requests("conv-long")[0]["evicted"] == 50
 
 
 # ── Detailed-capture toggle ──────────────────────────────────────────────
@@ -200,10 +204,14 @@ def test_record_failure_creates_an_estimated_entry(tmp_path):
     assert len(history) == 1
     entry = history[0]
     assert entry["is_failure"] is True
-    assert entry["is_estimated"] is True
-    # chars: system 2000 + conversation 8000 = 10000 -> //4 = 2500
-    assert entry["estimated_tokens"] == 2500
-    assert entry["total_input_tokens"] == 2500
+    # The rejection text carries the provider's own count; that is the
+    # figure recorded, not a char-based guess (see
+    # tests/test_context_overflow_estimation.py for the 2026-09-28 case).
+    assert entry["is_estimated"] is False
+    assert entry["total_input_tokens"] == 1_122_554
+    assert entry["effective_limit"] == 1_000_000
+    assert entry["pct_of_limit"] == 112.3
+    assert entry["estimated_tokens"] > 0
     assert "prompt is too long" in entry["note"]
     assert entry["message_count"] == 2
 
