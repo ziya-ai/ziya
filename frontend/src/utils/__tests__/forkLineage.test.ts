@@ -73,7 +73,7 @@ describe('syncMerge carries lineageKind / handedOffTo', () => {
     test('server-only shell keeps the handoff discriminator and forward link', () => {
         const d = mergeServerChat(
             sc({ branchedFrom: 'src', lineageKind: 'handoff', handedOffTo: 'next' }),
-            undefined, undefined, ctx,
+            undefined, ctx,
         );
         expect(d.action).toBe('set');
         if (d.action !== 'set') return;
@@ -89,7 +89,7 @@ describe('syncMerge carries lineageKind / handedOffTo', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, handedOffTo: 'next', lineageKind: 'fork' }),
             local({ _version: NOW - 5_000 }),
-            undefined, ctx,
+            ctx,
         );
         expect(d.action).toBe('set');
         if (d.action !== 'set') return;
