@@ -395,13 +395,16 @@ class BedrockProvider(LLMProvider):
         if response is None:
             yield ErrorEvent(message="No response after retries", error_type=ErrorType.UNKNOWN)
             return
+        # Tell the usage ledger what tier this call ran at (after any
+        # rejection retry, api_params no longer carries the tier).
+        _billed = _service_tier.note_call(self.model_id, api_params.get("serviceTier"), response)
         if "serviceTier" in api_params:
             # A silently ignored tier would look like a discount that never
             # arrives; log what the service says it actually used.
             logger.info(
                 f"BedrockProvider: {self.model_id} service tier requested="
                 f"{api_params['serviceTier']} resolved="
-                f"{_service_tier.resolved_tier_from_response(response) or 'unknown'}"
+                f"{_service_tier.resolved_tier_from_response(response) or 'unknown'} billed={_billed}"
             )
 
         # Parse the boto3 stream into normalized events.

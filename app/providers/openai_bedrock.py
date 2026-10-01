@@ -163,6 +163,10 @@ class OpenAIBedrockProvider(LLMProvider):
             )
             return
 
+        # Usage ledger: tier this call ran at (tier_kwargs is empty after
+        # a rejection retry, so "sent" is None then, i.e. standard).
+        _service_tier.note_call(self.model_id, tier_kwargs.get("serviceTier"), response)
+
         async for ev in self._parse_stream(response):
             yield ev
 

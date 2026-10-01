@@ -145,14 +145,20 @@ class UsageLedger:
             )
         return record.id
 
-    def actualize(self, record_id: str, dims: Dict[str, int]) -> bool:
+    def actualize(self, record_id: str, dims: Dict[str, int], tier: Optional[str] = None) -> bool:
         """Replace the estimated dims with provider-reported ones and flip
-        status to ``actual``.  Idempotent; returns False if no such row."""
+        status to ``actual``.  ``tier``, when given, replaces the requested
+        tier recorded at dispatch with the one the call ran at.
+        Idempotent; returns False if no such row."""
         clean = {str(k): int(v) for k, v in dims.items() if v is not None}
+        sets = "dims_json = ?, status = 'actual', actualized_ts = ?"
+        params: List[Any] = [json.dumps(clean, sort_keys=True), time.time()]
+        if tier:
+            sets += ", tier = ?"
+            params.append(tier)
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE usage_records SET dims_json = ?, status = 'actual', actualized_ts = ? WHERE id = ?",
-                (json.dumps(clean, sort_keys=True), time.time(), record_id),
+                f"UPDATE usage_records SET {sets} WHERE id = ?", (*params, record_id),
             )
             return cur.rowcount > 0
 
