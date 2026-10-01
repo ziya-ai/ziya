@@ -61,8 +61,16 @@ whose write policy is `Docs/` + `tests/` can `add .` and only those paths are
 staged — everything else is reported back as refused, not silently skipped.
 
 **Not offered, at any permission level:** `reset --hard`, `checkout --`,
-`restore` (worktree), `clean`, `rm`, `mv`, `rebase`, `merge`, `cherry-pick`,
-`branch -D`, `tag -d`, `filter-branch`, `push --force`. These destroy
+`checkout <branch>`, `restore` (worktree), `clean`, `rm`, `mv`, `rebase`,
+`merge`, `pull` (fetch + merge/rebase), `fetch --prune`, `worktree`,
+`cherry-pick`, `branch -D`, `tag -d`, `filter-branch`, `push --force`.
+
+The line is **anything that can overwrite an untracked or uncommitted file**
+(plus history rewriting). Of the ops that ARE offered, only `switch` writes the
+worktree, and it never passes `--force`/`--discard-changes`/`--merge`, so git's
+own refusal to overwrite an untracked file stands (pinned by
+`test_switch_refuses_to_overwrite_an_untracked_file`). `stash_push` never takes
+`-u`, so untracked files stay in place. These destroy
 uncommitted work or rewrite history; no preflight makes them recoverable. They
 remain reachable only through the shell's bare-`git` grant, which is signed and
 announces itself on startup. That is the correct home for "I accept the
@@ -159,11 +167,18 @@ larger than the git tool itself. It must not be built as a git-specific hack.
 ## What this replaces / retires
 
 - Retracted: shell `WRITE_GIT_OPERATIONS` tier (done, never shipped).
-- Kept: read-only shell git tier and its config; bare `git` grant.
-- Deprecate after the tool lands: explicit `git <sub>` entries in
-  `ALLOW_COMMANDS`, and `/shell git add|commit|push` in the CLI, which should
-  become "set the git tool's permission" rather than append an unguarded
-  pattern. Not before — until the tool exists they are the only commit path.
+- Kept, permanently: the read-only shell git tier and its config. Shell is the
+  right surface for queries (`log`, `diff`, `grep`, `blame`, `show`, …); the
+  tool's `status` replaces none of it. Hardened 2026-09-25: every safe-tier
+  pattern refuses `--output=<file>`, which nine of them otherwise honour as an
+  arbitrary file write (`tests/test_shell_git_no_output_file.py`).
+- Kept: bare `git` grant (signed; the home for "I accept the consequences").
+- Kept, not deprecated (revised 2026-09-25): explicit `git <sub>` entries in
+  `ALLOW_COMMANDS`. They are signed and some users want them. Their problem is
+  that they look narrow and are not — `git checkout` grants `checkout -- .`,
+  `git push` grants `--force` — so step 6 is now *warn and redirect*: say so
+  at grant time and on startup when a granted subcommand has a destructive
+  form, and have `/shell git commit|push` suggest the tool. Nothing is removed.
 - Positioning: the competitive-landscape material describes "Ziya never drives
   git writes itself" as a deliberate stance. This design changes that stance
   on purpose; the docs should say so rather than be left contradicting it.
@@ -188,18 +203,85 @@ answerable from any window on the conversation.
 3. `stash_push`, `push`, `switch`.
 4. **The `always` widening path:** staging from the prompt, signed activation
    via `ziya-approve`, per-op entries in `permissions.json`.
-5. Per-project tool permission override (`disabled` unsigned, `enabled/ask`
-   unsigned, `enabled/always` signed) + Manage Projects control.
-6. Deprecate `git <sub>` allowlist entries and rewire `/shell git ...` to set
-   the git tool's permission. Not before step 2 — until then they are the
-   only commit path.
+5. Per-project mode, three values (user framing 2026-09-25): **off** (tool
+   not advertised) / **human-gated** (`ask`: every mutating op shows its
+   preflight and waits) / **autonomous** (`always`: unattended, structural
+   refusals unchanged). Manage Projects control. **All three unsigned
+   (decided 2026-09-25).** Correction to the earlier reasoning: the agent
+   CAN change these settings, and can answer its own consent, through the
+   loopback HTTP API from the shell (curl / urllib; origin_guard admits
+   header-less requests). Accepted rather than blocked (loopback is too
+   useful; a URL filter is bypassable). Gated mode is protection against a
+   model that makes mistakes, not a hostile one; Docs/ThreatModel.md §6
+   item 7. Implemented in `app/utils/project_tool_modes.py`
+   (`settings.toolModes`, values `disabled|gated|autonomous`); the gate
+   consults it before permissions.json, and the tool loader adds/removes the
+   tool per project. Autonomous also unblocks task-run git steps. If the
+   gate itself errors, an autonomous project still refuses (fail-closed uses
+   the tool's declared `ask`).
+6. **Implemented 2026-09-25.** Catalogue: `app/utils/git_grant_hazards.py`
+   (35 subcommands; unreviewed subcommands flagged generically; explicit
+   `log`/`diff`/`show`/`blame` grants flagged for bypassing the `--output`
+   guard). Surfaces: shell startup (stderr → MCP Logs), CLI `/shell git <op>`,
+   `/shell git all`, `/shell add git …`, and the shell-config modal via
+   `POST /api/mcp/git-grant-hazards`. Claims verified against the real
+   pattern builder (`TestClaimsAreTrue`). Nothing removed.
+   *Warn and redirect* (revised from "deprecate"; see §What this replaces):
+   flag destructive forms of granted `git <sub>` entries at grant time and
+   on startup; `/shell git commit|push` suggests the tool. No removal.
 
-## Open questions
+## Decisions (2026-09-10, formerly open questions)
 
-- Should `commit` refuse when the tree has *unstaged* tracked changes in files
-  it is about to commit (i.e. partial-file commits)? Git allows it; it is a
-  common source of "I committed something I didn't review."
-- Should `push` be in v1 at all, or land after the tool has local-loop mileage?
-  It is the one op whose effects leave the machine.
-- Author identity: commits as the configured git user. Add a trailer
-  (`Co-authored-by`/`Ziya-Model:`)? Useful provenance; some teams object.
+1. **Partial-file commits are allowed.** `commit` does not refuse when a staged
+   file also has unstaged changes; the result (and the consent preflight)
+   lists them as `partially_committed` so the divergence is visible.
+2. **`push` is in v1**, under the same `ask` gate. Force, delete, mirror and
+   prune are inexpressible. Pushing with uncommitted tracked changes is not
+   refused but carries a `warning` + `uncommitted` list.
+3. **Provenance trailer on by default**, `ZIYA_GIT_PROVENANCE_TRAILER=false`
+   to disable: `Co-authored-by: Ziya <ziya@noreply.invalid>` and
+   `Ziya-Model: <alias>`. Joins an existing trailer block; idempotent.
+
+## Implementation notes (2026-09-25)
+
+**Status: sequencing steps 2 and 3 implemented** (all seven ops, including
+`push` per decision 2). Remaining: step 4 (`always` → signed), step 5
+(per-project override), step 6 (deprecate `git <sub>` shell grants), and
+task-run consent routing (see Open).
+
+- Logic lives in `app/utils/git_ops.py` (plans + ops + dispatch); the tool
+  (`app/mcp/tools/git_tool.py`) is a thin wrapper declaring
+  `consent_default="ask"`, `consent_op_key="op"`,
+  `consent_op_defaults={"status": "off"}`. Builtin category `git`, off by
+  default (`ZIYA_ENABLE_GIT=true` or the builtin-tools toggle). Enabling is
+  unsigned because every mutating call is human-approved.
+- The consent preflight is the op's `plan_*` — the exact computation the op
+  runs, recomputed at execution. A tree that changes between approval and
+  execution is judged on its new state (the result reports what actually
+  happened; it is not guaranteed to equal what was shown).
+- Staging is checked with `file_exists=True`: under `direct_write_mode=
+  new_files` the model may *create* files anywhere but may not *stage* them
+  outside the explicit policy. Stricter by design; revisit with mileage.
+- `commit` with `paths` is all-or-nothing against the write policy. `commit`
+  without paths commits the index as-is, including files the *user* staged
+  outside the policy — those are listed in the preflight, which is what the
+  human approves.
+- A conflicted file is refused by `add` while it still contains conflict
+  markers.
+- Fail closed: if the consent gate errors for an op the tool declares `ask`,
+  the call is refused rather than dispatched ungated
+  (`consent_gate.fails_closed`). A config read error falls back to the
+  tool's declared mode, not to `off`.
+- Environment: strips `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`/
+  `GIT_CONFIG_PARAMETERS`/`GIT_CONFIG_{COUNT,KEY_*,VALUE_*}`; forces
+  `GIT_EDITOR=:`, `GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, askpass to
+  `false`, `GIT_SSH_COMMAND=ssh -o BatchMode=yes` unless the user set one.
+  Expanded paths are passed with `GIT_LITERAL_PATHSPECS=1`.
+
+## Open
+
+- A task run's git step: the gate refuses when there is no conversation to
+  ask in. Whether a card step should route its consent to the run's Ask
+  mailbox (`run:{id}:…`) instead is step 4/5 work.
+- Approval-to-execution TOCTOU (see above): pin a preflight fingerprint into
+  the approval and refuse on mismatch? Deferred until it bites.

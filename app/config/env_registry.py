@@ -183,6 +183,10 @@ _VARS: List[EnvVar] = [
            "A reconnect within the window resumes it with a replay. Suspended "
            "while the turn is waiting on a human decision, and irrelevant to "
            "an explicit Stop, which cancels immediately."),
+    EnvVar("ZIYA_GIT_PROVENANCE_TRAILER", bool, True, EnvCategory.MCP,
+           "Append 'Co-authored-by: Ziya' and 'Ziya-Model:' trailers to commits "
+           "made by the git builtin tool. Set false to commit the message as "
+           "written."),
     EnvVar("ZIYA_MAX_TOOLS_PER_TURN", int, 1000, EnvCategory.MCP,
            "Per-turn circuit breaker: maximum tool invocations allowed within "
            "a single streaming response (one user turn) before further calls "

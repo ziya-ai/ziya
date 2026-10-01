@@ -184,3 +184,64 @@ async def test_a_wrapped_tool_instance_is_unwrapped_for_declarations():
     assert opened["payload"]["op"] == "commit"
     cg.ledger().record_answer(opened["request_id"], "approve")
     await asyncio.wait_for(_drain(gen), 5)
+
+
+# ── per-op declared defaults and fail-closed lookup (git tool, 2026-09-25) ──
+
+class _GitWithReadOnlyStatus(_GitLike):
+    consent_op_defaults = {"status": "off"}
+
+
+def test_per_op_declared_default_exempts_a_read_only_op():
+    t = _GitWithReadOnlyStatus()
+    assert cg.consent_mode("git", "status", t) == "off"
+    assert cg.consent_mode("git", "commit", t) == "ask", "other ops keep the tool default"
+
+
+def test_config_still_overrides_a_per_op_declared_default(monkeypatch):
+    monkeypatch.setattr(cg, "_consent_config", lambda: {
+        "tools": {"git": {"ops": {"status": "ask"}}}})
+    assert cg.consent_mode("git", "status", _GitWithReadOnlyStatus()) == "ask"
+
+
+@pytest.mark.asyncio
+async def test_a_config_read_failure_fails_closed_to_the_declared_mode(monkeypatch):
+    def boom():
+        raise RuntimeError("permissions.json unreadable")
+    monkeypatch.setattr(cg, "consent_mode", lambda *a, **k: boom())
+    gen = cg.consent_gate(tool_name="git", tool_id="t-fc", args={"op": "commit"},
+                          conversation_id="c-fc", tool=_GitLike())
+    first = await gen.__anext__()
+    # Positive: it asked instead of silently approving.
+    assert first["type"] == "consent_opened"
+    cg.ledger().record_answer(first["request_id"], "reject")
+    events = await asyncio.wait_for(_drain(gen), 5)
+    assert events[-1]["type"] == cg.DECISION_EVENT and events[-1]["approved"] is False
+
+
+def test_fails_closed_only_for_ops_the_tool_declares_ask():
+    t = _GitWithReadOnlyStatus()
+    assert cg.fails_closed(t, {"op": "commit"}) is True
+    assert cg.fails_closed(t, {"op": "status"}) is False
+    assert cg.fails_closed(_Plain(), {}) is False
+    assert cg.fails_closed(None, {}) is False
+
+
+@pytest.mark.asyncio
+async def test_preflight_receives_the_execution_project_root_but_the_panel_args_do_not():
+    seen = {}
+
+    class _RootAware(_GitLike):
+        def preflight(self, **kw):
+            seen.update(kw)
+            return {"root": kw.get("_workspace_path")}
+
+    gen = cg.consent_gate(tool_name="git", tool_id="t-root", args={"op": "commit"},
+                          conversation_id="c-root", tool=_RootAware(),
+                          project_root="/some/project")
+    opened = await gen.__anext__()
+    assert seen["_workspace_path"] == "/some/project"
+    assert opened["payload"]["preflight"] == {"root": "/some/project"}
+    assert "_workspace_path" not in opened["payload"]["args"]
+    cg.ledger().record_answer(opened["request_id"], "reject")
+    await asyncio.wait_for(_drain(gen), 5)
