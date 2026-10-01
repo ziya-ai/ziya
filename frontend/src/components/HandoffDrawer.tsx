@@ -13,6 +13,7 @@
  * copies, so it is never baked into the document.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 import { Alert, Button, Drawer, Input, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useConversationList } from '../context/ConversationListContext';
@@ -30,7 +31,7 @@ interface Props {
 
 const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
   const { isDarkMode } = useTheme();
-  const { loadConversation, currentConversationId, isStreaming } = useActiveChat();
+  const { loadConversation, currentConversationId, isStreaming, addMessageToConversation } = useActiveChat();
   const { conversations, setConversations } = useConversationList();
   const requestDraft = useHandoffDraftRequest();
   const [state, setState] = useState<HandoffState | null>(null);
@@ -123,6 +124,18 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
       setConversations(prev => prev
         .map(c => (c.id === conversationId ? { ...c, handedOffTo: res.handedOffTo } as any : c))
         .concat(prev.some(c => c.id === shell.id) ? [] : [shell]));
+      // Leave the trail's last item on the SOURCE: a local notice (system +
+      // muted, never sent to the model) that links forward to the child.  The
+      // sticky banner says the same at the top; this is what a reader who
+      // scrolled to the end of the segment sees.
+      addMessageToConversation({
+        id: uuidv4(),
+        role: 'system',
+        muted: true,
+        content: `Handed off to “${child.title}”.`,
+        _timestamp: now,
+        handoffNotice: { kind: 'handed_off', targetId: res.handedOffTo },
+      }, conversationId, conversationId !== currentConversationId);
       message.success(`Continuing in "${child.title}" — the original stays intact`);
       onClose();
       loadConversation(res.handedOffTo);
