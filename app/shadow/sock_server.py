@@ -599,7 +599,8 @@ class ShadowSocketServer:
             return ({"text": c["text"], "reason": c["reason"],
                      "confirm_id": c["confirm_id"]} if c else None)
 
-    def resolve_confirm(self, approve: bool, confirm_id: Optional[str] = None) -> bool:
+    def resolve_confirm(self, approve: bool, confirm_id: Optional[str] = None, *,
+                        approve_all: bool = False, revoke: bool = False) -> bool:
         """Human keystroke at the terminal decides the outstanding gated
         command.  Never reachable over the socket (§6.1 authority).
 
@@ -615,7 +616,26 @@ class ShadowSocketServer:
                 return False
             c["decision"] = bool(approve)
             c["event"].set()
+        if approve and approve_all:
+            with self._lease_lock:
+                ls = self._leases.current(_now())
+                if ls is not None:
+                    ls.auto_approve = True
+            self.journal.meta("control_auto_approve", {"enabled": True})
+        if revoke and not approve:
+            self.revoke_lease()
         return True
+
+    @staticmethod
+    def describe_restriction(restriction: str) -> str:
+        """Plain-English meaning of a lease restriction, for the human's banners."""
+        return {
+            "supervised": "every command it sends will ask you first",
+            "gated": "read-only commands run freely; anything that writes or is off the "
+                     "allowlist asks you first",
+            "strict": "read-only commands run freely; anything else is refused without asking",
+            "unrestricted": "every command it sends runs without asking",
+        }.get(restriction, restriction)
 
     def _op_wait_idle(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Resolve when journal output quiesces for ``quiet_ms`` (§6.1a).
@@ -697,6 +717,11 @@ class ShadowSocketServer:
             self.journal.meta("control_denied", {"lease_ref": _lease_ref(lease_id),
                               "text": text[:200], "reason": reason})
             return _err("command_denied", reason)
+        if verdict == CONFIRM and ls.auto_approve:
+            # The human chose "approve all" at an earlier banner for this lease.
+            self.journal.meta("control_auto_approved", {"lease_ref": _lease_ref(lease_id),
+                              "text": text[:200], "reason": reason})
+            verdict = RUN
         if verdict == CONFIRM:
             # gated: one keystroke at the shadow terminal decides (§6.3).
             # With no terminal to ask (headless), refuse — never type a

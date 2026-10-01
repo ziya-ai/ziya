@@ -100,7 +100,7 @@ def test_grant_confirm_deny_and_revoke_flow(interactive):
     # 1. A chat requests control → pending lease, banner at the terminal.
     resp = client.control_acquire(sid, "conv-A", restriction="gated", policy="builtin")
     assert resp["pending_grant"] is True and resp["granted"] is False
-    assert _wait(lambda: screen.has("requests line control") and fe._mode == "grant")
+    assert _wait(lambda: screen.has("wants to type commands") and fe._mode == "grant")
     with pytest.raises(client.ShadowError) as ei:
         client.send_line(sid, resp["lease_id"], "ls")
     assert ei.value.code == "lease_pending"
@@ -118,7 +118,7 @@ def test_grant_confirm_deny_and_revoke_flow(interactive):
 
     # 3. A not-allowed command under gated blocks on the confirm banner; 'y' runs it.
     box, th = _acquire_in_thread(sid, "conv-A", lease_id=lease_id, text="tee /tmp/ui-approved")
-    assert _wait(lambda: fe._mode == "confirm" and screen.has("wants to run: tee /tmp/ui-approved"))
+    assert _wait(lambda: fe._mode == "confirm" and screen.has("asks to run:  tee /tmp/ui-approved"))
     os.write(in_w, b"y")
     th.join(timeout=10)
     assert box.get("resp", {}).get("ok") is True, box

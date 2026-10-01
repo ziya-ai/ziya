@@ -71,6 +71,10 @@ class Lease:
     last_heartbeat: float
     granted: bool = False
     paused: bool = False
+    # Human pressed "approve all" at a confirm banner: further not-allowed
+    # commands under this lease run without asking.  Lease-scoped, journaled,
+    # ends with the lease.
+    auto_approve: bool = False
     # Why the lease ended, once it has: release|revoke|heartbeat_timeout|
     # superseded.  None while live or pending.
     ended: Optional[str] = None
