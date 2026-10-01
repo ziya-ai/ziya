@@ -207,6 +207,20 @@ The announce group is `continue` on purpose — a failed GitHub Release must not
 skip the Slack post, and both are best-effort. Since it is the last child of a
 `stop` root, nothing downstream inherits the leniency.
 
+That structural stop has a hole, and it was observed: the linear `sweep` task
+once posted its Slack announcement for a release that never finished
+committing. `on_failure: stop` fires only when the push stage *marks* its
+artifact failed; a stage that narrates "push failed" and ends its turn
+succeeded lets the announce group run on schedule. So the announce stages do
+not trust it. Each one opens with a **PUSH GATE** that verifies from git — not
+from the ledger, not from an earlier stage's prose — that `git tag -l` lists
+the tag, `git status -sb` shows the branch is not ahead of its upstream, and
+`git log -1` is the version-bump commit, and additionally that the ledger's
+`mode` is `pushed`. If any check fails the stage posts nothing and fails. P9
+is told the same thing from the other side: a push that did not land must fail
+the block, not merely be reported. The state block carries this as the
+ANNOUNCE RULE so a future stage added to that group inherits it.
+
 ## Escalation surface
 
 The analysis half asks for nothing that mutates.
@@ -241,6 +255,37 @@ through `--check` first and why a mismatched staged set fails the block instead
 of attempting repair. Handing an automated loop `git reset` to recover with
 trades a visible stall for a silent one.
 
+## Tooling: the mechanical half is a script
+
+Two release-agnostic scripts carry everything about planning that is not a
+judgement, so the agent's output shrinks to the judgement itself:
+
+| Script | Mode | Does |
+| --- | --- | --- |
+| `scripts/release_plan.py` | `index [--ledger PATH] [--json]` | parses every `- ` entry under `## [Unreleased]` into a record with a stable slug `entry_id`; partitions every path in `git status --porcelain` into **claimed** (one entry), **contended** (several) or **unclaimed** (none); reports stale citations and entries whose files have all shipped |
+| `scripts/release_hunks.py` | `dump <file>` | numbered hunk listing for a contended file |
+| | `split --file F --attrib J --out DIR` | turns a `{hunk index: entry_id}` mapping into `DIR/<entry_id>/<flattened>.patch` and validates each with `git apply --cached --check`; refuses an unmapped or nonexistent hunk |
+| | `merge --file F --entries a,b --reason R --out DIR` | records the merge escape at `DIR/_merges/<flattened>.json`; refuses a generic reason |
+
+P2a runs `index` and sanity-checks the result rather than re-deriving it; P2b
+runs `dump`, writes the mapping to `.ziya/sweep/attrib/`, and runs `split`.
+Neither script names a version, a file or an entry, and neither touches the
+index or the working tree — `--check` is validate-only.
+
+This replaces the previous `release_plan.py`, which hardcoded the target
+version, an exclusion list naming one release's files and ~80 affinity rules
+keyed on changelog **entry index**. That was correct for exactly the release it
+was written during. Run against the v0.8.9.0 tree it would have mapped the
+wrong hunks to the wrong entries, so the agent correctly refused to use it —
+and then had no non-interactive way to split `app/server.py` across the eleven
+entries that claimed it (`git add -p` is interactive; `git apply` was not
+granted to the linear task). Hand-writing 86 files' worth of per-entry diffs
+is where hunk-header and context errors come from; the mapping-plus-splitter
+shape makes the agent's part small and the error-prone part deterministic.
+`tests/test_release_tooling.py` exercises both scripts against a scratch
+repository, including the seam that matters: a produced patch stages exactly
+its hunks against a real index and the sibling patch still applies on top.
+
 ## Known limits
 
 - **Hunk attribution is a judgement.** P2b decides which entry owns each hunk
@@ -250,7 +295,10 @@ trades a visible stall for a silent one.
   attribute confidently, and has the merge escape above for the cases where it
   cannot attribute at all. The escape narrows this limit without removing it: a
   low-confidence split is still permitted and still undetectable, and only an
-  agent that *declares* its uncertainty gets the safe path.
+  agent that *declares* its uncertainty gets the safe path. The tooling above
+  makes a split *checkable* (every patch passes `--check`, every hunk is
+  mapped) but not *correct*; on a tree like v0.8.9.0 — 86 contended files, one
+  claimed by eleven entries — it is still a judgement at hundreds of points.
 - **P5 can stall.** Its condition is model-evaluated and it is capped at 3.
   The stall breaker also applies. It is deliberately *not* "the working tree is
   clean" — excluded in-progress work legitimately stays uncommitted, and
@@ -269,23 +317,44 @@ trades a visible stall for a silent one.
 
 ## Using it
 
-The card is data, not a registered task — `ziya task` runs file tasks from
-`tasks.yaml`, and cards launch from the deck or the API. The JSON in this
-directory is the source of truth; installing it is a `POST` of that file, whose
-body is already exactly the create shape:
+The card is data: the JSON in this directory is the source of truth, and the
+deck copy is an install of it. Installing is a `POST` of the file, whose body
+is already exactly the create shape; refreshing an installed copy after editing
+the file is a `PUT` to the same card id:
 
 ```bash
 curl -X POST "http://localhost:6969/api/v1/projects/<PROJECT_ID>/task-cards" \
   -H 'Content-Type: application/json' \
   --data-binary @design/sweep-orchestrated.task-card.json
+
+curl -X PUT "http://localhost:6969/api/v1/projects/<PROJECT_ID>/task-cards/<CARD_ID>" \
+  -H 'Content-Type: application/json' \
+  --data-binary @design/sweep-orchestrated.task-card.json
 ```
+
+Once installed it is callable from the command line like any task, by name:
+
+```bash
+ziya task "Sweep (orchestrated)"     # by the deck's name (case-insensitive)
+ziya task --card <CARD_ID>           # by id
+ziya task sweep                      # if the deck card is named `sweep` and no
+                                     # file task of that name remains in tasks.yaml
+```
+
+`ziya task <name>` resolves file tasks in `tasks.yaml` first and falls through
+to the deck when none matches, running the card in-process through the same
+block executor the GUI uses. The signed approvals are the same ledger either
+way, so a card approved from the deck tile is already approved for the CLI.
 
 Then:
 
 1. **It must be persisted before it can be signed.** Approvals key on block
    ids, and ids are minted by `TaskCardStorage.create`, so signing a card that
    only exists as a file is not possible.
-2. Run the `ziya-approve --all` command the deck tile shows. **Eight blocks
+2. Run the `ziya-approve --all` command the deck tile shows — the deck is
+   keyed by project id, not by path, so from the shell it is
+   `sudo ziya-approve --all --task <CARD_ID> --project <PROJECT_ID>`
+   (there is no `--card` or `--root` form for cards). **Eight blocks
    escalate** — the four that commit or push, the two that write the changelog
    and version files, the tag, and the GitHub release. The analysis half does
    not, and nothing anywhere requests `reset`, `checkout`, `clean`, `rebase` or
