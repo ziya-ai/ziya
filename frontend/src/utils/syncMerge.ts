@@ -180,12 +180,20 @@ export function shouldFetchFull(
         ? (typeof localFullCount === 'number' ? localFullCount : Infinity)
         : (Array.isArray(local.messages) ? local.messages.length : 0);
     const countDiverged = serverSummaryMsgs > localMsgCount;
+    // Server holds FEWER messages than local with a newer version: a delete
+    // or rewind landed on the server (bulk-sync never removes messages, so
+    // nothing else shrinks a record).  Pull even if already fetched this
+    // session; otherwise local keeps the removed message forever and the
+    // push side re-sends it every cycle, where the server's tombstone drops
+    // it again (the "msg-count divergence ... pushing" loop).
+    const serverShrank = typeof sc.messageCount === 'number'
+        && Number.isFinite(localMsgCount) && sc.messageCount < localMsgCount;
     const versionDiverged = serverVer > localVer;
     if (countDiverged || versionDiverged) {
         // For version divergence, skip if already fetched this session.
         // For count divergence, always fetch — local state is behind
         // right now regardless of what was fetched earlier this session.
-        if (versionDiverged && !countDiverged && ctx.alreadyFetchedThisSession) {
+        if (versionDiverged && !countDiverged && !serverShrank && ctx.alreadyFetchedThisSession) {
             return false;
         }
         return true;
