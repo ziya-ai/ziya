@@ -67,7 +67,7 @@ def test_tint_set_on_start_deepened_on_grant_reset_on_exit(tmp_path):
         from app.shadow import client, registry
         sid = registry.list_sessions()[0].session_id
         client.control_acquire(sid, "conv-tint", restriction="gated", policy="builtin")
-        _read_until(fd, b"[g] grant")
+        _read_until(fd, b"[g] allow it")
         os.write(fd, b"g")
         out = _read_until(fd, pty_host.tint_sequence(True))
         assert pty_host.tint_sequence(True) in out           # deeper tint + cursor on grant
