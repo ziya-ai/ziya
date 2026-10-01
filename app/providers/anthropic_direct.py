@@ -536,6 +536,26 @@ class AnthropicDirectProvider(LLMProvider):
     # Helpers
     # ------------------------------------------------------------------
 
+    def measure_baseline_tokens(
+        self,
+        system_text: str,
+        tools: List[Dict[str, Any]],
+    ) -> Optional[int]:
+        """Framework-overhead baseline through the count_tokens pre-flight.
+
+        Delegates to ``_estimate_request_tokens`` so subclasses that lack a
+        counting endpoint (BedrockMantleProvider) get their heuristic for free.
+        """
+        kwargs: Dict[str, Any] = {
+            "model": self.model_id,
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        if system_text:
+            kwargs["system"] = system_text
+        if tools:
+            kwargs["tools"] = tools
+        return self._estimate_request_tokens(kwargs)
+
     def _estimate_request_tokens(self, request_kwargs: Dict[str, Any]) -> int:
         """Estimate total tokens for a request.
 
