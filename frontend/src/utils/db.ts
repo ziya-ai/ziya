@@ -628,13 +628,16 @@ class ConversationDB implements DB {
                             // when existing.length > caller.length AND existing
                             // had more than 2 messages (guards against resurrecting
                             // deleted short conversations).
+                            // A shrink whose dropped messages are all tombstoned on
+                            // the caller's record is a deliberate delete/rewind and
+                            // is written as-is (see shouldPreserveExistingMessages).
                             const guardReq = store.get(conv.id);
                             guardReq.onsuccess = () => {
                                 try {
                                     const existing = guardReq.result;
                                     const existingLen = Array.isArray(existing?.messages) ? existing.messages.length : 0;
                                     const callerLen = Array.isArray(stripped.messages) ? stripped.messages.length : 0;
-                                    if (existingLen > callerLen && existingLen > 2) {
+                                    if (shouldPreserveExistingMessages(existing?.messages, stripped)) {
                                         console.warn(
                                             `🛡️ FAST_PATH_TOMBSTONE: Preserving ${existingLen} messages ` +
                                             `for ${conv.id.substring(0, 8)} (caller had ${callerLen}). ` +
@@ -836,9 +839,10 @@ class ConversationDB implements DB {
                     guardReq.onsuccess = () => {
                         try {
                             const existing = guardReq.result;
-                            // Per-record message-count guard
-                            if (existing?.id && existing.messages?.length > conv.messages?.length
-                                && existing.messages.length > 2) {
+                            // Per-record message-count guard.  A tombstoned shrink
+                            // (delete / rewind) is a deliberate write and goes through.
+                            if (existing?.id
+                                && shouldPreserveExistingMessages(existing.messages, conv)) {
                                 console.warn(
                                     `🛡️ IDB_WRITE_GUARD: Preserving ${existing.messages.length} messages ` +
                                     `for ${conv.id.substring(0, 8)} (caller had ${conv.messages?.length || 0})`
@@ -977,10 +981,12 @@ class ConversationDB implements DB {
             getReq.onsuccess = () => {
                 try {
                     const existing = getReq.result;
+                    // Shell: preserve unconditionally (content is stripped).
+                    // Full record: preserve only an UNEXPLAINED shrink — a
+                    // delete / rewind tombstones what it drops and is written.
                     const preserve = wasShell
                         ? (existing?.messages?.length > 0)
-                        : (existing?.messages?.length > conversation.messages?.length
-                            && existing.messages.length > 2);
+                        : shouldPreserveExistingMessages(existing?.messages, conversation);
                     if (preserve) {
                         console.warn(
                             `🛡️ SAVE_GUARD: Preserving ${existing.messages.length} messages ` +
