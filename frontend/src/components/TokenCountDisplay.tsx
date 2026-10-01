@@ -11,6 +11,8 @@ import { CheckCircleOutlined, CloseCircleOutlined, DashboardOutlined } from '@an
 import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
 import { folderTotalTokens, expandCheckedKeysToFiles } from '../utils/contextTokenTotals';
 import { dispatchHandoffOpen } from '../utils/handoffOpen';
+import { handoffPressureTier } from '../utils/handoffPressure';
+import { getHandoffState } from '../api/handoffApi';
 // Global request deduplication cache
 const activeRequests = new Map<string, Promise<any>>();
 
@@ -100,6 +102,21 @@ export const TokenCountDisplay = memo(() => {
     const { currentMessages, currentConversationId, isStreaming } = useActiveChat();
     const { currentFolderId, folders: chatFolders, folderFileSelections } = useConversationList();
     const [totalTokenCount, setTotalTokenCount] = useState(0);
+    // Server-side context pressure: the fraction of the limit the provider
+    // actually billed on the last turn (design/conversation-handoff.md).
+    // Refreshed when a stream ends or the conversation changes.  It can run
+    // ahead of the client estimate when a turn's tool results grew the
+    // submitted context, so the Hand off affordance gates on max(client, server).
+    const [serverPressure, setServerPressure] = useState<number | null>(null);
+    useEffect(() => {
+        if (!currentConversationId || isStreaming) return;
+        let cancelled = false;
+        getHandoffState(currentConversationId)
+            .then(s => { if (!cancelled) setServerPressure(s.contextPressure ?? null); })
+            .catch(() => { if (!cancelled) setServerPressure(null); });
+        return () => { cancelled = true; };
+    }, [currentConversationId, isStreaming]);
+    useEffect(() => { setServerPressure(null); }, [currentConversationId]);
 
     const [chatTokenCount, setChatTokenCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
@@ -1108,9 +1125,12 @@ export const TokenCountDisplay = memo(() => {
                         {/* Handoff affordance (design/conversation-handoff.md): an
                             offer once context passes the warning threshold, never
                             automatic.  Opens the same drawer as the sidebar row's
-                            "Hand off…" — the one surface a user at 90% actually sees. */}
-                        {currentConversationId && combinedTokenCount >= warningThreshold && (
-                            <Tooltip title={combinedTokenCount >= dangerThreshold
+                            "Hand off…" — the one surface a user at 90% actually sees.
+                            Gated on the higher of the client estimate and the provider's
+                            billed figure for the last turn: the estimate sat at 52%
+                            while the provider reported 79% after that turn's tool results. */}
+                        {currentConversationId && handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure) !== 'none' && (
+                            <Tooltip title={handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure) === 'danger'
                                 ? 'Context is nearly full. Hand off to a fresh conversation — the original stays intact and searchable.'
                                 : 'Context is getting large. Review or start a handoff draft.'}>
                                 <span
@@ -1120,8 +1140,8 @@ export const TokenCountDisplay = memo(() => {
                                     style={{
                                         cursor: 'pointer', fontSize: 12, lineHeight: '18px', padding: '0 8px',
                                         borderRadius: 6, whiteSpace: 'nowrap',
-                                        border: `1px solid ${combinedTokenCount >= dangerThreshold ? '#ff4d4f' : '#1890ff'}`,
-                                        color: combinedTokenCount >= dangerThreshold ? '#ff4d4f' : '#1890ff',
+                                        border: `1px solid ${handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure) === 'danger' ? '#ff4d4f' : '#1890ff'}`,
+                                        color: handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure) === 'danger' ? '#ff4d4f' : '#1890ff',
                                     }}
                                 >
                                     ⇢ Hand off…
