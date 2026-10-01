@@ -1,5 +1,6 @@
 import { Key } from 'react';
 import type { DelegateMeta, TaskPlan } from '../types/delegate';
+import type { MessagePart, TurnStatus } from './renderToolPart';
 
 export interface Folders {
     [key: string]: {
@@ -67,6 +68,12 @@ export type Message = {
     _feedbackId?: string;           // Unique ID for tracking feedback acknowledgment
     images?: ImageAttachment[];  // Optional array of attached images
     documents?: DocumentAttachment[];  // Optional array of attached documents
+    // Server-saved facts of an assistant turn, in emission order, and how it
+    // ended (design/conversation-single-writer.md, "save facts, render at
+    // display time").  Absent on human messages and on older assistant
+    // messages, which render from `content` as before.
+    parts?: MessagePart[];
+    turnStatus?: TurnStatus;
 };
 
 export interface Conversation {
@@ -86,7 +93,6 @@ export interface Conversation {
     isNew?: boolean;
     isActive: boolean;
     folderId?: string | null;
-    _editInProgress?: boolean;
     displayMode?: 'raw' | 'pretty';
     delegateMeta?: DelegateMeta | null;
     // Saved per-conversation model pin (alias string, e.g. "opus4.5").

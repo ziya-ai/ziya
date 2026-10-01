@@ -19,6 +19,7 @@ import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import { useProject } from '../context/ProjectContext';
 import { useChatContext } from '../context/ChatContext';
 import { useSendPayload } from '../hooks/useSendPayload';
+import { messageLocator, ownerProjectId, rewindMessages, deleteMessage } from '../api/conversationSyncApi';
 
 import { useTaskBindings } from '../hooks/useTaskBindings';
 // The ONE definition of "this run is over".  Imported rather than
