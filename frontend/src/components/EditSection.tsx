@@ -318,26 +318,39 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         setEditingMessageIndex(index);
     };
 
-    const handleSave = () => {
-        // Update the conversation in the context with the edited message
-        setConversations(prev => prev.map(conv => {
-            if (conv.id === currentConversationId) {
-                const updatedMessages = conv.messages.map((msg, i) => {
-                    if (i === index) {
-                        return {
-                            ...msg,
-                            content: editedMessage,
-                            images: attachedImages.length > 0 ? attachedImages : undefined,
-                            _timestamp: Date.now()  // Update timestamp to mark as modified
-                        };
-                    }
-                    return msg;
-                });
-                return { ...conv, messages: updatedMessages, _version: Date.now() };
-            }
-            return conv;
-        }));
+    const handleSave = async () => {
+        const images = attachedImages.length > 0 ? attachedImages : null;
+        // Locator and ids captured before the local rewrite below.
+        const locator = messageLocator(currentMessages, index);
+        const pid = ownerPid();
+        const convId = currentConversationId;
+        // Local first, so the edit appears at once and is not gated on the
+        // network.  State AND IndexedDB: a state-only edit let IDB restore
+        // the old text.
+        replaceMessages(currentConversationId, msgs => msgs.map((msg, i) =>
+            i === index
+                ? {
+                    ...msg,
+                    content: editedMessage,
+                    images: attachedImages.length > 0 ? attachedImages : undefined,
+                    _timestamp: Date.now(),  // Update timestamp to mark as modified
+                }
+                : msg
+        ));
         setEditingMessageIndex(null);
+        // In-place edit goes to the server explicitly: bulk-sync merges by id
+        // and never changes an existing message's content.  Awaited so a
+        // failure is reported instead of swallowed — a fire-and-forget PATCH
+        // that failed left the server on the old text, which then showed up
+        // in other browsers, chat_read, exports and any later full fetch.
+        // 404 = chat not on the server yet; bulk-sync carries the edit up.
+        const res = await patchMessage(pid, convId, locator, { content: editedMessage, images });
+        if (!res.ok && res.status !== 404) {
+            message.warning(
+                'Edit saved here but not on the server; it may revert in another '
+                + 'browser or after a reload. Try saving again.',
+            );
+        }
     };
 
     const handleCancel = () => {
