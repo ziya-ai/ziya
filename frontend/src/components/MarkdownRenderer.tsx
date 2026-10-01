@@ -5499,9 +5499,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Render paragraph, processing inline tokens recursively
                     const pTokens = (token as Tokens.Paragraph).tokens || [];
 
-                    // Check if any paragraph content has inline math
+                    // Math shortcut: join the leaf text and split on markers.
+                    // Only safe when every child is a plain text leaf — for a
+                    // styled child (strong/em/codespan) `.text` is its bare
+                    // inner text, so joining silently dropped the styling from
+                    // any paragraph that also contained inline math. Styled
+                    // paragraphs recurse instead; each leaf text token renders
+                    // its own markers in the 'text' case.
                     const paragraphContent = pTokens.map(t => (t as TokenWithText).text || '').join('');
-                    if (paragraphContent.includes(MATH_INLINE_MARKER_PREFIX)) {
+                    const allPlainText = pTokens.every(t => t.type === 'text' && !((t as TokenWithText).tokens?.length));
+                    if (allPlainText && paragraphContent.includes(MATH_INLINE_MARKER_PREFIX)) {
                         return <p key={sk}>{renderWithInlineMath(paragraphContent)}</p>;
                     }
 
@@ -5841,16 +5848,24 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                                   isDarkMode={isDarkMode} />;
                     }
 
-                    // Handle math expressions in text tokens
+                    // A 'text' token with nested inline tokens (strong, em,
+                    // codespan, ...) is how marked emits a tight list item: its
+                    // `.text` is the RAW inline markdown and `.tokens` are the
+                    // parsed children. Descend into the children so the
+                    // markdown is styled; each leaf text token handles its own
+                    // math markers below. Splitting the raw `.text` here
+                    // instead printed `**bold**` and `` `code` `` literally in
+                    // any list item that also contained inline math.
+                    if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
+                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig);
+                    }
+
+                    // Handle math expressions in leaf text tokens
                     if (decodedText.includes(MATH_INLINE_MARKER_PREFIX)) {
                         return <>{renderWithInlineMath(decodedText)}</>;
                     }
 
-                    // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
-                    if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
-                        // If it has nested tokens, render them recursively
-                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig);
-                    } else {
+                    {
                         // Preformatted block content (no lang tag) can arrive as a
                         // text token — during streaming before the closing fence
                         // arrives, when preprocessing strips bare fences, or as
