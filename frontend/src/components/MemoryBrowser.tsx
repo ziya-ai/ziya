@@ -9,7 +9,7 @@
  * - Health view: stale memories, oversized nodes, orphans, maintenance
  */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Modal, Input, Button, Tag, Tooltip, message, Tabs, Badge, Empty, Popconfirm, Select } from 'antd';
+import { Modal, Input, Button, Tag, Tooltip, message, Tabs, Badge, Empty, Popconfirm, Select, Alert } from 'antd';
 import {
   SearchOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined,
   EditOutlined, ThunderboltOutlined, ReloadOutlined, StarFilled,
@@ -627,6 +627,8 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
   const [history, setHistory] = useState<api.OrganizeHistoryRecord[]>([]);
   const [isOrganizing, setIsOrganizing] = useState(false);
   const [isMaintaining, setIsMaintaining] = useState(false);
+  const [pause, setPause] = useState<api.MemoryPauseRecord | null>(null);
+  const [isResuming, setIsResuming] = useState(false);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Load all data
@@ -643,10 +645,13 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
       setMemories(m);
       setProposals(p);
       setMindmap(mm);
-      // Load review lazily (can be slow with many memories)
-      api.getReview().then(setReview).catch(() => {});
+      // Load review lazily (can be slow with many memories); hydrate its
+      // slices from the full records just fetched so MemoryCard has fields.
+      api.getReview().then(r => setReview(api.hydrateReview(r, m))).catch(() => {});
       // Load organize history (cheap, drives Activity tab)
       api.getOrganizeHistory().then(setHistory).catch(() => {});
+      // Outage pause (app/utils/memory_pause.py): drives the Resume banner.
+      api.getMemoryPause().then(p => setPause(p.paused ? p.record : null)).catch(() => {});
     } catch (err) {
       console.error('Memory browser load failed:', err);
     } finally {
@@ -718,6 +723,19 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
       loadData();
     } catch { message.error('Maintenance failed'); }
     finally { setIsMaintaining(false); }
+  }, [loadData]);
+
+  const handleResume = useCallback(async () => {
+    setIsResuming(true);
+    try {
+      const r = await api.resumeMemory();
+      message.success(r.resumed
+        ? 'Memory resumed — the next turn extracts normally'
+        : 'Memory was not paused');
+      setPause(null);
+      loadData();
+    } catch { message.error('Resume failed'); }
+    finally { setIsResuming(false); }
   }, [loadData]);
 
   const handleOrganize = useCallback(async () => {
@@ -961,9 +979,25 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
     },
     {
       key: 'health',
-      label: '🩺 Health',
+      label: pause ? '🩺 Health ⏸' : '🩺 Health',
       children: (
         <div style={{ padding: '12px 0' }}>
+          {pause && (
+            <Alert
+              type="warning" showIcon style={{ marginBottom: 16 }}
+              message={api.memoryPauseLabel(pause)}
+              description={pause.error
+                ? <code style={{ fontSize: 11, wordBreak: 'break-all' }}>{pause.error}</code>
+                : undefined}
+              action={
+                <Tooltip title="Memory paused itself after an infrastructure failure (expired credentials, network) and retries automatically with backoff (5 min, doubling to 1 h). Press this to retry now instead of waiting. Chat was never paused.">
+                  <Button size="small" type="primary" loading={isResuming} onClick={handleResume}>
+                    Resume memory
+                  </Button>
+                </Tooltip>
+              }
+            />
+          )}
           {/* Organize status + policy — surfaces what the controls below
               actually do, when organize last ran, and that it is NOT on a
               timer.  history is newest-first. */}
