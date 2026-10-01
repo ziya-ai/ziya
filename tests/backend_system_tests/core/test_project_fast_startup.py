@@ -105,9 +105,13 @@ class TestLastAccessedEndpoint:
     @pytest.mark.asyncio
     async def test_returns_most_recent_project(self, tmp_path):
         projects_dir = tmp_path / "projects"
-        _create_project(projects_dir, "old", "Old Project", "/tmp/old", last_accessed=1000)
-        _create_project(projects_dir, "new", "New Project", "/tmp/new", last_accessed=9000)
-        _create_project(projects_dir, "mid", "Mid Project", "/tmp/mid", last_accessed=5000)
+        # Project directories must exist: /last-accessed now skips records
+        # whose working directory is gone (stale ~/.ziya protection).
+        for name in ("old", "new", "mid"):
+            (tmp_path / name).mkdir()
+        _create_project(projects_dir, "old", "Old Project", str(tmp_path / "old"), last_accessed=1000)
+        _create_project(projects_dir, "new", "New Project", str(tmp_path / "new"), last_accessed=9000)
+        _create_project(projects_dir, "mid", "Mid Project", str(tmp_path / "mid"), last_accessed=5000)
 
         from app.api.projects import get_last_accessed_project
         from app.storage.projects import ProjectStorage
@@ -139,7 +143,8 @@ class TestLastAccessedEndpoint:
         """Returned project should have its access time updated."""
         import time
         projects_dir = tmp_path / "projects"
-        _create_project(projects_dir, "proj-1", "My Project", "/tmp/mine", last_accessed=1000)
+        (tmp_path / "mine").mkdir()
+        _create_project(projects_dir, "proj-1", "My Project", str(tmp_path / "mine"), last_accessed=1000)
 
         from app.api.projects import get_last_accessed_project
         from app.storage.projects import ProjectStorage

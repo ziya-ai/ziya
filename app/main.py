@@ -623,6 +623,19 @@ def start_server(args):
                     f"Binding server on {bind_host}:{args.port} — Ziya has no built-in auth layer. "
                     f"Ensure network access is restricted (firewall, VPN, or SSH tunnel)."
                 )
+            # On a remote/headless host 127.0.0.1 is not where the user's
+            # browser is. Say so, with the tunnel command, before uvicorn's own
+            # "running on http://127.0.0.1" line invites the wrong click.
+            from app.utils.remote_access import maybe_print_notice
+            maybe_print_notice(args.port)
+            # ssh -L binds ::1 and only warns when its 127.0.0.1 bind fails;
+            # the result is localhost:PORT served by two backends at once.
+            # Detect it from this side, where it is visible.
+            from app.utils.bind_check import half_bound_loopback_warning
+            _dual = half_bound_loopback_warning(bind_host, args.port)
+            if _dual:
+                logger.warning(_dual)
+                print(f"\n⚠️  {_dual}\n", flush=True)
             uvicorn.run(app, host=bind_host, port=args.port)
             
         except ValueError as e:
@@ -745,6 +758,10 @@ def main():
     issues = validate_model_configs()
     if issues:
         logger.warning(f"Model config validation: {len(issues)} issue(s) found (run with --debug for details)")
+        # The warning above points at --debug; these are what it refers to.
+        # Without them the pointer led nowhere.
+        for issue in issues:
+            logger.debug(f"  model config: {issue}")
     
     # Initialize plugin system AFTER environment is set up
     # This allows plugins to read the correct model from environment

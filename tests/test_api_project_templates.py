@@ -68,6 +68,13 @@ def _make_project(ziya_home: Path, pid: str, path: str, settings=None) -> str:
     pdir = ziya_home / "projects" / pid
     for sub in ("chats", "contexts", "skills"):
         (pdir / sub).mkdir(parents=True, exist_ok=True)
+    # GET /projects/{id} refuses a project whose working directory is gone
+    # (stale-~/.ziya protection), so the path must exist.  Callers pass
+    # nominal absolute paths like /tmp/realproj; materialise them under the
+    # test's own tree rather than on the host filesystem.
+    real_dir = ziya_home.parent / "workdirs" / Path(path).name
+    real_dir.mkdir(parents=True, exist_ok=True)
+    path = str(real_dir)
     now = int(time.time() * 1000)
     (pdir / "project.json").write_text(json.dumps({
         "id": pid, "name": pid, "path": path,
