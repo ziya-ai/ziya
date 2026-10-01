@@ -51,13 +51,20 @@ _playwright_available: Optional[bool] = None
 
 
 def _check_playwright() -> bool:
+    """True only when the package AND a Chromium build are present.
+
+    The package-only check let export reach Playwright's driver on a host with
+    no browser; it then died mid-launch as a 500 "Connection closed while
+    reading from the driver" instead of the 501 the routes reserve for this.
+    Same gate as app/services/diagram_renderer.py.
+    """
     global _playwright_available
     if _playwright_available is None:
-        try:
-            import playwright.async_api  # noqa: F401
-            _playwright_available = True
-        except ImportError:
-            _playwright_available = False
+        from app.utils import optional_features
+        _playwright_available = (
+            optional_features.playwright_package_available()
+            and optional_features.chromium_browser_available()
+        )
     return _playwright_available
 
 
@@ -479,6 +486,175 @@ _CHROMIUM_DEFAULT_TITLES = {
 }
 _METADATA_CREATOR = "Ziya PDF Exporter"
 _METADATA_SUBJECT = "Ziya conversation export"
+# A document export describes the document, not a transcript (d024): the
+# front-matter subtitle when present, else this label.
+_METADATA_SUBJECT_DOCUMENT = "Ziya document export"
+
+# Runt-last-page squeeze (d014).  A last page with fewer words than this,
+# after a document of at least RUNT_MIN_PAGES pages, triggers a recapture
+# with DOCUMENT_SQUEEZE_CSS_STEPS; a recapture is kept only if it has fewer
+# pages than the first capture.
+RUNT_LAST_PAGE_WORDS = 80
+RUNT_MIN_PAGES = 3
+# d028: a squeeze candidate must keep (nearly) all of the first capture's
+# body words.  Tighter spacing never removes text, so a big drop means the
+# recapture failed (e.g. the frontend rendered its "Something went wrong"
+# error screen, one page) and "fewer pages" is meaningless.
+SQUEEZE_MIN_WORD_RETENTION = 0.97
+
+
+def _squeeze_candidate_ok(
+    first_words: Optional[List[int]], cand_words: Optional[List[int]],
+) -> bool:
+    """True when a squeeze recapture has fewer pages AND lost no content."""
+    if not first_words or not cand_words:
+        return False
+    if len(cand_words) >= len(first_words):
+        return False
+    first_total = sum(first_words)
+    return first_total > 0 and sum(cand_words) >= SQUEEZE_MIN_WORD_RETENTION * first_total
+
+
+def _pdf_page_words(
+    pdf_bytes: bytes, margin: Optional[Dict[str, str]] = None,
+) -> Optional[List[int]]:
+    """BODY word count per page of a captured PDF, or None if unreadable.
+
+    Words inside the top/bottom page margins (the running footer drawn by
+    footer_template) are excluded, so a last page holding only the footer
+    plus a few body lines counts only those lines.
+    """
+    try:
+        import pdfplumber
+        from app.utils.document_print_decor import _css_length_to_px
+        # pdfminer warns per glyph run about Chromium's subset fonts.
+        logging.getLogger("pdfminer").setLevel(logging.ERROR)
+        m = margin or {}
+        top_pt = (_css_length_to_px(m.get("top")) or 0.0) * 0.75
+        bot_pt = (_css_length_to_px(m.get("bottom")) or 0.0) * 0.75
+        counts: List[int] = []
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for pg in pdf.pages:
+                h = float(pg.height)
+                counts.append(sum(
+                    1 for w in pg.extract_words()
+                    if w["top"] >= top_pt - 1 and w["bottom"] <= h - bot_pt + 1
+                ))
+        return counts
+    except Exception:
+        return None
+
+
+# Figure float (d027).  A page that ends with a trailing gap of at least
+# FLOAT_MIN_GAP_FRAC of the printable height, followed by a page whose first
+# body line is an authored "Figure N — …" title, is recaptured with the
+# decorate option floatFigures={N: gap_px}: the prose after figure N (same
+# section, whole blocks, at most FLOAT_MAX_BLOCKS) moves ahead of the unit.
+FLOAT_MIN_GAP_FRAC = 0.20
+FLOAT_MAX_BLOCKS = 4
+_FIGURE_LINE_RE = None
+
+
+def _pdf_figure_gaps(
+    pdf_bytes: bytes, margin: Optional[Dict[str, str]] = None,
+) -> Optional[List[Tuple[int, float]]]:
+    """``[(figure_number, gap_fraction), …]`` for every page (but the last)
+    whose trailing body gap is >= FLOAT_MIN_GAP_FRAC and whose NEXT page
+    starts with a ``Figure N —`` line.  None when the PDF is unreadable.
+
+    Body words exclude the top/bottom margins exactly as _pdf_page_words
+    does, so the running footer never counts as the page's last line.
+    """
+    global _FIGURE_LINE_RE
+    try:
+        import re as _re
+        import pdfplumber
+        from app.utils.document_print_decor import _css_length_to_px
+        if _FIGURE_LINE_RE is None:
+            _FIGURE_LINE_RE = _re.compile(r"^Figure\s+(\d+)\s*[\u2014\u2013-]")
+        logging.getLogger("pdfminer").setLevel(logging.ERROR)
+        m = margin or {}
+        top_pt = (_css_length_to_px(m.get("top")) or 0.0) * 0.75
+        bot_pt = (_css_length_to_px(m.get("bottom")) or 0.0) * 0.75
+        pages: List[List[Dict[str, Any]]] = []
+        heights: List[float] = []
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for pg in pdf.pages:
+                h = float(pg.height)
+                heights.append(h)
+                pages.append([
+                    w for w in pg.extract_words()
+                    if w["top"] >= top_pt - 1 and w["bottom"] <= h - bot_pt + 1
+                ])
+        out: List[Tuple[int, float]] = []
+        for i in range(len(pages) - 1):
+            body, nxt = pages[i], pages[i + 1]
+            if not body or not nxt:
+                continue
+            box_top, box_bot = top_pt, heights[i] - bot_pt
+            box_h = box_bot - box_top
+            if box_h <= 0:
+                continue
+            gap = (box_bot - max(w["bottom"] for w in body)) / box_h
+            if gap < FLOAT_MIN_GAP_FRAC:
+                continue
+            first_top = min(w["top"] for w in nxt)
+            line = sorted((w for w in nxt if w["top"] <= first_top + 2),
+                          key=lambda w: w["x0"])
+            text = " ".join(w["text"] for w in line)
+            mm = _FIGURE_LINE_RE.match(text)
+            if mm:
+                out.append((int(mm.group(1)), round(gap, 4)))
+        return out
+    except Exception:
+        return None
+
+
+def _float_candidate_ok(
+    first_words: Optional[List[int]], cand_words: Optional[List[int]],
+    first_gaps: Optional[List[Tuple[int, float]]],
+    cand_gaps: Optional[List[Tuple[int, float]]],
+    fig_ns: List[int],
+) -> bool:
+    """True when a float recapture has no more pages, lost no content, and
+    reduced the figure gaps: their sum strictly falls and no gap is larger
+    than the worst before.  A requested figure the decorate pass could not
+    float (a heading follows it) keeps its gap and does not veto the win on
+    another figure; a gap that merely moves to the next figure (figures now
+    back to back) raises the sum and is rejected."""
+    if not first_words or not cand_words or cand_gaps is None:
+        return False
+    if len(cand_words) > len(first_words):
+        return False
+    first_total = sum(first_words)
+    if first_total <= 0 or sum(cand_words) < SQUEEZE_MIN_WORD_RETENTION * first_total:
+        return False
+    before = [g for _n, g in (first_gaps or [])]
+    after = [g for _n, g in cand_gaps]
+    if sum(after) >= sum(before) - 1e-6:
+        return False
+    if after and max(after) > max(before, default=0.0):
+        return False
+    return True
+
+
+def _is_runt_last_page(words: Optional[List[int]], sections: List[str]) -> bool:
+    """True when the document ends on a near-empty page that is NOT a
+    deliberately short section started by ``<!-- ziya:pagebreak -->``."""
+    if not words or len(words) < RUNT_MIN_PAGES:
+        return False
+    last = words[-1]
+    if last >= RUNT_LAST_PAGE_WORDS:
+        return False
+    if len(sections) > 1:
+        import re as _re
+        tail = _re.sub(r"<!--.*?-->", " ", sections[-1], flags=_re.DOTALL)
+        tail_words = len(_re.findall(r"[A-Za-z0-9][\w'’.-]*", tail))
+        if tail_words <= last + 10:
+            # The whole last section fits on the last page: it is short on
+            # purpose (a forced page break put it there).
+            return False
+    return True
 
 
 def _build_document_metadata(
@@ -729,11 +905,10 @@ class ConversationRenderSession:
     @classmethod
     async def create(cls, server_port: int = 6969) -> "ConversationRenderSession":
         if not _check_playwright():
-            raise ImportError(
-                "Playwright is required for headless conversation PDF export. "
-                "Install it with:\n"
-                "  pip install playwright && playwright install chromium"
-            )
+            # ImportError is what the export routes map to 501; the message
+            # names the real remedy (or the platform limit), not a recipe.
+            from app.utils import optional_features
+            raise ImportError(optional_features.headless_browser_unavailable_message("PDF export"))
         instance = cls()
         instance._base_url = f"http://localhost:{server_port}"
         await instance._ensure_browser()
@@ -1335,6 +1510,7 @@ def build_document_print_payload(
     *,
     footer_html: Optional[str] = None,
     title: Optional[str] = None,
+    page_box: Optional[Tuple[int, int]] = None,
 ) -> Dict[str, Any]:
     """Assemble the /print payload for an authored DOCUMENT render.
 
@@ -1345,6 +1521,12 @@ def build_document_print_payload(
     section on its own page with NO message chrome.  ``date`` is the
     DISPLAY string (already formatted by document_print_decor), not the raw
     front-matter value.
+
+    ``page_box`` is the printable ``(width_px, height_px)`` for the margins
+    ``page.pdf()`` will use.  The /print page fits oversized figures and
+    tables against it; without it the page falls back to the transcript
+    export's 10mm margins, which are wider than a document's, so a figure
+    wider than the real text column slipped through and was clipped by CSS.
     """
     payload: Dict[str, Any] = {
         "kind": "document",
@@ -1359,6 +1541,11 @@ def build_document_print_payload(
     }
     if footer_html:
         payload["footerHtml"] = footer_html
+    if page_box:
+        payload["page"] = {
+            "contentWidthPx": int(page_box[0]),
+            "contentHeightPx": int(page_box[1]),
+        }
     return payload
 
 
@@ -1399,7 +1586,7 @@ async def export_document_pdf(
     """
     from app.utils.document_ir import parse_document, split_sections, load_document
     from app.utils.document_print_decor import (
-        DEFAULT_DOCUMENT_MARGIN, DOCUMENT_PRINT_CSS,
+        DEFAULT_DOCUMENT_MARGIN, DOCUMENT_PRINT_CSS, DOCUMENT_SQUEEZE_CSS_STEPS,
         build_document_decorate_js, build_document_footer_template,
         format_document_date, page_content_box_px,
     )
@@ -1435,6 +1622,7 @@ async def export_document_pdf(
     meta = {**meta, "date": display_date}
     payload = build_document_print_payload(
         meta, sections, footer_html=None, title=doc_title,
+        page_box=(content_w, content_h),
     )
 
     doc_metadata = _build_document_metadata(
@@ -1443,6 +1631,9 @@ async def export_document_pdf(
     if meta.get("author"):
         # The document names its own author; model/provider is a fallback only.
         doc_metadata["/Author"] = meta["author"]
+    doc_metadata["/Subject"] = (
+        (meta.get("subtitle") or "").strip() or _METADATA_SUBJECT_DOCUMENT
+    )
 
     decorate_js, decorate_opts = build_document_decorate_js(
         numbering=meta.get("numbering"), title=doc_title,
@@ -1452,8 +1643,7 @@ async def export_document_pdf(
     )
 
     session = await get_render_session(server_port)
-    pdf_bytes = await session.capture_pdf(
-        payload,
+    capture_kwargs = dict(
         timeout_ms=timeout_ms,
         margin=margin,
         metadata=doc_metadata,
@@ -1461,14 +1651,82 @@ async def export_document_pdf(
         footer_template=footer_template,
         media="print",
         viewport=(content_w, content_h),
-        pre_capture_css=DOCUMENT_PRINT_CSS,
         pre_capture_js=[(decorate_js, decorate_opts)],
     )
+    pdf_bytes = await session.capture_pdf(
+        payload, pre_capture_css=DOCUMENT_PRINT_CSS, **capture_kwargs,
+    )
+
+    # d014: a document that ends on a near-empty page is recaptured with
+    # tighter vertical spacing (never a smaller font).  Only a capture with
+    # FEWER pages is kept; otherwise the first capture stands.
+    squeeze_step = 0
+    chosen_css = DOCUMENT_PRINT_CSS
+    first_words = _pdf_page_words(pdf_bytes, margin)
+    cur_words = first_words
+    pages_before = len(first_words) if first_words else None
+    if _is_runt_last_page(first_words, sections):
+        for step_no, step_css in enumerate(DOCUMENT_SQUEEZE_CSS_STEPS, start=1):
+            candidate = await session.capture_pdf(
+                payload, pre_capture_css=DOCUMENT_PRINT_CSS + step_css,
+                **capture_kwargs,
+            )
+            cand_words = _pdf_page_words(candidate, margin)
+            if _squeeze_candidate_ok(first_words, cand_words):
+                pdf_bytes, squeeze_step = candidate, step_no
+                chosen_css = DOCUMENT_PRINT_CSS + step_css
+                cur_words = cand_words
+                break
+            if cand_words and len(cand_words) < len(first_words):
+                logger.warning(
+                    "document export: squeeze step %s rejected — body words "
+                    "%s vs %s (content lost; failed recapture?)", step_no,
+                    sum(cand_words), sum(first_words),
+                )
+        logger.info(
+            "document export: runt last page (%s words); squeeze step %s "
+            "(pages %s -> %s)", first_words[-1], squeeze_step, pages_before,
+            len(_pdf_page_words(pdf_bytes, margin) or []) if squeeze_step else pages_before,
+        )
+
+    # d027: a page ending in a big gap before a page that starts with an
+    # authored figure title is recaptured once with the prose after that
+    # figure floated ahead of it — on whichever stylesheet won the squeeze,
+    # so the squeeze's page gain is kept.  Kept only if no page is added, no
+    # content is lost and the gap shrank.
+    float_figures: List[int] = []
+    float_applied = False
+    gaps = _pdf_figure_gaps(pdf_bytes, margin)
+    if gaps and cur_words:
+        float_figures = [n for n, _f in gaps]
+        float_opts = {
+            **decorate_opts,
+            "floatFigures": {str(n): round(f * content_h) for n, f in gaps},
+        }
+        float_kwargs = {**capture_kwargs,
+                        "pre_capture_js": [(decorate_js, float_opts)]}
+        candidate = await session.capture_pdf(
+            payload, pre_capture_css=chosen_css, **float_kwargs,
+        )
+        cand_words = _pdf_page_words(candidate, margin)
+        cand_gaps = _pdf_figure_gaps(candidate, margin)
+        if _float_candidate_ok(cur_words, cand_words, gaps, cand_gaps, float_figures):
+            pdf_bytes, float_applied = candidate, True
+        else:
+            logger.warning(
+                "document export: figure float %s rejected (pages %s -> %s, "
+                "gaps %s -> %s)", float_figures, len(cur_words),
+                len(cand_words) if cand_words else None, gaps, cand_gaps,
+            )
 
     out_meta = {
         "section_count": len(sections),
         "size": len(pdf_bytes),
         "title": doc_title,
         "name": name,
+        "squeeze_step": squeeze_step,
+        "pages_before_squeeze": pages_before,
+        "float_figures": float_figures,
+        "float_applied": float_applied,
     }
     return pdf_bytes, out_meta
