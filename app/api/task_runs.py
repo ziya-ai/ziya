@@ -597,8 +597,8 @@ async def resume_run_from_block(
         )
 
     from ..utils.resume_targets import (
-        parallel_replay_indices, resolve_resume_point, resume_call_chain,
-        serial_replay_prefix,
+        is_cancelled_sibling_artifact, parallel_replay_indices,
+        resolve_resume_point, resume_call_chain, serial_replay_prefix,
     )
     # ``call_snapshots`` is required, not enrichment: a Call runs its target
     # inline, so a run held inside a called card records a
@@ -695,10 +695,14 @@ async def resume_run_from_block(
                 # index the loop restarts at.
                 serial_start = len(fanout_artifacts)
         else:
+            # A gate-cancelled peer's marker is never banked.  Runs written
+            # before the executor persisted "cancelled" recorded such peers
+            # as passed, and a resume chain carries their markers forward,
+            # so both loops below check the artifact itself.
             for _i in _idxs:
                 _got = storage.read_iteration_artifact(
                     run_id, resume_point, _i)
-                if _got is not None:
+                if _got is not None and not is_cancelled_sibling_artifact(_got):
                     fanout_artifacts[_i] = _got
             # Excluding executed indices is what stops the carried set
             # undoing the resume: an index this attempt actually ran must
@@ -712,7 +716,7 @@ async def resume_run_from_block(
                     continue
                 _got = storage.read_iteration_artifact(
                     run_id, resume_point, _i)
-                if _got is not None:
+                if _got is not None and not is_cancelled_sibling_artifact(_got):
                     fanout_artifacts[_i] = _got
         # Display record for the replayed set, carried verbatim so a
         # preserved iteration keeps its own status and timings rather than

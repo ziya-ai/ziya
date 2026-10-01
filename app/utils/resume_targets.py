@@ -40,6 +40,53 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 _LOOP_TYPES = ("repeat", "until")
 
 
+# ── Gate-cancelled siblings ─────────────────────────────────────────────
+#
+# When one iteration of a parallel fan-out hits an infrastructure fault,
+# the infra gate cancels its still-running peers and the executor
+# synthesizes an Artifact for each.  That artifact is deliberately NOT
+# ``failed`` (the environment failed, not the work), and it was persisted
+# through ``_record_iteration``'s two-way ``failed -> "failed" else
+# "passed"`` rule -- so a peer killed halfway through its work was
+# recorded as PASSED.  ``parallel_replay_indices`` banks exactly the
+# passed iterations, so the resume offered for the fault replayed the
+# killed peers as done and re-ran only the one that faulted (run
+# daf6eedd -> 8c5deca5, 2026-09-27: 2 of 3 replay runs never executed).
+#
+# Both the executor (to persist status "cancelled") and the resume
+# launcher (to refuse to bank records written before that fix) recognise
+# the marker through these two functions, so they cannot drift apart.
+CANCELLED_SIBLING_SUFFIX = "cancelled — a sibling hit an infrastructure fault"
+
+
+def cancelled_sibling_summary(index: int) -> str:
+    """Summary text of the Artifact synthesized for a gate-cancelled peer."""
+    return f"Iteration {index} {CANCELLED_SIBLING_SUFFIX}"
+
+
+def is_cancelled_sibling_artifact(artifact: Any) -> bool:
+    """True for the synthesized marker of a gate-cancelled iteration.
+
+    Accepts an Artifact or its dict form.  Requires the exact synthesized
+    summary AND the absence of any work product (no outputs, tokens or tool
+    calls), so an iteration whose own summary happened to contain the
+    phrase is not mistaken for one.
+    """
+    if artifact is None:
+        return False
+    if isinstance(artifact, dict):
+        get = artifact.get
+    else:
+        def get(key, default=None):
+            return getattr(artifact, key, default)
+    if get("failed"):
+        return False
+    summary = get("summary") or ""
+    if not (summary.startswith("Iteration ") and summary.endswith(CANCELLED_SIBLING_SUFFIX)):
+        return False
+    return not (get("outputs") or []) and not (get("tokens") or 0) and not (get("tool_calls") or 0)
+
+
 def find_block(
     node: Dict[str, Any], target_id: str,
 ) -> Optional[Dict[str, Any]]:

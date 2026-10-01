@@ -35,6 +35,9 @@ from ..models.task_card import (
     Artifact, ArtifactPart, Block, TaskScope, TemplateResolution, merge_scopes,
 )
 from ..models.task_run import IterationStatus, IterationSummary, TaskRunBlockState
+from ..utils.resume_targets import (
+    cancelled_sibling_summary, is_cancelled_sibling_artifact,
+)
 from ..context import (
     set_task_iteration_context,
     reset_task_iteration_context,
@@ -2160,8 +2163,7 @@ async def _execute_repeat(
                 iter_outcomes[idx] = _iter_status
                 synth = Artifact(
                     summary=(
-                        f"Iteration {idx} cancelled — a sibling hit an "
-                        f"infrastructure fault"
+                        cancelled_sibling_summary(idx)
                         if _cancelled
                         else f"Iteration {idx} raised {type(r).__name__}"
                     ),
@@ -2711,7 +2713,16 @@ async def _record_iteration(
     """Persist summary + (optionally) full artifact for one iteration."""
     if ctx.storage is None or not block.id:
         return
-    status: IterationStatus = "failed" if artifact.failed else "passed"
+    # Three outcomes, not two.  A gate-cancelled peer is not failed (the
+    # environment failed, not the work) and is not passed either: recorded
+    # as passed, parallel_replay_indices banked it and "retry from" replayed
+    # the unfinished peer as done (run daf6eedd -> 8c5deca5).  Derived from
+    # the artifact so every caller and test double keeps its signature.
+    status: IterationStatus = (
+        "failed" if artifact.failed
+        else "cancelled" if is_cancelled_sibling_artifact(artifact)
+        else "passed"
+    )
     signature = _derive_signature(artifact) if artifact.failed else None
     pass_key = _pass_key(ctx)
     # Retention: always persist failures; cap passes per block.
