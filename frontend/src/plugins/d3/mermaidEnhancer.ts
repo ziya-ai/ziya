@@ -10,6 +10,7 @@
 import { hexToRgb } from '../../utils/colorUtils';
 import { contrastRatio, ensureReadableFill, CHART_DARK_BG, CHART_LIGHT_BG } from './chartTheme';
 import { escapeSequenceMessageSemicolons } from './mermaidSequenceSemicolons';
+import { withUnzoomedMeasureHost } from '../../utils/uiScale';
 import { flattenNestedClassGenerics } from './mermaidClassGenerics';
 import { escapeClassDiagramLabelSemicolons } from './mermaidClassSemicolons';
 
@@ -5133,14 +5134,32 @@ export function enhanceMermaid(mermaid: any): void {
       console.log('🔍 FINAL-DEF: Length:', markedDef.length);
       console.log('🔍 FINAL-DEF: Content:', markedDef);
 
+      // Mermaid lays out htmlLabels from getBoundingClientRect() of a scratch
+      // div it appends to <body>. Under the narrow-viewport body zoom
+      // (utils/uiScale.ts) those are viewport px, not CSS px, so every
+      // foreignObject comes out short by the zoom factor and multi-line
+      // labels are clipped. Rendering into a zoom-neutral host makes the
+      // measurement honest; mermaid removes its temp div from the host and
+      // the host is removed afterwards. A container the caller supplied
+      // explicitly is honoured as-is.
+      const explicitContainer = args[0] instanceof Element ? (args[0] as Element) : undefined;
+      const renderIn = <T>(fn: (container: Element) => Promise<T>): Promise<T> =>
+        explicitContainer ? fn(explicitContainer) : withUnzoomedMeasureHost(fn);
+
       // CRITICAL: Try to bypass Mermaid's internal preprocessing that might be corrupting definitions
       // Instead of using the high-level render() function, try the lower-level API
       if (mermaid.mermaidAPI && typeof mermaid.mermaidAPI.render === 'function') {
         console.log('🔍 BYPASS: Using mermaidAPI.render directly to avoid internal preprocessing');
         try {
-          const directResult = await mermaid.mermaidAPI.render(id, markedDef);
-          // mermaidAPI.render returns SVG string directly, not wrapped in an object
-          const svg = typeof directResult === 'string' ? directResult : directResult.svg || '';
+          const directResult: unknown = await renderIn((container) => mermaid.mermaidAPI.render(id, markedDef, container));
+          // Older mermaidAPI.render returned the SVG string directly; newer
+          // versions return { svg, bindFunctions }. Accept either shape.
+          const svg =
+            typeof directResult === 'string'
+              ? directResult
+              : (directResult && typeof directResult === 'object' && typeof (directResult as { svg?: unknown }).svg === 'string')
+                ? (directResult as { svg: string }).svg
+                : '';
           console.log('🔍 BYPASS: Direct API render successful, SVG length:', svg.length);
           return {
             svg: svg,
