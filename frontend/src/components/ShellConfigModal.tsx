@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Switch, Input, Button, List, Tag, Space, message, Divider, Checkbox, Collapse, Alert, Slider } from 'antd';
+import { Modal, Switch, Input, Button, List, Tag, Space, message, Divider, Checkbox, Collapse, Alert, Slider, Tooltip } from 'antd';
 import { PlusOutlined, DeleteOutlined, WarningOutlined } from '@ant-design/icons';
 import { CommandBlock } from './CommandBlock';
 
@@ -46,6 +46,13 @@ interface ShellConfig {
     } | null;
 }
 
+/** One entry from POST /api/mcp/git-grant-hazards (app/utils/git_grant_hazards.py). */
+interface GitGrantHazard {
+    grant: string;
+    hazards: string[];
+    alternative?: string | null;
+}
+
 const { Panel } = Collapse;
 
 const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose }) => {
@@ -64,6 +71,24 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
     const [newWritePattern, setNewWritePattern] = useState('');
     const [newInterpreter, setNewInterpreter] = useState('');
     const [newBlockedCmd, setNewBlockedCmd] = useState('');
+    // Warn-and-redirect for explicit `git <sub>` grants (design/git-tool.md
+    // step 6).  The catalogue lives on the backend; re-ask on every change so
+    // the warning appears before Save.
+    const [gitHazards, setGitHazards] = useState<GitGrantHazard[]>([]);
+    const allowedKey = (config?.allowedCommands ?? []).join('\n');
+    useEffect(() => {
+        const commands = allowedKey ? allowedKey.split('\n') : [];
+        if (!commands.some(c => c === 'git' || c.startsWith('git '))) { setGitHazards([]); return; }
+        let live = true;
+        fetch('/api/mcp/git-grant-hazards', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ commands }),
+        }).then(r => (r.ok ? r.json() : { hazards: [] }))
+          .then(d => { if (live) setGitHazards(d.hazards || []); })
+          .catch(() => { if (live) setGitHazards([]); });
+        return () => { live = false; };
+    }, [allowedKey]);
 
     useEffect(() => {
         if (visible) {
@@ -462,13 +487,26 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
         }
     };
 
-    const dangerousCommands = ['rm', 'rmdir', 'mv', 'cp', 'chmod', 'chown', 'sudo', 'su'];
+    // Commands the write policy gates by TARGET PATH (mirrors
+    // DEFAULT_WRITE_POLICY.destructive_commands in app/config/write_policy.py):
+    // they run, but only when every write target is a safe write path or
+    // matches an allowed write pattern.
+    const pathGatedCommands = ['rm', 'rmdir', 'mv', 'cp', 'mkdir', 'chmod', 'chown', 'chgrp', 'ln'];
     const allGitOperations = ['status', 'log', 'show', 'diff', 'grep', 'branch', 'remote', 'config --get', 'ls-files', 'ls-tree', 'blame', 'cat-file', 'check-ignore', 'tag', 'stash list', 'reflog', 'rev-parse', 'rev-list', 'describe', 'shortlog', 'whatchanged'];
 
-    const isDangerous = (command: string) =>
-        dangerousCommands.some(dangerous =>
-            command.toLowerCase().includes(dangerous.toLowerCase())
-        );
+    // Why a command tag carries a warning marker, or null. Matches the
+    // command WORD exactly: the old substring test flagged 'scp', 'sum'
+    // and anything else merely containing 'cp', 'su' or 'rm'.
+    const commandCaution = (command: string): string | null => {
+        const word = command.trim().split(/\s+/)[0].toLowerCase();
+        if ((config?.alwaysBlocked ?? []).includes(word)) {
+            return `'${word}' is in the always-blocked list: it never runs, even though it is listed here.`;
+        }
+        if (pathGatedCommands.includes(word)) {
+            return `'${word}' can modify files, so it runs only when every write target is a safe write path (.ziya/, /tmp/ and /var/tmp/ by default) or matches an allowed write pattern. Other targets are refused; project file changes go through git diffs.`;
+        }
+        return null;
+    };
 
     if (!config) {
         return (
@@ -731,17 +769,40 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                         <Tag
                                             key={command}
                                             closable
-                                            color={isDangerous(command) ? 'red' : 'blue'}
+                                            color={commandCaution(command) ? 'red' : 'blue'}
                                             onClose={() => removeCommand(command)}
                                             style={{ marginBottom: '4px' }}
                                         >
                                             {command}
-                                            {isDangerous(command) && (
-                                                <WarningOutlined style={{ marginLeft: 4, color: '#ff4d4f' }} />
+                                            {commandCaution(command) && (
+                                                <Tooltip title={commandCaution(command)}>
+                                                    <WarningOutlined style={{ marginLeft: 4, color: '#ff4d4f' }} />
+                                                </Tooltip>
                                             )}
                                         </Tag>
                                     ))}
                                 </div>
+                            )}
+                            {gitHazards.length > 0 && (
+                                <Alert
+                                    type="warning"
+                                    showIcon
+                                    style={{ marginBottom: 12 }}
+                                    message="These git grants admit every flag after the subcommand"
+                                    description={
+                                        <div style={{ fontSize: 12 }}>
+                                            {gitHazards.map(h => (
+                                                <div key={h.grant} style={{ marginBottom: 6 }}>
+                                                    <code>{h.grant}</code> admits:
+                                                    <ul style={{ margin: '2px 0 0 18px', padding: 0 }}>
+                                                        {h.hazards.map(x => <li key={x}>{x}</li>)}
+                                                    </ul>
+                                                    {h.alternative && <div>Prefer: {h.alternative}</div>}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    }
+                                />
                             )}
                         </div>
 
