@@ -194,10 +194,28 @@ async def get_last_accessed_project():
         # No projects at all — fall back to creating one for cwd
         cwd = os.getcwd()
         return storage.create(ProjectCreate(path=cwd))
-    # list() is already sorted by lastAccessedAt descending
-    best = projects[0]
+    # list() is already sorted by lastAccessedAt descending.  Skip records
+    # whose directory no longer exists: a stale ~/.ziya (e.g. a user
+    # returning after a year) otherwise hands the client a project it can
+    # do nothing with, and every X-Project-Root it then sends is rejected by
+    # the middleware while the UI claims to be in that project.
+    best = next((p for p in projects if os.path.isdir(p.path)), None)
+    if best is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No known project has an existing directory",
+        )
     storage.touch(best.id)
     return best
+
+
+def _require_project_dir(project: Project) -> None:
+    """Refuse to hand out a project whose working directory is gone."""
+    if not os.path.isdir(project.path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project directory no longer exists: {project.path}",
+        )
 
 @router.get("/startup", response_model=StartupInfo)
 async def get_startup_info():
@@ -215,11 +233,13 @@ async def get_startup_info():
     root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     root = os.path.abspath(os.path.expanduser(root))
     explicit = os.environ.get("ZIYA_EXPLICIT_ROOT") == "true"
+    from ..utils.instance_id import get_instance_id
     return StartupInfo(
         root=root,
         explicit=explicit,
         hasAnyProjects=len(storage.list_deduped()) > 0,
         rootProject=storage.get_by_path(root),
+        instanceId=get_instance_id(),
     )
 
 @router.post("", response_model=Project)
@@ -238,6 +258,7 @@ async def get_project(project_id: str):
     project = storage.get(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    _require_project_dir(project)
     storage.touch(project_id)
     return project
 

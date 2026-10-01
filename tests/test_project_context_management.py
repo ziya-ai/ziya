@@ -32,10 +32,14 @@ def project_with_settings(ziya_home):
     for sub in ("chats", "contexts", "skills"):
         (proj_dir / sub).mkdir()
 
+    # Must be a real directory: GET /projects/{id} refuses a project whose
+    # working directory is gone (stale-~/.ziya protection).
+    workdir = ziya_home.parent / "workdir"
+    workdir.mkdir(exist_ok=True)
     project_data = {
         "id": project_id,
         "name": "Context Mgmt Test",
-        "path": "/test/path",
+        "path": str(workdir),
         "settings": {
             "defaultContextIds": ["ctx-aaa", "ctx-bbb"],
             "defaultSkillIds": ["skill-111"],
