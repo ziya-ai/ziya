@@ -498,6 +498,21 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   overflow: visible;
 }
 
+/* Firefox: content-visibility: auto locks the user at the bottom of long
+   conversations. When a skipped message re-enters the viewport proximity
+   band Firefox swaps its remembered size for the rendered one (observed
+   deltas of ~500px per message), then flips back; scroll anchoring adds the
+   difference to scrollTop each time, so a normal-speed scroll up nets zero
+   movement and only a fling escapes. Setting contentVisibility: visible on
+   the messages from the console stopped it instantly. Off-screen mount cost
+   is already handled by LazyMarkdownRenderer's placeholder shells, so this
+   only gives up the paint-skip on Firefox. */
+@supports (-moz-appearance: none) {
+  .message {
+    content-visibility: visible;
+  }
+}
+
 /* Fix streaming content alignment - prevent left shift during streaming */
 .message.streaming {
   transform: none !important;
