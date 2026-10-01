@@ -1,15 +1,18 @@
 /**
+ * @jest-environment jsdom
+ *
  * ActiveContextBar shows the bench's always-set, not legacy list membership.
  * FAILS against the pre-slice-4 bar: it rendered every id in activeSkillIds,
  * including a model_discoverable skill whose presence there means SUPPRESSED.
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import '@testing-library/jest-dom';
 
 const disc = { id: 'd1', name: 'Code Review', visibility: 'model_discoverable', color: '#111', source: 'builtin', prompt: '' };
 const pick = { id: 'p1', name: 'Concise', visibility: 'user_selectable', color: '#222', source: 'builtin', prompt: '' };
 
-const benchMock = { ready: true, alwaysItems: [] as any[] };
+const benchMock = { ready: true, alwaysItems: [] as any[], pickedUpItems: [] as any[] };
 jest.mock('../../hooks/useBench', () => ({ useBench: () => benchMock }));
 jest.mock('../../context/ThemeContext', () => ({ useTheme: () => ({ isDarkMode: false }) }));
 jest.mock('../../context/ProjectContext', () => ({
@@ -32,6 +35,7 @@ const skillItem = (name: string, effective: string) => ({
 });
 
 describe('ActiveContextBar reads the bench', () => {
+    beforeEach(() => { benchMock.ready = true; benchMock.alwaysItems = []; benchMock.pickedUpItems = []; });
     it('renders only effective === always; a suppressed discoverable skill is absent', () => {
         benchMock.ready = true;
         benchMock.alwaysItems = [skillItem('Concise', 'always')];
@@ -49,5 +53,18 @@ describe('ActiveContextBar reads the bench', () => {
         render(<ActiveContextBar />);
         // d1 is discoverable => suppressed, not active; nothing to show.
         expect(screen.queryByText('Code Review')).toBeNull();
+    });
+    it('an on-demand skill the model loaded this turn shows with ✦', () => {
+        benchMock.pickedUpItems = [skillItem('Code Review', 'ondemand')];
+        render(<ActiveContextBar />);
+        const pill = screen.getByTestId('skill-pickup');
+        expect(pill).toHaveTextContent('✦');
+        expect(pill).toHaveTextContent('Code Review');
+    });
+    it('no pickups, no ✦', () => {
+        benchMock.alwaysItems = [skillItem('Concise', 'always')];
+        render(<ActiveContextBar />);
+        expect(screen.getByText('Concise')).toBeInTheDocument();
+        expect(screen.queryByTestId('skill-pickup')).toBeNull();
     });
 });

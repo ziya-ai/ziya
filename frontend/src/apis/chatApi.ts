@@ -14,6 +14,7 @@ import { drainSseFrames } from './sseFramer';
 import { applyContinuationRewind } from './continuationProtocol';
 import { resolveModelPin, ResolvedModelPin } from '../utils/modelPins';
 import { reportStreamModel } from '../services/modelSyncService';
+import { markPickedUp, clearPickups } from '../utils/capabilityPickup';
 import {
     applyThinkingEvent,
     thinkingMarker,
@@ -787,6 +788,9 @@ export const sendPayload = async (
     // everything after the fetch is shared with a fresh send.
     reattach: boolean = false
 ): Promise<string> => {
+    // A fresh user turn clears the previous turn's ✦ pickups; a reattach
+    // continues the same turn and keeps them (design/capabilities-hub.md).
+    if (!reattach) clearPickups(conversationId);
     let eventSource: any = null;
     let currentContent = '';
     let readerRef: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -1693,6 +1697,16 @@ export const sendPayload = async (
                             timestamp: Date.now()
                         }
                     }));
+                    return;
+                }
+
+                // ✦ pickup (design/capabilities-hub.md, slice 5): the model
+                // loaded an on-demand skill.  Out-of-band like
+                // feedbackDelivered — the frame carries no content.
+                if (unwrappedData.type === 'capability_used') {
+                    if (typeof unwrappedData.key === 'string') {
+                        markPickedUp(conversationId, unwrappedData.key);
+                    }
                     return;
                 }
 
