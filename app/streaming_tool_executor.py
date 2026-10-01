@@ -2031,6 +2031,24 @@ class StreamingToolExecutor:
                     f"({effective_input:,}/{effective_limit:,}), staging model notice"
                 )
 
+        # --- Handoff pressure (every iteration) ---
+        # server.py records a chars/4 estimate of the assembled prompt before
+        # the send; this is what the provider actually billed, and it moves
+        # mid-turn as tool results land, so it overrides that estimate.  The
+        # frontend token bar and the drawer read this cache; the bar's own
+        # estimate is of the next prompt and cannot include what this turn's
+        # tool results added (design/conversation-handoff.md).  Same ceiling as
+        # server.py: the user's Max Input Tokens setting first, model limit as fallback.
+        if conversation_id and effective_limit:
+            try:
+                from app.agents.models import ModelManager
+                from app.utils.handoff_prelude import record_context_pressure
+                _ceiling = (ModelManager.get_model_settings().get("max_input_tokens")
+                            or effective_limit)
+                record_context_pressure(conversation_id, effective_input, int(_ceiling))
+            except Exception as e:
+                logger.debug(f"Context-pressure record skipped: {e}")
+
         # --- Context-debug snapshot (every iteration) ---
         # The token numbers are already in hand from the provider event, so
         # the in-memory record is effectively free and always on.  Payload
