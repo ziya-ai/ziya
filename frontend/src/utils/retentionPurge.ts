@@ -5,6 +5,8 @@
  * any IndexedDB conversations whose creation time exceeds the TTL.
  */
 
+import { scopedNameSync } from './instanceIdentity';
+
 interface RetentionPolicy {
     conversation_data_ttl_seconds: number | null;
     conversation_data_ttl_days: number | null;
@@ -105,9 +107,10 @@ export async function purgeExpiredConversations(db: any): Promise<void> {
     });
 
     // Serialise against other DB writers via the existing Web Lock.  This
-    // is the same lock name db.ts uses for its write path.
+    // is the same lock name db.ts uses for its write path (instance-scoped;
+    // db.init() has completed by the time a purge runs, so the id is known).
     const purgedCount = navigator.locks
-        ? await navigator.locks.request('ziya-db-write', runPurge)
+        ? await navigator.locks.request(scopedNameSync('ziya-db-write'), runPurge)
         : await runPurge();
 
     if (purgedCount > 0) {

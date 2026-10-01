@@ -88,4 +88,7 @@ export interface StartupInfo {
   hasAnyProjects: boolean;
   /** Project already rooted at `root`, if one exists (null otherwise). */
   rootProject: Project | null;
+  /** Stable id of this installation's data store (~/.ziya/instance_id).
+   *  Absent/empty on a pre-feature backend. */
+  instanceId?: string;
 }

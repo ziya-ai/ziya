@@ -28,8 +28,13 @@ import { placeBench } from '../apis/benchApi';
 import * as syncApi from '../api/conversationSyncApi';
 import * as folderSyncApi from '../api/folderSyncApi';
 import FirstRunProjectDialog from '../components/FirstRunProjectDialog';
+import { scopedNameSync, setServerInstanceId } from '../utils/instanceIdentity';
 
-const LAST_PROJECT_KEY = 'ZIYA_LAST_PROJECT_ID';
+// Scoped to the connected server instance: a project id remembered against
+// one installation means nothing to another sharing the same origin.  Only
+// read after /projects/startup has answered (see init below), which is when
+// the instance id becomes known.
+const lastProjectKey = () => scopedNameSync('ZIYA_LAST_PROJECT_ID');
 
 interface ProjectContextType {
   // Project state
@@ -108,7 +113,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // ── Lens persistence helpers ──────────────────────────────────────
   // Store active context/skill IDs per project in localStorage so they
   // survive page reloads AND project switches.
-  const _lensKey = (projectId: string) => `ZIYA_LENS_${projectId}`;
+  const _lensKey = (projectId: string) => scopedNameSync(`ZIYA_LENS_${projectId}`);
 
   const _saveLens = useCallback((projectId: string, ctxIds: string[], skillIds: string[]) => {
     try {
@@ -235,6 +240,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           console.warn('ProjectContext: startup info unavailable, using legacy fallback', e);
         }
+        // Establish which installation this origin is serving BEFORE any
+        // origin-scoped storage is touched.  The fetch latch has normally
+        // already seen X-Ziya-Instance on the startup response; this call
+        // covers a legacy backend that sends neither the header nor the
+        // field (null = unsuffixed names, today's behaviour).  db.init()
+        // and projectSync.join() await this.
+        setServerInstanceId(startup?.instanceId || null);
 
         let project: Project | null = null;
 
@@ -251,14 +263,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         } else {
           // Defaulted cwd: prefer this browser's last project, then the
           // server-wide last-accessed, then a project already rooted at cwd.
-          const savedId = localStorage.getItem(LAST_PROJECT_KEY);
+          const savedId = localStorage.getItem(lastProjectKey());
           if (savedId) {
             try {
               project = await projectApi.getProject(savedId);
               console.log('ProjectContext: Restored last project from localStorage:', project.name);
             } catch {
               console.warn('ProjectContext: Saved project ID invalid, falling back');
-              localStorage.removeItem(LAST_PROJECT_KEY);
+              localStorage.removeItem(lastProjectKey());
             }
           }
           if (!project && (startup?.hasAnyProjects ?? true)) {
@@ -275,7 +287,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
         // ── First-run / nothing usable: ask the user what to do ──────
         if (!project) {
-          if (startup && !startup.hasAnyProjects && !startup.rootProject) {
+          // Whenever the server gave us startup context and none of the
+          // paths above produced a project, ask rather than guess.  The
+          // server now refuses projects whose directory is gone, so "some
+          // projects exist but none is usable" is a real state; falling to
+          // /projects/current here would 400 (no X-Project-Root yet) and
+          // leave the tab with no project AND no picker.
+          if (startup) {
             console.log('ProjectContext: No usable project — prompting user');
             setFirstRunRoot(startup.root);
             setIsLoadingProject(false);
@@ -288,7 +306,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         
         setCurrentProject(project);
         (window as any).__ZIYA_CURRENT_PROJECT_ID__ = project.id;
-        localStorage.setItem(LAST_PROJECT_KEY, project.id);
+        localStorage.setItem(lastProjectKey(), project.id);
         
         // Restore lens state for this project
         const savedLens = _loadLens(project.id);
@@ -581,7 +599,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       // 2. Update global path SYNCHRONOUSLY (before any events)
       (window as any).__ZIYA_CURRENT_PROJECT_PATH__ = project.path;
       (window as any).__ZIYA_CURRENT_PROJECT_ID__ = project.id;
-      localStorage.setItem(LAST_PROJECT_KEY, project.id);
+      localStorage.setItem(lastProjectKey(), project.id);
       
       // 3. Restore lens state for the project we're switching TO
       const savedLens = _loadLens(project.id);
