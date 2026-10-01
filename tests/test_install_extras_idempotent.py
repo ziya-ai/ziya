@@ -66,13 +66,17 @@ case "$*" in
 esac
 """)
 
-    def run(*args, chromium: bool, tex_installed=ALL_TEX):
+    def run(*args, chromium: bool, tex_installed=ALL_TEX, restrict_path=False, env=None):
+        # restrict_path hides the real host's tlmgr/latex so a "distro TeX
+        # without tlmgr" host can be staged from the shims alone.
+        base_path = "/usr/bin:/bin" if restrict_path else os.environ.get("PATH", "")
         env = {
             **os.environ,
-            "PATH": f"{shim_dir}:{os.environ.get('PATH', '')}",
+            "PATH": f"{shim_dir}:{base_path}",
             "ZIYA_PYTHON": str(fake_py),
             "FAKE_CHROMIUM": "1" if chromium else "0",
             "FAKE_TL_INSTALLED": " ".join(tex_installed),
+            **(env or {}),
         }
         return subprocess.run(
             ["bash", str(SCRIPT), *args],
@@ -80,6 +84,7 @@ esac
         )
 
     run.markers = marker_dir
+    run.shim_dir = shim_dir
     return run
 
 
@@ -131,3 +136,92 @@ class TestInstallPhaseSkipsWhatIsPresent:
         src = SCRIPT.read_text()
         assert 'install "${MISSING_TEX[@]}"' in src
         assert 'install "${TEX_PACKAGES[@]}"' not in src
+
+
+def _fake_linux(shim_dir: Path, glibc: str) -> None:
+    """Make the script believe it runs on Linux with the given glibc."""
+    _executable(shim_dir / "uname", '#!/usr/bin/env bash\ncase "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
+    _executable(shim_dir / "getconf",
+                f'#!/usr/bin/env bash\n[ "$1" = GNU_LIBC_VERSION ] && echo "glibc {glibc}"\n')
+
+
+class TestHostsTheInstallerCannotServe:
+    """A target the host can never satisfy is reported as blocked -- not as a
+    retryable failure, and not as "already installed"."""
+
+    def test_old_glibc_blocks_chromium_up_front(self, harness):
+        _fake_linux(harness.shim_dir, "2.26")
+        r = harness("--browser", "--dry-run", chromium=False)
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "glibc 2.26" in r.stdout and "2.28" in r.stdout
+        assert "playwright install chromium" not in r.stdout
+        assert "Re-run" not in r.stdout
+        assert "already installed" not in r.stdout
+
+    def test_new_glibc_still_plans_chromium(self, harness):
+        _fake_linux(harness.shim_dir, "2.34")
+        r = harness("--browser", "--dry-run", chromium=False)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "playwright install chromium" in r.stdout
+
+
+def _fake_install_tl(tmp_path: Path, markers: Path) -> Path:
+    """A pre-unpacked install-tl that builds what the real one would: bin/<arch>/tlmgr
+    under the profile's TEXDIR.  Records its argv and profile; the tlmgr it creates
+    records every invocation."""
+    inst = tmp_path / "install-tl-fake"
+    inst.mkdir()
+    _executable(inst / "install-tl", f"""#!/usr/bin/env bash
+echo "$@" >> "{markers}/install_tl_args"
+cp "$2" "{markers}/profile"
+texdir="$(awk '$1 == "TEXDIR" {{print $2}}' "$2")"
+mkdir -p "$texdir/bin/x86_64-linux"
+printf '%s\\n' '#!/usr/bin/env bash' 'echo "$@" >> "{markers}/home_tlmgr_write"' 'exit 0' > "$texdir/bin/x86_64-linux/tlmgr"
+chmod +x "$texdir/bin/x86_64-linux/tlmgr"
+""")
+    return inst
+
+
+class TestLinuxTexLiveGoesIntoHome:
+    """No tlmgr TeX on Linux is not a dead end: the official installer goes into
+    $HOME (no sudo), then tlmgr adds the packages.  Distro texlive-* packages are
+    never suggested; they ship no tlmgr and cannot be extended."""
+
+    def test_distro_tex_without_tlmgr_is_diagnosed_and_routed_to_install_tl(self, harness):
+        # A yum/apt TeX: latex + kpsewhich present, no tlmgr, only tikz.sty found.
+        _fake_linux(harness.shim_dir, "2.26")
+        (harness.shim_dir / "tlmgr").unlink()
+        _executable(harness.shim_dir / "latex", "#!/usr/bin/env bash\nexit 0\n")
+        _executable(harness.shim_dir / "kpsewhich",
+                    '#!/usr/bin/env bash\n[ "$1" = tikz.sty ] && { echo /tex/tikz.sty; exit 0; }\nexit 1\n')
+        r = harness("--latex", "--dry-run", chromium=False, restrict_path=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no tlmgr" in r.stdout
+        assert "install-tl" in r.stdout
+        assert "No TeX" not in r.stdout      # the old, false denial
+        assert "yum" not in r.stdout         # the old, dead-end advice
+        assert "Nothing this installer can set up" not in r.stdout
+        assert f"1 of {len(ALL_TEX)}" in r.stdout
+        listed = {l.strip().lstrip("- ") for l in r.stdout.splitlines() if l.strip().startswith("- ")}
+        assert listed == set(ALL_TEX) - {"pgf"}, listed
+        assert not (harness.markers / "tlmgr_write").exists()
+
+    def test_no_tlmgr_installs_texlive_into_home_without_sudo(self, harness, tmp_path):
+        _fake_linux(harness.shim_dir, "2.26")
+        (harness.shim_dir / "tlmgr").unlink()
+        texdir = tmp_path / "texlive"
+        r = harness("--latex", "--yes", chromium=False, restrict_path=True,
+                    env={"ZIYA_TEXLIVE_INSTALLER": str(_fake_install_tl(tmp_path, harness.markers)),
+                         "ZIYA_TEXLIVE_DIR": str(texdir)})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert str(texdir) in r.stdout                       # the plan names the target
+        profile = (harness.markers / "profile").read_text()
+        assert "selected_scheme scheme-basic" in profile
+        assert f"TEXDIR {texdir}" in profile
+        assert "--profile" in (harness.markers / "install_tl_args").read_text()
+        writes = (harness.markers / "home_tlmgr_write").read_text().splitlines()
+        assert writes[-1].split() == ["install", *ALL_TEX]   # the NEW tlmgr, not sudo/system
+        assert "under sudo" not in r.stdout and "root-owned" not in r.stdout
+        assert f'export PATH="{texdir}/bin/x86_64-linux:$PATH"' in r.stdout
+        assert "path_helper" not in r.stdout                  # macOS guidance must not leak
+        assert not (harness.markers / "tlmgr_write").exists()  # the shim tlmgr was never used

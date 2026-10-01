@@ -105,6 +105,46 @@ def playwright_missing_description() -> str:
     return playwright_status() or "Chromium browser for Playwright"
 
 
+# The Linux route of app/scripts/install_extras.sh installs TeX Live under
+# $HOME with no sudo: ZIYA_TEXLIVE_DIR, default ~/texlive, binaries in
+# bin/<arch>/.  These two names must stay equal to the script's TL_HOME.
+TEXLIVE_DIR_ENV = "ZIYA_TEXLIVE_DIR"
+DEFAULT_TEXLIVE_DIR = "~/texlive"
+
+
+def home_texlive_bin() -> Optional[Path]:
+    """The bin/<arch> dir of a TeX Live the installer put under $HOME, or None."""
+    root = Path(os.environ.get(TEXLIVE_DIR_ENV) or os.path.expanduser(DEFAULT_TEXLIVE_DIR))
+    try:
+        candidates = sorted((root / "bin").iterdir())
+    except OSError:
+        return None
+    for d in candidates:
+        if d.is_dir() and ((d / "tlmgr").exists() or (d / "latex").exists()):
+            return d
+    return None
+
+
+def ensure_home_texlive_on_path() -> Optional[Path]:
+    """Prepend a $HOME TeX Live to this process's PATH; return its bin dir.
+
+    Nothing puts that directory on PATH until the user edits their shell
+    startup, so a server started before then found only a distro /usr/bin/latex
+    (no dvisvgm) and reported LaTeX missing -- while ziya-install-extras, which
+    globs $TL_HOME/bin/*/ itself, reported everything installed.  Prepending
+    (not appending) makes the new TeX win over the older distro one for
+    shutil.which AND for the renderer's latex/dvisvgm/gs subprocesses, which
+    inherit os.environ.  Idempotent; a PATH that already names it is left alone.
+    """
+    bin_dir = home_texlive_bin()
+    if bin_dir is None:
+        return None
+    parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    if str(bin_dir) not in parts:
+        os.environ["PATH"] = os.pathsep.join([str(bin_dir)] + parts)
+    return bin_dir
+
+
 def tex_status() -> Optional[str]:
     """None when a usable TeX toolchain is present; otherwise what is missing.
 
@@ -112,6 +152,7 @@ def tex_status() -> Optional[str]:
     pdflatex+ghostscript.  Missing TeX *packages* are reported by the renderer
     itself at render time; this is only the toolchain.
     """
+    ensure_home_texlive_on_path()
     has_dvi = bool(shutil.which("latex") and shutil.which("dvisvgm"))
     has_pdf = bool(shutil.which("pdflatex") and (shutil.which("gs") or shutil.which("ghostscript")))
     if has_dvi or has_pdf:

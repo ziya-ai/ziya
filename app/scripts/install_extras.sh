@@ -9,7 +9,8 @@
 #              frozen diagram artifacts in task runs.  (~150 MB, no sudo)
 #   --latex    a TeX distribution + the TeX Live packages the LaTeX renderer
 #              needs: circuitikz, chemfig, pgfplots, tikz, forest, bussproofs,
-#              tikz-cd.  (sudo for tlmgr)
+#              tikz-cd.  (macOS: BasicTeX via Homebrew, sudo for tlmgr.
+#              Linux: TeX Live scheme-basic into ~/texlive, no sudo.)
 #   --all      both.  This is the DEFAULT when no target is given.
 #
 # Ziya WILL run without either; you just lose those features.
@@ -52,8 +53,15 @@ TEX_FRESHLY_INSTALLED=""
 DO_BROWSER=""
 DO_LATEX=""
 
+# Where the Linux route installs TeX Live: under $HOME, so no sudo is ever
+# needed and nothing root-owned lands in the user's tree.  Both overridable.
+TL_HOME="${ZIYA_TEXLIVE_DIR:-$HOME/texlive}"
+TL_MIRROR="${ZIYA_TEXLIVE_MIRROR:-https://mirror.ctan.org/systems/texlive/tlnet}"
+TL_BIN=""
+TLMGR=""
+
 usage() {
-    sed -n '3,33p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'
+    sed -n '3,34p' "$0" | sed 's/^#\{0,1\} \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -63,8 +71,101 @@ rule() { printf '%s\n' "--------------------------------------------------------
 
 find_tlmgr() {
     command -v tlmgr 2>/dev/null && return 0
-    [ -x /Library/TeX/texbin/tlmgr ] && { printf '%s\n' /Library/TeX/texbin/tlmgr; return 0; }
+    [ "$OS" = "Darwin" ] && [ -x /Library/TeX/texbin/tlmgr ] && { printf '%s\n' /Library/TeX/texbin/tlmgr; return 0; }
+    # A TeX Live this script installed into $HOME but not yet on this shell's PATH.
+    local t
+    for t in "$TL_HOME"/bin/*/tlmgr; do
+        [ -x "$t" ] && { printf '%s\n' "$t"; return 0; }
+    done
     return 1
+}
+
+# The file kpsewhich must find for a TeX Live package to count as present on a
+# TeX that has no tlmgr (distro packages).  dvisvgm is a program, not a file.
+tex_pkg_file() {
+    case "$1" in
+        standalone) printf 'standalone.cls\n' ;;
+        pgf)        printf 'tikz.sty\n' ;;
+        dvisvgm)    printf '\n' ;;
+        *)          printf '%s.sty\n' "$1" ;;
+    esac
+}
+
+# tlmgr needs sudo only when the TeX tree is not writable by this user.  A TeX
+# Live installed into $HOME (the Linux route below) must NOT run under sudo,
+# which would scatter root-owned files through the user's tree.
+tlmgr_needs_sudo() {
+    local d
+    d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 0
+    [ -w "$d" ] && return 1
+    return 0
+}
+
+# Linux route: the official installer (install-tl) into $TL_HOME.  Distro
+# texlive-* packages are years old, ship no tlmgr, and cannot have packages
+# added, so they are never the answer.  install-tl needs only perl, tar and
+# curl or wget, and no sudo when the target is under $HOME.
+can_install_tl() {
+    [ "$OS" = "Linux" ] || return 1
+    command -v perl >/dev/null 2>&1 || return 1
+    command -v tar >/dev/null 2>&1 || return 1
+    command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1
+}
+
+fetch() {
+    if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"; else wget -qO "$2" "$1"; fi
+}
+
+linux_install_tl_plan() {
+    log "  * TeX Live scheme-basic via the official installer (install-tl) into"
+    log "      $TL_HOME     (~300 MB download from CTAN; no sudo)"
+    log "  * then tlmgr install these TeX Live packages:"
+}
+
+linux_install_tl_blocked_hint() {
+    log "     install-tl (the official TeX Live installer) cannot run here: it needs perl, tar"
+    log "     and curl or wget. Add those and re-run, or install TeX Live yourself:"
+    log "         https://tug.org/texlive/acquire-netinstall.html"
+}
+
+# Download and run install-tl non-interactively into $TL_HOME.  On success sets
+# TLMGR/TL_BIN to the new tree and prepends its bin dir to PATH for the rest of
+# this run.  ZIYA_TEXLIVE_INSTALLER may name an already-unpacked install-tl
+# directory, which skips the download (the tests use this).
+install_tl_home() {
+    local work dir bin
+    work="$(mktemp -d)"
+    dir="${ZIYA_TEXLIVE_INSTALLER:-}"
+    if [ -z "$dir" ]; then
+        log "  -> fetching $TL_MIRROR/install-tl-unx.tar.gz"
+        fetch "$TL_MIRROR/install-tl-unx.tar.gz" "$work/install-tl-unx.tar.gz" || return 1
+        tar -xzf "$work/install-tl-unx.tar.gz" -C "$work" || return 1
+        dir="$(find "$work" -mindepth 1 -maxdepth 1 -type d -name 'install-tl-*' | head -n 1)"
+        [ -n "$dir" ] || return 1
+    fi
+    cat > "$work/ziya.profile" <<EOF
+selected_scheme scheme-basic
+TEXDIR $TL_HOME
+TEXMFLOCAL $TL_HOME/texmf-local
+TEXMFSYSCONFIG $TL_HOME/texmf-config
+TEXMFSYSVAR $TL_HOME/texmf-var
+TEXMFCONFIG $HOME/.texlive/texmf-config
+TEXMFVAR $HOME/.texlive/texmf-var
+TEXMFHOME $HOME/texmf
+tlpdbopt_autobackup 0
+tlpdbopt_install_docfiles 0
+tlpdbopt_install_srcfiles 0
+instopt_adjustpath 0
+instopt_letter 0
+EOF
+    log "  -> $dir/install-tl --profile $work/ziya.profile --repository $TL_MIRROR"
+    "$dir/install-tl" --profile "$work/ziya.profile" --repository "$TL_MIRROR" || return 1
+    bin="$(find "$TL_HOME/bin" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1)"
+    [ -n "$bin" ] && [ -x "$bin/tlmgr" ] || return 1
+    TL_BIN="$bin"
+    TLMGR="$bin/tlmgr"
+    export PATH="$bin:$PATH"
+    TEX_FRESHLY_INSTALLED=1
 }
 
 while [ $# -gt 0 ]; do
@@ -97,6 +198,13 @@ HAVE_TEX=""
 find_tlmgr >/dev/null 2>&1 && HAVE_TEX=1
 HAVE_BREW=""
 command -v brew >/dev/null 2>&1 && HAVE_BREW=1
+# A TeX that ships without tlmgr (distro packages) cannot have packages added,
+# so it is reported separately; the only question there is whether the
+# renderer's files are already present (kpsewhich).
+HAVE_DISTRO_TEX=""
+if [ -z "$HAVE_TEX" ] && { command -v latex >/dev/null 2>&1 || command -v pdflatex >/dev/null 2>&1; }; then
+    HAVE_DISTRO_TEX=1
+fi
 
 # `playwright` the CLI is installed with the wheel (hard dependency).  Prefer
 # the interpreter that runs Ziya (exported as ZIYA_PYTHON by the entry point)
@@ -116,6 +224,21 @@ find_playwright() {
 HAVE_PW=""
 PW_CMD="$(find_playwright || true)"
 [ -n "$PW_CMD" ] && HAVE_PW=1
+
+# Playwright's bundled Node needs glibc >= 2.28.  On an older Linux the install
+# dies with a linker error, and no re-run will ever succeed; say so up front
+# instead of printing the failure and inviting a retry.
+PW_BLOCKED=""
+if [ "$OS" = "Linux" ] && command -v getconf >/dev/null 2>&1; then
+    GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+    GLIBC_MAJ="${GLIBC_VER%%.*}"; GLIBC_MIN="${GLIBC_VER#*.}"; GLIBC_MIN="${GLIBC_MIN%%.*}"
+    case "$GLIBC_MAJ.$GLIBC_MIN" in
+        [0-9]*.[0-9]*)
+            if [ "$GLIBC_MAJ" -lt 2 ] || { [ "$GLIBC_MAJ" -eq 2 ] && [ "$GLIBC_MIN" -lt 28 ]; }; then
+                PW_BLOCKED="glibc $GLIBC_VER"
+            fi ;;
+    esac
+fi
 
 # Is the Chromium build already there?  Ask the same probe the running server
 # uses (app.utils.optional_features mirrors Playwright's browser registry:
@@ -165,9 +288,27 @@ if [ -n "$DO_LATEX" ]; then
                 MISSING_TEX+=("$p")
             fi
         done
+    elif [ -n "$HAVE_DISTRO_TEX" ] && command -v kpsewhich >/dev/null 2>&1; then
+        # No tlmgr to ask; check for the files the renderer will actually load.
+        for p in "${TEX_PACKAGES[@]}"; do
+            f="$(tex_pkg_file "$p")"
+            if { [ -z "$f" ] && command -v "$p" >/dev/null 2>&1; } || { [ -n "$f" ] && kpsewhich "$f" >/dev/null 2>&1; }; then
+                INSTALLED_TEX_COUNT=$((INSTALLED_TEX_COUNT + 1))
+            else
+                MISSING_TEX+=("$p")
+            fi
+        done
     else
         MISSING_TEX=("${TEX_PACKAGES[@]}")
     fi
+fi
+# Whether the tlmgr step will need sudo (root-owned tree) - decided once so
+# the plan and the install phase cannot disagree.
+TL_SUDO_NOTE=""
+if [ -n "$HAVE_TEX" ]; then
+    tlmgr_needs_sudo "$(find_tlmgr)" && TL_SUDO_NOTE=1
+elif [ "$OS" = "Darwin" ]; then
+    TL_SUDO_NOTE=1
 fi
 
 bold "Ziya optional features — installation plan"
@@ -181,6 +322,10 @@ if [ -n "$DO_BROWSER" ]; then
     log "Chromium for Playwright (the model sees its own diagrams; PDF export):"
     if [ -n "$HAVE_CHROMIUM" ]; then
         log "  ok already installed - nothing to do."
+    elif [ -n "$PW_BLOCKED" ]; then
+        log "  !! cannot be installed on this host: it has $PW_BLOCKED, and Playwright's bundled"
+        log "     Node needs glibc 2.28 or newer. Use Ziya from a newer host for render_diagram"
+        log "     and PDF export; everything else works without Chromium."
     elif [ -n "$HAVE_PW" ]; then
         log "  * $PW_CMD install chromium     (~150 MB into your user cache; no sudo)"
     else
@@ -206,25 +351,46 @@ if [ -n "$HAVE_TEX" ] && [ ${#MISSING_TEX[@]} -eq 0 ]; then
     log "  ok TeX Live present ($(find_tlmgr)) and all ${#TEX_PACKAGES[@]} packages installed - nothing to do."
 elif [ -n "$HAVE_TEX" ]; then
     log "  * TeX Live already present ($(find_tlmgr)); $INSTALLED_TEX_COUNT of ${#TEX_PACKAGES[@]} packages installed."
-    log "    Will (sudo) tlmgr install the missing:"
+    log "    Will tlmgr install the missing:"
+elif [ -n "$HAVE_DISTRO_TEX" ] && [ ${#MISSING_TEX[@]} -eq 0 ]; then
+    log "  ok TeX present ($(command -v latex || command -v pdflatex)) with all ${#TEX_PACKAGES[@]} required pieces - nothing to do."
+elif [ -n "$HAVE_DISTRO_TEX" ]; then
+    log "  !! A TeX is present ($(command -v latex || command -v pdflatex)) but it has no tlmgr, so nothing"
+    log "     can be added to it ($INSTALLED_TEX_COUNT of ${#TEX_PACKAGES[@]} required pieces found). Instead:"
+    if can_install_tl; then linux_install_tl_plan; else linux_install_tl_blocked_hint; fi
 elif [ "$OS" = "Darwin" ]; then
     log "  * BasicTeX  (brew install --cask basictex - you'll be asked for your password)"
     log "  * then, under sudo, tlmgr install these TeX Live packages:"
+elif can_install_tl; then
+    linux_install_tl_plan
 else
-    log "  * TeX Live  (install for your distro - see the note below), then these packages:"
+    log "  !! No TeX Live found."
+    linux_install_tl_blocked_hint
 fi
 if [ ${#MISSING_TEX[@]} -gt 0 ]; then
     for p in "${MISSING_TEX[@]}"; do log "      - $p"; done
-    log "    (installs into the root-owned TeX tree, so tlmgr runs under sudo)"
+    if [ -n "$TL_SUDO_NOTE" ]; then
+        log "    (installs into the root-owned TeX tree, so tlmgr runs under sudo)"
+    fi
 fi
 log ""
 fi
 
 # Nothing selected is actually missing: say so and stop before prompting.
-BROWSER_TODO=""; [ -n "$DO_BROWSER" ] && [ -z "$HAVE_CHROMIUM" ] && BROWSER_TODO=1
-LATEX_TODO="";   [ -n "$DO_LATEX" ] && { [ -z "$HAVE_TEX" ] || [ ${#MISSING_TEX[@]} -gt 0 ]; } && LATEX_TODO=1
+# A selected target this host cannot satisfy (glibc too old for Playwright; no
+# tlmgr TeX and install-tl cannot run) is BLOCKED, not "already installed":
+# exit non-zero so it is not mistaken for success, and never prompt.
+BROWSER_BLOCKED=""; [ -n "$DO_BROWSER" ] && [ -z "$HAVE_CHROMIUM" ] && [ -n "$PW_BLOCKED" ] && BROWSER_BLOCKED=1
+LATEX_SATISFIED=""; { [ -n "$HAVE_TEX" ] || [ -n "$HAVE_DISTRO_TEX" ]; } && [ ${#MISSING_TEX[@]} -eq 0 ] && LATEX_SATISFIED=1
+LATEX_BLOCKED="";   [ -n "$DO_LATEX" ] && [ -z "$LATEX_SATISFIED" ] && [ -z "$HAVE_TEX" ] && [ "$OS" != "Darwin" ] && ! can_install_tl && LATEX_BLOCKED=1
+BROWSER_TODO=""; [ -n "$DO_BROWSER" ] && [ -z "$HAVE_CHROMIUM" ] && [ -z "$BROWSER_BLOCKED" ] && BROWSER_TODO=1
+LATEX_TODO="";   [ -n "$DO_LATEX" ] && [ -z "$LATEX_SATISFIED" ] && [ -z "$LATEX_BLOCKED" ] && LATEX_TODO=1
 if [ -z "$BROWSER_TODO" ] && [ -z "$LATEX_TODO" ]; then
     rule
+    if [ -n "$BROWSER_BLOCKED" ] || [ -n "$LATEX_BLOCKED" ]; then
+        log "Nothing this installer can set up on this host yet; see the notes above."
+        exit 1
+    fi
     log "Everything requested is already installed. Nothing to do."
     exit 0
 fi
@@ -256,6 +422,9 @@ if [ -n "$DO_BROWSER" ]; then
     bold "> Chromium for Playwright..."
     if [ -n "$HAVE_CHROMIUM" ]; then
         log "  ok already installed; skipped."
+    elif [ -n "$PW_BLOCKED" ]; then
+        log "  !! skipped: $PW_BLOCKED is too old for Playwright's Node (needs 2.28); see plan above."
+        [ -z "$DO_LATEX" ] && exit 1
     elif [ -n "$HAVE_PW" ]; then
         if $PW_CMD install chromium; then
             log "  ok Chromium installed."
@@ -272,7 +441,11 @@ fi
 if [ -n "$DO_LATEX" ] && [ -z "$LATEX_TODO" ]; then
     log ""
     bold "> LaTeX rendering support..."
-    log "  ok already installed; skipped."
+    if [ -n "$LATEX_BLOCKED" ]; then
+        log "  !! skipped: no usable TeX Live on this host (see plan above)."
+    else
+        log "  ok already installed; skipped."
+    fi
 elif [ -n "$DO_LATEX" ]; then
 if [ -n "${NEED_BREW_FIRST:-}" ]; then
     log ""
@@ -293,30 +466,37 @@ if ! find_tlmgr >/dev/null 2>&1; then
         TEX_FRESHLY_INSTALLED=1
         log "  ok BasicTeX installed."
     else
-        log "  !! No TeX Live install found and this is not macOS."
-        log "     Install TeX Live for your distro (e.g. 'sudo yum install texlive-scheme-basic'"
-        log "     or the official install-tl), then re-run: ziya-install-extras --latex"
-        exit 1
+        log "  -> TeX Live scheme-basic into $TL_HOME  (~300 MB download; this takes a few minutes)"
+        install_tl_home || {
+            log "  !! install-tl failed. Re-run: ziya-install-extras --latex   (or install TeX Live"
+            log "     yourself: https://tug.org/texlive/acquire-netinstall.html)"
+            exit 1
+        }
+        log "  ok TeX Live installed into $TL_HOME."
     fi
 fi
 
-# find_tlmgr may return non-zero here (BasicTeX just installed, not yet on
-# PATH), so tolerate failure and fall back to the known BasicTeX location.
-TLMGR="$(find_tlmgr || true)"
+# install_tl_home already set TLMGR.  Otherwise find_tlmgr may return non-zero
+# here (BasicTeX just installed, not yet on PATH), so tolerate failure and fall
+# back to the known BasicTeX location.
+[ -n "$TLMGR" ] || TLMGR="$(find_tlmgr || true)"
 if [ -z "$TLMGR" ]; then
     TLMGR=/Library/TeX/texbin/tlmgr
 fi
 
 log ""
-log "  TeX Live is root-owned, so package installs need sudo. Running:"
-log "      sudo $TLMGR update --self"
-log "      sudo $TLMGR install ${MISSING_TEX[*]}"
-log ""
-
 SUDO=""
-if [ "$(id -u)" != "0" ]; then
+if [ "$(id -u)" != "0" ] && tlmgr_needs_sudo "$TLMGR"; then
     SUDO="sudo"
 fi
+if [ -n "$SUDO" ]; then
+    log "  TeX Live is root-owned, so package installs need sudo. Running:"
+else
+    log "  TeX Live tree is writable by you; no sudo needed. Running:"
+fi
+log "      ${SUDO:+$SUDO }$TLMGR update --self"
+log "      ${SUDO:+$SUDO }$TLMGR install ${MISSING_TEX[*]}"
+log ""
 
 $SUDO "$TLMGR" update --self || log "  (tlmgr self-update skipped/failed - continuing)"
 if $SUDO "$TLMGR" install "${MISSING_TEX[@]}"; then
@@ -330,7 +510,20 @@ log ""
 rule
 bold "Done. LaTeX rendering support is set up."
 
-if [ -n "$TEX_FRESHLY_INSTALLED" ]; then
+if [ -n "$TEX_FRESHLY_INSTALLED" ] && [ -n "$TL_BIN" ]; then
+    log ""
+    log "!! One more step - TeX isn't on this shell's PATH yet."
+    log "   Put the new TeX Live on PATH AHEAD of /usr/bin (so it wins over any distro TeX)"
+    log "   in your shell startup file (~/.bashrc or ~/.zshrc):"
+    log ""
+    log "     export PATH=\"$TL_BIN:\$PATH\""
+    log ""
+    log "   then open a new terminal (or source that file) and restart the Ziya server"
+    log "   so it picks up tlmgr/latex/dvisvgm (Ctrl-C it first):"
+    log "     ziya"
+    log ""
+    log "   Verify:  which tlmgr   ->   $TL_BIN/tlmgr"
+elif [ -n "$TEX_FRESHLY_INSTALLED" ]; then
     log ""
     log "!! One more step - TeX isn't on this shell's PATH yet."
     log "   BasicTeX added /Library/TeX/texbin, but your current shell and the running"
