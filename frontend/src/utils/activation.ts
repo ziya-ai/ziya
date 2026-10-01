@@ -20,7 +20,8 @@ export type Layer = 'conversation' | 'project' | 'user';
 export const WRITABLE_LAYERS: readonly Layer[] = ['conversation', 'project', 'user'];
 export type Origin = Layer | 'default' | 'environment';
 
-export type CapabilityKind = 'skill' | 'mcp';
+// ``builtin`` is a builtin tool category: always environment tier, never placeable.
+export type CapabilityKind = 'skill' | 'mcp' | 'builtin';
 export type Tier = 'placeable' | 'environment';
 
 export interface ItemSpec {
@@ -67,7 +68,7 @@ export function parseKey(key: unknown): [CapabilityKind, string] | null {
     if (idx < 0) return null;
     const kind = key.slice(0, idx);
     const name = key.slice(idx + 1);
-    if ((kind !== 'skill' && kind !== 'mcp') || !name) return null;
+    if ((kind !== 'skill' && kind !== 'mcp' && kind !== 'builtin') || !name) return null;
     return [kind, name];
 }
 

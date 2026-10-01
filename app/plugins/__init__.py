@@ -18,6 +18,7 @@ _auth_providers = []
 _directory_scan_providers = []
 _config_providers = []
 _registry_providers = []
+_skill_source_providers = []
 _service_model_providers = []
 _formatter_providers = []
 _shell_config_providers = []
@@ -56,13 +57,29 @@ def register_registry_provider(provider):
     # Suppress in chat mode - only show in server mode
     logger.debug(f"Registered registry provider: {getattr(provider, 'identifier', 'unknown')}")
 
+def register_skill_source_provider(provider):
+    """Register a skill source (design/capabilities-hub.md, slice 8a) -- the
+    skills analogue of an MCP registry provider."""
+    _skill_source_providers.append(provider)
+    logger.debug(f"Registered skill source provider: {getattr(provider, 'identifier', 'unknown')}")
+
 def register_shell_config_provider(provider):
     """
     Register a shell configuration provider plugin.
 
     Providers contribute additional allowed commands, git operations,
     and interpreters that are merged into the base shell config.
+
+    Re-registering a provider_id replaces the earlier instance, so the
+    shell-only hook and a later full initialize() can both run in one
+    process without registering the provider twice.
     """
+    pid = getattr(provider, 'provider_id', None)
+    if pid is not None:
+        _shell_config_providers[:] = [
+            p for p in _shell_config_providers
+            if getattr(p, 'provider_id', None) != pid
+        ]
     _shell_config_providers.append(provider)
     _shell_config_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
     logger.debug(f"Registered shell config provider: {getattr(provider, 'provider_id', 'unknown')}")
@@ -392,6 +409,11 @@ def get_shell_config_additions() -> dict:
 def get_registry_providers() -> List:
     """Get all registered MCP registry providers."""
     return _registry_providers.copy()
+
+
+def get_skill_source_providers() -> List:
+    """Skill source providers registered by plugins."""
+    return _skill_source_providers.copy()
 
 def get_formatter_providers() -> List:
     """Get all registered formatter providers."""

@@ -26,7 +26,10 @@ WRITABLE_LAYERS = ("conversation", "project", "user")
 Layer = Literal["conversation", "project", "user"]
 Origin = Literal["conversation", "project", "user", "default", "environment"]
 
-CapabilityKind = Literal["skill", "mcp"]
+# ``builtin`` is a BUILTIN_TOOL_CATEGORIES entry: always environment tier,
+# never placeable; it exists so the hub can show and toggle it.
+CapabilityKind = Literal["skill", "mcp", "builtin"]
+CAPABILITY_KINDS = ("skill", "mcp", "builtin")
 Tier = Literal["placeable", "environment"]
 
 
@@ -39,7 +42,7 @@ def parse_key(key: str) -> Optional[tuple]:
     if not isinstance(key, str) or ":" not in key:
         return None
     kind, _, name = key.partition(":")
-    if kind not in ("skill", "mcp") or not name:
+    if kind not in CAPABILITY_KINDS or not name:
         return None
     return kind, name
 

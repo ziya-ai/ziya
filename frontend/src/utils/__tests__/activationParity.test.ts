@@ -63,6 +63,7 @@ describe('fixture file is exercised, not merely loaded', () => {
 describe('keys', () => {
     it('round-trip and reject garbage', () => {
         expect(parseKey(makeKey('skill', 'kuiper-conventions'))).toEqual(['skill', 'kuiper-conventions']);
+        expect(parseKey('builtin:fileio')).toEqual(['builtin', 'fileio']);
         for (const bad of ['shell', 'tool:x', 'skill:', '', null, 42]) expect(parseKey(bad)).toBeNull();
     });
 });

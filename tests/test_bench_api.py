@@ -165,5 +165,7 @@ def test_route_order_guard():
     paths = {(r.path, tuple(sorted(r.methods))) for r in bench_api.router.routes}
     assert ("/api/v1/projects/{project_id}/bench", ("GET",)) in paths
     assert ("/api/v1/projects/{project_id}/bench/place", ("PUT",)) in paths
-    assert not any("{" in r.path.split("/bench", 1)[1] for r in bench_api.router.routes), \
-        "no /{id} route may follow /place"
+    tails = [r.path.split("/bench", 1)[1] for r in bench_api.router.routes]
+    # A parameter directly under /bench would capture /place; one under a literal segment cannot.
+    assert not any(t.startswith("/{") for t in tails), "no /bench/{param} route may capture /place"
+    assert "/sources/{source_id}" in tails

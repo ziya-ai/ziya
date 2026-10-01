@@ -1,20 +1,18 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, Suspense } from 'react';import { FolderTree } from './FolderTree';
 import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
-import { Button, Tooltip, ConfigProvider, Spin } from "antd";
+import { Button, Tooltip, ConfigProvider, Spin, message } from "antd";
 import {
     MenuFoldOutlined,
     MenuUnfoldOutlined,
     PlusOutlined,
     BulbOutlined,
     SwapOutlined,
-    CodeOutlined,
     ExportOutlined,
-    ApiOutlined,
-    CloudServerOutlined,
     SettingOutlined,
     AppstoreOutlined,
-    NodeIndexOutlined
+    NodeIndexOutlined,
+    ToolOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
 import PanelResizer from './PanelResizer';
@@ -36,7 +34,7 @@ import { FeedbackRecoveryWatcher } from './FeedbackRecoveryWatcher';
 import { ChatTurnReattachWatcher } from './ChatTurnReattachWatcher';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 import { useHeaderAttention } from '../hooks/useHeaderAttention';
-import { attentionButtonStyle, attentionTooltip } from '../utils/headerAttention';
+import { attentionButtonStyle, attentionTooltip, mergeAttention } from '../utils/headerAttention';
 import { layoutViewportWidth } from '../utils/uiScale';
 import Conversation from "./Conversation";
 const ShellConfigModal = lazyWithRetry(() => import("./ShellConfigModal"));
@@ -46,6 +44,7 @@ const ExportConversationModal = lazyWithRetry(() => import("./ExportConversation
 const MemoryBrowser = lazyWithRetry(() => import("./MemoryBrowser"));
 const AstStatusIndicator = lazyWithRetry(() => import("./AstStatusIndicator"));
 const TaskCardsLibrary = lazyWithRetry(() => import("./TaskCard/TaskCardsLibrary"));
+const BenchModal = lazyWithRetry(() => import("./Bench/BenchModal"));
 const GraphPanel = lazyWithRetry(() => import("./ConversationGraph/GraphPanel"));
 const BeadTree = lazyWithRetry(() => import("./BeadTree"));
 
@@ -169,7 +168,16 @@ export const App: React.FC = () => {
     const handleOpenShellConfig = useCallback(() => setShowShellConfig(true), []);
 
     const [showMCPStatus, setShowMCPStatus] = useState(false);
+    // Server a Bench card asked the status panel to land on.
+    const [mcpFocusServer, setMcpFocusServer] = useState<string | undefined>(undefined);
     const [showMCPRegistry, setShowMCPRegistry] = useState(false);
+    const [showBench, setShowBench] = useState(false);
+    // MCP Servers / Registry / Shell no longer have toolbar buttons; the Bench
+    // reaches them (design/capabilities-hub.md, slice 6b).
+    const benchActions = React.useMemo(() => ({
+        openMcpServers: (server?: string) => { setMcpFocusServer(server); setShowMCPStatus(true); },
+        openRegistry: () => setShowMCPRegistry(true),
+    }), []);
     const [showExportModal, setShowExportModal] = useState(false);
     const [showTaskCards, setShowTaskCards] = useState(false);
     // Card to focus when the deck opens via an inline tile's "Edit card"
@@ -533,23 +541,14 @@ export const App: React.FC = () => {
                                 <Tooltip title="Toggle theme">
                                     <Button icon={<BulbOutlined />} onClick={toggleTheme} />
                                 </Tooltip>
-                                {mcpEnabled && (
-                                    <>
-                                        <Tooltip title={attentionTooltip('Shell Configuration', headerAttention.shell)}>
-                                            <Button icon={<CodeOutlined />} onClick={() => setShowShellConfig(true)}
-                                                style={attentionButtonStyle(headerAttention.shell.level)}
-                                                data-attention={headerAttention.shell.level} />
-                                        </Tooltip>
-                                        <Tooltip title={attentionTooltip('MCP Servers', headerAttention.mcp)}>
-                                            <Button icon={<ApiOutlined />} onClick={() => setShowMCPStatus(true)}
-                                                style={attentionButtonStyle(headerAttention.mcp.level)}
-                                                data-attention={headerAttention.mcp.level} />
-                                        </Tooltip>
-                                        <Tooltip title="MCP Registry">
-                                            <Button icon={<CloudServerOutlined />} onClick={() => setShowMCPRegistry(true)} />
-                                        </Tooltip>
-                                    </>
-                                )}
+                                {/* One button for skills, MCP servers, registry and shell: the
+                                    Bench carries the shell + MCP attention its panels used to. */}
+                                <Tooltip title={attentionTooltip('Bench — skills and MCP servers for this conversation',
+                                                                 mergeAttention(headerAttention.shell, headerAttention.mcp))}>
+                                    <Button icon={<ToolOutlined />} onClick={() => setShowBench(true)} data-testid="bench-button"
+                                        style={attentionButtonStyle(mergeAttention(headerAttention.shell, headerAttention.mcp).level)}
+                                        data-attention={mergeAttention(headerAttention.shell, headerAttention.mcp).level} />
+                                </Tooltip>
                                 <Tooltip title={attentionTooltip('Task Cards', headerAttention.taskCards)}>
                                     <Button icon={<AppstoreOutlined />} onClick={() => setShowTaskCards(true)}
                                         style={attentionButtonStyle(headerAttention.taskCards.level)}
@@ -638,8 +637,9 @@ export const App: React.FC = () => {
                                 />}
                                 {showMCPStatus && <MCPStatusModal
                                     visible={showMCPStatus}
-                                    onClose={() => { setShowMCPStatus(false); headerAttention.refresh(); }}
+                                    onClose={() => { setShowMCPStatus(false); setMcpFocusServer(undefined); headerAttention.refresh(); }}
                                     onOpenShellConfig={handleOpenShellConfig}
+                                    focusServer={mcpFocusServer}
                                 />}
                                 {showMCPRegistry && <MCPRegistryModal
                                     visible={showMCPRegistry}
@@ -647,19 +647,31 @@ export const App: React.FC = () => {
                                 />}
                             </>
                         )}
+                        {showBench && <BenchModal
+                            visible={showBench}
+                            onClose={() => { setShowBench(false); headerAttention.refresh(); }}
+                            projectId={currentProject?.id}
+                            conversationId={currentConversationId || null}
+                            shellAttention={headerAttention.shell}
+                            onOpenShellConfig={handleOpenShellConfig}
+                            actions={mcpEnabled ? benchActions : {}}
+                        />}
                     </Suspense>
+                    </LazyChunkBoundary>
 
+                    <LazyChunkBoundary onDismiss={() => setShowExportModal(false)}>
                     <Suspense fallback={<ChunkLoadingFallback />}>
                         {showExportModal && <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />}
                     </Suspense>
+                    </LazyChunkBoundary>
 
-                    {showMemoryBrowser && <Suspense fallback={<ChunkLoadingFallback />}>
+                    {showMemoryBrowser && <LazyChunkBoundary onDismiss={() => setShowMemoryBrowser(false)}><Suspense fallback={<ChunkLoadingFallback />}>
                         <MemoryBrowser
                             visible={showMemoryBrowser}
                             onClose={() => setShowMemoryBrowser(false)} />
-                    </Suspense>}
+                    </Suspense></LazyChunkBoundary>}
 
-                    {showTaskCards && <Suspense fallback={<ChunkLoadingFallback />}>
+                    {showTaskCards && <LazyChunkBoundary onDismiss={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); }}><Suspense fallback={<ChunkLoadingFallback />}>
                         <TaskCardsLibrary
                             visible={showTaskCards}
                             onClose={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); headerAttention.refresh(); }}
