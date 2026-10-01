@@ -22,6 +22,8 @@ import { useTheme } from './ThemeContext';
 import { useConfig } from './ConfigContext';
 import { useProject } from './ProjectContext';
 import { projectSync } from '../utils/projectSync';
+import { isInstanceHalted, onInstanceHalt } from '../utils/instanceIdentity';
+import { selectDirtyConversations, flushPendingDirtyOnPagehide } from '../utils/pagehideFlush';
 import { getTabState, setTabState } from '../utils/tabState';
 import * as syncApi from '../api/conversationSyncApi';
 import { useServerStatus } from './ServerStatusContext';
@@ -800,19 +802,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // Read live state at fire time, not the snapshot
                         // captured when the timer was set — important because
                         // additional messages may have appended during the 2s.
-                        const dirtyConvs = conversationsRef.current.filter(
-                        (c: any) => batchIds.has(c.id) && c.isActive !== false && !c._isShell
-                            // Don't push empty "New Conversation" shells to the
-                            // server.  They have no meaningful content and their
-                            // presence on the server triggers the isEmptyShell
-                            // skip logic on subsequent sync cycles, which can
-                            // race with shell-cache timing and drop the
-                            // conversation from mergedMap.  The conversation
-                            // will be pushed on the next dual-write after the
-                            // user sends their first message (which bumps
-                            // messages.length > 0).
-                            && !(c.title === 'New Conversation' && (!c.messages || c.messages.length === 0))
-                        ) as Conversation[];
+                        // Filter shared with the pagehide flush (see
+                        // pagehideFlush.ts for the shell/empty rationale).
+                        const dirtyConvs = selectDirtyConversations(
+                            conversationsRef.current as any[], batchIds) as Conversation[];
                         if (dirtyConvs.length === 0) {
                             console.debug('📡 DUAL_WRITE(fast): no dirty convs to push (all filtered out)');
                             return;
@@ -1006,13 +999,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // could be many messages behind by the time the 2s
                         // debounce expires — causing the server to receive a
                         // conversation with only the first message.
-                        const dirtyConvs = conversationsRef.current.filter(
-                        (c: any) => batchIds.has(c.id) && c.isActive !== false && !c._isShell
-                            // Mirror of the FAST_PATH guard: don't push empty
-                            // "New Conversation" shells — they trigger the
-                            // isEmptyShell skip race on subsequent syncs.
-                            && !(c.title === 'New Conversation' && (!c.messages || c.messages.length === 0))
-                        ) as Conversation[];
+                        // Same filter as the FAST_PATH and the pagehide flush.
+                        const dirtyConvs = selectDirtyConversations(
+                            conversationsRef.current as any[], batchIds) as Conversation[];
                         if (dirtyConvs.length === 0) return;
                         try {
                             const byProject = new Map<string, any[]>();
@@ -2644,21 +2633,48 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Sync ref after initializeWithRecovery is initialized (avoids TDZ in startNewChat)
     initializeWithRecoveryRef.current = initializeWithRecovery;
 
-    useEffect(() => {
-        // Warn user before leaving if a response is still streaming.
-        // No content backup needed — server and IndexedDB have the data.
-        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-            if (streamingConversations.size > 0) {
-                const msg = 'A response is still being generated. Leaving now may lose the in-progress response.';
-                e.preventDefault();
-                e.returnValue = msg;
-                return msg;
-            }
-        };
+    // No beforeunload guard while streaming: each turn runs as a server-owned
+    // relay (ChatTurnReattachWatcher resumes it after a reload), so leaving
+    // mid-stream loses nothing.  The old guard produced the browser's "Leave
+    // site?" dialog, which also blocked lazyWithRetry's stale-chunk hard
+    // reload — the user (correctly) declined it and the page crashed instead.
 
-        window.addEventListener('beforeunload', handleBeforeUnload);
-        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-    }, [streamingConversations]);
+    // Flush the dual-write debounce when the page goes away.  A tab closed
+    // inside the 2s window otherwise leaves the last writes in IndexedDB
+    // only.  pagehide (not beforeunload) because it also fires on mobile
+    // backgrounding and bfcache entry, and cannot be cancelled.  Reads the
+    // same refs the timers read, so nothing here can push a record the
+    // debounce would not have pushed two seconds later.
+    const currentProjectIdRef = useRef<string | null>(null);
+    currentProjectIdRef.current = currentProject?.id ?? null;
+    useEffect(() => {
+        const onPageHide = () => {
+            if (dualWriteTimerRef.current) { clearTimeout(dualWriteTimerRef.current); dualWriteTimerRef.current = null; }
+            flushPendingDirtyOnPagehide({
+                conversations: conversationsRef.current as any[],
+                pendingIds: pendingDirtyIdsRef.current,
+                fallbackProjectId: currentProjectIdRef.current,
+                toServerChat: syncApi.conversationToServerChat,
+            });
+        };
+        window.addEventListener('pagehide', onPageHide);
+        return () => window.removeEventListener('pagehide', onPageHide);
+    }, []);
+
+    // The only user-visible surface of the instance latch.  Persistent on
+    // purpose: the tab is deliberately unusable for writes until the port
+    // conflict is fixed, and a toast that fades would leave silent refusals.
+    useEffect(() => {
+        return onInstanceHalt(h => {
+            message.error({
+                key: 'ziya-instance-mismatch',
+                duration: 0,
+                content: `This address (${window.location.host}) is being served by two different Ziya instances ` +
+                    `(${h.expected ?? 'none'} and ${h.got}). Saving is paused in this tab. ` +
+                    `Check for a port conflict (e.g. an ssh -L tunnel on the same port), then reload.`,
+            });
+        });
+    }, []);
 
     useEffect(() => {
         // Only initialize once
