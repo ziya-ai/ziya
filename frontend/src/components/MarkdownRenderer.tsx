@@ -653,15 +653,20 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                         const fileContent = pyDict.substring("{'content': '".length, pyDict.length - 2);
                         parsed = { content: fileContent.replace(/\\n/g, '\n') };
                     } else {
-                        // Fallback: try the general single-quote-to-double-quote approach
+                        // Parse the Python repr properly first.  The quote-swap
+                        // below silently corrupts any string value containing a
+                        // quote or the words True/False/None (e.g. memory prose).
+                        try {
+                            parsed = parsePythonLiteral(pyDict);
+                        } catch (_) { /* not a Python literal — try the legacy swap */ }
+                        // Legacy fallback: general single-quote-to-double-quote approach
                         // for non-file tool results that use simple Python dicts
                         try {
-                            const jsonified = content
+                            if (!parsed) parsed = JSON.parse(content
                                 .replace(/'/g, '"')
                                 .replace(/True/g, 'true')
                                 .replace(/False/g, 'false')
-                                .replace(/None/g, 'null');
-                            parsed = JSON.parse(jsonified);
+                                .replace(/None/g, 'null'));
                         } catch (_) { /* give up — fall through to plain text */ }
                     }
                 }
