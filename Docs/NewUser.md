@@ -32,12 +32,14 @@ ziya-install-extras --dry-run  # just show the plan
 
 | Capability | What it needs | Installer target |
 |---|---|---|
-| The model **looking at** its own rendered diagram (`render_diagram`), PDF export, and frozen diagram artifacts in task runs | A Chromium build for Playwright (~150 MB, no sudo) | `--browser` |
-| Server-side LaTeX diagrams — circuit schematics (circuitikz), chemical structures (chemfig), pgfplots, TikZ, proof and syntax trees | A TeX distribution plus a handful of TeX Live packages (sudo for `tlmgr`) | `--latex` |
+| The model **looking at** its own rendered diagram (`render_diagram`), PDF export, and frozen diagram artifacts in task runs | A Chromium build for Playwright (~150 MB, no sudo; Linux needs glibc ≥ 2.28) | `--browser` |
+| Server-side LaTeX diagrams — circuit schematics (circuitikz), chemical structures (chemfig), pgfplots, TikZ, proof and syntax trees | A TeX distribution plus a handful of TeX Live packages | `--latex` |
 
 Nothing is installed silently: the script prints every package before it runs
 and waits for a yes. On macOS it uses Homebrew for BasicTeX and will tell you
-if Homebrew itself is missing rather than install it for you. Restart Ziya
+if Homebrew itself is missing rather than install it for you (`tlmgr` then
+needs sudo). On Linux it runs the official TeX Live installer into `~/texlive`
+— no sudo — and tells you the one `PATH` line to add. Restart Ziya
 afterwards. The startup banner lists whichever of these is still missing.
 
 Without the Chromium build the `render_diagram` tool is simply not offered to
@@ -58,6 +60,14 @@ ziya
 ```
 
 Open `http://localhost:6969` in your browser.
+
+**Running Ziya on a remote machine** (a dev box you ssh into)? Ziya listens on
+that machine's `127.0.0.1`, so `localhost:6969` in your own browser reaches
+nothing until you tunnel to it — from your own computer, `ssh -L
+6969:localhost:6969 user@remote-host`, then open `http://localhost:6969`
+locally. Ziya prints a prominent reminder with that exact line when it detects
+it is starting on a remote or headless host; set `ZIYA_TUNNELED=1` in the
+server's environment if your launcher already builds the tunnel.
 
 ### Credentials on first run
 
