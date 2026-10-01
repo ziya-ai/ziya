@@ -1,0 +1,8 @@
+{
+  "target_file": "pyproject.toml",
+  "description": "Reproduction of the 2026-09-24 pyproject.toml corruption. The diff TEXT ends without a newline (a markdown fence body loses its final newline), and its last line is a '+' replacement for a line in the MIDDLE of the file. Apple patch 2.0-12u11 (the system_patch stage) reads the unterminated final '+' line as 'this line has no newline', joins it with the following line ('keywords = [...]classifiers = ['), exits 0, and the pipeline reports success -- the file then fails to parse. In unified-diff format a missing newline is expressed ONLY by an explicit '\\\\ No newline at end of file' marker; an unterminated diff text carries no meaning and must be treated as terminated. Positive control for the marker case: MRE_missing_newline_at_eof.",
+  "date_added": "2026-09-24",
+  "issue_reference": "pyproject_keywords_joined_classifiers_2026_09_24",
+  "bug_class": "silent_line_join_unterminated_diff",
+  "apply_twice": true
+}

@@ -39,6 +39,11 @@ def apply_reverse_diff_pipeline(diff_content: str, file_path: str, expected_cont
     """
     logger.info("Starting reverse diff pipeline...")
 
+    # Stage 1 is `patch -R`, which mis-reads an unterminated final line the same
+    # way the forward stage does (see terminate_diff_text).
+    from app.utils.diff_utils.core.text_normalization import terminate_diff_text
+    diff_content = terminate_diff_text(diff_content)
+
     # PenPal #124 [CWE-667]: hold a per-file lock across the ENTIRE
     # read-modify-write cycle. The route dispatches this via
     # run_in_threadpool, so concurrent /api/unapply-changes requests on the
@@ -162,14 +167,29 @@ def _try_patch_reverse(diff_content: str, file_path: str, current_content: str, 
         # Copy current file content to the temp location
         shutil.copy2(file_path, target_file)
         
+        # A hunk whose NEW side is empty (git -U0 deletion, '@@ -3 +2,0 @@')
+        # is mis-placed by `patch -R`: Apple patch 2.0-12u11 re-inserts the
+        # line one position early and exits 0, and the unapply route passes no
+        # expected_content, so nothing downstream catches it. `patch` places
+        # the forward form of the same change ('@@ -2,0 +3 @@') correctly, so
+        # for those diffs reverse the text ourselves and apply it forward.
+        # Every other diff keeps the long-standing `patch -R` path.
+        patch_args = ['patch', '-R', '-p1', '--no-backup-if-mismatch']
+        text_to_apply = diff_content
+        if re.search(r'^@@ -\d+(?:,\d+)? \+\d+,0 @@', diff_content, re.MULTILINE):
+            from app.utils.diff_utils.core.diff_reverser import reverse_diff
+            from app.utils.diff_utils.core.text_normalization import terminate_diff_text
+            text_to_apply = terminate_diff_text(reverse_diff(diff_content))
+            patch_args = ['patch', '--forward', '-p1', '--no-backup-if-mismatch']
+
         # Write diff file
         diff_file = os.path.join(temp_dir, 'changes.diff')
         with open(diff_file, 'w') as f:
-            f.write(diff_content)
+            f.write(text_to_apply)
         
-        # Run patch -R with -p1 from the temp directory
+        # Run patch from the temp directory
         result = subprocess.run(
-            ['patch', '-R', '-p1', '--no-backup-if-mismatch', '-i', diff_file],
+            patch_args + ['-i', diff_file],
             cwd=temp_dir,
             capture_output=True,
             text=True,

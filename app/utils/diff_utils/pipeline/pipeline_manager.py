@@ -188,6 +188,10 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     Stage 4, which calls back into this function on the same thread and file,
     re-enters rather than self-deadlocking.
     """
+    # An unterminated diff text makes the system patch stage silently join its
+    # last '+' line with the following file line (see terminate_diff_text).
+    from app.utils.diff_utils.core.text_normalization import terminate_diff_text
+    git_diff = terminate_diff_text(git_diff)
     with diff_file_lock(file_path):
         return _apply_diff_pipeline_locked(
             git_diff, file_path, request_id=request_id,

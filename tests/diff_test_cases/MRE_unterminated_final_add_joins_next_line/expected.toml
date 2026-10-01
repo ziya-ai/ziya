@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "ziya"
+version = "0.8.8.8"
+description = "Self-hosted AI harness for technical work: chat UI and coding agent in one local tool. Bring any model (Bedrock, Anthropic, OpenAI, Gemini, Ollama), apply validated diffs to your real repo, and get diagrams rendered inline. Runs alongside your editor, not instead of it."
+authors = ["Dan Cohn <chroma@gmail.com>",
+           "Vishnu Krishnaprasad <vishnukool@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/ziya-ai/ziya"
+repository = "https://github.com/ziya-ai/ziya"
+keywords = ["ai", "llm", "coding-agent", "ai-agent", "coding", "architecture", "operations", "visualization", "diagrams", "self-hosted", "local-first", "bedrock", "claude", "openai", "gemini", "ollama", "local-llm", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development",
+    "License :: OSI Approved :: MIT License",
+]
+
+packages = [
+    { include = "app", from = "." },
