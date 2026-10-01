@@ -126,6 +126,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "git": {
+        "name": "Git (consent-gated)",
+        "description": "Structured git writes — status, add, unstage, commit, stash, push, switch. Every mutating call waits for your approval.",
+        "enabled_by_default": False,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -362,6 +369,16 @@ def get_mcp_diagnostics_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_git_tools() -> List[Type[BaseMCPTool]]:
+    """Get the consent-gated git tool (design/git-tool.md)."""
+    try:
+        from app.mcp.tools.git_tool import GitTool
+        return [GitTool]
+    except ImportError as e:
+        logger.warning(f"Could not import git tool: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     tool_getters = {
@@ -381,6 +398,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "task_artifacts": get_task_artifact_tools,
         "shadow": get_shadow_tools,
         "mcp_diagnostics": get_mcp_diagnostics_tools,
+        "git": get_git_tools,
     }
 
     getter = tool_getters.get(category)
@@ -392,6 +410,29 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
 # Per-process cache for category enabled checks.  Populated on first
 # call per category, cleared by invalidate_category_cache().
 _category_enabled_cache: dict[str, bool] = {}
+
+
+# Persisted per-user toggles (design/capabilities-hub.md "Environment").
+# ``{"categories": {category: bool}}`` under ~/.ziya/state/.  Read below the
+# environment variable so an explicit launch-time override still wins, and
+# above the plugin/default so a toggle made in the hub survives a restart
+# (the old route only set os.environ, process lifetime).
+_TOGGLE_STATE = "builtin_tools"
+
+
+def _toggle_store():
+    from app.storage.json_state import JsonStateStore
+    from app.utils.paths import user_state_file
+    return JsonStateStore(user_state_file(_TOGGLE_STATE))
+
+
+def _persisted_toggle(category: str) -> Optional[bool]:
+    try:
+        v = (_toggle_store().get("categories", {}) or {}).get(category)
+    except Exception as e:  # noqa: BLE001 -- a bad state file must not disable tools
+        logger.debug(f"builtin_tools: toggle store unreadable: {e}")
+        return None
+    return v if isinstance(v, bool) else None
 
 
 def is_builtin_category_enabled(category: str) -> bool:
@@ -410,6 +451,12 @@ def is_builtin_category_enabled(category: str) -> bool:
         result = env_value.lower() in ("true", "1", "yes")
         _category_enabled_cache[category] = result
         return result
+
+    # Persisted user toggle (set from the hub's environment row)
+    persisted = _persisted_toggle(category)
+    if persisted is not None:
+        _category_enabled_cache[category] = persisted
+        return persisted
 
     # Check if a service model plugin has enabled this category
     try:
@@ -432,6 +479,61 @@ def invalidate_category_cache() -> None:
     _category_enabled_cache.clear()
 
 
+def set_builtin_category_enabled(category: str, enabled: bool) -> None:
+    """Persist a category toggle and make it take effect now.
+
+    One seam for the legacy ``/builtin-tools/toggle`` route and the bench's
+    environment row.  Writes the user store, mirrors into the env var (so an
+    in-process read agrees immediately), and drops both caches: the
+    category cache -- which the old route never cleared, so its toggles had
+    no effect after the first read -- and the secure-tool cache.
+    """
+    if category not in BUILTIN_TOOL_CATEGORIES:
+        raise KeyError(category)
+    _toggle_store().update(lambda d: d.setdefault("categories", {}).__setitem__(category, bool(enabled)))
+    os.environ[f"ZIYA_ENABLE_{category.upper()}"] = "true" if enabled else "false"
+    invalidate_category_cache()
+    try:
+        import app.mcp.enhanced_tools as _et
+        _et._secure_tool_cache = None
+        _et._tool_cache_timestamp = 0
+    except ImportError:
+        pass
+
+
+def describe_builtin_categories(include_hidden: bool = False) -> List[Dict]:
+    """Per-category facts for the bench's environment row.
+
+    ``tools`` are ``{name, description, inputSchema}`` dicts, the shape
+    ``count_server_tool_tokens`` takes, so an environment category is costed
+    the same way an MCP server is.  Schema extraction is best-effort: a tool
+    without an ``InputSchema`` costs its name and description only.
+    """
+    out: List[Dict] = []
+    for category, config in BUILTIN_TOOL_CATEGORIES.items():
+        if config.get("hidden") and not include_hidden:
+            continue
+        tools: List[Dict] = []
+        for cls in get_builtin_tools_for_category(category):
+            try:
+                inst = cls()
+                schema = {}
+                s = getattr(inst, "InputSchema", None)
+                if s is not None and hasattr(s, "model_json_schema"):
+                    schema = s.model_json_schema()
+                tools.append({"name": inst.name, "description": getattr(inst, "description", "") or "",
+                              "inputSchema": schema})
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"builtin_tools: could not describe {cls}: {e}")
+        out.append({
+            "category": category,
+            "name": config["name"],
+            "description": config.get("description", ""),
+            "enabled": is_builtin_category_enabled(category),
+            "enabled_by_default": config["enabled_by_default"],
+            "tools": tools,
+        })
+    return out
 def get_enabled_builtin_tools() -> List[BaseMCPTool]:
     """Get all enabled builtin tools as instances."""
     enabled_tools = []
