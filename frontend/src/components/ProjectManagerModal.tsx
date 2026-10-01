@@ -9,10 +9,11 @@ import {
 import { useProject } from '../context/ProjectContext';
 import { useTheme } from '../context/ThemeContext';
 import { useActiveChat } from '../context/ActiveChatContext';
-import { WritePolicy, ContextManagementSettings } from '../types/project';
+import { WritePolicy, ContextManagementSettings, ProjectToolMode } from '../types/project';
 import type { DetectTemplateResponse, ProjectTemplate } from '../types/projectTemplate';
 import * as templateApi from '../api/projectTemplateApi';
 import { GENERAL_TEMPLATE_ID } from '../api/projectTemplateApi';
+import UsageCostModal from './UsageCostModal';
 import { DEFAULT_AUTO_ADD_TOKEN_LIMIT, DEFAULT_AUTO_ADD_AGGREGATE_BUDGET } from '../utils/autoAddTokenLimit';
 
 const { Panel } = Collapse;
@@ -152,6 +153,8 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
 
     // Context management settings
     const [contextManagement, setContextManagement] = useState<ContextManagementSettings>({ auto_add_diff_files: true });
+    // Per-project tool modes; absent key = inherit.
+    const [toolModes, setToolModes] = useState<Record<string, ProjectToolMode>>({});
 
     // Project root path editing
     const [editProjectPath, setEditProjectPath] = useState('');
@@ -380,6 +383,7 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                         if (fullProject.ok) {
                             const projectData = await fullProject.json();
                             setContextManagement(projectData.settings?.contextManagement || { auto_add_diff_files: true });
+                            setToolModes(projectData.settings?.toolModes || {});
                         }
                     }
                 } catch (error) {
@@ -574,6 +578,7 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                 body: JSON.stringify({
                     settings: {
                         contextManagement: contextManagement,
+                        toolModes: toolModes,
                     }
                 })
             });
@@ -774,6 +779,50 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                         type="info"
                         showIcon
                     />
+
+                    <div>
+                        <strong>Git tool</strong>
+                        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                            Structured git (stage, commit, stash, push, switch) for this project.
+                            Destructive ops are never offered. Approval protects against mistakes,
+                            not against a model working against you.
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+                            {([
+                                { value: undefined, label: 'Inherit', desc: 'Use the global setting' },
+                                { value: 'disabled', label: 'Disabled', desc: 'Not offered in this project' },
+                                { value: 'gated', label: 'Human-gated', desc: 'You approve each change' },
+                                { value: 'autonomous', label: 'Autonomous', desc: 'Runs without asking' },
+                            ] as const).map(opt => {
+                                const isActive = toolModes.git === opt.value;
+                                return (
+                                    <div
+                                        key={opt.label}
+                                        onClick={() => setToolModes(prev => {
+                                            const next = { ...prev };
+                                            if (opt.value) next.git = opt.value; else delete next.git;
+                                            return next;
+                                        })}
+                                        style={{
+                                            flex: 1,
+                                            padding: '8px 12px',
+                                            borderRadius: 6,
+                                            border: `1.5px solid ${isActive ? '#1890ff' : (isDarkMode ? '#303030' : '#d9d9d9')}`,
+                                            backgroundColor: isActive ? (isDarkMode ? '#111d2c' : '#e6f7ff') : 'transparent',
+                                            cursor: 'pointer',
+                                            textAlign: 'center',
+                                            transition: 'all 0.2s',
+                                        }}
+                                    >
+                                        <div style={{ fontWeight: isActive ? 600 : 400, fontSize: 13 }}>{opt.label}</div>
+                                        <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>{opt.desc}</div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    <Divider style={{ margin: '8px 0' }} />
 
                     <div>
                         <strong>Direct File Write Mode</strong>
