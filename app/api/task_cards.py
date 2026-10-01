@@ -812,7 +812,11 @@ async def _launch_run_for_card(
         logger.warning(f"📋 TASK_LAUNCH: card_snapshot capture failed: {e}")
 
     from ..context import get_project_root_or_none, set_project_root
-    project_root = get_project_root_or_none()
+    from ..utils.launch_root import resolve_launch_root
+    # Falls back to the project's own directory when the launching request
+    # carried no X-Project-Root (scripts, curl, model tool calls); without
+    # it the run worked in the server process's cwd (run ecf5fa24).
+    project_root = resolve_launch_root(project_id, get_project_root_or_none())
 
     # Capture an audit-trail snapshot of effective permissions before
     # the run starts.  Done once at launch so later edits to the card
