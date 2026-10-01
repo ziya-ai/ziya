@@ -79,7 +79,11 @@ class RenderedDocument:
 # Rasterisation (shared by every PDF-producing backend)
 # ---------------------------------------------------------------------------
 
-def _rasterize_pdf(pdf_bytes: bytes, dpi: float) -> List[RenderedPage]:
+def _rasterize_pdf(pdf_bytes: bytes, dpi: float,
+                   rev_byteorder: bool = False) -> List[RenderedPage]:
+    # pypdfium2 renders BGR(A) unless rev_byteorder=True.  The default is kept
+    # for the conversation suite, whose colour specs were written against it;
+    # doc_aesthetics opts in so its PNGs are true colour (d023).
     import pypdfium2 as pdfium
 
     scale = dpi / _PDF_BASE_DPI
@@ -95,7 +99,7 @@ def _rasterize_pdf(pdf_bytes: bytes, dpi: float) -> List[RenderedPage]:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as plumb:
             n = len(doc)
             for i in range(n):
-                bmp = doc[i].render(scale=scale).to_numpy()
+                bmp = doc[i].render(scale=scale, rev_byteorder=rev_byteorder).to_numpy()
                 if bmp.ndim == 3 and bmp.shape[2] == 4:
                     bmp = bmp[:, :, :3]
                 bmp = np.ascontiguousarray(bmp)
@@ -123,6 +127,7 @@ def load_pdf(
     *,
     dpi: float = DEFAULT_DPI,
     meta: Optional[Dict[str, Any]] = None,
+    rev_byteorder: bool = False,
 ) -> RenderedDocument:
     """Rasterise an already-produced PDF into a :class:`RenderedDocument`.
 
@@ -134,7 +139,7 @@ def load_pdf(
         pdf_bytes = bytes(pdf)
     else:
         pdf_bytes = Path(pdf).read_bytes()
-    pages = _rasterize_pdf(pdf_bytes, dpi)
+    pages = _rasterize_pdf(pdf_bytes, dpi, rev_byteorder=rev_byteorder)
     full_text = "\n".join(p.text for p in pages)
     return RenderedDocument(
         pages=pages,
