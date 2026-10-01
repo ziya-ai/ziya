@@ -55,7 +55,8 @@ author: "Jane Doe"        # optional; a person or team ONLY. Becomes the PDF
                           # or model name to it.
 layout: report            # report = title block page header; plain = no chrome
 page:
-  margin: 18mm            # optional; one value or {top, bottom, left, right}
+  margin: 19mm            # optional; one value or {top, bottom, left, right};
+                          # keep left/right at 19-20mm (see below)
 ---
 
 # First Section
@@ -86,13 +87,76 @@ at full fidelity in the PDF.
 5. To render a PDF, POST to the local server (default port 6969):
    curl -s -X POST localhost:6969/api/export/document \\
      -H 'Content-Type: application/json' \\
+     -H "X-Project-Root: $PWD" \\
      -d '{"name": "report.md"}' -o /tmp/report.pdf
-   (or pass {"markdown": "..."} inline). The per-page footer (logo, version,
+   (or pass {"markdown": "..."} inline). The X-Project-Root header is
+   REQUIRED with "name": the store is <project>/.ziya/documents/, and without
+   the header the server resolves it against the directory it was started
+   in, which may not be this project ("Document not found"). Your shell
+   runs in the project root, so $PWD is correct. The per-page footer (logo, version,
    model) is included by default; add "includeFooter": false to the body
    ONLY when the user asks for no footer. Save output to /tmp or .ziya/ and
-   tell the user where the file is. HTTP 501 means the server has no
-   Playwright/Chromium — tell the user to run:
-   pip install playwright && playwright install chromium''',
+   tell the user where the file is. HTTP 501 means this install has no
+   headless Chromium; its JSON body states what is missing and whether it
+   can be installed here at all. Relay that message verbatim — do not
+   substitute an install recipe of your own, and do not probe further.
+
+## Figures that print well
+The text column is ~673 px (178 mm); a figure's smallest text must stay
+>= 6.5pt at print size, and the pipeline shrinks any drawing that is wider
+than the column or taller than a page.
+1. Mermaid flowcharts: a subgraph's `direction` is honoured ONLY if no edge
+   crosses the subgraph boundary. Connect subgraphs to each other
+   (`GROUND -->|feeder RF| SPACE`), not node-to-node across them — otherwise
+   every node stacks into one tall column. Then choose the outer direction
+   so each subgraph is SHORT: with wide multi-line node labels use
+   `flowchart LR` with `direction TB` subgraphs (one column per stage); keep
+   <= 4-5 nodes per subgraph. One row of 4+ wide-label nodes is ~1400 px and
+   prints below 6.5pt; 8 nodes in one `flowchart LR` row print at ~3.5pt.
+   Split a figure that is still taller than half a page.
+2. Mermaid `timeline`: every period line (`Name : event : event`) is its own
+   ~250 px column whatever section it sits in, and labels do not wrap. Keep
+   <= 4 periods in total (so <= 4 sections of one period each) and <= 3
+   short events per period; for more milestones use two timelines (each
+   with its own `**Figure N — …**` title line) or a table
+   (Phase | When | What), which prints at body size.
+3. Vega-lite titles: give `title.subtitle` as an array of lines, each
+   <= ~80 characters for a 560 px wide chart (roughly width / 7). Longer
+   explanations belong in the caption, never in the plot.
+4. Vega-lite text marks: put series explanations in the legend or the
+   caption. If a text mark is essential, keep it <= 40 characters, place it
+   in empty plot space and inside the plotted domain.
+5. A figure prints as ONE unbreakable unit (title + drawing + caption), so
+   the page before it ends early whenever the unit does not fit. Do not end
+   a section with figures back to back: follow each figure with the prose
+   that discusses it — the PDF fills a gap above a figure with the prose
+   after it (whole paragraphs, never across a heading). Split a stacked
+   chart (vega-lite `vconcat`) taller than about half a page into separate
+   figures ONLY when prose goes between the parts; split back to back, the
+   two half-page units leave two gaps instead of one.
+
+## Tables and notes
+1. Tables: at most 5 columns and short cells (a label, a number, a phrase).
+   Put qualifiers and citations in the prose after the table. The PDF
+   balances column widths to reduce wrapping, but a 190-character cell in a
+   5-column table still wraps to ~11 lines.
+2. Editorial notes: start the blockquote with its label in bold —
+   `> **Reviewer note:** …`, `> **Note:** …` or `> **TODO:** …`. The PDF
+   prints these as a tinted call-out, distinct from quotations; any other
+   blockquote prints as a quotation.
+3. Never interrupt a list with a column-0 blockquote or paragraph: markdown
+   ends the list there and the items after it restart as a new list at the
+   wrong level. Put the note after the whole list, or indent it under its
+   item (`  > **Note:** …`).
+
+## Page margins and line length
+1. Set `page: margin:` explicitly with left and right at 19-20mm, e.g.
+   `margin: {top: 16mm, bottom: 16mm, left: 19mm, right: 19mm}`. The PDF
+   body prints at 11pt; on A4, 16mm side margins (also the default when
+   no margin is set) give 95-98 characters per line and 18mm still gives
+   96 on some pages, past the 95-character readability limit. 19mm keeps
+   every page at or under 95. Never narrow the side margins to save
+   pages; cut words instead.''',
         'color': '#8b5cf6',
     },
     {
