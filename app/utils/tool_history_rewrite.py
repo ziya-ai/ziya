@@ -33,7 +33,10 @@ The envelope uses ‹ › (U+2039/U+203A), not the ``<tool_result>`` tags of
 user-role tool_result block, and an assistant-role message containing them
 would itself look like fabricated tool output.  Any ``<tool_result`` or
 ``‹tool_result`` lookalike inside a body is defanged so a body can never
-close the envelope early.  The rewrite never touches user messages.
+close the envelope early; the same defang is applied to the prose between
+blocks, so an envelope the MODEL wrote as bare text (a fabricated result,
+see text_delta_processor's RAW patterns) is not replayed intact as an
+in-context example.  The rewrite never touches user messages.
 
 Redundant-body elision
 ----------------------
@@ -103,11 +106,46 @@ _TRAILING_ID_RE = re.compile(r'\|toolu_[A-Za-z0-9_]+$')
 # Placeholder left when a stream ended before its tool_display arrived.
 _ORPHAN_MARKER_RE = re.compile(r'<!-- TOOL_MARKER:[^>]*-->\n?')
 
-# Any envelope lookalike inside a body, in either bracket alphabet.
-_LOOKALIKE_RE = re.compile(r'[<‹](\s*/?\s*tool_result\b)', re.IGNORECASE)
+# Any envelope lookalike, in either bracket alphabet, plus the
+# UTF-8-as-Latin-1 mojibake of U+2039 (U+201A U+00C4 U+00B9) that a model
+# parroting the envelope has been observed to emit.  Applied to block
+# bodies AND to the prose between blocks: a fabricated envelope the model
+# wrote as bare assistant text must not be replayed intact, or the next
+# turn sees its own fabrication as accepted history.
+_LOOKALIKE_RE = re.compile(
+    r'(?:[<\u2039]|\u201a\u00c4\u00b9)(\s*/?\s*tool_result\b)',
+    re.IGNORECASE,
+)
 
 _OPEN_FMT = '‹tool_result trust="{trust}" tool="{tool}" label="{label}"›'
 _CLOSE = '‹/tool_result›'
+
+# Inline rendered image (render_diagram / view_image / recall_image).  The
+# frontend prepends ``<img src="data:image/…;base64,…">`` to the tool block
+# (renderToolPart.ts) so the user sees the picture; that tag then sits in
+# message.content and is replayed as TEXT on every later turn.  As text a
+# 100 KB PNG is tens of thousands of tokens the model cannot see as an
+# image at all.  The model already saw the real image in the turn it was
+# produced, via the tool_result content block; nothing later needs the
+# bytes.  Matched on the src, not the whole tag shape, so a hand-edited or
+# older tag is still caught.
+_INLINE_IMAGE_RE = re.compile(
+    r'<img\b[^>]*?\bsrc=["\']data:image/[^"\']*["\'][^>]*?>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+INLINE_IMAGE_NOTE = (
+    "[Ziya: rendered image elided on replay. You saw this image in the turn "
+    "it was produced and any conclusion you drew from it then stands. "
+    "Re-run the render tool if you need to look again.]"
+)
+
+
+def elide_inline_images(text: str) -> str:
+    """Replace every inline ``data:image`` <img> tag with a short note."""
+    if not text or "data:image" not in text:
+        return text
+    return _INLINE_IMAGE_RE.sub(INLINE_IMAGE_NOTE, text)
 
 # --- Redundancy detection -------------------------------------------------
 
@@ -240,20 +278,31 @@ def rewrite_assistant_text(text: str,
     text, as returned by ``_non_overlapping(find_tool_blocks(text))``) to
     the note that replaces its body.
     """
-    if not text or ("tool:" not in text and "TOOL_BLOCK_START" not in text
-                    and "TOOL_MARKER" not in text):
+    if not text:
         return text
-    blocks = _non_overlapping(find_tool_blocks(text))
-    if blocks:
-        out: List[str] = []
-        pos = 0
-        for ordinal, b in enumerate(blocks):
-            out.append(text[pos:b.start])
-            note = elisions.get(ordinal) if elisions else None
-            out.append(render_envelope(b, note))
-            pos = b.end
-        out.append(text[pos:])
-        text = "".join(out)
+    # Inline image bytes go first: the tag sits OUTSIDE the tool block, so
+    # block matching never sees it, and it must go whether or not the
+    # message has any block at all.
+    text = elide_inline_images(text)
+    has_blocks = "tool:" in text or "TOOL_BLOCK_START" in text
+    if (not has_blocks and "TOOL_MARKER" not in text
+            and not _LOOKALIKE_RE.search(text)):
+        return text
+    blocks = _non_overlapping(find_tool_blocks(text)) if has_blocks else []
+    # Prose between (and outside) real blocks is defanged too: an envelope
+    # lookalike there is a fabrication the model wrote as bare text, and
+    # replaying it verbatim teaches the model that the shape is accepted.
+    # The envelopes rendered below are appended AFTER defanging their
+    # surroundings, so genuine re-encoded results are never altered.
+    out: List[str] = []
+    pos = 0
+    for ordinal, b in enumerate(blocks):
+        out.append(_defang(text[pos:b.start]))
+        note = elisions.get(ordinal) if elisions else None
+        out.append(render_envelope(b, note))
+        pos = b.end
+    out.append(_defang(text[pos:]))
+    text = "".join(out)
     return _ORPHAN_MARKER_RE.sub('', text)
 
 
