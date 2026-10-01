@@ -145,6 +145,11 @@ async def apply_changes(request: Request):
             logger.info("Single diff found")
             target_diff = individual_diffs[0]
 
+        # Pre-write snapshot for auto-context (app/utils/auto_context.py): it is
+        # the baseline if the file turns out too large to include.
+        from app.utils.auto_context import read_text_or_none, record_conversation_write
+        _pre_content = read_text_or_none(resolved_path)
+
         # Run in thread pool to avoid blocking the event loop and allow parallel processing
         # Pass the route-resolved user_codebase_dir explicitly so the pipeline writes
         # to the active project root (request body projectRoot) rather than re-deriving
@@ -153,6 +158,17 @@ async def apply_changes(request: Request):
             apply_diff_pipeline, validated.diff, file_path, request_id,
             user_codebase_dir=user_codebase_dir,
         )
+
+        # Tell the conversation it wrote this file: small files join its
+        # context, large ones are tracked (design/auto-context-tiers.md).
+        _conversation_id = body.get('conversation_id') or body.get('conversationId')
+        if _conversation_id and result.get('status') in ('success', 'partial'):
+            _auto = await run_in_threadpool(
+                record_conversation_write, _conversation_id, user_codebase_dir,
+                resolved_path, _pre_content, "apply",
+            )
+            if _auto:
+                result = {**result, 'auto_context': _auto}
         
         # Check the result status and return appropriate response
         status_code = 200 # Default to OK

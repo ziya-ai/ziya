@@ -430,6 +430,9 @@ class ContextRemoveFileTool(BaseMCPTool):
         chat_data = ctx["chat_data"]
         additional = list(chat_data.get("additionalFiles") or [])
         owned = list(chat_data.get(_OWNERSHIP_FIELD) or [])
+        # Files auto-added because this conversation wrote them (owner
+        # "auto", app/utils/auto_context.py) are removable as well.
+        auto_owned = list(chat_data.get("_autoAddedFiles") or [])
 
         match: Optional[str] = None
         for candidate in (path_str, path_str.lstrip("./")):
@@ -441,7 +444,7 @@ class ContextRemoveFileTool(BaseMCPTool):
                     "message": (f"File '{path_str}' is not in the "
                                 f"conversation context.")}
 
-        if match not in owned:
+        if match not in owned and match not in auto_owned:
             return {"error": True,
                     "message": (f"File '{match}' was pinned by the user, "
                                 f"not added by the model — refusing to "
@@ -449,9 +452,13 @@ class ContextRemoveFileTool(BaseMCPTool):
                                 f"removed via this tool.")}
 
         additional.remove(match)
-        owned.remove(match)
+        if match in owned:
+            owned.remove(match)
+        if match in auto_owned:
+            auto_owned.remove(match)
         chat_data["additionalFiles"] = additional
         chat_data[_OWNERSHIP_FIELD] = owned
+        chat_data["_autoAddedFiles"] = auto_owned
 
         import time as _time
         _now_ms = int(_time.time() * 1000)
@@ -502,12 +509,23 @@ class ContextListFilesTool(BaseMCPTool):
         chat_data = ctx["chat_data"]
         additional = list(chat_data.get("additionalFiles") or [])
         owned_set = set(chat_data.get(_OWNERSHIP_FIELD) or [])
+        auto_set = set(chat_data.get("_autoAddedFiles") or [])
+        tracked = chat_data.get("_autoTrackedFiles") or {}
+        if not isinstance(tracked, dict):
+            tracked = {}
+
+        def _owner(p):
+            if p in owned_set:
+                return "model"
+            if p in auto_set:
+                return "auto"
+            return "user"
 
         files = [
             {
                 "path": p,
-                "owner": "model" if p in owned_set else "user",
-                "removable": p in owned_set,
+                "owner": _owner(p),
+                "removable": p in owned_set or p in auto_set,
             }
             for p in additional
         ]
@@ -516,6 +534,13 @@ class ContextListFilesTool(BaseMCPTool):
             "success": True,
             "count": len(files),
             "files": files,
+            # Written by this conversation but too large to include; their
+            # content is not in context (app/utils/auto_context.py).
+            "tracked": [
+                {"path": p, "tokens": (e or {}).get("tokens"),
+                 "last_written_at": (e or {}).get("last_written_at")}
+                for p, e in sorted(tracked.items())
+            ],
             "message": (f"{len(files)} file(s) in current conversation "
                         f"context."),
         }

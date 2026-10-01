@@ -453,6 +453,24 @@ class FileWriteInput(BaseModel):
     )
 
 
+def _record_auto_context(resolved, project_root, pre_content):
+    """Register a successful write with the current conversation.
+
+    Small files join its context (owner ``auto``); large ones are tracked
+    without their content.  See app/utils/auto_context.py and
+    design/auto-context-tiers.md.  Never raises.
+    """
+    try:
+        from app.context import get_conversation_id_or_none
+        from app.utils.auto_context import record_conversation_write
+        return record_conversation_write(
+            get_conversation_id_or_none(), project_root, str(resolved),
+            pre_content, "file_write")
+    except Exception as e:
+        logger.debug(f"file_write: auto-context recording skipped: {e}")
+        return None
+
+
 class FileWriteTool(BaseMCPTool):
     """Write or patch a file, gated by the project write policy."""
 
@@ -568,18 +586,22 @@ class FileWriteTool(BaseMCPTool):
                 replaced = 1
 
             resolved.write_text(updated, encoding="utf-8")
+            _auto = _record_auto_context(resolved, project_root, existing)
             label = (
                 f"replaced {replaced} of {count} occurrence(s)"
                 if count > 1 else
                 f"replaced 1 of 1 occurrence(s)"
             )
             logger.info(f"📝 FILEIO: Patched {path_str} ({label})")
-            return {
+            result = {
                 "success": True,
                 "message": f"Patched {path_str} successfully ({label})",
                 "path": path_str,
                 "bytes_written": len(updated.encode("utf-8")),
             }
+            if _auto:
+                result["auto_context"] = _auto
+            return result
 
         # -- Full write / create -----------------------------------------
 
@@ -595,20 +617,30 @@ class FileWriteTool(BaseMCPTool):
         except Exception as exc:
             return {"error": True, "message": f"Cannot create directory: {exc}"}
 
+        pre_content = None
+        if exists_before:
+            try:
+                pre_content = resolved.read_text(encoding="utf-8")
+            except Exception:
+                pre_content = None   # unreadable/binary: baseline unknown
         try:
             resolved.write_text(content, encoding="utf-8")
         except Exception as exc:
             return {"error": True, "message": f"Write failed: {exc}"}
 
+        _auto = _record_auto_context(resolved, project_root, pre_content)
         size = len(content.encode("utf-8"))
         action = "Created" if not exists_before else "Updated"
         logger.info(f"📝 FILEIO: {action} {path_str} ({size:,} bytes)")
-        return {
+        result = {
             "success": True,
             "message": f"{action} {path_str} ({size:,} bytes)",
             "path": path_str,
             "bytes_written": size,
         }
+        if _auto:
+            result["auto_context"] = _auto
+        return result
 
 
 # ---------------------------------------------------------------------------
