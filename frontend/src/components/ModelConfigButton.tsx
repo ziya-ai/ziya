@@ -38,6 +38,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
     max_output_tokens: 4096,
     max_input_tokens: 4096,
     thinking_mode: false,
+    thinking_display: 'summary',
     thinking_level: 'high'
   });
   const [currentModelId, setCurrentModelId] = useState<string>(modelId);
@@ -507,6 +508,10 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
             return currentSettings.capabilities?.supports_thinking_level || false;
           case 'thinking_effort':
             return currentSettings.capabilities?.supports_adaptive_thinking || false;
+          case 'thinking_display':
+            // /api/current-model echoes ZIYA_THINKING_DISPLAY in settings once
+            // it has been set; only then is there something to compare against.
+            return typeof currentSettings.settings?.thinking_display === 'string';
           case 'thinking_mode':
           case 'max_output_tokens':
           case 'max_input_tokens':
@@ -553,6 +558,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         top_k: (isSupported('top_k') && normalizedExpectedSettings.top_k !== undefined) ? normalizedActualSettings.top_k === normalizedExpectedSettings.top_k : true,
         max_output_tokens: (isSupported('max_output_tokens') && normalizedExpectedSettings.max_output_tokens !== undefined) ? normalizedActualSettings.max_output_tokens === normalizedExpectedSettings.max_output_tokens : true,
         thinking_mode: (isSupported('thinking_mode') && normalizedExpectedSettings.thinking_mode !== undefined) ? normalizedActualSettings.thinking_mode === normalizedExpectedSettings.thinking_mode : true,
+        thinking_display: (isSupported('thinking_display') && normalizedExpectedSettings.thinking_display !== undefined) ? normalizedActualSettings.thinking_display === normalizedExpectedSettings.thinking_display : true,
         thinking_level: (isSupported('thinking_level') && normalizedExpectedSettings.thinking_level !== undefined) ? normalizedActualSettings.thinking_level === normalizedExpectedSettings.thinking_level : true,
         thinking_effort: (isSupported('thinking_effort') && normalizedExpectedSettings.thinking_effort !== undefined) ? normalizedActualSettings.thinking_effort === normalizedExpectedSettings.thinking_effort : true
       };

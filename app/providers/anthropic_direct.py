@@ -329,8 +329,11 @@ class AnthropicDirectProvider(LLMProvider):
                 # bedrock-mantle gateway (which subclasses this provider):
                 # fable-5 went from 0 deltas to 47 with this one field.
                 # A no-op on models that already default to "summarized".
+                # The user's display tier picks which of the two values the
+                # API accepts: "quiet" -> omitted, otherwise summarized.
+                from app.utils.thinking_options import anthropic_display
                 kwargs["thinking"] = {
-                    "type": "adaptive", "display": "summarized",
+                    "type": "adaptive", "display": anthropic_display(config.thinking.display),
                 }
             elif config.thinking.mode == "enabled":
                 # Standard extended thinking requires budget_tokens

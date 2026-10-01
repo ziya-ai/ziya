@@ -137,6 +137,10 @@ _VARS: List[EnvVar] = [
     EnvVar("ZIYA_THINKING_EFFORT", str, None, EnvCategory.MODEL_PARAMS,
            "Thinking effort for Claude 4.6+ adaptive thinking: "
            "'low', 'medium', 'high', 'max'."),
+    EnvVar("ZIYA_THINKING_DISPLAY", str, "summary", EnvCategory.MODEL_PARAMS,
+           "How much reasoning to stream back when thinking is on: "
+           "'quiet' (none), 'summary', or 'full'. Backends that cannot "
+           "honour a tier fall back to the nearest one they can."),
     EnvVar("ZIYA_THINKING_BUDGET", int, 16000, EnvCategory.MODEL_PARAMS,
            "Token budget for extended thinking (Bedrock streaming)."),
 

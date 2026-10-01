@@ -408,12 +408,17 @@ class OpenAIResponsesMantleProvider(LLMProvider):
             config.thinking and config.thinking.enabled
             and self.model_config.get("supports_thinking")
         ):
+            from app.utils.thinking_options import openai_reasoning_summary
             kwargs["reasoning"] = {
                 "effort": _EFFORT_MAP.get(config.thinking.effort, "medium"),
-                # Request summaries so reasoning streams back as
-                # response.reasoning_summary_text.delta → ThinkingDelta.
-                "summary": "auto",
             }
+            # Summaries stream back as response.reasoning_summary_text.delta
+            # -> ThinkingDelta.  The user's display tier selects the level:
+            # summary -> "auto" (what Ziya always sent), full -> "detailed",
+            # quiet -> no summary key at all, so nothing streams.
+            summary = openai_reasoning_summary(config.thinking.display)
+            if summary is not None:
+                kwargs["reasoning"]["summary"] = summary
 
         return kwargs
 
