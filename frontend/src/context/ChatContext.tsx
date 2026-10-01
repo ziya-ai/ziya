@@ -6,6 +6,7 @@ import { ActiveChatProvider } from './ActiveChatContext';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import type { TaskBinding } from '../types/task_binding';
 import { v4 as uuidv4 } from "uuid";
+import { isDuplicateMessage } from '../utils/messageDedup';
 import { db } from '../utils/db';
 import * as syncMerge from '../utils/syncMerge';
 import { forkLineageFields } from '../utils/lineage';
@@ -1124,8 +1125,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // message-anchored features reference specific messages.  Existing
         // messages that already carry an id (e.g. model-change system
         // messages constructed earlier in this file) keep theirs.
+        let mintedId: string | undefined;
         if (!message.id) {
-            message = { ...message, id: uuidv4() };
+            mintedId = uuidv4();
+            message = { ...message, id: mintedId };
         }
 
         // Temporary: unconditional trace to identify spam caller
@@ -1270,16 +1273,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const deriveTitle = shouldDeriveTitleFromMessage(
                 message, existingConversation?.messages, existingConversation?.title);
 
-            // DUPLICATE GUARD: If a message with the same role + content already
-            // exists in the conversation, skip it.  This breaks feedback loops
-            // that replay the entire message history through addMessageToConversation.
-            // Intentionally ignores _timestamp — replayed messages may carry a
-            // fresh timestamp even though the content is identical.
+            // DUPLICATE GUARD: breaks feedback loops that replay the message
+            // history through addMessageToConversation.  Decision lives in
+            // utils/messageDedup.ts: match on the id a message ARRIVED with,
+            // else same role+content only when it is plausibly the same event.
+            // A bare role+content match dropped a user's legitimately
+            // repeated "applied" and left the record assistant→assistant.
             if (existingConversation && existingConversation.messages.length > 0) {
                 const msgs = existingConversation.messages;
-                const isDuplicate = msgs.some(
-                    m => m.role === message.role && m.content === message.content
-                );
+                const isDuplicate = isDuplicateMessage(message, msgs, mintedId);
                 if (isDuplicate) {
                     // Trace only once to avoid flooding the console further
                     if (!(window as any).__dupGuardTraced) {
