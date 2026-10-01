@@ -560,6 +560,17 @@ class ShellServer:
         # Yolo mode — bypass command allowlist (except always_blocked)
         self.yolo_mode = self._scope_env.get('YOLO_MODE', 'false').lower() in ('true', '1', 'yes')
 
+        # This process never runs the full plugin initialize(), so register the
+        # enterprise shell-config providers here.  Without it their additions
+        # reached the parent's view of the allowlist but not this enforcer.
+        # They come from installed code, not from env values, so they sit
+        # outside the signed scope checked above.
+        try:
+            from app.plugins import initialize_shell_config_providers
+            initialize_shell_config_providers()
+        except Exception as _e:  # noqa: BLE001 - never block startup
+            print(f"shell config provider init failed: {_e}", file=sys.stderr)
+
         # Use centralized configuration (merged with plugin provider additions)
         self._effective_config = get_default_shell_config()
         self.allowed_commands = self._effective_config["allowedCommands"].copy()
@@ -1984,15 +1995,24 @@ class ShellServer:
                 # slip: the author wanted read-only git and had no way to know
                 # the safe subset requires naming subcommands explicitly.
                 patterns['git_all'] = r'^git(\s+.*)?$'
-                print("⚠️  ALL git subcommands permitted (bare 'git' grant): "
-                      "reset/checkout/clean/stash/push are reachable",
-                      file=sys.stderr)
                 continue
             if cmd in self.command_pattern_overrides:
                 patterns[cmd] = self.command_pattern_overrides[cmd]
             else:
                 patterns[cmd] = self.default_command_pattern.format(cmd=re.escape(cmd))
         
+        # Warn and redirect (design/git-tool.md step 6): an explicit
+        # ``git <sub>`` grant admits every flag after the subcommand.  Said
+        # here, at the one place grants become patterns, so every spawn logs
+        # it (visible in the MCP Logs tab).  Runs before __init__ appends the
+        # display-only safe-tier entries, so the read-only tier is not flagged.
+        try:
+            from app.utils.git_grant_hazards import startup_warning
+            for _line in startup_warning(self.allowed_commands):
+                print(_line, file=sys.stderr)
+        except Exception as _e:  # noqa: BLE001 — a warning must never block startup
+            print(f"git grant hazard check failed: {_e}", file=sys.stderr)
+
         # Add patterns for complex shell constructs that use allowed commands
         allowed_cmd_pattern = '|'.join([re.escape(cmd) for cmd in self.allowed_commands if not cmd.startswith('git ')])
         patterns['piped_commands'] = f'^({allowed_cmd_pattern})(\\s+.*?)?(\\s*\\|\\s*({allowed_cmd_pattern})(\\s+.*?)?)*$'

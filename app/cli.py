@@ -3556,6 +3556,8 @@ class CLI:
                 if persist:
                     set_persisted_allowed_commands(commands)
                 print(f"\033[32m✓ Added: {', '.join(added)}\033[0m")
+                for _entry in added:
+                    self._print_git_grant_warning(_entry)
                 if persist:
                     print("\033[90m  (saved permanently)\033[0m")
                 else:
@@ -3633,11 +3635,13 @@ class CLI:
             if not sub_args:
                 print("\033[1mGit access control:\033[0m")
                 print("  /shell git all          Allow ALL git operations")
-                print("  /shell git add          Allow 'git add'")
-                print("  /shell git commit       Allow 'git commit'")
-                print("  /shell git push         Allow 'git push'")
+                print("  /shell git add          Allow 'git add' (every flag, incl. -f)")
+                print("  /shell git commit       Allow 'git commit' (incl. --amend, --no-verify)")
+                print("  /shell git push         Allow 'git push' (incl. --force, --delete)")
                 print("  /shell git safe         Reset to safe (read-only) git ops")
                 print("  Append 'save' to persist across sessions.")
+                print("  \033[90mFor add/commit/push/stash/switch, prefer the git tool: each call is\033[0m")
+                print("  \033[90mapproved, destructive forms don't exist (ZIYA_ENABLE_GIT=true or per project).\033[0m")
                 return
             op = sub_args[0]
             commands = self._get_session_commands()
@@ -3649,6 +3653,7 @@ class CLI:
                 if persist:
                     set_persisted_allowed_commands(commands)
                 print("\033[33m✓ All git operations enabled.\033[0m")
+                self._print_git_grant_warning('git')
             elif op == 'safe':
                 # Remove bare 'git' and any explicit git subcommands
                 commands = [c for c in commands if c != 'git' and not c.startswith('git ')]
@@ -3665,6 +3670,7 @@ class CLI:
                 if persist:
                     set_persisted_allowed_commands(commands)
                 print(f"\033[32m✓ 'git {op}' enabled.\033[0m")
+                self._print_git_grant_warning(entry)
             if persist:
                 print("\033[90m  (saved permanently)\033[0m")
             else:
@@ -3728,6 +3734,22 @@ class CLI:
         print(f"\033[90mUnknown: /shell {sub}\033[0m")
         print("Usage: /shell [list|add|rm|yolo|git|timeout|reset]")
         print("  Append 'save' to persist changes across sessions.")
+
+    @staticmethod
+    def _print_git_grant_warning(entry: str) -> None:
+        """Warn-and-redirect for an explicit git grant (design/git-tool.md
+        step 6).  The grant is still made; this says what it admits."""
+        try:
+            from app.utils.git_grant_hazards import assess, format_lines
+        except Exception:  # noqa: BLE001
+            return
+        h = assess(entry)
+        if h is None:
+            return
+        lines = format_lines(h)
+        print(f"\033[33m  ⚠ {lines[0]}\033[0m")
+        for ln in lines[1:]:
+            print(f"\033[33m  {ln}\033[0m")
 
     def _get_session_commands(self) -> list:
         """Get the effective command list (session override or persisted)."""
