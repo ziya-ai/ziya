@@ -714,6 +714,7 @@ class BedrockProvider(LLMProvider):
 
     def _apply_thinking(self, body: Dict[str, Any], thinking: "ThinkingConfig") -> None:
         from app.providers.base import ThinkingConfig  # avoid circular at module level
+        from app.utils.thinking_options import anthropic_display
 
         if thinking.mode == "adaptive":
             # display defaults to "omitted" on Opus 4.7/4.8/5, Sonnet 5,
@@ -729,7 +730,10 @@ class BedrockProvider(LLMProvider):
             # (Sonnet 4.6, Opus 4.6, Haiku 4.5) already default to
             # "summarized", so passing it explicitly is a no-op for them
             # and there is no list to keep in sync as models are added.
-            body["thinking"] = {"type": "adaptive", "display": "summarized"}
+            # The user's display tier decides between the two values the API
+            # accepts: "quiet" -> omitted (reason, stream nothing, faster
+            # first token), anything else -> summarized.
+            body["thinking"] = {"type": "adaptive", "display": anthropic_display(thinking.display)}
             supported = self.model_config.get("supported_efforts", ["low", "medium", "high", "max"])
             effort = thinking.effort if thinking.effort in supported else self.model_config.get("thinking_effort_default", "medium")
             if effort != thinking.effort:

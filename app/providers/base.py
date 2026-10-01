@@ -169,6 +169,11 @@ class ThinkingConfig:
     mode: str = "adaptive"          # "adaptive" | "enabled"
     effort: str = "high"            # "low" | "medium" | "high" | "xhigh" | "max"
     budget_tokens: int = 16000      # for mode="enabled"
+    # How much of the reasoning to stream back: "quiet" | "summary" | "full".
+    # Each provider maps this to its own knob (Anthropic thinking.display,
+    # OpenAI reasoning.summary, Gemini include_thoughts); see
+    # app.utils.thinking_options for the table.  Never changes what is billed.
+    display: str = "summary"
 
 
 @dataclass

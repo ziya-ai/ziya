@@ -1360,14 +1360,35 @@ class StreamingToolExecutor:
         build its request body.
         """
         from app.providers.base import ProviderConfig, ThinkingConfig
+        from app.utils.thinking_options import normalize_display
 
+        # How much reasoning to stream back; each provider maps it to its own
+        # knob (see app.utils.thinking_options).  Read every iteration so a
+        # change in the model-config modal applies to the next request.
+        display = normalize_display(ziya_env("ZIYA_THINKING_DISPLAY"))
         thinking = None
         if self.model_config and self.model_config.get('supports_adaptive_thinking'):
-            effort = ziya_env(
-                "ZIYA_THINKING_EFFORT",
-                default=self.model_config.get('thinking_effort_default', 'high'),
-            )
-            thinking = ThinkingConfig(enabled=True, mode="adaptive", effort=effort)
+            # Adaptive models think by default; only an EXPLICIT off from the
+            # settings route (ZIYA_THINKING_MODE=0) omits the thinking block.
+            # An unset variable keeps the model default, so a server that has
+            # never had its settings saved behaves as before.  Previously the
+            # switch was ignored here entirely.
+            explicit_off = ("ZIYA_THINKING_MODE" in os.environ
+                            and not ziya_env("ZIYA_THINKING_MODE"))
+            if not explicit_off:
+                effort = ziya_env(
+                    "ZIYA_THINKING_EFFORT",
+                    default=self.model_config.get('thinking_effort_default', 'high'),
+                )
+                thinking = ThinkingConfig(enabled=True, mode="adaptive", effort=effort, display=display)
+        elif self.model_config and (
+            self.model_config.get('supports_thinking_level')
+            or str(self.model_config.get('family', '')).startswith('gemini')
+        ):
+            # Gemini always thinks; the level travels on the provider itself
+            # (thinking_level ctor arg).  This config only carries the display
+            # tier so include_thoughts can follow it.
+            thinking = ThinkingConfig(enabled=True, mode="enabled", display=display)
         elif self.model_config and self.model_config.get('supports_thinking'):
             thinking_on = ziya_env("ZIYA_THINKING_MODE")
             if thinking_on:
@@ -1385,7 +1406,7 @@ class StreamingToolExecutor:
                 budget = ziya_env("ZIYA_THINKING_BUDGET")
                 thinking = ThinkingConfig(
                     enabled=True, mode="enabled",
-                    effort=effort, budget_tokens=budget,
+                    effort=effort, budget_tokens=budget, display=display,
                 )
 
         # Per-request overrides from active skill modelOverrides
@@ -3406,6 +3427,16 @@ class StreamingToolExecutor:
                         chunk = {'type': 'content_block_stop',
                                  'index': stream_event.index}
                     elif isinstance(stream_event, ThinkingDelta):
+                        # "quiet": backends with a server-side display knob
+                        # already send nothing; the OpenAI-compatible providers
+                        # stream raw chain of thought with no such knob, so
+                        # this drop is the only way to honour the tier there.
+                        # Billing is unaffected; passback (ThinkingBlock) is
+                        # untouched.
+                        from app.utils.thinking_options import suppress_thinking_deltas
+                        if (provider_config.thinking is not None
+                                and suppress_thinking_deltas(provider_config.thinking.display)):
+                            continue
                         chunk = {'type': 'content_block_delta',
                                  'delta': {'type': 'thinking_delta',
                                            'thinking': stream_event.content}}

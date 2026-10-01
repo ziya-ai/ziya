@@ -44,6 +44,9 @@ class ModelSettingsRequest(BaseModel):
     # ceiling is per-model and cannot be expressed as a static Field bound.
     max_input_tokens: Optional[int] = Field(default=None, ge=1)
     thinking_mode: bool = Field(default=False)
+    # How much reasoning streams back when thinking is on; the honest option
+    # set per model comes from /api/model-capabilities (thinking_options).
+    thinking_display: Optional[str] = Field(default=None, pattern='^(quiet|summary|full)$')
     thinking_level: Optional[str] = Field(default=None, pattern='^(low|medium|high)$')
     thinking_effort: Optional[str] = Field(default=None, pattern='^(low|medium|high|xhigh|max)$')
 
@@ -815,6 +818,21 @@ def get_model_capabilities(model: str = None, endpoint: Optional[str] = None):
             "supports_thinking": effective_settings.get("thinking_mode", base_model_config.get("supports_thinking", False)),
             "supports_vision": base_model_config.get("supports_vision", False),
         }
+
+        # Reasoning display selector: which tiers this model can honour and
+        # what to call them, computed from the merged config so a model that
+        # gains an adaptive/level/summary knob moves group without UI edits.
+        # Published even when thinking is currently off, otherwise the
+        # control would vanish the moment a user chose Off.
+        from app.utils.thinking_options import describe_thinking_options, normalize_display
+        thinking_desc = describe_thinking_options(base_model_config, endpoint)
+        capabilities["thinking_group"] = thinking_desc["group"]
+        capabilities["thinking_options"] = thinking_desc["options"]
+        capabilities["thinking_option_labels"] = thinking_desc["labels"]
+        capabilities["thinking_help"] = thinking_desc["help"]
+        capabilities["thinking_title"] = thinking_desc["title"]
+        capabilities["thinking_display"] = normalize_display(
+            effective_settings.get("thinking_display", os.environ.get("ZIYA_THINKING_DISPLAY")))
         
         # Add thinking level support for Gemini 3 models
         if base_model_config.get("family") == "gemini-3":
@@ -974,7 +992,7 @@ async def _update_model_settings_locked(settings: ModelSettingsRequest):
         _SETTABLE_KEYS = {
             'temperature', 'top_k', 'top_p', 'max_output_tokens',
             'max_input_tokens', 'thinking_mode', 'thinking_level',
-            'thinking_effort',
+            'thinking_effort', 'thinking_display',
         }
         for key, value in settings.model_dump().items():
             if key not in _SETTABLE_KEYS:

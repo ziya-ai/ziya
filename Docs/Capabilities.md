@@ -1124,10 +1124,29 @@ qualifies, but a plain-HTTP LAN address generally does not.
 
 ## Thinking Mode
 
-Some models support extended reasoning before responding:
+Some models support extended reasoning before responding. The model
+configuration modal shows a **Reasoning** selector whose options are computed
+per model, so it only ever offers tiers that backend can honour. The two
+settings behind it are `ZIYA_THINKING_MODE` (on/off) and
+`ZIYA_THINKING_DISPLAY` (`quiet` / `summary` / `full` — how much of the
+reasoning streams back). Changing the display tier never changes what is
+billed: the model reasons the same and the tokens still count; only what you
+see differs.
 
-- **Adaptive thinking** — Sonnet 4.6, Opus 4.6: controllable effort (`low` through `max`), enabled via model settings panel
-- **Extended thinking** — Sonnet 3.7, Sonnet/Opus 4.0–4.5, Nova Pro/Premier: enable via model settings panel
+| Model group | Selector offers | What each tier sends |
+|---|---|---|
+| **Claude adaptive** (Sonnet 4.6+, Opus 4.6+, Fable/Mythos; Bedrock, Anthropic direct, mantle) | Off · On quiet · On summary | `thinking.display: omitted` (quiet) or `summarized`. The API has no full-text tier. **Off** now genuinely omits the thinking block (it also disables the Effort setting); previously the switch was ignored on these models. |
+| **Claude extended thinking** (Sonnet 3.7, Sonnet/Opus 4.0–4.5) | Off · On | Fixed `budget_tokens`; no display knob exists on this API. |
+| **OpenAI Responses API** (GPT‑5.6 on mantle) | On quiet · On summary · On detailed | `reasoning.summary` omitted / `auto` / `detailed`. Reasoning cannot be turned off; use Effort to control how much. |
+| **Gemini** (3.x levels, 2.5 thinking) | On quiet · On summary | `include_thoughts: false` / `true`. Gemini cannot disable thinking; choose the Low level to minimise it. |
+| **OpenAI‑compatible raw reasoning** (DeepSeek, z.ai GLM, Kimi, Qwen on Bedrock, Ollama/LM Studio, OpenAI Chat Completions) | Off · On hidden · On full | The provider streams the complete chain of thought; there is no server summary. **Hidden** still requests reasoning but Ziya drops the deltas so the panel stays collapsed. |
+| **Converse models without a reasoning channel** (Nova, Llama, Mistral on Bedrock) | Off · On | Labelled *Step‑by‑step prompting*: On appends a think‑step‑by‑step instruction to the system prompt; the reasoning appears as ordinary answer text. |
+
+A model entry can pin its own list with `thinking_display_options` when the
+computed group over‑promises (Meta Muse Spark bills for reasoning it never
+streams, so it offers only Off/On).
+
+- **Effort** — Claude adaptive and OpenAI‑compatible reasoning models: `low` through `max`, clamped to the model's `supported_efforts`
 - **Gemini thinking levels** — Gemini 3 Pro/Flash: `low`, `medium`, `high`, set in model settings
 
 ## Multi-Region Routing (Bedrock)

@@ -2,6 +2,9 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Modal, Form, Radio, Checkbox, Slider, Switch, Button, Typography, Tooltip, Select, message, Space } from 'antd';
 import { SettingOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
+import {
+  selectorValue, applySelection, coerceThinkingSettings, reasoningIsOff, DEFAULT_THINKING_DISPLAY,
+} from '../utils/thinkingDisplay';
 
 const { Text } = Typography; // Keep existing import
 
@@ -72,7 +75,9 @@ export interface ModelSettings {
   top_k: number;
   max_output_tokens: number;
   max_input_tokens: number;
-  thinking_mode: boolean;  // For DeepSeek/other models
+  thinking_mode: boolean;  // Reasoning on/off (ZIYA_THINKING_MODE)
+  /** How much reasoning streams back when on: "quiet" | "summary" | "full" (ZIYA_THINKING_DISPLAY). */
+  thinking_display?: string;
   thinking_level?: string;  // For Gemini 3 models: "low", "medium", "high"
   thinking_effort?: string;  // For Claude 4.6+ models: "low", "medium", "high", "max"
 }
@@ -92,6 +97,20 @@ export interface ModelCapabilities {
   is_advanced_model?: boolean;  // Opus-class models that support max effort
   thinking_effort_default?: string;  // Default thinking effort for Claude 4.6+
   supported_efforts?: string[];  // Which effort levels the model supports
+  /**
+   * Reasoning display selector, computed server-side per model
+   * (app/utils/thinking_options.py).  `thinking_options` is the honest set
+   * of selector ids this backend can honour — e.g. ["off","quiet","summary"]
+   * for adaptive Claude, ["quiet","summary","full"] for the OpenAI Responses
+   * API, ["off","on"] where the API has no display knob.  Empty = no control.
+   */
+  thinking_group?: string | null;
+  thinking_options?: string[];
+  thinking_option_labels?: Record<string, string>;
+  thinking_help?: string;
+  thinking_title?: string;
+  /** Currently effective display tier. */
+  thinking_display?: string;
 }
 
 const DEFAULT_SETTINGS: ModelSettings = {
@@ -100,6 +119,7 @@ const DEFAULT_SETTINGS: ModelSettings = {
   max_output_tokens: 4096,
   max_input_tokens: 4096,
   thinking_mode: false,
+  thinking_display: DEFAULT_THINKING_DISPLAY,
   thinking_level: "high",
   thinking_effort: "medium"
 };
@@ -141,6 +161,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     max_output_tokens: currentSettings.max_output_tokens,
     max_input_tokens: capabilities?.token_limit || 4096,
     thinking_mode: currentSettings.thinking_mode,
+    thinking_display: currentSettings.thinking_display || capabilities?.thinking_display || DEFAULT_THINKING_DISPLAY,
     thinking_level: currentSettings.thinking_level || capabilities?.thinking_level_default || 'high',
     thinking_effort: currentSettings.thinking_effort || capabilities?.thinking_effort_default || 'medium'
   });
@@ -185,6 +206,17 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const [isLoadingCapabilities, setIsLoadingCapabilities] = useState(false);
   const [selectedModelCapabilities, setSelectedModelCapabilities] = useState<ModelCapabilities | null>(capabilities);
   const capabilitiesCheckedRef = useRef<boolean>(false);
+  // Reasoning selector state.  The option list is whatever the server says
+  // this model can honour; the two underlying form fields stay hidden and
+  // are written together by applySelection.
+  const thinkingOptions: string[] =
+    selectedModelCapabilities?.thinking_options ?? capabilities?.thinking_options ?? [];
+  const thinkingLabels: Record<string, string> =
+    selectedModelCapabilities?.thinking_option_labels ?? capabilities?.thinking_option_labels ?? {};
+  const thinkingHelp = selectedModelCapabilities?.thinking_help ?? capabilities?.thinking_help ?? '';
+  const thinkingTitle = selectedModelCapabilities?.thinking_title ?? capabilities?.thinking_title ?? 'Reasoning';
+  const watchedThinkingMode = Form.useWatch('thinking_mode', form);
+  const watchedThinkingDisplay = Form.useWatch('thinking_display', form);
 
   // Scope for the model change: server default vs project/conversation
   // pin.  Re-seeded from initialScope each time the modal opens.
@@ -266,6 +298,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         max_output_tokens: currentSettings.max_output_tokens,
         max_input_tokens: capabilities.max_input_tokens || capabilities.token_limit,
         thinking_mode: currentSettings.thinking_mode,
+        thinking_display: currentSettings.thinking_display || capabilities.thinking_display || DEFAULT_THINKING_DISPLAY,
         thinking_level: currentSettings.thinking_level || capabilities.thinking_level_default || 'high',
         thinking_effort: currentSettings.thinking_effort || capabilities.thinking_effort_default || 'medium'
       };
@@ -337,7 +370,13 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         top_k: data.top_k_range?.default || 15,
         max_output_tokens: data.max_output_tokens,
         max_input_tokens: data.token_limit,
-        thinking_mode: data.supports_thinking ? form.getFieldValue('thinking_mode') || false : false,
+        // Keep the user's on/off across a model switch when the new model has
+        // a reasoning control at all; coerceThinkingSettings makes the pair
+        // coherent with the new option list at save time.
+        thinking_mode: (data.thinking_options?.length ?? 0) > 0
+          ? (form.getFieldValue('thinking_mode') ?? Boolean(data.supports_thinking))
+          : false,
+        thinking_display: data.thinking_display || form.getFieldValue('thinking_display') || DEFAULT_THINKING_DISPLAY,
         thinking_level: data.thinking_level_default || 'high',
         thinking_effort: data.thinking_effort_default || 'medium'
       };
@@ -434,7 +473,9 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
       // Per-scope sampling settings are not yet modelled; until they are,
       // a pin changes WHICH model answers and nothing else.
       if (pinScope === 'server') {
-        await onSave(values);
+        // Never post a (mode, tier) pair the model's option list cannot
+        // express — e.g. thinking_mode:false to a group without "off".
+        await onSave(coerceThinkingSettings(values, thinkingOptions));
       } else {
         console.log('Pin scope active — skipping global settings save');
       }
@@ -717,12 +758,51 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
           />
         </Form.Item>
 
-        {(selectedModelCapabilities?.supports_thinking || capabilities?.supports_thinking) && (
-          <Form.Item label={<span>Thinking Mode <Tooltip title="Makes the model show its reasoning process">
-            <InfoCircleOutlined style={{ marginLeft: 5 }} />
-          </Tooltip></span>} name="thinking_mode" valuePropName="checked">
-            <Switch />
-          </Form.Item>
+        {thinkingOptions.length > 0 && (
+          <>
+            {/* The two saved settings behind the selector.  Kept as real form
+                fields so they reach onSave with everything else; the visible
+                control below reads and writes them as one choice. */}
+            <Form.Item name="thinking_mode" valuePropName="checked" hidden>
+              <Switch />
+            </Form.Item>
+            <Form.Item name="thinking_display" hidden>
+              <Select options={[]} />
+            </Form.Item>
+            <Form.Item
+              label={
+                <span>
+                  {thinkingTitle}
+                  <Tooltip title={thinkingHelp || 'Controls whether the model reasons before answering and how much of that reasoning is shown.'}>
+                    <InfoCircleOutlined style={{ marginLeft: 5 }} />
+                  </Tooltip>
+                </span>
+              }
+              extra={
+                <Text type="secondary" style={{ fontSize: '12px' }}>
+                  {thinkingHelp}
+                </Text>
+              }
+            >
+              <Radio.Group
+                optionType="button"
+                buttonStyle="solid"
+                data-testid="thinking-display-selector"
+                value={selectorValue(watchedThinkingMode, watchedThinkingDisplay, thinkingOptions)}
+                onChange={(e) => {
+                  const next = applySelection(e.target.value, watchedThinkingDisplay);
+                  form.setFieldsValue(next);
+                  handleValuesChange(next);
+                }}
+              >
+                {thinkingOptions.map((opt) => (
+                  <Radio.Button key={opt} value={opt}>
+                    {thinkingLabels[opt] ?? opt}
+                  </Radio.Button>
+                ))}
+              </Radio.Group>
+            </Form.Item>
+          </>
         )}
 
         {selectedModelCapabilities?.supports_thinking_level && (
@@ -737,7 +817,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             }
             name="thinking_level"
           >
-            <Select>
+            <Select disabled={reasoningIsOff(watchedThinkingMode, thinkingOptions)}>
               <Select.Option value="low">Low (faster, less reasoning)</Select.Option>
               <Select.Option value="medium">Medium (balanced)</Select.Option>
               <Select.Option value="high">High (deeper reasoning)</Select.Option>
@@ -757,7 +837,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             }
             name="thinking_effort"
           >
-            <Select>
+            <Select disabled={reasoningIsOff(watchedThinkingMode, thinkingOptions)}>
               {(selectedModelCapabilities?.supported_efforts
                 || capabilities?.supported_efforts
                 || ['low', 'medium', 'high', ...(selectedModelCapabilities?.is_advanced_model ? ['max'] : [])]

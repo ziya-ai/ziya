@@ -337,12 +337,24 @@ class GoogleDirectProvider(LLMProvider):
         if system_content:
             gen_config_params["system_instruction"] = system_content
 
+        # thinking_level applies to Gemini 3 and later (and "thinking" variants);
+        # include_thoughts decides whether thought summaries stream back as
+        # ThinkingDelta and follows the user's display tier ("quiet" -> off).
+        # Gemini cannot disable thinking, so the tier is honoured whenever the
+        # model reasons at all, not only when a level is configured.
+        thinking_kwargs: Dict[str, Any] = {}
+        mid = self.model_id.lower()
         if self.thinking_level and (
-            "gemini-3" in self.model_id.lower() or "thinking" in self.model_id.lower()
+            "gemini-3" in mid or "gemini-4" in mid or "thinking" in mid
         ):
-            gen_config_params["thinking_config"] = types.ThinkingConfig(
-                thinking_level=self.thinking_level.upper()
-            )
+            thinking_kwargs["thinking_level"] = self.thinking_level.upper()
+        if config.thinking is not None and (
+            thinking_kwargs or self.model_config.get("supports_thinking")
+        ):
+            from app.utils.thinking_options import gemini_include_thoughts
+            thinking_kwargs["include_thoughts"] = gemini_include_thoughts(config.thinking.display)
+        if thinking_kwargs:
+            gen_config_params["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
 
         if tools and not config.suppress_tools:
             declarations = self._convert_tools(tools)
