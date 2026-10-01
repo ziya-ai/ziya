@@ -398,6 +398,49 @@ def test_export_document_pdf_explicit_margin_sizes_viewport(monkeypatch):
     m = {s: '10mm' for s in ('top', 'bottom', 'left', 'right')}
     assert call['margin'] == m
     assert tuple(call['viewport']) == page_content_box_px(m)
+    # The page fits figures against the SAME box it is paginated with.
+    w, h = page_content_box_px(m)
+    assert call['payload']['page'] == {'contentWidthPx': w, 'contentHeightPx': h}
+
+
+def test_export_document_pdf_payload_carries_printable_box(monkeypatch):
+    """The /print page used to fit oversized figures against a constant
+    baked for the TRANSCRIPT export (A4 minus 10mm sides, ~718px) while a
+    document paginates at its front-matter margins (19mm sides, ~650px), so
+    a figure between the two widths escaped the fit pass and was squeezed by
+    CSS instead. The payload must now carry the document's own box, equal to
+    the viewport the exporter renders at."""
+    import app.services.pdf_exporter as pe
+    from app.utils.document_print_decor import DEFAULT_DOCUMENT_MARGIN, page_content_box_px
+    fake = _FakeSession()
+
+    async def fake_get_session(port=6969):
+        return fake
+
+    monkeypatch.setattr(pe, 'get_render_session', fake_get_session)
+    asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    call = fake.calls[0]
+
+    w, h = page_content_box_px(DEFAULT_DOCUMENT_MARGIN)
+    assert call['payload']['page'] == {'contentWidthPx': w, 'contentHeightPx': h}
+    assert tuple(call['viewport']) == (w, h)
+    # The reported gap: the document column is materially narrower than the
+    # transcript constant the page previously assumed.
+    assert w < 718 - 60
+
+    # Direct builder contract: absent page_box -> no page block (the page's
+    # transcript fallback applies); present -> integer px.
+    assert 'page' not in pe.build_document_print_payload({}, ['x'])
+    built = pe.build_document_print_payload({}, ['x'], page_box=(650.0, 994.0))
+    assert built['page'] == {'contentWidthPx': 650, 'contentHeightPx': 994}
+
+
+def test_transcript_payload_has_no_page_block_so_page_uses_transcript_defaults():
+    """The transcript path paginates at capture_pdf's 10mm defaults, which
+    are exactly the page's fallback box, so it sends no page block."""
+    from app.services import pdf_exporter as pe
+    payload = pe.build_print_payload([{'role': 'human', 'content': 'hi'}])
+    assert 'page' not in payload
 
 
 def test_export_document_pdf_footer_opt_out(monkeypatch):
@@ -449,3 +492,251 @@ def test_export_document_pdf_inline_markdown(monkeypatch):
     assert meta['section_count'] == 1
     assert fake.calls[0]['payload']['title'] == 'Inline Doc'
     assert fake.calls[0]['payload']['layout'] == 'plain'
+
+
+# ---------------------------------------------------------------------------
+# doc-aesthetics iter_006: d024 /Subject, d014 runt-last-page squeeze
+# ---------------------------------------------------------------------------
+
+def _fake_session_factory(monkeypatch, results=None):
+    import app.services.pdf_exporter as pe
+
+    class _Seq(_FakeSession):
+        async def capture_pdf(self, payload, **kwargs):
+            self.calls.append({'payload': payload, **kwargs})
+            if results is None:
+                return b'%PDF-fake'
+            return results[min(len(self.calls), len(results)) - 1]
+
+    fake = _Seq()
+
+    async def fake_get_session(port=6969):
+        return fake
+
+    monkeypatch.setattr(pe, 'get_render_session', fake_get_session)
+    return pe, fake
+
+
+def test_export_document_pdf_subject_is_document_label(monkeypatch):
+    pe, fake = _fake_session_factory(monkeypatch)
+    asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    subj = fake.calls[0]['metadata']['/Subject']
+    assert subj == 'Ziya document export'
+    assert 'conversation' not in subj.lower()
+    asyncio.run(pe.export_document_pdf(
+        markdown='---\ntitle: T\nsubtitle: Sub line\n---\n# A\n\nbody',
+        include_footer=False,
+    ))
+    assert fake.calls[1]['metadata']['/Subject'] == 'Sub line'
+
+
+def _words_by_bytes(monkeypatch, pe, table):
+    monkeypatch.setattr(pe, '_pdf_page_words', lambda b, margin=None: table.get(b))
+
+
+def test_runt_last_page_triggers_squeeze_recapture(monkeypatch):
+    from app.utils.document_print_decor import DOCUMENT_PRINT_CSS, DOCUMENT_SQUEEZE_CSS_STEPS
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15 + [47], b'B': [500] * 15})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert len(fake.calls) == 2
+    assert fake.calls[1]['pre_capture_css'] == DOCUMENT_PRINT_CSS + DOCUMENT_SQUEEZE_CSS_STEPS[0]
+    assert pdf == b'B'
+    assert meta['squeeze_step'] == 1
+    assert meta['pages_before_squeeze'] == 16
+
+
+def test_squeeze_rejected_when_page_count_not_reduced(monkeypatch):
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B', b'C', b'D'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15 + [47],
+                                     b'B': [500] * 15 + [30], b'C': [500] * 15 + [20],
+                                     b'D': [500] * 15 + [25]})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert len(fake.calls) == 4
+    assert pdf == b'A'
+    assert meta['squeeze_step'] == 0
+
+
+def test_squeeze_step3_accepted_when_it_drops_a_page(monkeypatch):
+    from app.utils.document_print_decor import DOCUMENT_PRINT_CSS, DOCUMENT_SQUEEZE_CSS_STEPS
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B', b'C', b'D'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15 + [47],
+                                     b'B': [500] * 15 + [30], b'C': [500] * 15 + [20],
+                                     b'D': [500] * 15})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert len(fake.calls) == 4
+    assert fake.calls[3]['pre_capture_css'] == DOCUMENT_PRINT_CSS + DOCUMENT_SQUEEZE_CSS_STEPS[2]
+    assert pdf == b'D'
+    assert meta['squeeze_step'] == 3
+    assert meta['pages_before_squeeze'] == 16
+
+
+def test_squeeze_rejects_candidate_that_lost_content(monkeypatch):
+    # d028: a recapture where the page crashed (frontend error screen, one
+    # page of ~30 words) has "fewer pages" but has lost the document; it
+    # must be rejected, and a later genuine candidate may still win.
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B', b'C', b'D'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15 + [47],
+                                     b'B': [30], b'C': [500] * 15 + [20],
+                                     b'D': [500] * 15})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert pdf == b'D'
+    assert meta['squeeze_step'] == 3
+
+
+def test_squeeze_keeps_first_capture_when_every_candidate_lost_content(monkeypatch):
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B', b'C', b'D'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15 + [47],
+                                     b'B': [30], b'C': [30], b'D': [30]})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert pdf == b'A'
+    assert meta['squeeze_step'] == 0
+
+
+def test_no_squeeze_when_last_page_full(monkeypatch):
+    pe, fake = _fake_session_factory(monkeypatch, [b'A'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15 + [300]})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert len(fake.calls) == 1 and pdf == b'A'
+    assert meta['squeeze_step'] == 0
+
+
+def test_no_squeeze_when_last_section_is_short_after_pagebreak(monkeypatch):
+    pe, fake = _fake_session_factory(monkeypatch, [b'A'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 5 + [35]})
+    short = ' '.join(['word'] * 30)
+    doc = '# A\n\n' + ' '.join(['x'] * 2000) + '\n\n<!-- ziya:pagebreak -->\n\n# End\n\n' + short + '\n'
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown=doc, include_footer=False))
+    assert len(fake.calls) == 1 and pdf == b'A'
+
+
+def test_unparseable_pdf_never_squeezes(monkeypatch):
+    from app.utils.document_print_decor import DOCUMENT_PRINT_CSS
+    pe, fake = _fake_session_factory(monkeypatch)
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert len(fake.calls) == 1 and pdf == b'%PDF-fake'
+    assert fake.calls[0]['pre_capture_css'] is DOCUMENT_PRINT_CSS
+
+
+# ---------------------------------------------------------------------------
+# doc-aesthetics iter_008: d027 figure float recapture
+# ---------------------------------------------------------------------------
+
+def _gaps_by_bytes(monkeypatch, pe, table):
+    monkeypatch.setattr(pe, '_pdf_figure_gaps', lambda b, margin=None: table.get(b))
+
+
+def _float_opts(call):
+    js, opts = call['pre_capture_js'][0]
+    return opts.get('floatFigures')
+
+
+def test_figure_gap_triggers_float_recapture(monkeypatch):
+    from app.utils.document_print_decor import page_content_box_px
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15, b'B': [500] * 15})
+    _gaps_by_bytes(monkeypatch, pe, {b'A': [(6, 0.26)], b'B': []})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert len(fake.calls) == 2
+    content_h = page_content_box_px(None)[1]
+    assert _float_opts(fake.calls[1]) == {"6": round(0.26 * content_h)}
+    assert _float_opts(fake.calls[0]) == {}
+    assert pdf == b'B'
+    assert meta['float_applied'] is True and meta['float_figures'] == [6]
+
+
+def test_float_recapture_rejected_when_pages_grow_or_words_lost(monkeypatch):
+    for cand_words in ([500] * 16, [30]):
+        pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B'])
+        _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15, b'B': cand_words})
+        _gaps_by_bytes(monkeypatch, pe, {b'A': [(6, 0.26)], b'B': []})
+        pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+        assert len(fake.calls) == 2
+        assert pdf == b'A', cand_words
+        assert meta['float_applied'] is False and meta['float_figures'] == [6]
+
+
+def test_float_rejected_when_gap_did_not_shrink(monkeypatch):
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15, b'B': [500] * 15})
+    _gaps_by_bytes(monkeypatch, pe, {b'A': [(6, 0.26)], b'B': [(6, 0.26)]})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert pdf == b'A' and meta['float_applied'] is False
+
+
+def test_float_uses_squeeze_css_when_squeeze_won(monkeypatch):
+    from app.utils.document_print_decor import DOCUMENT_PRINT_CSS, DOCUMENT_SQUEEZE_CSS_STEPS
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B', b'C', b'D', b'E'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15 + [47],
+                                     b'B': [500] * 15 + [30], b'C': [500] * 15 + [20],
+                                     b'D': [500] * 15, b'E': [500] * 15})
+    _gaps_by_bytes(monkeypatch, pe, {b'D': [(6, 0.26)], b'E': []})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert len(fake.calls) == 5
+    assert fake.calls[4]['pre_capture_css'] == DOCUMENT_PRINT_CSS + DOCUMENT_SQUEEZE_CSS_STEPS[2]
+    assert pdf == b'E'
+    assert meta['squeeze_step'] == 3 and meta['float_applied'] is True
+
+
+def test_no_float_without_figure_gap(monkeypatch):
+    pe, fake = _fake_session_factory(monkeypatch, [b'A'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15})
+    _gaps_by_bytes(monkeypatch, pe, {b'A': []})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert len(fake.calls) == 1 and pdf == b'A'
+    assert meta['float_applied'] is False and meta['float_figures'] == []
+
+
+def _two_page_pdf(p1_lines: int, p2_first: str) -> bytes:
+    """A4 PDF: page 1 has ``p1_lines`` text lines from the top margin, page 2
+    starts with ``p2_first``.  Built with fpdf2 (core Helvetica)."""
+    from fpdf import FPDF
+    pdf = FPDF(unit="pt", format="A4")
+    pdf.set_auto_page_break(False)
+    pdf.set_font("Helvetica", size=11)
+    top = 16 / 25.4 * 72
+    for page_lines, first in ((p1_lines, None), (3, p2_first)):
+        pdf.add_page()
+        y = top + 2
+        for i in range(page_lines):
+            pdf.set_xy(54, y)
+            pdf.cell(0, 14, first if (i == 0 and first) else f"Body line {i} of the text")
+            y += 16
+    return bytes(pdf.output())
+
+
+def test_pdf_figure_gaps_detects_gap_before_figure_page():
+    import app.services.pdf_exporter as pe
+    margin = {"top": "16mm", "bottom": "16mm", "left": "16mm", "right": "16mm"}
+    # ~0.40 of the printable height used on page 1 (746pt box, 16pt lines).
+    blob = _two_page_pdf(19, "Figure 2 - Burst allowance")
+    gaps = pe._pdf_figure_gaps(blob, margin)
+    assert gaps and gaps[0][0] == 2, gaps
+    assert 0.5 < gaps[0][1] < 0.65, gaps
+    # Next page not a figure: no gap reported.
+    assert pe._pdf_figure_gaps(_two_page_pdf(19, "Plain prose starts here"), margin) == []
+    # Small gap: page 1 nearly full.
+    assert pe._pdf_figure_gaps(_two_page_pdf(44, "Figure 2 - X"), margin) == []
+    assert pe._pdf_figure_gaps(b'%PDF-fake', margin) is None
+
+
+def test_float_accepted_when_unfloatable_figure_gap_remains(monkeypatch):
+    # iter_008 real render: figure 5 is followed by a heading (nothing can
+    # float), figure 6's gap closes.  The unchanged figure-5 gap must not
+    # veto the figure-6 win.
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15, b'B': [500] * 15})
+    _gaps_by_bytes(monkeypatch, pe, {b'A': [(5, 0.32), (6, 0.26)], b'B': [(5, 0.32)]})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert pdf == b'B' and meta['float_applied'] is True
+
+
+def test_float_rejected_when_gap_only_moves_to_next_figure(monkeypatch):
+    # iter_008 real render: floating Phase 4 above figure 6 left figures 6
+    # and 7 back to back, so the gap reappeared (larger) before figure 7.
+    pe, fake = _fake_session_factory(monkeypatch, [b'A', b'B'])
+    _words_by_bytes(monkeypatch, pe, {b'A': [500] * 15, b'B': [500] * 15})
+    _gaps_by_bytes(monkeypatch, pe, {b'A': [(5, 0.3194), (6, 0.2606)],
+                                    b'B': [(5, 0.3194), (7, 0.3184)]})
+    pdf, meta = asyncio.run(pe.export_document_pdf(markdown='# A\n\nbody', include_footer=False))
+    assert pdf == b'A' and meta['float_applied'] is False

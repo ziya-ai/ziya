@@ -54,6 +54,7 @@ import '../styles/print.css';
 // page).  See utils/mermaidThemeNormalize for why CSS cannot fix a theme baked
 // into the diagram's own <style>.
 import { normalizeMermaidThemeToLight } from '../utils/mermaidThemeNormalize';
+import { resolvePrintContentBox, type PrintContentBox, type PrintPageSpec } from '../utils/printContentBox';
 
 const MarkdownRenderer = lazyWithRetry(
     () => import('./MarkdownRenderer').then(m => ({ default: m.MarkdownRenderer }))
@@ -84,6 +85,10 @@ interface ConversationSpec {
     layout?: string;
     /** Document mode: pagebreak-split markdown bodies. */
     sections?: string[];
+    /** Printable box (px) for the margins the exporter will paginate with.
+     *  Documents send their front-matter box; absent (transcripts) the page
+     *  falls back to the transcript margins. See utils/printContentBox. */
+    page?: PrintPageSpec;
     messages?: PrintMessage[];
     options?: PrintOptions;
     footerHtml?: string;
@@ -203,18 +208,13 @@ function parseSpecFromHash(): ConversationSpec | null {
 }
 
 /**
- * Printable A4 content box, in CSS px at 96dpi, matching the capture margins
- * in `app/services/pdf_exporter.py` -> `capture_pdf` (A4, top 12mm / bottom
- * 16mm / left 10mm / right 10mm).  A4 is 210x297mm; 1mm = 96/25.4 px.
- *   width  = (210 - 10 - 10)mm = 190mm ~= 718px
- *   height = (297 - 12 - 16)mm = 269mm ~= 1016px
- * These are the bounds an atomic figure must fit within to avoid forcing an
- * absurd page break (defect #7) or leaving an empty band (defect #5).  A small
- * safety factor absorbs sub-pixel rounding and the diagram's own padding.
+ * The printable content box comes from the payload (`spec.page`), resolved by
+ * utils/printContentBox: documents send the box for their front-matter
+ * margins, transcripts fall back to `capture_pdf`'s 10mm defaults.  It is the
+ * bound an atomic figure must fit within to avoid forcing an absurd page break
+ * (defect #7) or leaving an empty band (defect #5).  A small safety factor
+ * absorbs sub-pixel rounding and the diagram's own padding.
  */
-const MM_TO_PX = 96 / 25.4;
-const PRINT_CONTENT_WIDTH_PX = (210 - 10 - 10) * MM_TO_PX;   // ~718
-const PRINT_CONTENT_HEIGHT_PX = (297 - 12 - 16) * MM_TO_PX;  // ~1016
 const FIT_SAFETY = 0.96;
 
 /**
@@ -356,17 +356,17 @@ function applyFigureShrink(
     }
 }
 
-function fitOversizedFigures(root: HTMLElement): void {
+function fitOversizedFigures(root: HTMLElement, box: PrintContentBox): void {
     const svgs = Array.from(
         root.querySelectorAll<SVGSVGElement>(
             '.mermaid-container svg, .mermaid-wrapper svg, .d3-container svg, figure svg',
         ),
     );
-    const maxW = PRINT_CONTENT_WIDTH_PX * FIT_SAFETY;
-    const maxH = PRINT_CONTENT_HEIGHT_PX * FIT_SAFETY;
+    const maxW = box.widthPx * FIT_SAFETY;
+    const maxH = box.heightPx * FIT_SAFETY;
     // A figure box may be at most this tall before it can no longer leave a
     // companion band of prose on its page (the flow-hostile threshold).
-    const flowMaxBoxH = maxH - PRINT_CONTENT_HEIGHT_PX * FLOW_COMPANION_BAND_FRACTION;
+    const flowMaxBoxH = maxH - box.heightPx * FLOW_COMPANION_BAND_FRACTION;
     for (const svg of svgs) {
         // Measured rendered size (falls back to the inline px if layout is 0).
         const rect = svg.getBoundingClientRect();
@@ -440,8 +440,8 @@ const OVERWIDE_TABLE_OVERFLOW_RATIO = 3.0;
  * is a no-op.  Shared with Card II's HTML export (a clipped-in-HTML wide table
  * benefits identically).
  */
-function fitOverwideTables(root: HTMLElement): void {
-    const maxW = PRINT_CONTENT_WIDTH_PX * FIT_SAFETY;
+function fitOverwideTables(root: HTMLElement, box: PrintContentBox): void {
+    const maxW = box.widthPx * FIT_SAFETY;
     const tables = Array.from(root.querySelectorAll<HTMLTableElement>('table'));
     for (const table of tables) {
         // Skip diff tables — they flow/scroll on their own terms (NEW-3).
@@ -480,6 +480,13 @@ export const PrintRenderPage: React.FC = () => {
     const contentRef = useRef<HTMLDivElement | null>(null);
     const observerRef = useRef<MutationObserver | null>(null);
     const safetyTimerRef = useRef<ReturnType<typeof setTimeout>>();
+    // Printable box for THIS export's margins.  Held in a ref because the
+    // readiness callback that fits figures is deliberately dependency-free
+    // (re-creating it would re-attach the mutation observer mid-render).
+    const contentBoxRef = useRef<PrintContentBox>(resolvePrintContentBox(undefined));
+    useEffect(() => {
+        contentBoxRef.current = resolvePrintContentBox(spec?.page);
+    }, [spec]);
 
     // ThemeContext is the real provider (mounted above in index.tsx). Force
     // light DETERMINISTICALLY rather than hoping a body-class removal sticks.
@@ -638,13 +645,14 @@ export const PrintRenderPage: React.FC = () => {
         // author stylesheet (see fitOversizedFigures + styles/print.css).
         // (Canvas rasterization already ran at the top of finalizeReadiness so
         // its data-URL <img> was awaited alongside the other images.)
-        fitOversizedFigures(node);
+        const contentBox = contentBoxRef.current;
+        fitOversizedFigures(node, contentBox);
         // Fit-scale any content table so much wider than the page that its
         // right-hand columns would be clipped off the margin and dropped from
         // the captured PDF entirely (user defect PDF-09b).  Narrow / mildly-wide
         // tables are left untouched; see fitOverwideTables.  Runs after images
         // settle so measured cell widths are final.
-        fitOverwideTables(node);
+        fitOverwideTables(node, contentBox);
         // Collect any plugin error cards so the caller learns which diagrams
         // failed without parsing the rendered output.
         const failed = Array.from(node.querySelectorAll('[data-diagram-error]'))
