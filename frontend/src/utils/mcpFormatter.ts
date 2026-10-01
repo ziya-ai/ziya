@@ -957,6 +957,26 @@ function formatFileWrite(result: any, input: any, options: any): FormattedOutput
         return formatFileWrite(parsed, input, options);
       }
     } catch {
+      // Not JSON.  chatApi persists `formatted.content` -- for a patch that
+      // is the unified diff synthesized below -- as the tool fence body and
+      // drops `renderAs`; on reload ToolBlock hands that string back here.
+      // Without this branch it fell through as plain text and was Prism-
+      // highlighted as the file's language, so an already-applied write
+      // looked like a raw diff.  Recognise our own output and re-route it.
+      if (/^diff --git /.test(result)) {
+        const pathMatch = result.match(/^diff --git a\/(\S+) b\//);
+        const diffPath = pathMatch ? pathMatch[1] : (input?.path || 'file');
+        const hunkLines = result.split('\n').filter(l => /^[+-](?![+-]{2} )/.test(l)).length;
+        const shouldCollapse = hunkLines > 6 || result.length > 400;
+        return {
+          content: result,
+          type: 'text',
+          showInput: false,
+          collapsed: shouldCollapse && defaultCollapsed,
+          summary: `✏️ **${diffPath}** (patched)`,
+          renderAs: 'diff',
+        };
+      }
       return { content: result, type: 'text', collapsed: false };
     }
   }

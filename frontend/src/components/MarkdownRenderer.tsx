@@ -43,6 +43,7 @@ import '../styles/blockquoteAffordance.css';
 // tokens are illegible on the light code surface; index.css/prism-tomorrow.css
 // are out of scope so the corrected light values live in a writable stylesheet.
 import '../styles/prismLightTokenContrast.css';
+import '../styles/toolDiffApplied.css';
 // D-022 (unblocks D-013/D-014 on w2-11/w2-14/w2-15): markdown table gridline
 // contrast. index.css sets no border rule for `.message .message-content`
 // markdown tables, so light gridlines fall to a faint UA default (~1.45:1,
@@ -525,6 +526,11 @@ interface ToolBlockProps {
 // previews).  Uses the same react-diff-view engine as inline chat diffs
 // but skips the apply button, hunk-status registry, and context-check
 // machinery — none of which apply to "show what was just written".
+//
+// Every diff shown here has ALREADY been written to disk by the tool, so it
+// is rendered in the neutral `tool-diff-applied` palette (see
+// styles/toolDiffApplied.css) with a caption, rather than the red/green of
+// an inline chat diff the user is still being asked to apply.
 const ToolDiffPreview: React.FC<{ diff: string; isDarkMode: boolean }> = ({ diff, isDarkMode }) => {
     let files: ReturnType<typeof parseDiff> = [];
     try {
@@ -550,7 +556,10 @@ const ToolDiffPreview: React.FC<{ diff: string; isDarkMode: boolean }> = ({ diff
         );
     }
     return (
-        <div style={{ padding: '8px', overflow: 'auto' }}>
+        <div className="tool-diff-applied" style={{ padding: '8px', overflow: 'auto' }}>
+            <div className="tool-diff-applied-caption">
+                ✓ already written to disk — shown for review, nothing to apply
+            </div>
             {files.map((file, fi) => (
                 <Diff key={fi} viewType="unified" diffType={file.type} hunks={file.hunks} gutterType="none" className="diff-view smaller-diff-view">
                     {hunks => hunks.map((h, hi) => <Hunk key={hi} hunk={h} />)}
