@@ -64,3 +64,34 @@ def merge_bench_prompt(
     if client_addition and client_addition.strip() != bench.system_prompt_addition.strip():
         logger.debug("bench_prompt: client systemPromptAddition superseded by bench")
     return bench.system_prompt_addition, overrides, tool_ids, set(bench.catalog_names)
+
+
+def withheld_mcp_for_root(project_root: Optional[str], conversation_id: Optional[str]) -> set:
+    """MCP servers the bench shelves for this request; empty when unknown.
+
+    Fails open: a bench error must never strip tools from, or fail, a turn.
+    """
+    pid = project_id_for_root(project_root)
+    if not pid:
+        return set()
+    try:
+        from app.services.bench import withheld_mcp_servers
+        return withheld_mcp_servers(pid, conversation_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bench_prompt: MCP withhold lookup failed, tools unfiltered: %s", e)
+        return set()
+
+
+def _tool_server(tool) -> Optional[str]:
+    md = getattr(tool, "metadata", None)
+    if isinstance(md, dict) and md.get("server_name"):
+        return md["server_name"]
+    return getattr(tool, "server_name", None)
+
+
+def drop_withheld_tools(tools: List[Any], withheld: set) -> Tuple[List[Any], int]:
+    """``tools`` minus those from a withheld server, and how many were dropped."""
+    if not withheld:
+        return list(tools), 0
+    kept = [t for t in tools if _tool_server(t) not in withheld]
+    return kept, len(tools) - len(kept)
