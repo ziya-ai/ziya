@@ -202,6 +202,53 @@ def test_load_document_missing_raises(tmp_path, monkeypatch):
         load_document('absent.md')
 
 
+def test_documents_dir_follows_request_project_root(tmp_path, monkeypatch):
+    # Observed: server started in $HOME, project open elsewhere. file_write
+    # put the IR under <project>/.ziya/documents/, the export route looked
+    # under $HOME/.ziya/documents/ and returned "Document not found". The
+    # store must resolve against the SAME root file_write uses.
+    from app.context import set_project_root, _request_project_root
+    home = tmp_path / 'home'
+    project = tmp_path / 'project'
+    (project / '.ziya' / 'documents').mkdir(parents=True)
+    (project / '.ziya' / 'documents' / 'report.md').write_text('# hi\n')
+    monkeypatch.setenv('ZIYA_USER_CODEBASE_DIR', str(home))       # startup dir
+    token = _request_project_root.set(None)
+    try:
+        set_project_root(str(project))                            # X-Project-Root
+        assert documents_dir(create=False) == project / '.ziya' / 'documents'
+        assert load_document('report.md')['body'].strip() == '# hi'
+    finally:
+        _request_project_root.reset(token)
+
+
+def test_documents_dir_falls_back_to_startup_root_without_request(tmp_path, monkeypatch):
+    # Pair for the above: no header (CLI, or a bare curl) still resolves to
+    # the startup root, so nothing that worked before stops working.
+    from app.context import _request_project_root
+    monkeypatch.setenv('ZIYA_USER_CODEBASE_DIR', str(tmp_path))
+    token = _request_project_root.set(None)
+    try:
+        assert documents_dir(create=False) == tmp_path / '.ziya' / 'documents'
+    finally:
+        _request_project_root.reset(token)
+
+
+def test_skill_recipe_sends_project_root_and_no_install_recipe():
+    # Seam: the store fix is moot if the model's curl (from the shell, which
+    # runs in the project root) omits the header. And the 501 guidance must
+    # relay the server's message, not the raw playwright recipe -- on an AL2
+    # host that recipe can never succeed.
+    import re
+    from app.data.built_in_skills import BUILT_IN_SKILLS
+    skill = next(s for s in BUILT_IN_SKILLS if s['id'] == 'document_authoring')
+    text = skill['prompt']
+    assert 'X-Project-Root: $PWD' in text
+    assert text.index('X-Project-Root') < text.index('"name": "report.md"')
+    assert 'playwright install chromium' not in text
+    assert re.search(r'501.*Relay', text, re.S)
+
+
 # ---------------------------------------------------------------------------
 # 2. Payload contract
 # ---------------------------------------------------------------------------
