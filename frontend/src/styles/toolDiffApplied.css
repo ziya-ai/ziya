@@ -1,0 +1,64 @@
+/*
+ * Neutral palette for diffs inside tool-result blocks (ToolDiffPreview).
+ *
+ * An inline chat diff is a PROPOSAL: red/green, with an Apply button.  A
+ * diff inside a file_write tool block is a RECORD of a change already made.
+ * Rendering both in the same colours invites the reader to look for an
+ * Apply button that is not there, or to assume the change is pending.
+ * Removed lines are muted grey, added lines a pale slate; no red, no green.
+ *
+ * Overrides index.css's .diff-code-* rules; the dark-mode token colours
+ * there are !important, so these are too.
+ */
+
+.tool-diff-applied-caption {
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    opacity: 0.7;
+    padding: 2px 8px 6px;
+    user-select: none;
+}
+
+.tool-diff-applied .diff-code-delete,
+.tool-diff-applied .diff-gutter-delete {
+    background-color: #f1f2f4;
+    color: #6b7280;
+}
+
+.tool-diff-applied .diff-code-insert,
+.tool-diff-applied .diff-gutter-insert {
+    background-color: #e9eef6;
+    color: #24292e;
+}
+
+.tool-diff-applied .diff-code-delete .token {
+    color: #6b7280 !important;
+    background: inherit !important;
+}
+
+.tool-diff-applied .diff-code-insert .token {
+    color: inherit !important;
+    background: inherit !important;
+}
+
+.dark .tool-diff-applied .diff-code-delete,
+.dark .tool-diff-applied .diff-gutter-delete {
+    background-color: #26282c;
+    color: #8b949e;
+}
+
+.dark .tool-diff-applied .diff-code-insert,
+.dark .tool-diff-applied .diff-gutter-insert {
+    background-color: #1f2837;
+    color: #c9d1d9;
+}
+
+.dark .tool-diff-applied .diff-code-delete .token {
+    color: #8b949e !important;
+    background: inherit !important;
+}
+
+.dark .tool-diff-applied .diff-code-insert .token {
+    color: #c9d1d9 !important;
+    background: inherit !important;
+}

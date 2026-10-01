@@ -142,6 +142,42 @@ describe('file_write patch mode routes to the diff renderer', () => {
     });
 });
 
+describe('file_write patch diff round-trips through persisted history', () => {
+    // chatApi persists `formatted.content` (the synthesized diff) as the tool
+    // fence body and drops `renderAs`.  On reload ToolBlock re-runs the
+    // formatter with that string; JSON.parse fails and it used to fall into
+    // the generic `{content, type:'text'}` branch, so the diff was Prism-
+    // highlighted as the file's language (python, tsx …) instead of routed
+    // to react-diff-view.  This is the exact shape ToolBlock hands back.
+    const persisted = patchCall().content;
+
+    it('recognises its own synthesized diff and routes it to the diff renderer', () => {
+        const out = formatMCPOutput('file_write', persisted, undefined, {});
+        expect(out.renderAs).toBe('diff');
+        expect(out.content).toBe(persisted);
+    });
+
+    it('rebuilds a summary naming the file from the diff header', () => {
+        const out = formatMCPOutput('file_write', persisted, undefined, {});
+        expect(out.summary).toContain('src/a.ts');
+    });
+
+    it('applies the same collapse threshold as the live path', () => {
+        const short = formatMCPOutput('file_write', persisted, undefined, {});
+        expect(short.collapsed).toBe(false);
+        const long = formatMCPOutput(
+            'file_write', patchCall({ patch: lines(6), content: lines(6) }).content, undefined, {},
+        );
+        expect(long.collapsed).toBe(true);
+    });
+
+    it('does not treat arbitrary non-JSON text as a diff', () => {
+        const out = formatMCPOutput('file_write', 'Updated src/a.ts (120 bytes)', undefined, {});
+        expect(out.renderAs).toBeUndefined();
+        expect(out.content).toBe('Updated src/a.ts (120 bytes)');
+    });
+});
+
 describe('file_write paths that must not change', () => {
     // Guards against over-correction. All of these already passed before the
     // dead code was removed, and must keep passing.
