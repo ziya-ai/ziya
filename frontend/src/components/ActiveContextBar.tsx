@@ -4,6 +4,7 @@
 import React from 'react';
 import { useProject } from '../context/ProjectContext';
 import { useTheme } from '../context/ThemeContext';
+import { useActiveChatOptional } from '../context/ActiveChatContext';
 import { useBench } from '../hooks/useBench';
 import { placementForLegacySkill } from '../utils/benchMigration';
 import { CloseOutlined } from '@ant-design/icons';
@@ -39,8 +40,10 @@ export const ActiveContextBar: React.FC = () => {
   // list carried two meanings by visibility and showed SUPPRESSED discoverable
   // skills as active.  Until the bench has answered, fall back to the legacy
   // list read through its real semantics (never as raw membership).
+  const activeChat = useActiveChatOptional();
   const bench = useBench({
     projectId: currentProject?.id,
+    conversationId: activeChat?.currentConversationId ?? null,
     legacy: {
       skillIds: activeSkillIds,
       skills,
@@ -53,8 +56,16 @@ export const ActiveContextBar: React.FC = () => {
         .map(i => skills.find(s => s.name === i.name))
         .filter((s): s is typeof skills[number] => !!s)
     : skills.filter(s => activeSkillIds.includes(s.id) && placementForLegacySkill(s, true) === 'always');
+  // ✦ on-demand skills the model loaded this turn (slice 5).
+  const pickedUpSkills = bench.ready
+    ? bench.pickedUpItems
+        .filter(i => i.kind === 'skill')
+        .map(i => skills.find(s => s.name === i.name))
+        .filter((s): s is typeof skills[number] => !!s)
+    : [];
   const hasAdditionalFiles = additionalFiles.length > 0;
-  const hasAnySelection = activeContexts.length > 0 || activeSkills.length > 0 || hasAdditionalFiles;
+  const hasAnySelection = activeContexts.length > 0 || activeSkills.length > 0
+    || pickedUpSkills.length > 0 || hasAdditionalFiles;
   
   if (!hasAnySelection) {
     return (
@@ -135,6 +146,30 @@ export const ActiveContextBar: React.FC = () => {
               style={{ fontSize: '9px', opacity: 0.7, cursor: 'pointer' }}
               onClick={() => removeSkillFromLens(skill.id)}
             />
+          </div>
+        ))}
+
+        {/* ✦ picked up on demand this turn: not removable here, it was
+            the model's choice and ends with the turn */}
+        {pickedUpSkills.map(skill => (
+          <div
+            key={`pickup-${skill.id}`}
+            data-testid="skill-pickup"
+            title="Loaded on demand by the model this turn"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '4px 8px',
+              borderRadius: '12px',
+              fontSize: '11px',
+              fontWeight: 500,
+              border: `1px dashed ${skill.color}`,
+              color: skill.color,
+            }}
+          >
+            <span aria-hidden="true">✦</span>
+            <span>{skill.name}</span>
           </div>
         ))}
         

@@ -50,6 +50,7 @@ from app.utils.diff_utils import apply_diff_pipeline
 from app.utils.diff_utils.pipeline.reverse_pipeline import apply_reverse_diff_pipeline
 from app.utils.custom_exceptions import ValidationError
 from app.utils.file_utils import read_file_content
+from app.utils.capability_events import capability_used_event
 from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware, StreamingMiddleware
 from app.middleware.project_context import ProjectContextMiddleware
 from app.utils.context_enhancer import initialize_ast_if_enabled
@@ -2054,6 +2055,11 @@ async def stream_chunks(body):
                         logger.debug(f"🔍 TOOL_DISPLAY: {chunk.get('tool_name')} completed")
                         # Stream tool result
                         yield f"data: {json.dumps({'tool_result': chunk})}\n\n"
+                        # ✦ pickup: an on-demand skill loaded this turn
+                        # (design/capabilities-hub.md, slice 5).
+                        _cap = capability_used_event(chunk)
+                        if _cap:
+                            yield f"data: {json.dumps(_cap)}\n\n"
                     elif chunk.get('type') == 'tool_execution':  # Legacy support
                         logger.debug(f"🔍 TOOL_EXECUTION (legacy): {chunk.get('tool_name')} completed")
                     elif chunk.get('type') == 'stream_end':
@@ -2236,6 +2242,9 @@ async def stream_chunks(body):
                                 yield f"data: {json.dumps({'tool_execution': retry_chunk})}\n\n"
                             elif retry_chunk.get('type') == 'tool_display':
                                 yield f"data: {json.dumps({'tool_result': retry_chunk})}\n\n"
+                                _cap = capability_used_event(retry_chunk)
+                                if _cap:
+                                    yield f"data: {json.dumps(_cap)}\n\n"
                             elif retry_chunk.get('type') == 'throttling_error':
                                 yield f"data: {json.dumps(retry_chunk)}\n\n"
                             elif retry_chunk.get('type') in ('continuation_rewind', 'continuation_failed'):
