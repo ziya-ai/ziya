@@ -66,7 +66,8 @@ import {
     parseHunkStatuses
 } from '../apis/chatApi';
 import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffParts, findRejectedDiffIndices, isDiffRejectedMarkerBlock } from '../utils/diffUtils';
-import { formatMCPOutput } from '../utils/mcpFormatter';
+import { formatMCPOutput, parsePythonLiteral } from '../utils/mcpFormatter';
+import { MemoryCard } from './MemoryCard';
 import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
@@ -688,14 +689,15 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
             // Not JSON, continue with regular processing
         }
 
-        // Builtin file tools (file_read, file_write, file_list, ast_*) may
-        // return plain text that doesn't start with '{'.  Route through
+        // Builtin tools (file_*, ast_*, memory_propose/save) may return
+        // text the parse above could not handle.  Route through
         // formatMCPOutput so tool-specific formatters build a proper summary
-        // with file path and line counts instead of the generic fallback.
+        // (or memory card) instead of the generic fallback.
         const FILE_TOOL_NAMES = new Set([
             'file_read', 'mcp_file_read', 'file_write', 'mcp_file_write',
             'file_list', 'mcp_file_list', 'ast_get_tree', 'mcp_ast_get_tree',
             'ast_search', 'mcp_ast_search', 'ast_references', 'mcp_ast_references',
+            'memory_propose', 'mcp_memory_propose', 'memory_save', 'mcp_memory_save',
         ]);
         if (FILE_TOOL_NAMES.has(actualToolName)) {
             return formatMCPOutput(actualToolName, content, toolInput, {
@@ -935,6 +937,12 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                 description={content}
             />
         );
+    }
+
+    // memory_propose / memory_save: render the memory card instead of tool chrome.
+    const memoryCard = (formattedOutput as any).memory;
+    if ((formattedOutput as any).renderAs === 'memory' && memoryCard) {
+        return <MemoryCard data={memoryCard} isDarkMode={isDarkMode} verified={verified === true} />;
     }
 
 
