@@ -346,6 +346,8 @@ const MessageActions = memo<MessageActionsProps>(({
         addStreamingConversation,
         streamingConversations,
         toggleMessageMute,
+        removeMessage,
+        replaceMessages,
         editingMessageIndex,
     } = useActiveChat();
     const { setConversations } = useConversationList();
@@ -387,14 +389,27 @@ const MessageActions = memo<MessageActionsProps>(({
         const msgs = activeChatRef.current.currentMessages;
         const truncatedMessages = msgs.slice(0, actualIndex + 1);
         const messagesToSend = truncatedMessages.filter(msg => !msg.muted);
-        convListRef.current.setConversations(prev => prev.map(conv =>
-            conv.id === currentConversationId
-                ? { ...conv, messages: truncatedMessages, _version: Date.now() }
-                : conv
-        ));
+        // Locate the message in the list as it was BEFORE truncating locally.
+        const locator = messageLocator(msgs, actualIndex);
+        // Owner project read at call time; no project-context subscription here
+        // (see MessageActions.test: it would re-render every message row).
+        const pid = ownerProjectId(
+            convListRef.current.conversations.find(c => c.id === currentConversationId));
+        // Persisted to IndexedDB too: a state-only truncation let IDB restore
+        // the old tail if the send failed before its own save.
+        replaceMessages(currentConversationId, () => truncatedMessages);
         addStreamingConversation(currentConversationId);
         (async () => {
             try {
+                // The server drops the old tail first.  bulk-sync merges by id
+                // and never removes messages, so without this the truncation
+                // would never reach disk; and it must land before the new
+                // answer syncs, or it would remove the answer too.  A 404 means
+                // the chat has not synced yet, so there is nothing to rewind.
+                const rw = await rewindMessages(pid, currentConversationId, locator);
+                if (!rw.ok && rw.status !== 404) {
+                    console.warn('Resubmit: server rewind failed; the old tail stays on the server record', rw.status);
+                }
                 await send({
                     messages: messagesToSend,
                     question: message.content,
@@ -405,20 +420,26 @@ const MessageActions = memo<MessageActionsProps>(({
             }
         })();
         setQuestion('');
-    }, [currentConversationId, actualIndex, message.content, message.images, isCurrentlyStreaming, addStreamingConversation, send, setQuestion]);
+    }, [currentConversationId, actualIndex, message.content, message.images, isCurrentlyStreaming, addStreamingConversation, send, setQuestion, replaceMessages]);
 
     const handleDiscard = useCallback(() => {
         if (isCurrentlyStreaming) return;
-        convListRef.current.setConversations(prev => prev.map(conv =>
-            conv.id === currentConversationId
-                ? {
-                    ...conv,
-                    messages: conv.messages.filter((_, i) => i !== actualIndex),
-                    _version: Date.now(),
-                }
-                : conv
-        ));
-    }, [currentConversationId, actualIndex, isCurrentlyStreaming]);
+        const conv = convListRef.current.conversations.find(c => c.id === currentConversationId);
+        const locator = messageLocator(conv?.messages || activeChatRef.current.currentMessages, actualIndex);
+        const pid = ownerProjectId(conv);
+        // Explicit delete: bulk-sync cannot remove a message.  A 404 (chat not
+        // synced yet) is fine, the next push creates it without.  Any other
+        // failure leaves the message on the server, and the next pull
+        // brings it back.
+        void deleteMessage(pid, currentConversationId, locator).then(r => {
+            if (!r.ok && r.status !== 404) {
+                console.warn('Delete: server delete failed; the message stays on the server record', r.status);
+            }
+        });
+        // removeMessage persists to IndexedDB as well as React state; a
+        // state-only update let IDB restore the deleted message.
+        removeMessage(currentConversationId, actualIndex);
+    }, [currentConversationId, actualIndex, isCurrentlyStreaming, removeMessage]);
 
     if (isEditing) return null;
 

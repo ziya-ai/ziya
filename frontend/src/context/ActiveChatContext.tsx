@@ -13,7 +13,7 @@
  * pass-through — same pattern as StreamingContext.
  */
 import React, { createContext, useContext, useMemo, Dispatch, SetStateAction } from 'react';
-import { Message } from '../utils/types';
+import { Conversation, Message } from '../utils/types';
 import type { ProcessingState } from './ChatContext';
 import type { ThinkingBlockData } from '../utils/thinkingBlocks';
 import type { TaskBinding } from '../types/task_binding';
@@ -64,6 +64,9 @@ export interface ActiveChatContextValue {
   lastResponseIncomplete: boolean;
   setDisplayMode: (conversationId: string, mode: 'raw' | 'pretty') => void;
   toggleMessageMute: (conversationId: string, messageIndex: number) => void;
+  removeMessage: (conversationId: string, messageIndex: number) => void;
+  /** Rewrite a message list in state AND IndexedDB (see ChatContext). */
+  replaceMessages: (conversationId: string, update: (messages: Message[]) => Message[], extra?: Partial<Conversation>) => void;
   setChatContexts: (chatId: string, contextIds: string[], skillIds: string[], additionalFiles: string[], additionalPrompt: string | null) => Promise<void>;
   currentDisplayMode: 'raw' | 'pretty';
   throttlingRecoveryData: Map<string, { toolResults?: any[]; partialContent?: string }>;
@@ -106,6 +109,8 @@ export const ActiveChatProvider: React.FC<
       lastResponseIncomplete: value.lastResponseIncomplete,
       setDisplayMode: value.setDisplayMode,
       toggleMessageMute: value.toggleMessageMute,
+      removeMessage: value.removeMessage,
+      replaceMessages: value.replaceMessages,
       currentDisplayMode: value.currentDisplayMode,
       setChatContexts: value.setChatContexts,
       throttlingRecoveryData: value.throttlingRecoveryData,
@@ -134,7 +139,7 @@ export const ActiveChatProvider: React.FC<
       value.setStreamedContentMap, value.setReasoningContentMap,
       value.getProcessingState, value.updateProcessingState,
       value.setDynamicTitleLength, value.setDisplayMode,
-      value.toggleMessageMute, value.setChatContexts,
+      value.toggleMessageMute, value.removeMessage, value.replaceMessages, value.setChatContexts,
       value.setThrottlingRecoveryData,
     ]
   );

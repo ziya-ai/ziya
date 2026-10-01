@@ -807,6 +807,11 @@ export function decideCrossTabMerge(
     if (remoteMsgCount >= localMsgCount || localMsgCount <= 2) {
         return { action: 'adopt-remote' };
     }
+    // Fewer messages remotely because another tab deleted or rewound them:
+    // adopt, or this tab keeps the removed messages and writes them back.
+    if (shrinkExplainedByTombstones(local.messages, remote)) {
+        return { action: 'adopt-remote' };
+    }
     return { action: 'keep-local' };
 }
 
