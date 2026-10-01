@@ -111,9 +111,44 @@ def test_public_plan_prices_list_and_never_guesses():
     assert line.list_cost == pytest.approx(0.45)
     assert line.provenance == "list" and not line.is_partial
 
-    unknown = price_record(_rec(model_id="claude-mythos-5"), cat, PublicPlan())
+    unknown = price_record(_rec(model_id="claude-nonesuch-9"), cat, PublicPlan())
     assert unknown.effective_cost is None and unknown.provenance == "unknown"
     assert unknown.unpriced_dims == ["input", "output"]
+
+
+def test_builtin_catalog_prices_current_claude_bedrock_ids():
+    """The shipped table is the only price source a normal install has, so
+    the resolved Bedrock ids that actually appear in a ledger must hit it —
+    with the right card, since fable-5 / fable-5-1 and opus-5 / opus-5-5
+    differ only in cache-read and the globs must not bleed into each other.
+    Anthropic platform pricing page, read 2026-09-28."""
+    from app.config.pricing import build_catalog
+    cat = build_catalog(user_file=Path("/nonexistent"))
+    now = time.time()
+
+    def rates(mid):
+        e = cat.lookup("bedrock", mid, None, now)
+        assert e is not None, mid
+        assert e.source == "builtin" and e.tier_factors == {"standard": 1.0, "batch": 0.5}
+        assert e.long_context is None, f"{mid}: 4.6+ bills 1M at standard rate"
+        return e.unit_prices
+
+    assert rates("global.anthropic.claude-fable-5-1") == {
+        "input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write_5m": 12.5, "cache_write_1h": 20.0}
+    assert rates("anthropic.claude-fable-5")["cache_read"] == 1.0          # not the 5.1 card
+    assert rates("global.anthropic.claude-opus-4-8") == {
+        "input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write_5m": 6.25, "cache_write_1h": 10.0}
+    assert rates("global.anthropic.claude-opus-5")["cache_read"] == 0.5
+    assert rates("global.anthropic.claude-opus-5-5") == {
+        "input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write_5m": 5.0, "cache_write_1h": 8.0}
+    assert rates("global.anthropic.claude-sonnet-5")["input"] == 2.0
+    assert rates("global.anthropic.claude-sonnet-5-5-20261001-v1:0")["input"] == 2.0
+    assert rates("us.anthropic.claude-sonnet-4-6-v1:0")["input"] == 3.0
+    # Sonnet 4.5 keeps its >200k step-up; it predates the flat-1M models.
+    assert cat.lookup("bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0", None, now).long_context
+    # Genuinely absent stays unknown — this is the sentinel the other tests use.
+    assert cat.lookup("bedrock", "global.anthropic.claude-nonesuch-9", None, now) is None
+    assert cat.version == "builtin:2026-10-01"  # Gemini parity pass (Google pricing page)
 
 
 def test_partial_when_a_dimension_is_unlisted():
@@ -192,7 +227,7 @@ def test_discount_table_plan_provenance_and_inheritance():
     assert unlisted.provenance == "default_rule"
 
     # No list price → still unknown; a discount is not a price.
-    none = price_record(_rec(model_id="claude-mythos-5"), cat, plan)
+    none = price_record(_rec(model_id="claude-nonesuch-9"), cat, plan)
     assert none.effective_cost is None and none.provenance == "unknown"
 
 
@@ -265,7 +300,7 @@ def test_ledger_estimate_then_actual_and_rollup(isolated_home):
     # A never-actualized estimate on another project, and an unpriced model.
     ledger.append(_rec(id="", status="estimate", dims={"input": 200_000},
                        project_id="P2", conversation_id="C2"))
-    ledger.append(_rec(id="", model_id="claude-mythos-5", project_id="P1", conversation_id="C1",
+    ledger.append(_rec(id="", model_id="claude-nonesuch-9", project_id="P1", conversation_id="C1",
                        dims={"input": 10}))
 
     r = ledger.rollup(by="project", catalog=cat, plan=PublicPlan())
