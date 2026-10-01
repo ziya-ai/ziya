@@ -35,22 +35,20 @@ def reverse_diff(diff_content: str) -> str:
         line = lines[i]
         
         if line.startswith('@@'):
-            # Reverse hunk header: swap old and new ranges
-            match = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@(.*)$', line)
+            # Reverse hunk header: swap old and new ranges. Each side's count
+            # is optional independently (git -U0 writes a deletion of line 3
+            # as '@@ -3 +2,0 @@'), so one pattern covers all four forms and
+            # each side keeps the form it had. Two fixed-form patterns used to
+            # leave mixed forms unswapped, describing the forward change.
+            match = re.match(r'^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@(.*)$', line)
             if match:
                 old_start, old_count, new_start, new_count, context = match.groups()
-                reversed_line = f"@@ -{new_start},{new_count} +{old_start},{old_count} @@{context}"
-                reversed_lines.append(reversed_line)
+                reversed_lines.append(
+                    f"@@ -{new_start}{new_count or ''} +{old_start}{old_count or ''} @@{context}"
+                )
             else:
-                # Handle single-line format: @@ -1 +1 @@
-                match = re.match(r'^@@ -(\d+) \+(\d+) @@(.*)$', line)
-                if match:
-                    old_start, new_start, context = match.groups()
-                    reversed_line = f"@@ -{new_start} +{old_start} @@{context}"
-                    reversed_lines.append(reversed_line)
-                else:
-                    # Keep malformed headers as-is
-                    reversed_lines.append(line)
+                # Keep malformed headers as-is
+                reversed_lines.append(line)
             i += 1
             
             # Process the hunk content - collect and reorder changes

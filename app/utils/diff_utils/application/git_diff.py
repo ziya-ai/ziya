@@ -810,6 +810,10 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
         Dict with status information about the operation
     """
     logger.info(f"Applying diff atomically to {file_path}")
+
+    # CLI entry point; same unterminated-final-line hazard as the pipeline.
+    from app.utils.diff_utils.core.text_normalization import terminate_diff_text
+    git_diff = terminate_diff_text(git_diff)
     
     # Read the original file content
     try:

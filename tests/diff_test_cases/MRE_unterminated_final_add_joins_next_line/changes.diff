@@ -1,0 +1,9 @@
+diff --git a/pyproject.toml b/pyproject.toml
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,1 +4,1 @@
+-description = "Self-hosted AI workbench. Runs alongside your editor, not instead of it. The surface next to your editor where conversations, architecture work, diff review, and visual debugging happen."
++description = "Self-hosted AI harness for technical work: chat UI and coding agent in one local tool. Bring any model (Bedrock, Anthropic, OpenAI, Gemini, Ollama), apply validated diffs to your real repo, and get diagrams rendered inline. Runs alongside your editor, not instead of it."
+@@ -11,1 +11,1 @@
+-keywords = ["ai", "llm", "coding", "architecture", "operations", "visualization", "self-hosted", "bedrock", "claude", "mcp"]
++keywords = ["ai", "llm", "coding-agent", "ai-agent", "coding", "architecture", "operations", "visualization", "diagrams", "self-hosted", "local-first", "bedrock", "claude", "openai", "gemini", "ollama", "local-llm", "mcp"]
