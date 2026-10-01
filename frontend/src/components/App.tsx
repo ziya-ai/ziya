@@ -67,6 +67,40 @@ const ChunkLoadingFallback: React.FC = () => (
     </div>
 );
 
+// A lazily-loaded modal whose chunk cannot be fetched (stale build) or whose
+// recovery reload never landed (see lazyWithRetry.ts watchdog) must fail as
+// ONE modal, not as the page.  Without this the rejection climbs to
+// RootErrorBoundary and pressing the memory button takes the whole app down.
+// Only chunk-class errors are handled here; anything else propagates as before.
+function isChunkFailure(error: Error): boolean {
+    return error.name === 'ChunkLoadError'
+        || /Loading chunk|recovery reload did not complete/.test(error.message);
+}
+
+class LazyChunkBoundary extends React.Component<
+    { children: React.ReactNode; onDismiss: () => void },
+    { failed: boolean }
+> {
+    constructor(props: { children: React.ReactNode; onDismiss: () => void }) {
+        super(props);
+        this.state = { failed: false };
+    }
+    static getDerivedStateFromError(error: Error) {
+        return isChunkFailure(error) ? { failed: true } : null;
+    }
+    componentDidCatch(error: Error) {
+        if (!isChunkFailure(error)) return;
+        message.error({ content: error.message, key: 'ziya-chunk-failure', duration: 10 });
+        // Reset the caller's show-flag so the modal is not left half-open and
+        // the button is usable again; then clear our own state.
+        this.props.onDismiss();
+        this.setState({ failed: false });
+    }
+    render() {
+        return this.state.failed ? null : this.props.children;
+    }
+}
+
 // Error boundary component to catch extension context errors
 class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
     constructor(props: { children: React.ReactNode }) {
@@ -628,6 +662,7 @@ export const App: React.FC = () => {
                         </Suspense>
                     )}
 
+                    <LazyChunkBoundary onDismiss={() => { setShowShellConfig(false); setShowMCPStatus(false); setShowMCPRegistry(false); }}>
                     <Suspense fallback={<ChunkLoadingFallback />}>
                         {mcpEnabled && (
                             <>
@@ -682,7 +717,7 @@ export const App: React.FC = () => {
                                     ? currentMessages[currentMessages.length - 1]?.id
                                     : null
                             } />
-                    </Suspense>}
+                    </Suspense></LazyChunkBoundary>}
 
                     <div style={{
                         position: 'fixed',
