@@ -11,6 +11,7 @@ import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useQuestionContext } from '../context/QuestionContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import { useSendPayload } from '../hooks/useSendPayload';
+import { messageLocator, ownerProjectId, deleteMessage } from '../api/conversationSyncApi';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import SwarmFlowGraph from './SwarmFlowGraph';
 import type { SwarmNode } from './SwarmFlowGraph';
@@ -674,18 +675,30 @@ export const StreamedContent: React.FC<{}> = () => {
             // Also remove the preserved partial-turn message (marked with
             // ziya-auth-interrupted) that immediately precedes the banner,
             // since the retry will regenerate that turn from scratch.
+            // Both are also deleted on the server: bulk-sync merges by id and
+            // never removes a message, so a state-only splice left the banner
+            // on the record and the next pull brought it back.
             setConversations(prev => prev.map(conv => {
                 if (conv.id !== retryConversationId) return conv;
                 // Walk backwards to find and remove the error message
                 const msgs = [...conv.messages];
+                const pid = ownerProjectId(conv);
+                const dropOnServer = (i: number) => {
+                    const loc = messageLocator(conv.messages, i);
+                    void deleteMessage(pid, retryConversationId, loc).then(r => {
+                        if (!r.ok && r.status !== 404) console.warn('Retry: server delete of auth message failed', r.status);
+                    });
+                };
                 for (let i = msgs.length - 1; i >= 0; i--) {
                     if (msgs[i].role === 'assistant' &&
                         typeof msgs[i].content === 'string' &&
                         msgs[i].content.includes('auth-error-retry-button')) {
+                        dropOnServer(i);
                         msgs.splice(i, 1);
                         if (i > 0 && msgs[i - 1].role === 'assistant' &&
                             typeof msgs[i - 1].content === 'string' &&
                             msgs[i - 1].content.includes('ziya-auth-interrupted')) {
+                            dropOnServer(i - 1);
                             msgs.splice(i - 1, 1);
                         }
                         break;

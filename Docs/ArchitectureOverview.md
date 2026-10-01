@@ -270,6 +270,24 @@ through as a plain code block where it would read as a legitimate sample.
 A fake fence with a prose or code body still passes through, so the
 format can be quoted when discussing it.
 
+### In-app links (`ziya://`)
+
+`app/utils/ziya_links.py` and its mirror `frontend/src/utils/ziyaLinks.ts`
+define the one address format the model can write for something inside
+this install: `ziya://project/<projectId>`, `ziya://chat/<conversationId>`,
+`ziya://chat/<conversationId>/<messageIndex>` (0-based, the index
+`chat_search` reports). The chat-history tools attach a `link` to every
+result and carry the format hint in their descriptions, so the model learns
+it where it receives the ids. On the browser side `ZiyaLinkNavigator`
+(mounted in `AppProviders` under `ChatProvider`) owns one capture-phase
+document click listener: any `<a href="ziya://…">`, however it was rendered,
+is swallowed before the browser sees an unknown scheme, the owning project
+is taken from `conversations` state or `GET /api/v1/chats/{id}/locate`
+(cross-project chat index), `switchProject` runs if it differs, and the
+conversation is opened with `loadConversationAndScrollToMessage`. Chat links
+carry no project id on purpose: a conversation can be moved between
+projects and the id alone still resolves.
+
 ---
 
 ## File Tree & Context
