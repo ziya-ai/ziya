@@ -2098,6 +2098,10 @@ MODEL_CONFIGS = {
             "max_output_tokens": 131072,
             "default_max_output_tokens": 16384,
             "supports_thinking": True,
+            # Reasoning is billed but never streamed (see the meta-muse family
+            # note), so the display selector offers only on/off here rather
+            # than a "full" tier that could never show anything.
+            "thinking_display_options": ["off", "on"],
             "native_function_calling": True,
             "supports_vision": True,
             "inline_schema_refs": True,
@@ -2158,7 +2162,8 @@ ENV_VAR_MAPPING = {
     "ZIYA_MODEL_ID_OVERRIDE": "model_id",
     "AWS_REGION": "region",
     "ZIYA_THINKING_LEVEL": "thinking_level",
-    "ZIYA_THINKING_EFFORT": "thinking_effort"
+    "ZIYA_THINKING_EFFORT": "thinking_effort",
+    "ZIYA_THINKING_DISPLAY": "thinking_display"
 }
 
 # Default request size limits
@@ -2550,13 +2555,14 @@ _VALID_MODEL_CONFIG_KEYS = frozenset({
     "available_regions", "context_window", "convert_system_message_to_human",
     "default_max_output_tokens", "effort_beta_required", "endpoint_override",
     "enforce_size_limit", "extended_context_header", "extended_context_limit",
-    "family", "inference_parameters", "internal_parameters",
+    "family", "inference_parameters", "inline_schema_refs", "internal_parameters",
     "is_advanced_model", "mantle_api", "max_input_tokens", "max_iterations",
-    "max_output_tokens", "max_request_size_mb", "max_thinking_tokens", "max_tokens",
+    "max_output_tokens", "max_request_size_mb", "max_thinking_tokens", "max_tokens", "max_tokens_param",
     "message_format", "model_id", "model_name", "native_function_calling",
     "parameter_mappings", "parameter_ranges", "parent", "preferred_region",
     "preferred_regions", "preview", "region", "region_restricted",
     "region_router_class", "requires_provider_data_share",
+    "recover_text_tool_calls",
     "required_data_retention_mode",
     "reasoning_request", "replay_reasoning_content", "request_extra_body", "supports_reasoning_effort",
     "service_name", "stop_sequences", "supports_cache", "supported_efforts",
