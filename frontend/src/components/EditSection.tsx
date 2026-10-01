@@ -69,14 +69,27 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         return () => window.removeEventListener('modelChanged', onModelChanged);
     }, []);
 
-    // Initialize attachedImages when editing starts
+    // Seed the draft (text + images) when an edit SESSION starts: editing
+    // flips on, or the target index / conversation changes under a mounted
+    // editor.  Deliberately NOT on every currentMessages identity change:
+    // ChatContext's syncWithServer runs every 30s and replaces the active
+    // conversation's message array (same content, new reference).  With
+    // currentMessages driving this effect, every tick re-ran it and
+    // overwrote the in-progress edit with the stored content, so an edit
+    // that took longer than the interval could never be completed.
+    const editSessionRef = useRef<string | null>(null);
     useEffect(() => {
-        if (isEditing) {
-            const messageImages = currentMessages[index].images || [];
-            setAttachedImages(messageImages);
-            setEditedMessage(currentMessages[index].content || '');
+        if (!isEditing) {
+            editSessionRef.current = null;
+            return;
         }
-    }, [isEditing, index, currentMessages]);
+        const sessionKey = `${currentConversationId}:${index}`;
+        if (editSessionRef.current === sessionKey) return;
+        editSessionRef.current = sessionKey;
+        const msg = currentMessages[index];
+        setAttachedImages(msg?.images || []);
+        setEditedMessage(msg?.content || '');
+    }, [isEditing, index, currentConversationId, currentMessages]);
 
     // Process image files (from file input or drag-drop)
     const processImageFiles = async (files: FileList | null) => {
