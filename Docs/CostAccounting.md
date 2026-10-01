@@ -104,21 +104,76 @@ be published.
 ## Built-in catalog
 
 `app/config/pricing.py::BUILTIN_CATALOG`, revision `CATALOG_REVISION`.
-Public on-demand list prices for the Claude 3.x–4.5 family (Anthropic and
-Bedrock), Amazon Nova, DeepSeek R1, gpt-oss, Llama 3.3/4 and Qwen3-Coder on
-Bedrock, GPT‑4o/4.1/5 and o‑series on OpenAI, Gemini 2.0/2.5/3 Pro, GLM‑4.5/4.6,
-and Ollama at zero.
+This table ships with the package and is the **only** price source a normal
+install has — `pricing.json` is an override for internal or negotiated
+rates, not a prerequisite. It carries public on-demand list prices for the
+Claude 3.x–5.5 family including Fable 5 / 5.1 and Mythos 5 / 5.1 (Anthropic
+and Bedrock, same list), Amazon Nova, DeepSeek R1, gpt-oss, Llama 3.3/4 and
+Qwen3-Coder on Bedrock, GPT‑4o/4.1/5 and o‑series on OpenAI, the whole
+Gemini direct line (2.5 Pro/Flash/Flash‑Lite, 3 Flash and 3.1 Pro preview,
+3.1 and 3.5 Flash‑Lite, 3.5–3.8 Flash, plus the shut-down 2.0 and 3 Pro
+rows so history still prices), GLM‑4.5/4.6, and Ollama at zero. Claude 4.6
+and later bill the full 1M context at the standard rate; only Sonnet 4.5 and
+earlier, and the Gemini Pro cards, carry the >200k step-up.
+
+Gemini notes (ai.google.dev/gemini-api/docs/pricing, read 2026‑10‑01):
+Batch and Flex are 0.5× and Priority 1.8× of standard on every 2.5/3.x text
+model; 3.6/3.7/3.8 Flash are at an introductory $0.75 / $3.75 / $0.075
+through 2026‑12‑31 and double on 2027‑01‑01 (two dated rows, so a December
+call and a January call price differently without a catalog change); the
+audio-input surcharge on the Flash‑Lite / 3 Flash cards is not modelled;
+Google does not halve the 3.1 Pro Batch cache-read rate, which a uniform
+tier factor cannot express, so that one cell prices slightly low. **Gemini
+4 Argon** carries its announced introductory rate ($2 / $10, cached input
+95% off) from 2026‑09‑30 under a provisional `gemini-4-argon*` glob — the
+endpoint was not on the API models page when this was written, so the id in
+`models_config.py` and here must be corrected once Google publishes it.
+`gemini-pro-latest` (the `gemini-latest` alias) is a floating pointer and
+is intentionally unpriced; use the concrete model if cost matters.
 
 **Deliberately unpriced** (no confident public figure at the time the table
-was written — add them to `pricing.json`): Claude Sonnet 4.6 / 5, Opus 4.6–5,
-Fable, Mythos; GPT‑5.4 / 5.5; Gemini 3.1 / 3.5; GLM‑4.7 / 5.2; DeepSeek v3.x;
-Kimi K2.x; MiniMax M2.1; Qwen3‑Next; Nova 2; Meta Muse Spark. Nova cache-read
-rates are also omitted, so Nova totals show as partial when caching is in
-play.
+was written — add them to `pricing.json`): GPT‑5.4 / 5.5;
+GLM‑4.7 / 5.2; DeepSeek v3.x; Kimi K2.x / K3; MiniMax M2.1; Qwen3‑Next; Nova 2;
+Meta Muse Spark. Nova cache-read rates are also omitted, so Nova totals show
+as partial when caching is in play. Bedrock `flex` factors are listed only
+where the provider publishes one (OpenAI); a Bedrock row billed at Flex for
+a model with no factor is unknown, not standard.
 
 Rate cards change; treat the built-in table as a starting point and the
 catalog version stamped on every figure as the thing that tells you which
-table produced it.
+table produced it. To refresh it: add a dated entry (`effective_from`)
+rather than editing an old one, cite the provider's pricing page in the
+entry `note` or the commit, bump `CATALOG_REVISION`, and extend
+`tests/backend/test_cost_model.py::test_builtin_catalog_prices_current_claude_bedrock_ids`
+with the resolved id you expect to price.
+
+## Where to see it
+
+Cost display is **off by default** and there is no discovery link for it;
+tokens are recorded regardless, so turning it on later prices everything
+already in the ledger. To enable it: open the **model configuration modal**
+(the model button), choose a scope under *Apply model to* — project, folder
+or conversation — and tick **Show cost for this &lt;scope&gt;**. The setting is
+saved on that record (`costDisplay: "show" | "hide"`) and resolved like the
+model pin, most specific wins: conversation → folder → project → hidden.
+There is no server-wide value, which is why the checkbox is disabled while
+*Server default* is selected. The row shows the effective value for the
+active conversation and which scope decided it.
+
+Where the resolved value is *shown*:
+
+- **Usage & cost…** (link in that same row): the global view. Group by
+  month, day, project, model, source, tier or conversation over the last
+  7 / 30 days, this month, or all time; scope to the current project or
+  every project. Bold/italic and `unpriced` follow the rules above; `*`
+  marks a figure with unpriced dimensions, and hovering a cost shows list
+  vs. effective price, provenance and what is missing. A banner reports the
+  share of records with no rate and points at `pricing.json`.
+- **Conversation menu → Info**: a `Cost` line with the conversation's total
+  and its token counts, from the same ledger. Absent when hidden.
+
+Hiding is display-only at every scope: a conversation set to `hide` inside
+a project set to `show` still contributes its rows to the project's totals.
 
 ## API
 
@@ -136,8 +191,7 @@ Rollup and records accept `since` / `until` (unix seconds or ISO date),
 
 - Background memory extraction does not go through the metered executor and
   is not yet in the ledger.
-- Per-turn cost in the live chat stream and a Usage tab in the UI are
-  pending; the ledger and API are the substrate for both.
+- Per-turn cost in the live chat stream (a new SSE event) is pending.
 - Reconciling to a provider invoice to the cent is a non-goal: rates revise
   retroactively and credits post later. Figures are labelled with the
   catalog version they used.

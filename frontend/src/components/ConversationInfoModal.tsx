@@ -16,6 +16,8 @@ import type { Conversation } from '../utils/types';
 import { db } from '../utils/db';
 import { hydrateConversationMessages } from '../utils/conversationHydration';
 import { computeConversationStats, formatBytes } from '../utils/conversationInfo';
+import { fetchConversationCost, formatTokens, RollupResponse } from '../api/usageApi';
+import { CostCell } from './UsageCostModal';
 
 const { Text } = Typography;
 
@@ -71,6 +73,10 @@ const ConversationInfoModal: React.FC<Props> = ({
     // Backend detailed-capture flag (char counts + disk snapshots); null
     // until the first Load reports it.
     const [detailedCapture, setDetailedCapture] = useState<boolean | null>(null);
+    // Ledger rollup for this conversation (usage.db, global).  null =
+    // not loaded; error string when the request failed.
+    const [cost, setCost] = useState<RollupResponse | null>(null);
+    const [costError, setCostError] = useState<string | null>(null);
 
     useEffect(() => {
         if (!visible || !conversationId) return;
@@ -112,6 +118,21 @@ const ConversationInfoModal: React.FC<Props> = ({
         setContextDebug(null);
         setContextDebugError(null);
     }, [conversationId]);
+
+    // Cost is cheap to fetch (one indexed query) so load it on open rather
+    // than behind a button like the debug panel.
+    useEffect(() => {
+        setCost(null);
+        setCostError(null);
+        if (!visible || !conversationId) return;
+        let cancelled = false;
+        fetchConversationCost(conversationId).then(r => {
+            if (!cancelled) setCost(r);
+        }).catch(e => {
+            if (!cancelled) setCostError(e instanceof Error ? e.message : String(e));
+        });
+        return () => { cancelled = true; };
+    }, [visible, conversationId]);
 
     const fetchContextDebug = async () => {
         const pid = full?.projectId || (conversation as any)?.projectId || projectId;
@@ -215,6 +236,24 @@ const ConversationInfoModal: React.FC<Props> = ({
                         {formatTs(meta?.lastAccessedAt)}
                     </Descriptions.Item>
                     <Descriptions.Item label="Version">{meta?._version ?? '—'}</Descriptions.Item>
+                    <Descriptions.Item label="Cost">
+                        {costError ? (
+                            <Text type="secondary">unavailable ({costError})</Text>
+                        ) : !cost ? (
+                            <Text type="secondary">…</Text>
+                        ) : cost.totals.records === 0 ? (
+                            <Text type="secondary">no usage recorded</Text>
+                        ) : (
+                            <span>
+                                <CostCell g={cost.totals} />
+                                <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                                    {cost.totals.records} calls · {formatTokens(cost.totals.dims.input)} in
+                                    {' · '}{formatTokens(cost.totals.dims.cache_read)} cached
+                                    {' · '}{formatTokens(cost.totals.dims.output)} out
+                                </Text>
+                            </span>
+                        )}
+                    </Descriptions.Item>
                     <Descriptions.Item label="Storage state">
                         {persisted === null
                             ? <Tag>unknown</Tag>

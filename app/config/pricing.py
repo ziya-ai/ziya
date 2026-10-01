@@ -79,7 +79,7 @@ SERVICE_TIERS: Tuple[str, ...] = ("standard", "priority", "flex", "batch")
 # Revision of the BUILT-IN table below.  Bump when a price changes.  The
 # effective catalog version reported on every priced line combines this
 # with a content hash of the user overlay (see PricingCatalog.version).
-CATALOG_REVISION = "2026-09-04"
+CATALOG_REVISION = "2026-10-01"
 
 PRICING_FILENAME = "pricing.json"
 
@@ -192,8 +192,29 @@ def _anthropic_card(inp, out, cr, cw5, cw1, note="") -> Dict[str, Any]:
 
 _CLAUDE_CARDS = [
     # (patterns, card)
+    # Source: platform.claude.com/docs/en/about-claude/pricing, read
+    # 2026-09-28.  Claude 4.6 and later bill the full 1M context at the
+    # standard rate (no >200k step-up); only the Sonnet 4.5-and-earlier
+    # entry below keeps a long_context block.  Globs for the "-5" and
+    # "-5-5" / "-5-1" generations are kept disjoint on purpose: candidates
+    # of equal specificity tie-break on list order, which is fragile.
+    (["*claude-fable-5-1*", "*claude-mythos-5-1*"],
+     _anthropic_card(10.0, 50.0, 0.25, 12.50, 20.0, "cache read 0.025x on the 5.1 models")),
+    (["*claude-fable-5", "*claude-fable-5-20*", "*claude-fable-5-v*",
+      "*claude-mythos-5", "*claude-mythos-5-20*", "*claude-mythos-5-v*"],
+     _anthropic_card(10.0, 50.0, 1.0, 12.50, 20.0)),
+    (["*claude-opus-5-5*"],
+     _anthropic_card(4.0, 20.0, 0.20, 5.0, 8.0, "cache read 0.05x on Opus 5.5")),
     (["*claude-opus-4-1*", "*claude-opus-4-2025*"], _anthropic_card(15.0, 75.0, 1.5, 18.75, 30.0)),
-    (["*claude-opus-4-5*"], _anthropic_card(5.0, 25.0, 0.5, 6.25, 10.0)),
+    (["*claude-opus-4-5*", "*claude-opus-4-6*", "*claude-opus-4-7*", "*claude-opus-4-8*",
+      "*claude-opus-5", "*claude-opus-5-20*", "*claude-opus-5-v*"],
+     _anthropic_card(5.0, 25.0, 0.5, 6.25, 10.0)),
+    # Sonnet 5 and 5.5 share one card.  Sonnet 5 base rates are derived
+    # from the official batch table (50%: $1 / $5) and corroborated by its
+    # listed 5m cache write ($2.50 = 1.25 x $2.00); the base cells did not
+    # render on the page the day this was read.
+    (["*claude-sonnet-5*"], _anthropic_card(2.0, 10.0, 0.20, 2.50, 4.0)),
+    (["*claude-sonnet-4-6*"], _anthropic_card(3.0, 15.0, 0.30, 3.75, 6.0)),
     (["*claude-sonnet-4-5*", "*claude-sonnet-4-2025*", "*claude-3-7-sonnet*", "*claude-3-5-sonnet*"],
      dict(_anthropic_card(3.0, 15.0, 0.30, 3.75, 6.0),
           long_context={"above_input_tokens": 200_000,
@@ -224,6 +245,20 @@ def _simple(inp, out, cache_read=None, tiers=None, note="", **extra) -> Dict[str
 
 
 _OPENAI_TIERS = {"standard": 1.0, "priority": 2.0, "flex": 0.5, "batch": 0.5}
+# Gemini: Batch and Flex are half of standard, Priority is 1.8x, on every
+# 2.5 and 3.x text model (ai.google.dev/gemini-api/docs/pricing, read
+# 2026-10-01).  One known gap: Google does not halve the cache-read rate on
+# the 3.1 Pro Batch tier ($0.20 either way), which a uniform factor cannot
+# express; Batch cache reads on 3.1 Pro therefore price slightly low.
+_GOOGLE_TIERS = {"standard": 1.0, "batch": 0.5, "flex": 0.5, "priority": 1.8}
+
+# Gemini 3.6 / 3.7 / 3.8 Flash share one card and an introductory period:
+# $0.75 / $3.75 / $0.075 through 2026-12-31, doubling on 2027-01-01.
+_GEMINI_3X_FLASH_PATTERNS = [
+    "gemini-3.8-flash", "gemini-3.8-flash-[!lt]*",   # not -lite-tts / -tts
+    "gemini-3.7-flash", "gemini-3.7-flash-[!lt]*",
+    "gemini-3.6-flash", "gemini-3.6-flash-[!lt]*",
+]
 
 BUILTIN_CATALOG: List[Dict[str, Any]] = (
     # Claude on Anthropic direct and on Bedrock (same public list).  Bedrock
@@ -260,19 +295,48 @@ BUILTIN_CATALOG: List[Dict[str, Any]] = (
         (["o1", "o1-2*"], _simple(15.0, 60.0, 7.50, _OPENAI_TIERS)),
     ])
     + _expand("google", [
+        # Source: ai.google.dev/gemini-api/docs/pricing, read 2026-10-01.
+        # Text / image / video rates; the audio-input surcharge on the
+        # Flash-Lite and 3 Flash cards is not modelled.  Globs are kept
+        # disjoint from -lite / -live / -tts / -image variants on purpose.
         (["gemini-2.5-pro*"], _simple(
-            1.25, 10.0, 0.31, {"standard": 1.0, "batch": 0.5},
+            1.25, 10.0, 0.125, _GOOGLE_TIERS,
             long_context={"above_input_tokens": 200_000,
-                          "unit_prices": {"input": 2.50, "output": 15.0, "cache_read": 0.625}})),
-        (["gemini-2.5-flash-lite*"], _simple(0.10, 0.40, 0.01, {"standard": 1.0, "batch": 0.5})),
-        (["gemini-2.5-flash*"], _simple(0.30, 2.50, 0.03, {"standard": 1.0, "batch": 0.5})),
+                          "unit_prices": {"input": 2.50, "output": 15.0, "cache_read": 0.25}})),
+        (["gemini-2.5-flash-lite*"], _simple(0.10, 0.40, 0.01, _GOOGLE_TIERS)),
+        (["gemini-2.5-flash", "gemini-2.5-flash-[!l]*"], _simple(0.30, 2.50, 0.03, _GOOGLE_TIERS)),
+        # Shut down 2026; kept so historical rows still price.
         (["gemini-2.0-flash-lite*"], _simple(0.075, 0.30, None, {"standard": 1.0, "batch": 0.5})),
         (["gemini-2.0-flash*"], _simple(0.10, 0.40, 0.025, {"standard": 1.0, "batch": 0.5})),
         (["gemini-3-pro*"], _simple(
             2.0, 12.0, 0.20, {"standard": 1.0, "batch": 0.5},
             long_context={"above_input_tokens": 200_000,
                           "unit_prices": {"input": 4.0, "output": 18.0, "cache_read": 0.40}},
+            note="preview pricing; shut down 2026")),
+        (["gemini-3.1-pro-preview*"], _simple(
+            2.0, 12.0, 0.20, _GOOGLE_TIERS,
+            long_context={"above_input_tokens": 200_000,
+                          "unit_prices": {"input": 4.0, "output": 18.0, "cache_read": 0.40}},
             note="preview pricing")),
+        (["gemini-3-flash-preview*"], _simple(0.50, 3.0, 0.05, _GOOGLE_TIERS, note="preview pricing")),
+        (["gemini-3.1-flash-lite", "gemini-3.1-flash-lite-[!i]*"],
+         _simple(0.25, 1.50, 0.025, _GOOGLE_TIERS)),
+        (["gemini-3.5-flash-lite*"], _simple(0.30, 2.50, 0.03, _GOOGLE_TIERS)),
+        (["gemini-3.5-flash", "gemini-3.5-flash-[!lt]*"], _simple(1.50, 9.0, 0.15, _GOOGLE_TIERS)),
+        (_GEMINI_3X_FLASH_PATTERNS, _simple(
+            0.75, 3.75, 0.075, _GOOGLE_TIERS,
+            effective_to="2026-12-31", note="introductory pricing through 2026-12-31")),
+        (_GEMINI_3X_FLASH_PATTERNS, _simple(
+            1.50, 7.50, 0.15, _GOOGLE_TIERS,
+            effective_from="2027-01-01", note="standard pricing from 2027-01-01")),
+        # Gemini 4 Argon: introductory $2 / $10 with cached input at 95% off,
+        # per the 2026-09-30 announcement.  Not on the API pricing page yet;
+        # only the Google-wide Batch discount is assumed.  The id glob is
+        # provisional, matching the models_config entry.
+        (["gemini-4-argon*"], _simple(
+            2.0, 10.0, 0.10, {"standard": 1.0, "batch": 0.5},
+            effective_from="2026-09-30",
+            note="introductory pricing from the 2026-09-30 announcement; endpoint id provisional")),
     ])
     + _expand("zai", [
         (["glm-4.6*", "glm-4.5", "glm-4.5-2*"], _simple(0.60, 2.20, 0.11)),

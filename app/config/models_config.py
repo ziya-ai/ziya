@@ -46,6 +46,12 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
     "google": {
         "gemini": "gemini-3.1-pro",
         "flash": "gemini-flash",
+        "argon": "gemini-4-argon",
+        # Shut down by Google (API models page, 2026-10-01) — keep the old
+        # names resolving for users with saved settings.  Both land on the
+        # cheapest live model of the same shape.
+        "gemini-2.0-flash": "gemini-flash",
+        "gemini-2.0-flash-lite": "gemini-3.1-flash-lite",
     },
     "anthropic": {
         "sonnet": "claude-sonnet-4-6",
@@ -151,7 +157,7 @@ def resolve_tier_model(endpoint: str, tier: str) -> str:
 # Each endpoint maps to its cheapest capable model.
 DEFAULT_SERVICE_MODELS = {
     "bedrock": "us.amazon.nova-lite-v1:0",
-    "google": "gemini-2.0-flash-lite",
+    "google": "gemini-3.1-flash-lite",
     "openai": "gpt-5.5-mini",
     "anthropic": "claude-haiku-4-5-20251001",
     "zai": "glm-4.6",
@@ -166,7 +172,7 @@ DEFAULT_SERVICE_MODELS = {
 SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     "memory_extraction": {
         "bedrock": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "google": "gemini-2.0-flash",       # flash (not lite) for extraction
+        "google": "gemini-3.8-flash",       # flash (not lite) for extraction
         "openai": "gpt-5.5-mini",           # already strong enough
         "anthropic": "claude-haiku-4-5-20251001",
     },
@@ -197,7 +203,7 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     # ZIYA_INTENT_JUDGE_MODEL.
     "intent_judge": {
         "bedrock": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "google": "gemini-2.0-flash",
+        "google": "gemini-3.8-flash",
         "openai": "gpt-5.5-mini",
         "anthropic": "claude-haiku-4-5-20251001",
     },
@@ -1559,48 +1565,108 @@ MODEL_CONFIGS = {
         },
     },
     "google": {
-        "gemini-2.5-pro": {
-            "model_id": "gemini-2.5-pro",
+        # Source: ai.google.dev/gemini-api/docs/models and the per-model
+        # pages, read 2026-10-01.  Gemini 2.0 Flash / Flash-Lite and
+        # 3 Pro Preview are shut down; the 2.0 names survive only as
+        # MODEL_ALIASES.  Every Gemini 3.x text entry is a 1M-input /
+        # 65,536-output model with caching, function calling and thinking
+        # levels (3.7 and 3.8 reject the `minimal` level).
+        "gemini-4-argon": {
+            # Announced 2026-09-30 (blog.google, "Gemini 4 Argon"): rolling
+            # out to the Fairwind cohort first, then paid API customers.
+            # The endpoint is NOT on the API models page yet, so this id is
+            # provisional — correct it when Google publishes one.  Output
+            # limit (1M) and introductory pricing come from the announcement;
+            # the input limit is assumed to match the rest of the line.  Not
+            # tier-tagged on purpose: no background task should be routed to
+            # a model most API keys cannot reach yet.
+            "model_id": "gemini-4-argon",
             "token_limit": 1048576,
-            "family": "gemini-pro",
-            "max_output_tokens": 65536,  # Gemini 2.5 Pro supports up to 65K output tokens
-            "convert_system_message_to_human": False,
-            "supports_vision": True,  # Gemini Pro supports vision
-            "supports_function_calling": True,
-            "native_function_calling": True,
-        },
-        "gemini-flash": {
-            "tier": "small",
-            "model_id": "gemini-2.5-flash",
-            "token_limit": 1048576,
-            "family": "gemini-flash",
-            "max_output_tokens": 65535,
-            "convert_system_message_to_human": False,
-            "supports_vision": True,  # Gemini Flash supports vision
-            "supports_function_calling": True,
-            "native_function_calling": True,
-        },
-
-        "gemini-2.0-flash": {
-            "model_id": "gemini-2.0-flash",
-            "token_limit": 1048576,
-            "family": "gemini-flash",
-            "max_output_tokens": 8192,
+            # Same API surface as Gemini 3 (thinking_level, native tools);
+            # the family name selects that surface, not the generation.
+            "family": "gemini-3",
+            "max_output_tokens": 1000000,
+            "default_max_output_tokens": 32768,
             "convert_system_message_to_human": False,
             "supports_vision": True,
             "supports_function_calling": True,
             "native_function_calling": True,
+            "thinking_level": "medium",
         },
-        "gemini-2.0-flash-lite": {
+        "gemini-3.8-flash": {
+            "model_id": "gemini-3.8-flash",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium",
+        },
+        "gemini-3.7-flash": {
+            "model_id": "gemini-3.7-flash",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium",
+        },
+        "gemini-3.6-flash": {
+            "model_id": "gemini-3.6-flash",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium",
+        },
+        "gemini-3.5-flash": {
+            "model_id": "gemini-3.5-flash",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium",
+        },
+        "gemini-3.5-flash-lite": {
+            "model_id": "gemini-3.5-flash-lite",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "low",
+        },
+        "gemini-3.1-flash-lite": {
+            # Cheapest live Gemini text model ($0.25 / $1.50): the xsmall
+            # rung and the DEFAULT_SERVICE_MODELS pick for google.
             "tier": "xsmall",
-            "model_id": "gemini-2.0-flash-lite",
+            "model_id": "gemini-3.1-flash-lite",
             "token_limit": 1048576,
-            "family": "gemini-flash",
-            "max_output_tokens": 8192,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
             "convert_system_message_to_human": False,
             "supports_vision": True,
             "supports_function_calling": True,
             "native_function_calling": True,
+            "thinking_level": "low",
         },
         "gemini-3.1-pro": {
             "tier": "medium",
@@ -1651,17 +1717,26 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
             "thinking_level": "medium"
         },
-        "gemini-3.5-flash": {
-            "model_id": "gemini-3.5-flash",
+        "gemini-2.5-pro": {
+            "model_id": "gemini-2.5-pro",
             "token_limit": 1048576,
-            "family": "gemini-flash",
-            "max_output_tokens": 65536,
-            "default_max_output_tokens": 32768,
+            "family": "gemini-pro",
+            "max_output_tokens": 65536,  # Gemini 2.5 Pro supports up to 65K output tokens
             "convert_system_message_to_human": False,
-            "supports_vision": True,
+            "supports_vision": True,  # Gemini Pro supports vision
             "supports_function_calling": True,
             "native_function_calling": True,
-            "thinking_level": "medium"
+        },
+        "gemini-flash": {
+            "tier": "small",
+            "model_id": "gemini-2.5-flash",
+            "token_limit": 1048576,
+            "family": "gemini-flash",
+            "max_output_tokens": 65535,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,  # Gemini Flash supports vision
+            "supports_function_calling": True,
+            "native_function_calling": True,
         },
         "gemini-2.5-flash-lite": {
             "model_id": "gemini-2.5-flash-lite",
