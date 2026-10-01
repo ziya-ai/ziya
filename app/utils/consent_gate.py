@@ -105,9 +105,26 @@ def consent_mode(tool_name: str, op: str, tool_instance: Any = None) -> str:
             return mode
     elif isinstance(entry, str) and entry in _MODES:
         return entry
-    declared = getattr(tool_instance, "consent_default", None)
-    if declared in _MODES:
-        return declared
+    return declared_mode(tool_instance, op)
+
+
+def declared_mode(tool_instance: Any, op: str) -> str:
+    """The mode a tool declares for itself, ignoring configuration.
+
+    ``consent_op_defaults`` (``{op: mode}``) wins over ``consent_default`` so
+    a tool can exempt its read-only ops — the git tool's ``status`` must
+    not prompt.  This is also the FAIL-CLOSED fallback when configuration
+    cannot be read: a tool that declares ``ask`` stays ``ask``.  Never raises.
+    """
+    try:
+        per_op = getattr(tool_instance, "consent_op_defaults", None)
+        if isinstance(per_op, dict) and per_op.get(op) in _MODES:
+            return per_op[op]
+        declared = getattr(tool_instance, "consent_default", None)
+        if declared in _MODES:
+            return declared
+    except Exception:  # noqa: BLE001
+        pass
     return MODE_OFF
 
 
