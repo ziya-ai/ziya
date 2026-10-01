@@ -34,6 +34,10 @@ _rate_plan_providers = []
 # selects the handler that authenticates its HTTP transport.
 _remote_auth_providers = {}
 _initialized = False
+# Set once initialize_shell_config_providers() has run in this process.
+_shell_config_initialized = False
+# Module names probed, in order, for an enterprise plugin package.
+_ENTERPRISE_PLUGIN_MODULES = ('plugins', 'internal.plugins')
 
 def register_auth_provider(provider):
     """
@@ -677,7 +681,7 @@ def initialize():
     # Only load internal plugins if ZIYA_LOAD_INTERNAL_PLUGINS is set
     if ziya_env('ZIYA_LOAD_INTERNAL_PLUGINS'):
         loaded = False
-        for module_name in ['plugins', 'internal.plugins']:
+        for module_name in _ENTERPRISE_PLUGIN_MODULES:
             try:
                 import importlib
                 internal_plugins = importlib.import_module(module_name)
@@ -697,3 +701,49 @@ def initialize():
         logger.debug("Enterprise plugins disabled")
     
     _initialized = True
+
+
+def initialize_shell_config_providers() -> None:
+    """Register only the enterprise shell-config providers in this process.
+
+    The shell MCP server enforces the command allowlist in its own
+    subprocess, where initialize() never runs.  Without this, provider
+    additions reached the parent's view of the allowlist but not the
+    enforcer.  initialize() itself is not used there: an enterprise
+    register() may set up auth, remote registries, encryption or web
+    routes, none of which belong in the enforcer.
+
+    An enterprise plugin module opts in by exposing a zero-argument
+    ``register_shell_config()`` that calls ``register_shell_config_provider``
+    and nothing else.  A module without it contributes nothing here.
+
+    Gated on ZIYA_LOAD_INTERNAL_PLUGINS, as initialize() is.  Runs at most
+    once per process, does nothing after initialize() (which registers the
+    same providers), and never raises.
+    """
+    global _shell_config_initialized
+    if _initialized or _shell_config_initialized:
+        return
+    _shell_config_initialized = True
+    if not ziya_env('ZIYA_LOAD_INTERNAL_PLUGINS'):
+        return
+
+    import importlib
+    for module_name in _ENTERPRISE_PLUGIN_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        except Exception as e:
+            logger.warning(f"Failed to import enterprise plugins from {module_name}: {e}")
+            return
+        hook = getattr(module, 'register_shell_config', None)
+        if not callable(hook):
+            logger.debug(f"{module_name} has no register_shell_config(); no shell additions")
+            return
+        try:
+            hook()
+            logger.debug(f"Enterprise shell config registered from {module_name}")
+        except Exception as e:
+            logger.warning(f"Failed to register enterprise shell config from {module_name}: {e}")
+        return
