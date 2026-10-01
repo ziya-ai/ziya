@@ -28,6 +28,7 @@ lifetime, so a rejecting model pays the extra round-trip once.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import threading
 from typing import Any, Dict, Optional, Set, Tuple
@@ -44,6 +45,15 @@ _DISABLE_VALUES = ("", "off", "none", "default", "standard", "0", "false")
 # tier for a model that previously rejected it.
 _unsupported: Set[Tuple[str, str]] = set()
 _lock = threading.Lock()
+
+# Tier the most recent provider call in this context actually ran at, as
+# reported by :func:`note_call`.  Read by the usage meter when it closes
+# an iteration, so the ledger records the RESOLVED tier (what was billed)
+# rather than the REQUESTED one (the ContextVar above, which a model may
+# have rejected).  Cleared by the meter at the start of each iteration.
+_resolved_tier: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "resolved_service_tier", default=None
+)
 
 
 def resolve_task_tier_from_env(env: Optional[Dict[str, str]] = None) -> Optional[str]:
@@ -152,3 +162,50 @@ def resolved_tier_from_response(response: Any) -> Optional[str]:
         if k.lower() == "x-amzn-bedrock-service-tier":
             return str(v)
     return None
+
+
+def normalize_tier(tier: Optional[str]) -> str:
+    """Map a wire tier name onto the ledger's vocabulary.  Bedrock calls
+    the standard tier ``default``; the pricing catalog calls it
+    ``standard`` (design/CostModel.md).  Unknown strings pass through
+    unchanged so the pricer can refuse to price them."""
+    if not tier:
+        return "standard"
+    t = str(tier).strip().lower()
+    return "standard" if t in ("default", "standard", "on_demand", "on-demand") else t
+
+
+def note_call(model_id: str, sent_tier: Any, response: Any) -> str:
+    """Record, for the usage ledger, the tier a completed provider call ran at.
+
+    Precedence: the tier the service echoes back (header or ``serviceTier``
+    structure) > the tier actually sent on the successful request (None
+    after a retry-at-standard) > standard.  Providers call this once per
+    successful call, AFTER any tier-rejection retry.  ``sent_tier`` may be
+    the invoke string or the converse ``{"type": ...}`` structure.
+
+    Sets a ContextVar; the provider ``stream()`` async generator runs in
+    the executor's context (async generators have no context of their
+    own), so the executor's meter sees it.
+    """
+    if isinstance(sent_tier, dict):
+        sent_tier = sent_tier.get("type")
+    tier = normalize_tier(resolved_tier_from_response(response) or sent_tier)
+    _resolved_tier.set(tier)
+    return tier
+
+
+def clear_resolved_tier() -> None:
+    """Forget the previous call's resolved tier (start of an iteration)."""
+    _resolved_tier.set(None)
+
+
+def billed_tier(model_id: str) -> str:
+    """Best available answer to "what tier was this model billed at": the
+    resolved tier if a provider reported one, else what would be sent now
+    (which is None — standard — once the model has rejected the tier),
+    else standard."""
+    resolved = _resolved_tier.get()
+    if resolved:
+        return resolved
+    return normalize_tier(requested_tier(model_id))

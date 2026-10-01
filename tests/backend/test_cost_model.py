@@ -401,6 +401,147 @@ def test_meter_resolves_project_id_from_root(isolated_home):
     assert get_ledger().get(rid).project_id == project.id
 
 
+def test_billed_tier_precedence_and_normalization():
+    """resolved (echoed) > sent > requested-now > standard; 'default' -> 'standard'."""
+    from app.context import reset_task_service_tier, set_task_service_tier
+    from app.utils import service_tier as st
+
+    st.reset_unsupported_cache()
+    st.clear_resolved_tier()
+    tok = set_task_service_tier("flex")
+    try:
+        # Nothing resolved yet: what would be sent now.
+        assert st.billed_tier("m") == "flex"
+        # Model rejected flex -> requested_tier is None -> standard, no echo needed.
+        st.mark_unsupported("m", "flex")
+        assert st.billed_tier("m") == "standard"
+        # Sent flex, service echoed nothing: sent wins over the (now cached) rejection.
+        assert st.note_call("m2", "flex", {}) == "flex"
+        assert st.billed_tier("m2") == "flex"
+        # Service echoed a different tier than requested: echo wins.
+        st.clear_resolved_tier()
+        resp = {"ResponseMetadata": {"HTTPHeaders": {"X-Amzn-Bedrock-Service-Tier": "default"}}}
+        assert st.note_call("m2", "flex", resp) == "standard"
+        # converse-shaped sent tier and echo.
+        assert st.note_call("m3", {"type": "flex"}, {"serviceTier": {"type": "priority"}}) == "priority"
+        # Nothing sent (outside a run or after retry) -> standard.
+        assert st.note_call("m4", None, {}) == "standard"
+        # ...but once cleared, with flex still requested and m4 never
+        # rejected, the answer reverts to what would be sent now.
+        st.clear_resolved_tier()
+        assert st.billed_tier("m4") == "flex"
+    finally:
+        reset_task_service_tier(tok)
+        st.reset_unsupported_cache()
+        st.clear_resolved_tier()
+
+
+def test_note_call_inside_async_generator_is_visible_to_consumer():
+    """The provider sets the resolved tier from inside its stream() async
+    generator; the executor reads it after iterating.  Async generators do
+    not get their own context, which is what this relies on."""
+    import asyncio
+    from app.utils import service_tier as st
+
+    async def fake_stream():
+        st.note_call("m", "flex", {"serviceTier": {"type": "flex"}})
+        yield 1
+
+    async def consumer():
+        st.clear_resolved_tier()
+        async for _ in fake_stream():
+            pass
+        return st.billed_tier("m")
+
+    try:
+        assert asyncio.run(consumer()) == "flex"
+    finally:
+        st.clear_resolved_tier()
+
+
+def test_meter_records_resolved_tier_not_requested(isolated_home):
+    """A Claude task row: flex requested, model rejected it, billed at
+    standard.  The estimate row says flex; the actual row must say standard."""
+    from app.context import reset_task_service_tier, set_task_service_tier
+    from app.cost import meter
+    from app.storage.usage_ledger import get_ledger
+    from app.utils import service_tier as st
+
+    class Usage:
+        input_tokens = 10
+        output_tokens = 5
+        cache_read_tokens = cache_write_tokens = 0
+
+    st.reset_unsupported_cache()
+    tok = set_task_service_tier("flex")
+    try:
+        mid = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+        rid = meter.open_iteration(provider="bedrock", model_id=mid, region=None,
+                                   conversation_id="run-1", project_root=None, iteration=0,
+                                   estimated_input_tokens=8)
+        assert get_ledger().get(rid).tier == "flex"
+        # What the provider does on the retry path, before re-sending at standard.
+        st.mark_unsupported(mid, "flex")
+        meter.close_iteration(rid, Usage(), model_id=mid)
+        row = get_ledger().get(rid)
+        assert row.status == "actual" and row.tier == "standard"
+
+        # A model that accepted flex (service echoed it) stays flex.
+        mid2 = "openai.gpt-oss-120b-1:0"
+        rid2 = meter.open_iteration(provider="bedrock", model_id=mid2, region=None,
+                                    conversation_id="run-1", project_root=None, iteration=1,
+                                    estimated_input_tokens=8)
+        st.note_call(mid2, "flex", {"ResponseMetadata": {"HTTPHeaders": {"x-amzn-bedrock-service-tier": "flex"}}})
+        meter.close_iteration(rid2, Usage(), model_id=mid2)
+        assert get_ledger().get(rid2).tier == "flex"
+
+        # open_iteration clears the previous resolved tier: a following
+        # non-Bedrock call must not inherit "flex" from rid2.
+        rid3 = meter.open_iteration(provider="anthropic", model_id="claude-x", region=None,
+                                    conversation_id="c", project_root=None, iteration=2,
+                                    estimated_input_tokens=8)
+        st.mark_unsupported("claude-x", "flex")
+        meter.close_iteration(rid3, Usage(), model_id="claude-x")
+        assert get_ledger().get(rid3).tier == "standard"
+    finally:
+        reset_task_service_tier(tok)
+        st.reset_unsupported_cache()
+        st.clear_resolved_tier()
+
+
+def test_rejected_flex_row_prices_at_standard_end_to_end(isolated_home):
+    """The seam: a rejected-Flex Haiku row, after the meter records the
+    resolved tier, is priced by the built-in catalog (which has no flex
+    factor for Claude) instead of coming back unknown."""
+    from app.context import reset_task_service_tier, set_task_service_tier
+    from app.cost import meter
+    from app.storage.usage_ledger import get_ledger
+    from app.utils import service_tier as st
+
+    class Usage:
+        input_tokens = 1_000_000
+        output_tokens = 0
+        cache_read_tokens = cache_write_tokens = 0
+
+    st.reset_unsupported_cache()
+    tok = set_task_service_tier("flex")
+    try:
+        mid = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+        rid = meter.open_iteration(provider="bedrock", model_id=mid, region=None,
+                                   conversation_id="run-1", project_root=None, iteration=0,
+                                   estimated_input_tokens=1)
+        st.mark_unsupported(mid, "flex")
+        meter.close_iteration(rid, Usage(), model_id=mid)
+    finally:
+        reset_task_service_tier(tok)
+        st.reset_unsupported_cache()
+        st.clear_resolved_tier()
+    r = get_ledger().rollup(by="tier", conversation_id="run-1")
+    assert [g["key"] for g in r["groups"]] == ["standard"]
+    assert r["totals"]["unknown_records"] == 0
+    assert r["totals"]["effective_cost"] == pytest.approx(1.0)  # Haiku 4.5 $1/M input
+
+
 def test_meter_is_failure_isolated(isolated_home, monkeypatch):
     from app.cost import meter
     from app.storage import usage_ledger

@@ -13,7 +13,7 @@ honoured). Each row carries:
 | Field | Meaning |
 |---|---|
 | `provider`, `model_id`, `region` | The billing endpoint (`bedrock`, `anthropic`, `openai`, `google`, `zai`, …), the **resolved** model id (never the alias), and region. The same weights cost different amounts on different endpoints. |
-| `tier` | Service tier: `standard`, or `flex`/`priority` when a Task Card run requested one. |
+| `tier` | Service tier the call was **billed** at: `standard`, or `flex`/`priority`. The `estimate` row records the tier a Task Card run *requested*; when the provider reports usage the row is updated to the tier the service echoed back (Bedrock `x-amzn-bedrock-service-tier` / `serviceTier`), or to `standard` when the model rejected the requested tier and the call was retried without one. A `flex` row therefore means Flex was actually applied, not merely asked for. Rows recorded before this rule existed can be relabelled with `scripts/usage_ledger_relabel_tier.py` (dry-run by default). |
 | `status` | `estimate` — Ziya's pre-flight count, written when the request is dispatched. `actual` — replaced in place when the provider's usage block arrives. A call that never returns usage (throttle, abort) stays `estimate`. |
 | `dims` | Token counts per dimension: `input`, `output`, `cache_read`, `cache_write_5m`, plus `reasoning` where reported. |
 | attribution | `user`, `project_id`, `conversation_id`, `run_id` / `block_id` (Task Cards), `source` (`chat`, `task`, `delegate`, `cli`). |

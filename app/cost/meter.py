@@ -98,7 +98,13 @@ def open_iteration(*, provider: str, model_id: str, region: Optional[str],
     try:
         from app.context import get_task_service_tier
         from app.storage.usage_ledger import UsageRecord, get_ledger
+        from app.utils import service_tier as _st
         attr = _attribution(is_delegate)
+        # The estimate row carries the REQUESTED tier; close_iteration
+        # replaces it with the tier the provider reports it ran at.  Clear
+        # the previous iteration's answer so a provider that never calls
+        # note_call (non-Bedrock) cannot inherit a stale one.
+        _st.clear_resolved_tier()
         rec = UsageRecord(
             id=uuid.uuid4().hex, ts=time.time(),
             provider=provider or "unknown", model_id=model_id or "unknown",
@@ -116,17 +122,25 @@ def open_iteration(*, provider: str, model_id: str, region: Optional[str],
         return None
 
 
-def close_iteration(record_id: Optional[str], usage: Any) -> None:
-    """Replace the estimate with the provider-reported usage."""
+def close_iteration(record_id: Optional[str], usage: Any,
+                    model_id: Optional[str] = None) -> None:
+    """Replace the estimate with the provider-reported usage and the tier
+    the call actually ran at.
+
+    The tier is re-derived here, not copied from the estimate row: a model
+    that rejects Flex is retried at standard and marks itself unsupported
+    before the retry, so by close time ``billed_tier`` already answers
+    "standard" even when the service echoed nothing back."""
     if not record_id:
         return
     try:
         from app.storage.usage_ledger import get_ledger
+        from app.utils.service_tier import billed_tier
         dims = dims_from_usage(usage)
         if not dims:
             # No usage at all — leave the row as an estimate.
             return
-        get_ledger().actualize(record_id, dims)
+        get_ledger().actualize(record_id, dims, tier=billed_tier(model_id or ""))
     except Exception as e:  # noqa: BLE001
         logger.debug(f"usage meter: close_iteration failed (non-fatal): {e}")
 
