@@ -27,8 +27,10 @@ await something; if it does, wrap the blocking work in
 ``await asyncio.to_thread(...)`` rather than calling it inline.
 ``tests/test_chat_api_not_event_loop_blocking.py`` enforces this.
 """
-from fastapi import APIRouter, HTTPException, Query
-from typing import List, Optional
+from fastapi import APIRouter, Body, HTTPException, Query
+from pydantic import BaseModel
+from typing import Any, List, Optional
+from contextlib import ExitStack
 from datetime import timedelta
 import time
 import uuid
@@ -41,6 +43,10 @@ from ..storage.chats import ChatStorage
 from ..storage.global_items import collect_global_chats, collect_global_chat_summaries, collect_global_groups
 from ..storage.groups import ChatGroupStorage
 from ..utils.paths import get_ziya_home, get_project_dir
+from ..utils.chat_message_ops import (
+    MessageOpError, TOMBSTONE_FIELD, chat_record_lock, merge_messages,
+    rewind as _op_rewind, delete_message as _op_delete, patch_message as _op_patch,
+)
 
 logger = get_mode_aware_logger(__name__)
 router = APIRouter(tags=["chats"])
@@ -421,7 +427,12 @@ def bulk_sync_chats(project_id: str, data: ChatBulkSync):
         return (ziya_home / "projects" / owner / "project.json").exists()
 
     for chat_data in data.chats:
+        # One read-merge-write per chat under the chats-dir lock, so a
+        # concurrent message endpoint (or a second server sharing ~/.ziya)
+        # cannot interleave between this read and write.
+        _lock = ExitStack()
         try:
+            _lock.enter_context(chat_record_lock(storage))
             if _is_foreign(chat_data):
                 logger.debug(
                     f"bulk-sync[{project_id[:8]}]: skipping foreign chat "
@@ -446,38 +457,27 @@ def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                 if incoming_ver >= existing_ver:
                     merged = chat_data.model_dump()
                     # Strip persisted empty assistant turns (Bedrock empty-200
-                    # poison) from BOTH sides before the regression guards run.
-                    # Sanitizing only the incoming side would trip the
-                    # count-regression guard below, which would restore the
-                    # poisoned on-disk history and silently undo the fix.
+                    # poison) from BOTH sides before merging, so the merge
+                    # cannot carry a poisoned on-disk turn forward.
                     existing_msgs = storage.strip_empty_assistant_messages(
-                        [m.model_dump() for m in existing.messages] if existing.messages else []
+                        list(raw.get('messages') or [])
                     )
-                    merged['messages'] = storage.strip_empty_assistant_messages(merged.get('messages', []))
-                    # Message-count guard: refuse any update that reduces
-                    # message count below what the server already has.
-                    # The previous `> 2` threshold was a hole that allowed
-                    # shells to overwrite already-damaged 2-message records,
-                    # compounding history loss.  Legitimate shrinkage (user
-                    # deleting a message) must go through an explicit delete
-                    # endpoint, not bulk-sync.
-                    existing_msg_count = len(existing_msgs)
-                    incoming_msg_count = len(merged.get('messages', []))
-                    if existing_msg_count >= 1 and incoming_msg_count < existing_msg_count:
-                        logger.warning(
-                            f"bulk-sync: blocking message regression for {chat_data.id} "
-                            f"({existing_msg_count} -> {incoming_msg_count} messages)")
-                        merged['messages'] = existing_msgs
-                    # Content-length guard: catch same-count shell overwrites
-                    # (e.g. 2 real msgs replaced by 2 blanked-content shells).
-                    elif incoming_msg_count == existing_msg_count and existing_msg_count > 0:
-                        existing_len = sum(len((m.get('content') or '')) for m in existing_msgs)
-                        incoming_len = sum(len((m.get('content') or '')) for m in merged.get('messages', []))
-                        if existing_len > 0 and incoming_len < existing_len // 4:
-                            logger.warning(
-                                f"bulk-sync: blocking content regression for {chat_data.id} "
-                                f"({existing_len} -> {incoming_len} chars, same msg count)")
-                            merged['messages'] = existing_msgs
+                    incoming_msgs = storage.strip_empty_assistant_messages(merged.get('messages', []))
+                    # Merge by message id (app/utils/chat_message_ops.py).
+                    # Replaces the count and content-length regression guards:
+                    # bulk-sync may add messages and update client-owned
+                    # metadata, but can never remove a message or change its
+                    # content, so shells and stale copies cannot damage the
+                    # record.  Shrinks go through the rewind / message DELETE /
+                    # PATCH endpoints.  When the merged list differs from what
+                    # the client sent (it missed a server message, or pushed
+                    # placeholder ids), the version moves past the client's so
+                    # its next pull converges.  See the 2026-09-25 audit in
+                    # design/conversation-single-writer.md.
+                    merged['messages'], _differs = merge_messages(
+                        existing_msgs, incoming_msgs, raw)
+                    if _differs:
+                        merged['_version'] = max(int(incoming_ver) + 1, int(time.time() * 1000))
                     if merged.get('delegateMeta') is None and existing.delegateMeta is not None:
                         merged['delegateMeta'] = existing.delegateMeta.model_dump() \
                             if hasattr(existing.delegateMeta, 'model_dump') \
@@ -494,6 +494,13 @@ def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                     # omits it.
                     if not merged.get('_beads') and existing_extra.get('_beads'):
                         merged['_beads'] = existing_extra['_beads']
+                    # Message tombstones are server-owned (written only by the
+                    # message endpoints).  A client mirror must never clear or
+                    # forge them.
+                    if raw.get(TOMBSTONE_FIELD) is not None:
+                        merged[TOMBSTONE_FIELD] = raw[TOMBSTONE_FIELD]
+                    else:
+                        merged.pop(TOMBSTONE_FIELD, None)
                     # Handoff fields are SERVER-OWNED on this path, exactly
                     # like _beads: written by the handoff_write tool and the
                     # handoff endpoints (user edits go through PATCH, never
@@ -561,6 +568,8 @@ def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                 results["created"] += 1
         except Exception as e:
             results["errors"].append({"id": chat_data.id, "error": str(e)})
+        finally:
+            _lock.close()
     
     return results
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}", response_model=Chat)
@@ -877,6 +886,97 @@ def add_message(project_id: str, chat_id: str, message_data: Message):
         raise HTTPException(status_code=404, detail="Chat not found")
     
     return chat
+
+
+# ── Message-level operations ───────────────────────────────────────
+#
+# The explicit shrink/edit intents bulk-sync can no longer express (it merges
+# by id and never removes a message).  Logic lives in
+# app/utils/chat_message_ops.py; these handlers only lock, load, apply, save.
+
+class MessageLocatorBody(BaseModel):
+    """Identifies a message.  The path id (or ``messageId``) is authoritative;
+    the other fields are the fallback for a legacy message the browser holds
+    without the server's id (see ``chat_message_ops.locate_message``)."""
+    model_config = {"extra": "forbid"}
+    messageId: Optional[str] = None
+    index: Optional[int] = None
+    role: Optional[str] = None
+    contentHead: Optional[str] = None
+    contentLength: Optional[int] = None
+
+
+class RewindBody(MessageLocatorBody):
+    text: Optional[str] = None
+    images: Optional[List[Any]] = None
+
+
+class MessagePatchBody(MessageLocatorBody):
+    content: Optional[str] = None
+    images: Optional[List[Any]] = None
+
+
+_LOCATOR_KEYS = {"messageId", "index", "role", "contentHead", "contentLength"}
+
+
+def _locator(body: Optional[MessageLocatorBody], path_id: Optional[str] = None) -> dict:
+    loc = body.model_dump(include=_LOCATOR_KEYS) if body is not None else {}
+    # "_" in the path means "no id; use the body's fallback fields".
+    if path_id and path_id != "_":
+        loc["messageId"] = path_id
+    return loc
+
+
+def _apply_message_op(project_id: str, chat_id: str, op) -> dict:
+    storage = get_chat_storage(project_id)
+    with chat_record_lock(storage):
+        raw = storage._read_json(storage._chat_file(chat_id))
+        if not raw:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        try:
+            out = op(raw)
+        except MessageOpError as e:
+            raise HTTPException(status_code=e.status, detail=str(e))
+        storage._write_json(storage._chat_file(chat_id), raw)
+    try:
+        from ..storage import chat_index
+        chat_index.on_chat_written(chat_id, project_id)
+    except Exception as e:
+        logger.debug(f"message op: chat_index update skipped: {e}")
+    return {"ok": True, **out}
+
+
+@router.post("/api/v1/projects/{project_id}/chats/{chat_id}/rewind")
+def rewind_chat(project_id: str, chat_id: str, body: RewindBody):
+    """Drop every message after a human message, optionally replacing its
+    text/images: the resubmit and edit-and-resubmit intent.  The client then
+    starts the turn; the turn endpoint (Turn authorship, step 3) will do both
+    in one call."""
+    kw = {"text": body.text}
+    if "images" in body.model_fields_set:
+        kw["images"] = body.images
+    return _apply_message_op(project_id, chat_id,
+                             lambda raw: _op_rewind(raw, _locator(body), **kw))
+
+
+@router.delete("/api/v1/projects/{project_id}/chats/{chat_id}/messages/{message_id}")
+def delete_chat_message(project_id: str, chat_id: str, message_id: str,
+                        body: Optional[MessageLocatorBody] = Body(None)):
+    """Delete one message.  Pass ``_`` as the id with a locator body for a
+    legacy message whose server id the client does not know."""
+    return _apply_message_op(project_id, chat_id,
+                             lambda raw: _op_delete(raw, _locator(body, message_id)))
+
+
+@router.patch("/api/v1/projects/{project_id}/chats/{chat_id}/messages/{message_id}")
+def patch_chat_message(project_id: str, chat_id: str, message_id: str,
+                       body: MessagePatchBody):
+    """Edit a message in place (no truncation)."""
+    kw = {"content": body.content}
+    if "images" in body.model_fields_set:
+        kw["images"] = body.images
+    return _apply_message_op(project_id, chat_id,
+                             lambda raw: _op_patch(raw, _locator(body, message_id), **kw))
 
 
 # ── Timestamp repair ───────────────────────────────────────────────

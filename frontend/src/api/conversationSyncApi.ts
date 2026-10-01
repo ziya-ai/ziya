@@ -252,6 +252,143 @@ export async function deleteChat(projectId: string, chatId: string): Promise<boo
 }
 
 /**
+ * Move a chat to another project in ONE server-side step.
+ * Returns 'moved', or 'absent' when the source project has no such chat on
+ * the server (it was never synced from there); throws on any other failure.
+ */
+export async function moveChat(
+  sourceProjectId: string, targetProjectId: string, chatId: string,
+): Promise<'moved' | 'absent'> {
+  const res = await timedFetchOk(
+    `${BASE}/${sourceProjectId}/chats/${chatId}/move`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...projectHeaders() },
+      body: JSON.stringify({ targetProjectId }),
+    },
+    MUTATE_TIMEOUT_MS,
+    'moveChat',
+  );
+  if (res.ok) return 'moved';
+  if (res.status === 404) return 'absent';
+  throw new SyncHttpError('moveChat', res.status);
+}
+
+// ── Message-level operations ────────────────────────────────────────
+//
+// bulk-sync merges messages by id and can never remove one or change its
+// content (app/utils/chat_message_ops.py).  Every shrink or edit of the
+// message list is therefore an explicit intent sent to its own endpoint.
+// See design/conversation-single-writer.md, 2026-09-25 shrink-path audit.
+
+/** How the server finds a message: by id, or — for a legacy message held
+ *  locally without the server's id — by index verified against role and the
+ *  leading content.  Lengths are in code points to match Python's len(). */
+export interface MessageLocator {
+  messageId?: string;
+  index: number;
+  role?: string;
+  contentHead?: string;
+  contentLength?: number;
+}
+
+const LOCATOR_HEAD_CHARS = 200;
+
+export function messageLocator(
+  messages: ReadonlyArray<{ id?: string; role?: string; content?: string }>,
+  index: number,
+): MessageLocator {
+  const m = messages[index] || {};
+  const points = Array.from(typeof m.content === 'string' ? m.content : '');
+  const loc: MessageLocator = {
+    index,
+    role: m.role,
+    contentHead: points.slice(0, LOCATOR_HEAD_CHARS).join(''),
+    contentLength: points.length,
+  };
+  if (m.id) loc.messageId = m.id;
+  return loc;
+}
+
+/** The project whose directory holds a conversation's record.  A global chat
+ *  surfaced into this project lives in its home project; mirrors the owner
+ *  rule in conversationToServerChat.  Falls back to the viewing project that
+ *  ProjectContext publishes on window (as projectHeaders does for the path),
+ *  so per-message components need not subscribe to useProject. */
+export function ownerProjectId(
+  conv: { projectId?: string } | undefined | null,
+  viewingProjectId?: string | null,
+): string | undefined {
+  return (conv && conv.projectId) || viewingProjectId
+    || (window as any).__ZIYA_CURRENT_PROJECT_ID__ || undefined;
+}
+
+export interface MessageOpResult {
+  ok: boolean;
+  /** HTTP status on failure; 404 means the chat is not on the server yet
+   *  (a new conversation before its first sync), which callers may ignore. */
+  status?: number;
+  _version?: number;
+  messageCount?: number;
+}
+
+async function messageOp(
+  projectId: string | undefined,
+  path: string,
+  method: 'POST' | 'PATCH' | 'DELETE',
+  body: Record<string, unknown>,
+  label: string,
+): Promise<MessageOpResult> {
+  if (!projectId) return { ok: false, status: 0 };
+  try {
+    const out = await timedFetchJson<MessageOpResult>(
+      `${BASE}/${projectId}/${path}`,
+      {
+        method,
+        headers: { 'Content-Type': 'application/json', ...projectHeaders() },
+        body: JSON.stringify(body),
+      },
+      MUTATE_TIMEOUT_MS,
+      label,
+    );
+    return { ...out, ok: true };
+  } catch (e) {
+    if (e instanceof SyncHttpError) {
+      if (e.status !== 404) console.warn(`${label}: HTTP ${e.status}`);
+      return { ok: false, status: e.status };
+    }
+    console.warn(`${label} failed:`, e);
+    return { ok: false, status: 0 };
+  }
+}
+
+/** Drop every message after the located human message, optionally replacing
+ *  its text/images (resubmit, edit-and-resubmit).  Must complete BEFORE the
+ *  resubmitted turn's answer is synced: id-merge only adds, so a rewind that
+ *  landed after the answer would remove the answer as well. */
+export function rewindMessages(
+  projectId: string | undefined, chatId: string, locator: MessageLocator,
+  edit?: { text: string; images: unknown[] | null },
+): Promise<MessageOpResult> {
+  return messageOp(projectId, `chats/${chatId}/rewind`, 'POST', { ...locator, ...(edit || {}) }, 'rewindMessages');
+}
+
+export function deleteMessage(
+  projectId: string | undefined, chatId: string, locator: MessageLocator,
+): Promise<MessageOpResult> {
+  const id = encodeURIComponent(locator.messageId || '_');
+  return messageOp(projectId, `chats/${chatId}/messages/${id}`, 'DELETE', { ...locator }, 'deleteMessage');
+}
+
+export function patchMessage(
+  projectId: string | undefined, chatId: string, locator: MessageLocator,
+  patch: { content?: string; images?: unknown[] | null },
+): Promise<MessageOpResult> {
+  const id = encodeURIComponent(locator.messageId || '_');
+  return messageOp(projectId, `chats/${chatId}/messages/${id}`, 'PATCH', { ...locator, ...patch }, 'patchMessage');
+}
+
+/**
  * Convert a frontend Conversation to a ServerChat for syncing.
  */
 export function conversationToServerChat(conv: any, projectId: string): ServerChat {
