@@ -468,6 +468,15 @@ Use this structural information to better understand the codebase organization a
     
     template += ast_template
 
+# Name the optional tools this install lacks. Registration already withholds
+# render_diagram / recall_image / view_image when Playwright's Chromium is
+# absent, but skills, memories and imported conversations still refer to
+# them, and the model then calls a tool it never held. Same source of truth
+# as the startup banner; evaluated once, like the tool list itself (a
+# restart is what picks up a later install).
+from app.utils.optional_features import install_limitations_prompt
+template += install_limitations_prompt()
+
 # Create a wrapper around the original template
 original_template = template
 
