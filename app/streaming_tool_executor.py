@@ -2875,182 +2875,60 @@ class StreamingToolExecutor:
             if should_establish_baseline:
                 should_establish_baseline = False  # Only run once
                 logger.info(f"📊 BASELINE: Establishing baseline for {model_family} (first time)")
-                
+
                 try:
-                    # Count MCP tools for baseline measurement
                     mcp_tool_count = len(bedrock_tools) if bedrock_tools else 0
 
-                    # Baseline calibration via invoke_model requires a Bedrock client.
-                    # For non-Bedrock endpoints (Anthropic direct, OpenAI, Google),
-                    # use the provider's count_tokens API if available, otherwise
-                    # estimate from serialized JSON size.
-                    if self.bedrock is None:
-                        logger.info(f"📊 BASELINE: No Bedrock client — using provider token counting")
-                        baseline_tokens = 0
-                        
-                        # Baseline measures FRAMEWORK overhead (tools + system
-                        # template) — NOT the per-request file context. The
-                        # Bedrock invoke_model path below strips the codebase
-                        # section before measuring; this path must do the same.
-                        # Without the strip, the entire codebase lands in the
-                        # persisted baseline AND is estimated again as
-                        # system_tokens on every request — the double count
-                        # behind est ≈ 2x actual (baseline=834K on a 482K turn).
-                        _baseline_sys = system_content if isinstance(system_content, str) else ""
-                        _cb_marker = 'Below is the current codebase of the user:'
-                        if _cb_marker in _baseline_sys:
-                            _baseline_sys = (_baseline_sys.split(_cb_marker)[0]
-                                             + f"\n\n{_cb_marker}\n\n(No files selected)")
-
-                        # Try provider's count_tokens API. Only the Anthropic
-                        # direct provider supports it — mantle shares the same
-                        # client shape but has no count_tokens endpoint and a
-                        # placeholder api_key ("unused"), so calling it would
-                        # raise an uncaught AuthenticationError.
-                        try:
-                            if (self.provider and hasattr(self.provider, 'client')
-                                    and getattr(self.provider, 'provider_name', '') == 'anthropic'):
-                                import anthropic as _anthropic
-                                sync_client = _anthropic.Anthropic(api_key=self.provider.client.api_key)
-                                count_kwargs = {
-                                    "model": self.model_id,
-                                    "messages": [{"role": "user", "content": "Hello"}],
-                                }
-                                if _baseline_sys:
-                                    count_kwargs["system"] = _baseline_sys
-                                if bedrock_tools:
-                                    count_kwargs["tools"] = bedrock_tools
-                                resp = sync_client.messages.count_tokens(**count_kwargs)
-                                baseline_tokens = resp.input_tokens
-                                logger.info(f"📊 BASELINE: count_tokens API returned {baseline_tokens:,} tokens")
-                        except (ImportError, AttributeError, TypeError, RuntimeError) as ct_err:
-                            logger.info(f"📊 BASELINE: count_tokens failed ({ct_err}), using JSON size estimate")
-                        
-                        # Fallback: estimate from JSON size with higher multiplier
-                        # (estimated_* default to 0 so the log line below is
-                        # safe when count_tokens succeeded and this block is
-                        # skipped — referencing them undefined was a latent
-                        # NameError that escaped the outer except tuple.)
-                        estimated_tool_tokens = 0
-                        estimated_sys_tokens = 0
-                        if baseline_tokens == 0:
-                            tool_json_size = len(json.dumps(bedrock_tools)) if bedrock_tools else 0
-                            # Anthropic's internal tool formatting adds ~2.5x overhead
-                            estimated_tool_tokens = int(tool_json_size * 2.5 / 3.5)
-                            sys_size = len(_baseline_sys)
-                            estimated_sys_tokens = int(sys_size / 3.5)
-                            baseline_tokens = estimated_tool_tokens + estimated_sys_tokens
-                            _baseline_src = f"estimated (tools: {estimated_tool_tokens:,}, system: {estimated_sys_tokens:,})"
-                        else:
-                            _baseline_src = "count_tokens API"
-
-                        calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
-                        calibrator.baselines_measured.add(model_family)
-                        calibrator.baseline_tool_counts[model_family] = mcp_tool_count
-                        calibrator._save_calibration_data()
-                        logger.info(f"✅ BASELINE: {baseline_tokens:,} tokens via {_baseline_src}")
-                        # Skip the Bedrock invoke_model path below
-                        raise RuntimeError("Baseline established via estimation")
-                    
-                    # Use system_content as-is, just replace file section with placeholder
-                    # This ensures cache structure matches real requests perfectly
-                    baseline_system_text = system_content  # Default to full content
-                    if isinstance(system_content, str) and 'Below is the current codebase of the user:' in system_content:
-                        parts = system_content.split('Below is the current codebase of the user:')
-                        baseline_system_text = parts[0] + "\n\nBelow is the current codebase of the user:\n\n(No files selected)"
-                    
+                    # Baseline measures FRAMEWORK overhead (tools + system
+                    # template), not the per-request file context: swap the
+                    # codebase section for a placeholder before measuring.
+                    # Without the strip the whole codebase lands in the
+                    # persisted baseline AND is estimated again as
+                    # system_tokens on every request (est ≈ 2x actual).
+                    baseline_system_text = system_content if isinstance(system_content, str) else ""
+                    _cb_marker = 'Below is the current codebase of the user:'
+                    if _cb_marker in baseline_system_text:
+                        baseline_system_text = (baseline_system_text.split(_cb_marker)[0]
+                                                + f"\n\n{_cb_marker}\n\n(No files selected)")
                     logger.info(f"📊 BASELINE: {len(baseline_system_text):,} chars, {mcp_tool_count} tools")
-                    
-                    # Make baseline request
-                    baseline_body = {
-                        "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": 100,
-                        "messages": [{"role": "user", "content": "Hello"}],
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": baseline_system_text,
-                                "cache_control": {"type": "ephemeral"}
-                            }
-                        ]
-                    }
-                    
-                    # Add tools to match real request structure
-                    if bedrock_tools:
-                        baseline_body["tools"] = bedrock_tools
-                    
-                    # Use existing client's underlying boto3 client directly to avoid wrapper recursion
-                    # Unwrap all layers to reach the raw boto3 client
-                    if hasattr(self.bedrock, 'unwrap'):
-                        raw_client = self.bedrock.unwrap()
+
+                    # The provider owns how (and whether) its backend can be
+                    # asked; this layer only persists the answer. A None means
+                    # "can't measure" (OpenAI-compatible and Converse families
+                    # on Bedrock, Google, OpenAI direct) and we estimate.
+                    baseline_tokens = None
+                    if self.provider is not None:
+                        _measure = self.provider.measure_baseline_tokens
+                        baseline_tokens = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: _measure(baseline_system_text, bedrock_tools or []),
+                        )
+
+                    if baseline_tokens:
+                        _baseline_src = "provider measurement"
                     else:
-                        raw_client = self.bedrock
-                    
-                    logger.info(f"📊 BASELINE: Using raw client type: {type(raw_client).__name__}")
-                    
-                    baseline_body_json = json.dumps(baseline_body)
-                    baseline_response = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: raw_client.invoke_model(
-                            modelId=self.model_id,
-                            body=baseline_body_json,
-                        ),
-                    )
-                    
-                    baseline_response_body = json.loads(baseline_response['body'].read())
-                    
-                    # DEBUG: Log the full response to see what we actually got
-                    logger.info(f"📊 BASELINE_RESPONSE: Keys in response: {list(baseline_response_body.keys())}")
-                    baseline_usage = baseline_response_body.get('usage', {})
-                    logger.info(f"📊 BASELINE_USAGE: {baseline_usage}")
-                    
-                    # CRITICAL: Use TOTAL input (fresh + cached + cache_creation) for baseline
-                    # On FIRST baseline call: cache is being CREATED, so use cache_creation_input_tokens
-                    # On SUBSEQUENT calls: cache exists, so use cache_read_input_tokens
-                    baseline_fresh = baseline_usage.get('input_tokens', 0)
-                    baseline_cached = baseline_usage.get('cache_read_input_tokens', 0)
-                    baseline_cache_created = baseline_usage.get('cache_creation_input_tokens', 0)
-                    
-                    # Total = fresh + (cached OR created)
-                    baseline_tokens = baseline_fresh + baseline_cached + baseline_cache_created
-                    
-                    logger.info(f"📊 BASELINE_TOTAL: {baseline_tokens:,} tokens (fresh: {baseline_fresh:,}, cached: {baseline_cached:,})")
-                    if baseline_cache_created > 0:
-                        logger.info(f"📊 BASELINE_CACHE_CREATED: {baseline_cache_created:,} tokens (first baseline call)")
-                    
-                    # Also check if stop_reason indicates an error
-                    stop_reason = baseline_response_body.get('stop_reason')
-                    if stop_reason:
-                        logger.info(f"📊 BASELINE_STOP: stop_reason={stop_reason}")
-                        
-                        # Check content to see if model actually responded
-                        content = baseline_response_body.get('content', [])
-                        logger.info(f"📊 BASELINE_CONTENT: {len(content)} content blocks")
-                        
-                        # Validate - use baseline_system_text length as proxy
-                        # Rough estimate: 1 token per 3-4 chars for text, ~500 tokens per tool
-                        expected_min = len(baseline_system_text) // 6 + mcp_tool_count * 300
-                        expected_max = len(baseline_system_text) // 2 + mcp_tool_count * 1500
-                        
-                        if baseline_tokens < expected_min or baseline_tokens > expected_max:
-                            logger.warning(f"📊 BASELINE: Invalid measurement {baseline_tokens:,} (expected {expected_min:,}-{expected_max:,})")
-                        else:
-                            # Store the baseline overhead (system prompt + tools)
-                            calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
-                            calibrator.baselines_measured.add(model_family)
-                            calibrator.baseline_tool_counts[model_family] = mcp_tool_count
-                            calibrator._save_calibration_data()
-                            if not chat_mode:
-                                logger.info(f"✅ BASELINE: Established {baseline_tokens:,} tokens")
-                                logger.info(f"   System prompt: {len(baseline_system_text):,} chars")
-                                logger.info(f"   MCP tools: {mcp_tool_count}")
-                            logger.debug(f"📊 BASELINE: Baseline established, will not run again for {model_family}")
-                except RuntimeError:
-                    pass  # "Baseline established via estimation" — expected control flow from non-Bedrock path
-                except (ImportError, KeyError, AttributeError, OSError, ValueError) as e:
-                    logger.debug(f"📊 BASELINE: Establishment failed (will retry next time): {e}")
+                        tool_json_size = len(json.dumps(bedrock_tools)) if bedrock_tools else 0
+                        # Tool definitions are re-rendered by the backend;
+                        # ~2.5x raw JSON is a reasonable upper-middle guess.
+                        estimated_tool_tokens = int(tool_json_size * 2.5 / 3.5)
+                        estimated_sys_tokens = int(len(baseline_system_text) / 3.5)
+                        baseline_tokens = estimated_tool_tokens + estimated_sys_tokens
+                        _baseline_src = f"estimated (tools: {estimated_tool_tokens:,}, system: {estimated_sys_tokens:,})"
+
+                    calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
+                    calibrator.baselines_measured.add(model_family)
+                    calibrator.baseline_tool_counts[model_family] = mcp_tool_count
+                    calibrator._save_calibration_data()
+                    if not chat_mode:
+                        logger.info(f"✅ BASELINE: {baseline_tokens:,} tokens via {_baseline_src} "
+                                    f"({len(baseline_system_text):,} chars, {mcp_tool_count} tools)")
+                except Exception as e:
+                    # Providers swallow their own backend errors; this is the
+                    # last line. A failed calibration must never abort the
+                    # user's request — the narrow tuple that used to live here
+                    # let botocore's ValidationException kill the stream.
                     logger.warning(f"📊 BASELINE: Establishment failed (will retry next time): {e}")
-            
+
             # WARNING: Approaching iteration limit - notify model to wrap up
             iterations_remaining = max_iterations - iteration
             warning_message = None
