@@ -38,6 +38,9 @@ class TokenCountDocument(BaseModel):
 class TokenCountMessage(BaseModel):
     model_config = {"extra": "allow"}
     content: Optional[str] = ""
+    # 'human' | 'assistant' | 'system'.  Absent (older frontend) counts the
+    # content as saved, which is correct for everything but assistant turns.
+    role: Optional[str] = None
     muted: Optional[bool] = False
     images: Optional[List[TokenCountImage]] = None
     documents: Optional[List[TokenCountDocument]] = None
@@ -101,13 +104,30 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
             # Images and document page-images are estimated using the same
             # heuristic as the actual request-time estimator so the GUI token
             # bar matches what the backend will bill for.
+            #
+            # Assistant history is not sent as saved: build_messages_for_streaming
+            # runs it through rewrite_tool_history, which re-encodes tool
+            # blocks, replaces inline <img src="data:image/…"> tags (a
+            # view_image / render_diagram result is ~tens of k tokens of
+            # base64 as text) with a one-line note, and elides bodies
+            # provably redundant with a later result.  Count that form, or
+            # the bar overstates a diagram-heavy conversation several-fold.
+            active = [m for m in request.messages if not m.muted]
+            history: List[Any] = [
+                {"type": m.role or "human", "content": m.content or ""}
+                for m in active
+            ]
+            try:
+                from app.utils.tool_history_rewrite import rewrite_tool_history
+                history = rewrite_tool_history(history)
+            except Exception as e:
+                logger.warning(f"token-count: history rewrite failed (counting as saved): {e}")
             text_parts: List[str] = []
             image_tokens = 0
-            for msg in request.messages:
-                if msg.muted:
-                    continue
-                if msg.content:
-                    text_parts.append(msg.content)
+            for msg, replayed in zip(active, history):
+                content = replayed.get("content") if isinstance(replayed, dict) else msg.content
+                if isinstance(content, str) and content:
+                    text_parts.append(content)
                 if msg.images:
                     for img in msg.images:
                         image_tokens += _estimate_image_tokens(img)
