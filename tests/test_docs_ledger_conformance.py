@@ -257,3 +257,80 @@ def test_glossary_region_matches_fresh_regeneration():
             "Docs/CapabilityGlossary.md's generated region is STALE relative "
             "to the ledger. Regenerate with `python3 scripts/"
             "complandscape_docdefects.py glossary --write`.\n" + snippet)
+
+
+def test_gap_table_does_not_deny_tiered_permissions():
+    """FeatureInventory §12 once said 'No tiered permission system' and that
+    the allowlist was 'the only guardrail' -- false against the write-policy
+    tiers, signed escalation and interpreter guard, and it framed the
+    deliberate default-permit floor as an oversight.  Corpus-independent."""
+    with open(os.path.join(ROOT, "Docs", "FeatureInventory.md"), encoding="utf-8") as f:
+        inv = f.read()
+    for stale in ("No tiered permission system",
+                  "allowlist is the only guardrail",
+                  "users cannot review what the agent _intends_ to do"):
+        assert stale not in inv, stale
+    # positive: the rewritten rows exist, carry the design rationale link,
+    # and the sandbox row still admits the real gap
+    assert "**Named permission-mode selector**" in inv
+    assert "**Plan / Act mode (read-only session toggle)**" in inv
+    assert inv.count("DesignPhilosophy.md#security-is-load-bearing") >= 2
+    assert "no OS-level (kernel) confinement" in inv
+
+
+def _front_matter_problems(readme, inv):
+    """Return the list of front-matter defects; empty means conformant.
+    Split out so the test can also prove it flags the pre-fix text."""
+    problems = []
+    # a literal backslash-backtick (from copying escaped context) breaks code
+    # fences and inline code on GitHub/PyPI without any error
+    if "\\`" in readme:
+        problems.append("escaped backtick in README")
+    for anchor in ("**At a glance**", "## Coming from another tool?",
+                   "In concrete terms:", "ziya --endpoint local", "## Quick start",
+                   "## Why Ziya", "## Working on a dozen things at once",
+                   "(#working-on-a-dozen-things-at-once)"):
+        if anchor not in readme:
+            problems.append(f"README missing {anchor!r}")
+    # superlatives a skeptical reader cannot verify were replaced by checkable
+    # claims; keep them out
+    for unverifiable in ("nothing else does the job as well",
+                         "not a wrapper and not a toy"):
+        if unverifiable in readme:
+            problems.append(f"README unverifiable claim {unverifiable!r}")
+    gaps = inv[inv.index("## 12. What Ziya Does NOT Have"):]
+    for stale in ("as of v0.6.x",
+                  "the model has no recall of previous sessions",
+                  "No structured audit trail of what files were read/written",
+                  "No design-to-code path"):
+        if stale in gaps:
+            problems.append(f"§12 still says {stale!r}")
+    for shipped in ("~/.ziya/audit/", "custom-personas-assistants"):
+        if shipped not in gaps:
+            problems.append(f"§12 does not name shipped {shipped!r}")
+    return problems
+
+
+def test_readme_front_matter_and_gap_table_reflect_shipped_capabilities():
+    """README orientation sections exist and render; FeatureInventory §12 no
+    longer lists shipped capabilities (memory, tool audit log) as absent.
+    Corpus-independent."""
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+        readme = f.read()
+    with open(os.path.join(ROOT, "Docs", "FeatureInventory.md"), encoding="utf-8") as f:
+        inv = f.read()
+    assert _front_matter_problems(readme, inv) == []
+
+
+def test_front_matter_check_flags_the_pre_fix_text():
+    """The checker must fail on the defects it exists for, or it certifies
+    nothing."""
+    old_gap = ("## 12. What Ziya Does NOT Have (as of v0.6.x)\n"
+               "| **Persistent cross-session memory** | x | No `~/.ziya/memories/` "
+               "equivalent; history survives within a session but the model has no "
+               "recall of previous sessions |\n")
+    probs = _front_matter_problems("```bash\n\\`pip install ziya\\`\n```\n", old_gap)
+    assert "escaped backtick in README" in probs
+    assert any("as of v0.6.x" in p for p in probs)
+    assert any("no recall" in p for p in probs)
+    assert any("At a glance" in p for p in probs)
