@@ -216,11 +216,13 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
     # For a tool in ``ask`` mode with no standing grant, hold here until a
     # human answers via POST /api/consent/{request_id}.  The gate yields
     # ``consent_opened`` / ``consent_answered`` for the stream and finishes
-    # with a private decision item.  Any failure inside the gate degrades to
-    # "not gated" — the pre-gate behaviour — never to a stuck turn.
+    # with a private decision item.  A failure inside the gate degrades to
+    # "not gated" (the pre-gate behaviour, never a stuck turn) EXCEPT for a
+    # tool that declares ``ask`` for this op: that call is refused, because
+    # unattended execution is exactly what it opted out of.
+    _gate_tool = None
     try:
         from app.utils import consent_gate as _consent
-        _gate_tool = None
         for _t in (ctx.all_tools or []):
             if getattr(_t, "name", None) == ctx.actual_tool_name:
                 _gate_tool = _t
@@ -239,11 +241,14 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             tool_name=ctx.actual_tool_name, tool_id=ctx.tool_id, args=ctx.args,
             conversation_id=ctx.conversation_id, tool=_gate_tool,
             cancel_requested=_cancel_check,
+            project_root=ctx.project_root,
         ):
             if _ev.get("type") == _consent.DECISION_EVENT:
                 _decision = _ev
             else:
                 yield ctx.track_yield_fn(_ev)
+        if _decision is None and _consent.fails_closed(_gate_tool, ctx.args):
+            raise RuntimeError("the consent gate ended without a decision")
         if _decision is not None and not _decision.get("approved", True):
             _op = _consent.op_for_call(_consent._unwrap(_gate_tool), ctx.args)
             yield {
@@ -254,6 +259,25 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             }
             return
     except Exception as _gate_err:  # noqa: BLE001
+        try:
+            from app.utils.consent_gate import fails_closed as _fails_closed
+            _refuse = _fails_closed(_gate_tool, ctx.args)
+        except Exception:  # noqa: BLE001
+            _inst = getattr(_gate_tool, "tool_instance", _gate_tool)
+            _refuse = getattr(_inst, "consent_default", None) == "ask"
+        if _refuse:
+            logger.error(f"consent gate failed for {ctx.actual_tool_name}; refusing (tool requires approval): {_gate_err}")
+            yield {
+                'type': '_tool_result',
+                'tool_id': ctx.tool_id,
+                'tool_name': ctx.tool_name,
+                'result': (
+                    f"Tool call refused: the approval check for `{ctx.actual_tool_name}` "
+                    f"failed ({_gate_err}). This tool only runs with the user's consent, "
+                    f"so it was not run. Tell the user; do not retry."
+                ),
+            }
+            return
         logger.warning(f"consent gate failed for {ctx.actual_tool_name}; dispatching ungated: {_gate_err}")
 
     # --- Execute the tool ---
