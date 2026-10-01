@@ -96,6 +96,19 @@ _RAW_HALLUCINATION_PATTERNS = [
     # concept, not a structure, and false-fired on legitimate discussion
     # or diffs of the shell-security code. The high-harm form (a fabricated
     # result envelope) is caught structurally by Layer C instead.
+    # The replay envelope app.utils.tool_history_rewrite wraps prior tool
+    # results in when re-encoding history for the model: a U+2039 bracket
+    # followed by ``tool_result``.  It exists only in the model-facing
+    # replay — nothing the frontend renders or persists has this shape —
+    # so a model writing it at the start of a line is parroting the
+    # replay format instead of calling the tool.  The second alternative
+    # is the UTF-8-as-Latin-1 mojibake of U+2039 seen in a live sample.
+    # Anchored to line start so a unified-diff body line (``+``/``-``/
+    # space prefix) never matches.
+    re.compile(
+        r'^[ \t]*(?:\u2039|\u201a\u00c4\u00b9)\s*/?\s*tool_result\b',
+        re.MULTILINE,
+    ),
 ]
 
 # Cue phrases that, when they appear in the ~120 chars immediately preceding
@@ -160,7 +173,8 @@ def _is_meta_discussion(text: str, match_start: int) -> bool:
 
 
 _CONTAMINATION_RE = re.compile(
-    r'(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|```+tool:)'
+    r'(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|```+tool:'
+    r'|(?:\u2039|\u201a\u00c4\u00b9)\s*/?\s*tool_result)'
 )
 
 
