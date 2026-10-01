@@ -27,6 +27,7 @@ import { ProjectProvider } from '../context/ProjectContext';
 import { ChatProvider } from '../context/ChatContext';
 import { FolderProvider } from '../context/FolderContext';
 import { QuestionProvider } from '../context/QuestionContext';
+import ZiyaLinkNavigator from './ZiyaLinkNavigator';
 
 /**
  * Exact match (ignoring a trailing slash) rather than a prefix test, so a
@@ -58,6 +59,10 @@ export const AppProviders: React.FC<AppProvidersProps> = ({
     return (
         <ProjectProvider>
             <ChatProvider>
+                {/* Follows ziya://chat|project links clicked anywhere in the
+                    page (model-written cross-conversation references).  Needs
+                    Project + ActiveChat + ConversationList, hence this slot. */}
+                <ZiyaLinkNavigator />
                 <FolderProvider>
                     <QuestionProvider>
                         {children}

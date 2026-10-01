@@ -608,6 +608,46 @@ def get_chat(project_id: str, chat_id: str):
 
     raise HTTPException(status_code=404, detail="Chat not found")
 
+
+@router.get("/api/v1/chats/{chat_id}/locate")
+def locate_chat(chat_id: str):
+    """Which project owns ``chat_id``, plus enough to label it.
+
+    Backs ``ziya://chat/<id>[/<messageIndex>]`` links (app/utils/ziya_links.py):
+    a chat link deliberately carries no project id, because a conversation
+    can move between projects, so the browser asks here before switching
+    project and opening it.  Resolved through the cross-project chat index,
+    the same way chat_read resolves the id the model was given.
+    """
+    from ..storage import chat_index
+    from ..utils.ziya_links import chat_link, parse_ziya_link, project_link
+    # Same id shape the link parser accepts; anything path-like is unknown.
+    if parse_ziya_link(chat_link(chat_id)) is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    ziya_home = get_ziya_home()
+    found = chat_index.lookup(ziya_home, chat_id)
+    if found is None:
+        # Written by another process since this one built its index.
+        chat_index.invalidate()
+        found = chat_index.lookup(ziya_home, chat_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    owning_pid, _path = found
+    chat = ChatStorage(get_project_dir(owning_pid)).get(chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    project = ProjectStorage(ziya_home).get(owning_pid)
+    return {
+        "conversationId": chat_id,
+        "link": chat_link(chat_id),
+        "projectId": owning_pid,
+        "projectName": project.name if project else None,
+        "projectLink": project_link(owning_pid),
+        "title": chat.title,
+        "messageCount": len(chat.messages or []),
+        "folderId": getattr(chat, "groupId", None),
+    }
+
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}/context-debug")
 def get_chat_context_debug(project_id: str, chat_id: str):
     """Return recorded per-iteration input-token snapshots for a conversation.

@@ -331,8 +331,15 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
                 }
             }
 
-            // Check for authentication errors in plain text
-            if (dataContent.includes('AWS credentials have expired') || dataContent.includes('authentication')) {
+            // Authentication errors in plain text.  Only the server's own
+            // marker or an explicit expired-credential phrasing counts; the
+            // bare word "authentication" matched any line that merely
+            // discussed auth, and a network-shaped line (a credential fetch
+            // that died on the wire) is an outage, never an auth failure —
+            // the same rule as app/utils/infra_errors.is_auth_failure.
+            const networkShaped = /no such host|dial tcp|i\/o timeout|connection (refused|reset|aborted)|network is unreachable|failed to initialize iibs client|request to idp url|could not connect to the endpoint/i.test(dataContent);
+            if (!networkShaped &&
+                /authentication_error|AWS credentials have expired|credentials have expired|run 'mwinit'|ExpiredToken/i.test(dataContent)) {
                 return {
                     error: 'auth_error',
                     detail: 'AWS credentials have expired. Please refresh your credentials and try again.',
