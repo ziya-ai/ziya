@@ -148,12 +148,14 @@ any that should be REMOVED because they are:
    (keep the better-worded one, remove the other)
 3. Dangling references: memories that reference "the document", "the system", "the bug" \
    without naming what they refer to — making them useless out of context
-4. Stale/obsolete: information that was likely true at one point but is probably outdated \
-   (e.g. "currently working on X" from months ago)
+4. Explicitly time-bound status: text that says it describes the present moment \
+   ("currently working on X", "this week", "for now") — NOT facts you merely suspect are outdated
 5. Too vague to be useful: memories so generic they provide no actionable knowledge
 
 For duplicates, also identify which memory to KEEP (the more complete or better-worded one) \
-and which to MERGE into it (content from the duplicate that adds useful detail).
+and which to MERGE into it (content from the duplicate that adds useful detail). \
+Only two memories stating the SAME fact are duplicates. Two different facts about the \
+same subject are not: keep both, and never merge them.
 
 Output a JSON object:
 {
@@ -166,8 +168,13 @@ Output a JSON object:
 
 Rules:
 - Be conservative. When in doubt, KEEP the memory.
+- Decisions and negative constraints are durable by design. Flag them only as \
+  duplicates of another memory of the same kind.
+- Domain-specific jargon, part numbers and project names are not vagueness.
 - Only flag memories you are confident are junk or duplicates.
 - Merging should improve clarity, not just concatenate.
+- merged_content states ONE fact, at most 500 characters, and is no longer than the \
+  longer of the two memories. A merge that does not fit is ignored.
 - Empty arrays/objects are fine if nothing needs cleanup.
 
 No markdown fences, no explanation. JSON only."""
@@ -380,21 +387,39 @@ async def cleanup_corpus(store) -> Dict[str, Any]:
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
             result = json.loads(raw)
+            if not isinstance(result, dict):
+                raise json.JSONDecodeError("not an object", raw, 0)
+            layer_of = {m["id"]: m.get("layer") for m in batch}
 
             # Process merges first (before removing, since merge targets may be in remove list)
             for merge_op in result.get("merge", []):
                 keep_id = merge_op.get("keep")
                 absorb_id = merge_op.get("absorb")
                 merged_content = merge_op.get("merged_content", "")
+                # Only memories in this batch may be absorbed, and a
+                # protected layer only into a memory of the same layer.
+                if absorb_id not in layer_of or keep_id == absorb_id:
+                    continue
+                if (layer_of[absorb_id] in CLEANUP_PROTECTED_LAYERS
+                        and layer_of.get(keep_id) != layer_of[absorb_id]):
+                    continue
                 if keep_id and absorb_id and merged_content:
                     keep_mem = store.get(keep_id)
-                    if keep_mem:
+                    absorb_mem = store.get(absorb_id) if keep_mem else None
+                    if keep_mem and absorb_mem:
+                        longest = max(len(keep_mem.content), len(absorb_mem.content))
+                        if (len(merged_content) > MERGE_MAX_CHARS
+                                or len(merged_content) > max(MERGE_MAX_GROWTH * longest,
+                                                             longest + MERGE_GROWTH_SLACK_CHARS)):
+                            merges_rejected += 1
+                            continue
                         keep_mem.content = merged_content
-                        absorb_mem = store.get(absorb_id)
-                        if absorb_mem:
-                            keep_mem.tags = list(set(keep_mem.tags + absorb_mem.tags))
+                        merged_tags = list(dict.fromkeys(
+                            list(keep_mem.tags) + [t for t in absorb_mem.tags
+                                                   if t not in keep_mem.tags]))
+                        keep_mem.tags = merged_tags[:MERGE_MAX_TAGS]
                         store.save(keep_mem)
-                        store.delete(absorb_id)
+                        _archive_memory(store, absorb_id, f"cleanup_merged_into:{keep_id}")
                         total_merged += 1
                         logger.info(
                             f"🧹 MERGE: {absorb_id} → {keep_id}: {merged_content[:60]}"
