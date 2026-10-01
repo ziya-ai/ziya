@@ -228,13 +228,21 @@ def reset_for_tests(base_dir: Optional[Path] = None) -> None:
 
 # ── preflight ─────────────────────────────────────────────────────────────
 
-async def _preflight(tool_instance: Any, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def _preflight(
+    tool_instance: Any, args: Dict[str, Any], project_root: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Tool-declared ``preflight(**args) -> dict`` (sync or async), or None."""
     fn = getattr(tool_instance, "preflight", None)
     if not callable(fn):
         return None
     try:
-        out = fn(**(args or {}))
+        kw = dict(args or {})
+        # The gate runs before the executor injects ``_workspace_path``, so
+        # hand the preflight the SAME root the execution will use.  It rides
+        # the preflight call only, never the payload args the panel shows.
+        if project_root:
+            kw.setdefault("_workspace_path", project_root)
+        out = fn(**kw)
         if hasattr(out, "__await__"):
             out = await out
         return out if isinstance(out, dict) else {"value": out}
@@ -268,6 +276,7 @@ async def consent_gate(
     tool: Any = None,
     cancel_requested: Optional[Callable[[], bool]] = None,
     ttl_ms: int = DEFAULT_TTL_MS,
+    project_root: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Yield stream events, ending with a ``DECISION_EVENT``.
 
@@ -278,11 +287,37 @@ async def consent_gate(
     """
     inst = _unwrap(tool)
     op = op_for_call(inst, args)
+
+    # Per-project mode (app/utils/project_tool_modes.py) is the most specific
+    # layer and wins over permissions.json.  ``disabled`` refuses outright —
+    # the loader should not have advertised the tool, so reaching here means
+    # a stale tool list or a direct call.
+    project_mode = None
     try:
-        mode = consent_mode(tool_name, op, inst)
+        from app.utils.project_tool_modes import mode_for as _project_mode_for
+        project_mode = _project_mode_for(tool_name, project_root)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"consent mode lookup failed for {tool_name}; not gating: {exc}")
-        mode = MODE_OFF
+        logger.debug(f"project tool mode unavailable for {tool_name}: {exc}")
+    if project_mode == "disabled":
+        answer = {"decision": "reject", "answer": "this tool is disabled for this project",
+                  "answered_by": "project settings", "scope": SCOPE_ONCE}
+        yield {"type": DECISION_EVENT, "approved": False, "answer": answer, "asked": False}
+        return
+
+    try:
+        if project_mode == "autonomous":
+            mode = MODE_ALWAYS
+        elif project_mode == "gated":
+            # Gate every op the tool considers mutating; its read-only ops
+            # (declared ``off``, e.g. git ``status``) still run unprompted.
+            mode = MODE_OFF if declared_mode(inst, op) == MODE_OFF else MODE_ASK
+        else:
+            mode = consent_mode(tool_name, op, inst)
+    except Exception as exc:  # noqa: BLE001
+        # Fail closed to what the tool declares: a config read error must not
+        # turn an ``ask`` tool into an unattended one.
+        mode = declared_mode(inst, op)
+        logger.warning(f"consent mode lookup failed for {tool_name}; using declared {mode!r}: {exc}")
 
     if mode != MODE_ASK or _grants.covers(tool_name, op, conversation_id):
         yield {"type": DECISION_EVENT, "approved": True, "answer": None, "asked": False}
@@ -303,7 +338,7 @@ async def consent_gate(
         "tool": tool_name,
         "op": op,
         "args": args,
-        "preflight": await _preflight(inst, args),
+        "preflight": await _preflight(inst, args, project_root),
         "tool_id": tool_id,
     }
     led = ledger()

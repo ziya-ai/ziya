@@ -2,7 +2,7 @@
 Project data models.
 """
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional
 from app.models.task_card import TaskScope
 
 class WritePolicy(BaseModel):
@@ -46,6 +46,11 @@ class ProjectSettings(BaseModel):
     # chain (see app.models.task_card.merge_scopes and
     # app/agents/block_executor.py) — this is the outermost layer.
     taskScope: Optional[TaskScope] = None
+    # Per-project tool modes, ``{tool_name: "disabled"|"gated"|"autonomous"}``
+    # (app/utils/project_tool_modes.py).  Absent key = inherit.  Unsigned by
+    # decision; not a boundary against a hostile model — see
+    # Docs/ThreatModel.md §6 item 7.
+    toolModes: Dict[str, Literal["disabled", "gated", "autonomous"]] = {}
     # Which project template seeded these settings, recorded at creation.
     # PROVENANCE ONLY — deliberately NOT consulted when reading settings.
     # Template semantics are apply-once: the values above were stamped in
