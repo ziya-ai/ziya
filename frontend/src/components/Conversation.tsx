@@ -10,7 +10,7 @@ import { DocumentChip, ImageChip } from './FileChip';
 import ModelChangeNotification from './ModelChangeNotification';
 import LineageBar from './LineageBar';
 import HandoffBanner from './HandoffBanner';
-import { dispatchHandoffOpen } from '../utils/handoffOpen';
+import HandoffNotice from './HandoffNotice';
 import SeamRibbon from './SeamRibbon';
 import { getSeamHighlight, SEAM_HIGHLIGHT_EVENT, SeamHighlight } from '../utils/seamHighlight';
 import { useSetQuestion } from '../context/QuestionContext';
@@ -1070,17 +1070,13 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                             />
                         ) : msg.role === 'system' && msg.handoffNotice ? (
                             // Local-only notice: muted, never sent to the model.
-                            <div data-testid="handoff-notice" style={{
-                                display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', margin: '6px 0',
-                                borderRadius: 8, fontSize: 13,
-                                background: 'rgba(24, 144, 255, 0.08)', border: '1px solid rgba(24, 144, 255, 0.25)',
-                            }}>
-                                <span>⇢</span>
-                                <span style={{ flex: 1 }}>{msg.content}</span>
-                                <Button size="small" type="link" onClick={() => dispatchHandoffOpen(currentConversationId)}>
-                                    Review handoff
-                                </Button>
-                            </div>
+                            // Links forward to the continuation once one exists.
+                            <HandoffNotice
+                                message={msg}
+                                conversationId={currentConversationId}
+                                conversations={conversations as any}
+                                onNavigate={(id) => activeChat.loadConversation(id)}
+                            />
                         ) : (
                             // Skip rendering empty messages entirely
                             msg.content ? (
