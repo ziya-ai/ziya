@@ -174,6 +174,21 @@ class NovaBedrockProvider(LLMProvider):
             elif isinstance(system_content, list):
                 params["system"] = [{"text": b} if isinstance(b, str) else b
                                     for b in system_content]
+        # Converse models served here have no native reasoning channel, so
+        # "thinking on" can only mean asking the model to reason in its
+        # answer.  Append the instruction to the system prompt (or make it
+        # the system prompt), matching what the legacy ZiyaBedrock wrapper
+        # did; the model-config UI labels this group "step-by-step
+        # prompting" so nobody expects a thinking panel.
+        if config.thinking is not None and config.thinking.enabled:
+            from app.utils.thinking_options import STEP_BY_STEP_INSTRUCTION
+            system = params.get("system") or []
+            if system and isinstance(system[-1], dict) and "text" in system[-1]:
+                system[-1] = {**system[-1],
+                              "text": system[-1]["text"] + STEP_BY_STEP_INSTRUCTION}
+            else:
+                system.append({"text": STEP_BY_STEP_INSTRUCTION.strip()})
+            params["system"] = system
         # Some models (e.g. DeepSeek R1) don't support tool use in streaming.
         # Check native_function_calling from model config before sending tools.
         model_supports_tools = self.model_config.get("native_function_calling", True)
