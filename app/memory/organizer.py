@@ -32,6 +32,26 @@ CLUSTER_BATCH_SIZE = 40
 # Maximum memories per cleanup review call
 CLEANUP_BATCH_SIZE = 30
 
+# Cleanup reviews each memory ONCE.  It used to re-judge the whole corpus on
+# every organize run (the system job fires ~every 6h), so each memory faced
+# the LLM judge ~4x a day indefinitely and even a small false-positive rate
+# compounded into losing most of the corpus.  A memory the judge keeps is
+# stamped with CLEANUP_REVIEW_FIELD and never re-reviewed.
+CLEANUP_REVIEW_FIELD = "cleanup_reviewed_at"
+# Layers that are durable by design: removable only as a duplicate of a
+# memory of the same layer, never as "junk" or "stale".
+CLEANUP_PROTECTED_LAYERS = {"decision", "negative_constraint"}
+# At most this fraction of a batch (rounded up) may be removed in one call.
+CLEANUP_MAX_REMOVE_FRACTION = 0.25
+# A cleanup merge is applied only when it is a dedup.  Applying merged_content
+# verbatim, run after run, grew one live memory to 2,777 chars / 146 tags.
+# A merged text over MERGE_MAX_CHARS, or longer than the longer input plus
+# 20% or 40 chars (whichever is larger), is a concatenation and is refused.
+MERGE_MAX_CHARS = 500
+MERGE_MAX_GROWTH = 1.2
+MERGE_GROWTH_SLACK_CHARS = 40
+MERGE_MAX_TAGS = 6
+
 # Maximum memories per relation extraction call
 RELATION_BATCH_SIZE = 20
 
@@ -351,13 +371,19 @@ async def cleanup_corpus(store) -> Dict[str, Any]:
 
     Returns stats on what was cleaned up.
     """
+    import math
     all_memories = store.list_memories(status="active")
     if len(all_memories) < 5:
         return {"status": "too_few", "removed": 0, "merged": 0}
 
-    mem_dicts = [m.model_dump() for m in all_memories]
+    pending = [m for m in all_memories if not getattr(m, CLEANUP_REVIEW_FIELD, None)]
+    if not pending:
+        return {"status": "nothing_new", "reviewed": 0, "removed": 0, "merged": 0,
+                "reasons": {}}
+    mem_dicts = [m.model_dump() for m in pending]
     total_removed = 0
     total_merged = 0
+    merges_rejected = 0
     all_reasons: Dict[str, str] = {}
 
     for i in range(0, len(mem_dicts), CLEANUP_BATCH_SIZE):
@@ -427,14 +453,34 @@ async def cleanup_corpus(store) -> Dict[str, Any]:
 
             # Process removals
             merged_ids = {m.get("absorb") for m in result.get("merge", []) if m.get("absorb")}
+            budget = math.ceil(len(batch) * CLEANUP_MAX_REMOVE_FRACTION)
             for mem_id in result.get("remove", []):
                 if mem_id in merged_ids:
                     continue  # Already handled by merge
+                if mem_id not in layer_of or layer_of[mem_id] in CLEANUP_PROTECTED_LAYERS:
+                    continue
+                if budget <= 0:
+                    logger.info(f"🧹 cleanup removal cap reached; keeping {mem_id}")
+                    continue
+                budget -= 1
                 reason = result.get("reasons", {}).get(mem_id, "flagged by cleanup")
-                if store.delete(mem_id):
+                if _archive_memory(store, mem_id, f"cleanup: {reason}"):
                     total_removed += 1
                     all_reasons[mem_id] = reason
                     logger.info(f"🧹 REMOVE: {mem_id} — {reason}")
+
+            # Everything in the batch that is still active has now been
+            # reviewed.  A failed call (below) stamps nothing, so those
+            # memories are reviewed on a later run.
+            stamp = int(time.time() * 1000)
+            kept = []
+            for m in batch:
+                cur = store.get(m["id"])
+                if cur and cur.status == "active":
+                    setattr(cur, CLEANUP_REVIEW_FIELD, stamp)
+                    kept.append(cur)
+            if kept:
+                store.save_many(kept)
 
         except json.JSONDecodeError as e:
             logger.warning(f"Cleanup batch JSON parse failed: {e}")
@@ -443,13 +489,14 @@ async def cleanup_corpus(store) -> Dict[str, Any]:
 
     logger.info(
         f"🧹 Corpus cleanup: {total_removed} removed, {total_merged} merged "
-        f"from {len(all_memories)} total"
+        f"from {len(pending)} unreviewed of {len(all_memories)} total"
     )
     return {
         "status": "success",
-        "reviewed": len(all_memories),
+        "reviewed": len(pending),
         "removed": total_removed,
         "merged": total_merged,
+        "merges_rejected": merges_rejected,
         "reasons": all_reasons,
     }
 
