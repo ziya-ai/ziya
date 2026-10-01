@@ -572,7 +572,8 @@ class InteractiveFrontend:
         bound = f"chat {str(conv)[:8]}" if conv else "no chat attached"
         lease = self.core.server.current_lease() if self.core.server else None
         if lease is not None:
-            state = "active" if lease.granted else "pending grant"
+            state = ("active, approve-all" if lease.granted and lease.auto_approve
+                     else "active" if lease.granted else "pending grant")
             ctl = (f"control: chat {lease.conversation_id[:8]} ({lease.restriction}, "
                    f"{lease.policy_set}, {state}) · [r] revoke control · ")
         else:
@@ -641,10 +642,12 @@ class InteractiveFrontend:
             return
         if lease.granted:
             return  # implicit grant (headless) never reaches a frontend
-        self.overlay(
-            f"chat {lease.conversation_id[:8]} requests line control · "
-            f"{lease.restriction} · policy {lease.policy_set} · "
-            f"[g] grant · [n] deny · other key: deny")
+        from app.shadow.sock_server import ShadowSocketServer
+        self.overlay(f"chat {lease.conversation_id[:8]} wants to type commands into this "
+                     f"terminal ({lease.restriction}: "
+                     f"{ShadowSocketServer.describe_restriction(lease.restriction)}; "
+                     f"allowlist: {lease.policy_set})")
+        self.overlay("  [g] allow it   [n] refuse   — you can revoke any time: C-x C-z, r")
         self._grant_lease_id = lease.lease_id
         self._mode = "grant"
 
@@ -663,8 +666,10 @@ class InteractiveFrontend:
     def confirm_request(self, text: str, reason: str, conversation_id: str,
                         confirm_id: Optional[str] = None) -> None:
         """Server callback: a gated command awaits the human's decision."""
-        self.overlay(f"chat {conversation_id[:8]} wants to run: {text}")
-        self.overlay(f"  ({reason}) · [y] run · [n] deny · other key: deny")
+        self.overlay(f"chat {conversation_id[:8]} asks to run:  {text}")
+        self.overlay(f"  why it asks: {reason}")
+        self.overlay("  [y] run it   [a] run it and stop asking for this chat   "
+                     "[n] refuse   [x] refuse and revoke control")
         self._confirm_id = confirm_id
         self._mode = "confirm"
 
@@ -679,13 +684,20 @@ class InteractiveFrontend:
     def _confirm_key(self, key: bytes) -> None:
         srv = self.core.server
         shown, self._confirm_id = self._confirm_id, None
-        ok = srv is not None and srv.resolve_confirm(key == b"y", shown)
+        approve = key in (b"y", b"a")
+        ok = srv is not None and srv.resolve_confirm(
+            approve, shown, approve_all=(key == b"a"), revoke=(key == b"x"))
         if not ok:
             self.overlay("nothing awaiting confirmation")
+        elif key == b"a":
+            self.overlay("approved — this chat's further commands run without asking "
+                         "(C-x C-z, r to revoke)")
         elif key == b"y":
             self.overlay("approved")
+        elif key == b"x":
+            self.overlay("refused and control revoked")
         else:
-            self.overlay("denied")
+            self.overlay("refused")
 
     # -- one-line composer -----------------------------------------------------------
 
