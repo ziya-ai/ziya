@@ -204,17 +204,27 @@ async def call_service_model(
     config = resolve_service_model(category)
     ep = config["endpoint"]
 
-    if ep == "bedrock":
-        return await _call_bedrock(config, system_prompt, user_message, max_tokens, temperature)
-    elif ep == "google":
-        return await _call_google(config, system_prompt, user_message, max_tokens, temperature)
-    elif ep in ("openai", "anthropic", "zai", "meta", "local"):
-        return await _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature)
-    elif ep.startswith("local-"):
-        return await _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature)
-    else:
-        logger.warning(f"ServiceModelResolver: unknown endpoint '{ep}', falling back to bedrock")
-        return await _call_bedrock(config, system_prompt, user_message, max_tokens, temperature)
+    # An outage (credentials, network, throttling) is raised as a typed
+    # BaseException so callers cannot mistake it for a model answer: the
+    # memory pipeline's ``except Exception`` fallbacks (AGREES / ADD / no
+    # dedup) used to fire on expired credentials.  See app/utils/infra_errors.
+    from app.utils.infra_errors import ServiceInfraError, is_infra_error
+    try:
+        if ep == "bedrock":
+            return await _call_bedrock(config, system_prompt, user_message, max_tokens, temperature)
+        elif ep == "google":
+            return await _call_google(config, system_prompt, user_message, max_tokens, temperature)
+        elif ep in ("openai", "anthropic", "zai", "meta", "local"):
+            return await _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature)
+        elif ep.startswith("local-"):
+            return await _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature)
+        else:
+            logger.warning(f"ServiceModelResolver: unknown endpoint '{ep}', falling back to bedrock")
+            return await _call_bedrock(config, system_prompt, user_message, max_tokens, temperature)
+    except Exception as e:
+        if is_infra_error(e):
+            raise ServiceInfraError(e, where=f"call_service_model[{category}]") from e
+        raise
 
 
 def _unsupported_params_for_model_id(model_id: str) -> set:

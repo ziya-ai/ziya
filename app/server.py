@@ -2323,14 +2323,14 @@ async def stream_chunks(body):
                 logger.error(f"🚀 DIRECT_STREAMING: Error in StreamingToolExecutor: {e}")
                 logger.error(f"🚀 DIRECT_STREAMING: Full traceback:\n{error_details}")
                 
-                # Check for auth/credential errors
+                # Check for auth/credential errors.  is_auth_failure excludes a
+                # credential fetch that died on the network BEFORE asking the
+                # provider, so a plugin override cannot label an outage "auth".
                 from app.plugins import get_active_auth_provider
                 auth_provider = get_active_auth_provider()
                 from app.utils.custom_exceptions import KnownCredentialException
-                is_auth_error = (
-                    isinstance(e, KnownCredentialException) or
-                    (auth_provider and auth_provider.is_auth_error(error_str))
-                )
+                from app.utils.infra_errors import is_auth_failure, is_network_failure_text
+                is_auth_error = is_auth_failure(e, auth_provider)
                 
                 if is_auth_error:
                     # Same rationale as StreamingToolExecutor._classify_and_handle_error:
@@ -2345,7 +2345,8 @@ async def stream_chunks(body):
                     return
                 
                 # Check for connectivity errors
-                if any(indicator in error_str.lower() for indicator in ['i/o timeout', 'dial tcp', 'lookup', 'network', 'connection']):
+                if (is_network_failure_text(error_str) or
+                        any(indicator in error_str.lower() for indicator in ['lookup', 'network', 'connection'])):
                     yield f"data: {json.dumps({'error': 'Network connectivity issue. Please check your internet connection and try again.', 'error_type': 'connectivity'})}\n\n"
                     return
                 

@@ -1893,6 +1893,14 @@ async def _execute_repeat(
             return None
         return got.model_copy(update={"failed": False}) if got.failed else got
 
+    # A loop nested inside a for_each iteration (a count Repeat, or the
+    # Until below) has no item of its own.  Its bindings used to carry
+    # item=None and SHADOW the enclosing item, so every {{item}} under it
+    # rendered empty: the memory-replay card's Stage 3 tasks were told
+    # "Run id: ." (run 8c5deca5, 2026-09-27).  Captured once, before any
+    # of this loop's own bindings are pushed.
+    _enclosing_item = ctx.binding_stack[-1].item if ctx.binding_stack else None
+
     async def _run_one(index: int, item: Any = None,
                         previous: Optional[Artifact] = None,
                         all_prior: Optional[List[str]] = None,
@@ -1904,7 +1912,7 @@ async def _execute_repeat(
         iter_start = time.time()
         bindings = task_templating.IterationBindings(
             index=index,
-            item=item,
+            item=item if item is not None else _enclosing_item,
             previous=previous,
             all_summaries=list(all_prior or []),
         )
@@ -1927,7 +1935,17 @@ async def _execute_repeat(
         # would land in a never-sealed phantom bucket keyed to the task
         # block id and every iteration's output would collapse into a
         # single "Iteration 0" in the Live and Tools tabs.
-        iter_ctx_token = set_task_iteration_context(block.id, index)
+        # A parallel iteration is told what it owns and that its peers'
+        # items are someone else's (app/utils/fanout_notice.py): its
+        # instructions carry only its own {{item}}, and on 2026-09-27 an
+        # iteration advanced a sibling's run instead of its own.
+        _fanout = None
+        if block.repeat_parallel and len(iterations) > 1:
+            from ..utils.fanout_notice import fanout_descriptor
+            _fanout = fanout_descriptor(
+                block.name, index, len(iterations),
+                [_iter_label(i) for i in range(len(iterations))])
+        iter_ctx_token = set_task_iteration_context(block.id, index, _fanout)
         try:
             artifact = await _execute_sequence(
                 block.body, iter_scope,
@@ -2768,7 +2786,13 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     never-satisfied condition cannot hang the run.
     """
     n_max = max(1, int(block.until_max or 5))
+    # Rendered against the ENCLOSING bindings (this loop has pushed none
+    # yet).  It was passed to the evaluator raw, so a condition naming
+    # {{item}} asked the model about a literal "{{item}}".
     condition = (block.until_condition or "").strip()
+    if "{{" in condition:
+        condition = task_templating.render(condition, _task_bindings(ctx)).strip()
+    _enclosing_item = ctx.binding_stack[-1].item if ctx.binding_stack else None
     mode = (block.until_mode or "model").lower()
     start = time.time()
     last_artifact: Optional[Artifact] = None
@@ -2847,7 +2871,7 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
             "block_id": block.id, "index": i,
         })
         bindings = task_templating.IterationBindings(
-            index=i, item=None, previous=last_artifact, all_summaries=[],
+            index=i, item=_enclosing_item, previous=last_artifact, all_summaries=[],
         )
         ctx.binding_stack.append(bindings)
         # See _execute_repeat._run_one — stamp iteration context so

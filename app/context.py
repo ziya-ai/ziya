@@ -253,18 +253,30 @@ def get_task_service_tier() -> Optional[str]:
 
 def set_task_iteration_context(
     block_id: Optional[str], index: Optional[int],
+    fanout: Optional[dict] = None,
 ) -> contextvars.Token:
     """Set the active iteration context for the current task scope.
 
     ``block_id`` is the *iteration owner* — i.e. the Repeat/Until
     block emitting the boundary events — not the inner task block.
-    Pass ``None`` for both to clear.
+    Pass ``None`` for both to clear.  ``fanout`` is set only for an
+    iteration of a PARALLEL loop (see app/utils/fanout_notice.py).
     """
+    if fanout is None and block_id is not None:
+        # A loop nested INSIDE a parallel iteration (the common shape:
+        # parallel Repeat -> Until -> Task) still works on that
+        # iteration's item.  Re-stamping without inheriting dropped the
+        # descriptor for every task under the inner loop.
+        fanout = (_task_iteration_context.get() or {}).get("fanout")
     value = (
         {"block_id": block_id, "index": int(index)}
         if block_id is not None and index is not None
         else None
     )
+    if value is not None and fanout is not None:
+        # Only when present, so the context keeps its established shape
+        # for every loop that is not a parallel fan-out.
+        value["fanout"] = fanout
     return _task_iteration_context.set(value)
 
 
@@ -274,7 +286,7 @@ def reset_task_iteration_context(token: contextvars.Token) -> None:
 
 
 def get_task_iteration_context() -> Optional[dict]:
-    """Return ``{'block_id', 'index'}`` if inside an iteration, else None."""
+    """Return ``{'block_id', 'index', 'fanout'}`` inside an iteration, else None."""
     return _task_iteration_context.get()
 
 

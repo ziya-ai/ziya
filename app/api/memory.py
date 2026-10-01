@@ -152,11 +152,21 @@ async def list_proposals():
     from app.memory.lifecycle import (
         current_activity_count, ARCHIVAL_AGE_THRESHOLD, _evaluate_promotion,
     )
+    from app.utils.memory_clock import build_context, effective_counter
     store = get_proposals_store()
     counter = current_activity_count()
+    try:
+        from app.storage.memory import get_memory_storage
+        _key_by_id, _coll = get_memory_storage()._provenance()
+        clock_ctx = build_context(_coll)
+    except Exception:
+        clock_ctx = None
     out = []
     for row in store.list_open():
-        age = max(0, counter - int(row.get("activity_count_at_proposal", 0) or 0))
+        # Same per-domain counter the lifecycle sweep uses, so "age" and
+        # "would_promote" match what the next sweep will actually do.
+        row_counter = effective_counter(row, counter, clock_ctx)
+        age = max(0, row_counter - int(row.get("activity_count_at_proposal", 0) or 0))
         out.append({
             **row,
             # Why this entry has not promoted yet, and when it would expire.
@@ -164,7 +174,7 @@ async def list_proposals():
             "signals": [s.get("name") for s in (row.get("signals") or [])],
             "age": age,
             "expires_in": max(0, ARCHIVAL_AGE_THRESHOLD - age),
-            "would_promote": _evaluate_promotion(row),
+            "would_promote": _evaluate_promotion(row, row_counter),
         })
     return out
 
@@ -215,6 +225,24 @@ async def dismiss_proposal(proposal_id: str):
 
 
 # -- Review (Phase 2) -------------------------------------------------------
+
+@router.get("/api/v1/memory/pause")
+async def get_memory_pause():
+    """Whether memory is paused after an infrastructure outage, and why."""
+    from app.utils import memory_pause
+    rec = memory_pause.status()
+    return {"paused": rec is not None, "record": rec}
+
+
+@router.post("/api/v1/memory/resume")
+async def resume_memory():
+    """Human-in-the-loop continuation: clear the pause written when a memory
+    pass hit an outage (expired credentials, network).  The next turn
+    extracts normally; the lifecycle job's next tick catches up."""
+    from app.utils import memory_pause
+    rec = memory_pause.resume()
+    return {"resumed": rec is not None, "cleared": rec}
+
 
 @router.get("/api/v1/memory/review")
 async def get_review():

@@ -666,6 +666,18 @@ async def execute_task_block(
             "earlier task may have already established it."
         )
 
+    # Parallel fan-out ownership.  Read from the iteration context the
+    # block executor stamps, so it reaches every Task inside a parallel
+    # loop body, however deeply nested, without any card having to ask.
+    try:
+        from app.context import get_task_iteration_context as _gtic
+        from app.utils.fanout_notice import fanout_ownership_notice
+        _notice = fanout_ownership_notice((_gtic() or {}).get("fanout"))
+        if _notice:
+            system_parts.append(_notice)
+    except Exception as e:
+        logger.warning(f"📋 TASK_EXEC: fan-out ownership notice failed (non-fatal): {e}")
+
     messages = [
         SystemMessage(content="\n\n".join(system_parts)),
         HumanMessage(content=block.instructions),
