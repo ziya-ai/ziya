@@ -3327,10 +3327,26 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // server stuck at 2 messages, local at 46, same _version.
                             // Shell guards above still prevent pushing truncated
                             // shells, so widening here is safe.
+                            //
+                            // Except when the server is NEWER and shorter: a server
+                            // record only shrinks through an explicit rewind/delete,
+                            // which bumps its _version, so local's extra messages
+                            // were removed there and local is stale.  Pushing would
+                            // re-send tombstoned messages, the server would drop
+                            // them and bump _version again, and this rule would
+                            // re-fire every cycle.  shouldFetchFull's serverShrank
+                            // branch pulls the shorter record instead.
                             const serverMsgCount = typeof (sc as any).messageCount === 'number'
                                 ? (sc as any).messageCount
                                 : Array.isArray((sc as any).messages) ? (sc as any).messages.length : 0;
+                            // If server has no _version (old data), compare lastActiveAt instead.
+                            const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
+                            const localVer = (c as any)._version || c.lastAccessedAt || 0;
                             if (localMsgCount > serverMsgCount) {
+                                if (syncMerge.serverShrankPastLocal({ localMsgCount, serverMsgCount, localVer, serverVer })) {
+                                    console.log(`📡 SERVER_SYNC: server shrank ${c.id.substring(0, 8)} (local=${localMsgCount} server=${serverMsgCount}, server newer) — not pushing, pull will reconcile`);
+                                    return false;
+                                }
                                 console.log(`📡 SERVER_SYNC: msg-count divergence for ${c.id.substring(0, 8)} (local=${localMsgCount} server=${serverMsgCount}) — pushing`);
                                 return true;
                             }
@@ -3347,10 +3363,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             if (localMsgCount === 0 && serverMsgCount === 0) {
                                 return false;
                             }
-                            // Only push if local has a _version AND it's strictly greater than server's
-                            // If server has no _version (old data), compare lastActiveAt instead
-                            const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
-                            const localVer = (c as any)._version || c.lastAccessedAt || 0;
+                            // Only push if local's version is strictly greater than server's.
                             return localVer > serverVer;
                         })
                         .map(c => c.id);
