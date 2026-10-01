@@ -127,12 +127,18 @@ def price_record(record: Any, catalog: PricingCatalog, plan: RatePlan) -> CostLi
         entry and entry.unit_prices.get("reasoning_additive"))
     dims = _billable_dims(record.dims, additive)
     eff_rates = {k: v for k, v in eff.unit_prices.items() if k != "reasoning_additive"}
+    # Additive reasoning with no explicit rate bills at the output rate —
+    # that is what "billed as output tokens, on top of output" means.
+    if additive and "reasoning" not in eff_rates and "output" in eff_rates:
+        eff_rates["reasoning"] = eff_rates["output"]
     eff_rates, lc_applied = _select_rates(eff_rates, eff.long_context, dims)
     effective, missing = _sum(dims, eff_rates, factor)
 
     list_cost: Optional[float] = None
     if entry is not None:
         list_rates = {k: v for k, v in entry.unit_prices.items() if k != "reasoning_additive"}
+        if additive and "reasoning" not in list_rates and "output" in list_rates:
+            list_rates["reasoning"] = list_rates["output"]
         list_rates, _ = _select_rates(list_rates, entry.long_context, dims)
         list_factor = entry.tier_factors.get(tier)
         if list_factor is not None:
