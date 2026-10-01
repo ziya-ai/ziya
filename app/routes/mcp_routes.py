@@ -1978,22 +1978,14 @@ async def get_builtin_tools_status():
 async def toggle_builtin_tool_category(request: BuiltinToolToggleRequest):
     """Enable or disable a builtin tool category."""
     try:
-        from app.mcp.builtin_tools import BUILTIN_TOOL_CATEGORIES
+        from app.mcp.builtin_tools import BUILTIN_TOOL_CATEGORIES, set_builtin_category_enabled
         
         if request.category not in BUILTIN_TOOL_CATEGORIES:
             raise HTTPException(status_code=400, detail=f"Unknown builtin tool category: {request.category}")
         
-        # Set environment variable to persist the setting
-        env_var = f"ZIYA_ENABLE_{request.category.upper()}"
-        os.environ[env_var] = "true" if request.enabled else "false"
-        
-        # Clear the MCP tools cache to force reload
-        try:
-            import app.mcp.enhanced_tools
-            app.mcp.enhanced_tools._secure_tool_cache = None
-            app.mcp.enhanced_tools._tool_cache_timestamp = 0
-        except ImportError:
-            pass
+        # Persists to the user state store, mirrors into the env var and
+        # clears both caches (design/capabilities-hub.md "Environment").
+        set_builtin_category_enabled(request.category, request.enabled)
         
         action = "enabled" if request.enabled else "disabled"
         logger.info(f"Builtin tool category '{request.category}' {action}")
