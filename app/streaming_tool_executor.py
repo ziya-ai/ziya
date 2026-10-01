@@ -1462,6 +1462,33 @@ class StreamingToolExecutor:
 
         all_tools = create_secure_mcp_tools()
 
+        # Per-project tool modes (app/utils/project_tool_modes.py): a project
+        # set to gated/autonomous gets an enableable tool (git) even when its
+        # category is off globally; disabled removes it.  Before the task
+        # allowlist, so a card's allowlist can still narrow the result.
+        from app.utils.project_tool_modes import apply_to_tools as _apply_project_modes
+        all_tools, _pm_added, _pm_removed = _apply_project_modes(
+            all_tools, project_root, wrap=DirectMCPTool)
+        if _pm_added or _pm_removed:
+            logger.info(
+                f"🗂️ PROJECT_TOOL_MODES: added {_pm_added} removed {_pm_removed}"
+            )
+
+        # Bench placements (design/capabilities-hub.md): an MCP server shelved
+        # at the project or conversation layer stays connected, but its tools
+        # are withheld here.  create_secure_mcp_tools() is context-free and
+        # cached, so this is the only point with the request's project and
+        # conversation in hand.  Before the task allowlist, which may only
+        # narrow the set, never restore a shelved server.
+        from app.utils.bench_prompt import withheld_mcp_for_root, drop_withheld_tools
+        _withheld = withheld_mcp_for_root(project_root, conversation_id)
+        all_tools, _n_withheld = drop_withheld_tools(all_tools, _withheld)
+        if _n_withheld:
+            logger.info(
+                f"🧰 BENCH: withheld {_n_withheld} tool(s) from shelved "
+                f"server(s) {sorted(_withheld)}"
+            )
+
         # Apply the task-scope allowlist before anything else derives from
         # all_tools (name sets, schemas, the provider payload) so no
         # downstream structure can leak a filtered-out tool back in.

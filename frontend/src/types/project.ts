@@ -44,7 +44,12 @@ export interface ProjectSettings {
   // scope (see app/models/task_card.py::merge_scopes and
   // app/agents/block_executor.py) — this is the outermost layer.
   taskScope?: TaskScope | null;
+  // Per-project tool modes (app/utils/project_tool_modes.py).  Absent key =
+  // inherit the global setting.
+  toolModes?: Record<string, ProjectToolMode>;
 }
+
+export type ProjectToolMode = 'disabled' | 'gated' | 'autonomous';
 
 export interface Project {
   id: string;
