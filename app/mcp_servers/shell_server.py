@@ -154,6 +154,22 @@ GIT_TAG_READ_ONLY_PATTERN = (
     rf"(?:\s+(?:{_GIT_TAG_LIST_OPTS}|{_GIT_TAG_DISPLAY_OPTS}|{_GIT_TAG_OPERAND}))+)\s*$"
 )
 
+# ``--output=<file>`` is a diff/revision option honoured by diff, log, show,
+# whatchanged, rev-list, shortlog, reflog, blame and ``stash list``: each
+# writes (or overwrites) an arbitrary path, untracked files included.  Git
+# accepts neither abbreviations nor a short form, so rejecting the literal
+# ``--output`` (not followed by ``-``, which keeps ``--output-indicator-*``)
+# anywhere in the segment closes it -- quoted forms included.  Collateral: a
+# grep/--grep pattern containing ``--output`` is refused too.  Probed
+# 2026-09-25; tests/test_shell_git_no_output_file.py.
+_GIT_NO_OUTPUT_FILE = r"(?!.*--output(?!-))"
+
+
+def _refuse_output_file(pattern: str) -> str:
+    """Prefix a safe-tier git pattern with the ``--output`` refusal."""
+    body = pattern[1:] if pattern.startswith("^") else pattern
+    return "^" + _GIT_NO_OUTPUT_FILE + body
+
 
 def _consume_assignment_with_subst(segment: str) -> str | None:
     """Consume a full VAR=$(...) or VAR="$(...)" token from *segment*.
@@ -651,6 +667,12 @@ class ShellServer:
                 'describe': r'^git\s+describe(\s+.*)?$',
                 'shortlog': r'^git\s+shortlog(\s+.*)?$',
                 'whatchanged': r'^git\s+whatchanged(\s+.*)?$',
+            }
+            # Every read-only pattern refuses --output=<file>; applied here so
+            # an op added to the table above inherits it (see
+            # _GIT_NO_OUTPUT_FILE).
+            self.git_patterns = {
+                op: _refuse_output_file(p) for op, p in self.git_patterns.items()
             }
             
             # Only add enabled git operations
