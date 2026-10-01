@@ -70,55 +70,64 @@ export function forkLineageFields(source: ForkLineageSource): {
     };
 }
 
-export interface HandoffChainLike {
+export interface HandoffOrdinalLike {
     id: string;
     branchedFrom?: string;
     lineageKind?: string;
     handedOffTo?: string;
 }
 
-/**
- * Resolve handoff chains for the chat list (design/conversation-handoff.md,
- * "divergence nests, continuation chains").
- *
- * A segment link A→B exists only when all three fields agree: B.lineageKind
- * is 'handoff', B.branchedFrom is A, and A.handedOffTo is B.  The TAIL of a
- * chain — the newest segment, not itself linked forward — owns the row; the
- * map value is its predecessors, newest first.  A handoff child whose source
- * is missing, or which its source does not point forward to (a superseded
- * second continuation), is not a chain and falls through to ordinary
- * under-parent nesting.  Cycle-safe and depth-bounded.
- */
-export function buildHandoffChains(conversations: HandoffChainLike[]): Map<string, string[]> {
-    const byId = new Map(conversations.map(c => [c.id, c]));
-    const isLink = (child: HandoffChainLike, parent: HandoffChainLike | undefined) =>
-        !!parent && child.lineageKind === 'handoff' && child.branchedFrom === parent.id
-        && parent.handedOffTo === child.id;
+export interface SegmentOrdinal {
+    index: number;   // 1-based position in the chain
+    total: number;   // chain length
+}
 
-    // Sources of a confirmed link are never tails.
-    const linkedForward = new Set<string>();
+/**
+ * Position-in-chain for every segment of every handoff chain
+ * (design/conversation-handoff.md, "Chat list").  Rows are NOT collapsed —
+ * each segment stays visible, nested under its source like a fork — the
+ * ordinal is what makes the order legible (1/3 ⇢, ⛓ 2/3, ⛓ 3/3).
+ *
+ * A link A→B requires all three fields to agree: B.lineageKind='handoff',
+ * B.branchedFrom=A, A.handedOffTo=B.  A superseded second continuation
+ * (its source points elsewhere) is not part of the chain and gets no
+ * ordinal.  A continuation whose source is not loaded is numbered as the
+ * tail of a 2-segment chain so it is still marked.  Cycle-safe.
+ */
+export function handoffSegmentOrdinals(
+    conversations: HandoffOrdinalLike[],
+): Map<string, SegmentOrdinal> {
+    const byId = new Map(conversations.map(c => [c.id, c]));
+    const isLink = (parent: HandoffOrdinalLike | undefined, child: HandoffOrdinalLike | undefined): boolean =>
+        !!parent && !!child && child.lineageKind === 'handoff'
+        && child.branchedFrom === parent.id && parent.handedOffTo === child.id;
+
+    const out = new Map<string, SegmentOrdinal>();
     for (const c of conversations) {
         if (c.lineageKind !== 'handoff' || !c.branchedFrom) continue;
-        const p = byId.get(c.branchedFrom);
-        if (isLink(c, p)) linkedForward.add(p!.id);
-    }
-
-    const chains = new Map<string, string[]>();
-    for (const c of conversations) {
-        if (c.lineageKind !== 'handoff' || linkedForward.has(c.id)) continue;
-        const preds: string[] = [];
-        const seen = new Set<string>([c.id]);
-        let cur: HandoffChainLike = c;
-        while (cur.branchedFrom && preds.length < 50) {
-            const p = byId.get(cur.branchedFrom);
-            if (!isLink(cur, p) || seen.has(p!.id)) break;
-            seen.add(p!.id);
-            preds.push(p!.id);
-            cur = p!;
+        const parent = byId.get(c.branchedFrom);
+        if (!parent) {
+            if (!out.has(c.id)) out.set(c.id, { index: 2, total: 2 });
+            continue;
         }
-        if (preds.length) chains.set(c.id, preds);
+        if (!isLink(parent, c)) continue;   // superseded continuation — not a chain link
+        // Only start a walk from the chain's ROOT (a parent that is not
+        // itself a linked continuation); deeper links are reached by the walk.
+        const grandparent = parent.branchedFrom ? byId.get(parent.branchedFrom) : undefined;
+        if (parent.lineageKind === 'handoff' && isLink(grandparent, parent)) continue;
+        const chain: string[] = [parent.id];
+        const seen = new Set<string>(chain);
+        let cur: HandoffOrdinalLike | undefined = parent;
+        while (cur && chain.length < 50) {
+            const next = cur.handedOffTo ? byId.get(cur.handedOffTo) : undefined;
+            if (!next || !isLink(cur, next) || seen.has(next.id)) break;
+            seen.add(next.id);
+            chain.push(next.id);
+            cur = next;
+        }
+        chain.forEach((id, i) => out.set(id, { index: i + 1, total: chain.length }));
     }
-    return chains;
+    return out;
 }
 
 /**

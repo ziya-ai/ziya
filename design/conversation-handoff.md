@@ -243,12 +243,24 @@ a lock would be wrong.
    handoff-flavoured sibling) with *Edit* — reopens the drawer against the
    stored document. Predecessor breadcrumb for hop-by-hop navigation.
 
-4. **Chat list.** Divergence nests, continuation chains:
-   - fork / branch: nested under the parent (existing behaviour), glyph ⑂.
-   - handoff chain A→B→C: **one row** titled/sorted by the newest segment,
-     glyph ⛓ and a "N segments" pill, expandable to the segment list. Nesting
-     each handoff a level deeper would indent a long-running track off the
-     right edge — wrong shape for a linear thing.
+4. **Chat list.** Every lineage kind nests the same way: the child sits
+   under the conversation it came from (the generic `branchedFrom` pass).
+   A handoff continuation carries ⛓; its source is dimmed with ⇢ (never
+   hidden, never locked). A→B→C is therefore A ▸ B ▸ C, one level per hop.
+   Because nesting alone reads like a fork tree, every segment of a chain
+   also carries an **ordinal badge** — `1/3 ⇢`, `⛓ 2/3`, `⛓ 3/3` — computed
+   by `handoffSegmentOrdinals` (`frontend/src/utils/lineage.ts`): a link
+   needs `B.lineageKind='handoff'`, `B.branchedFrom=A` and `A.handedOffTo=B`
+   to agree, so a superseded second continuation is unnumbered and just
+   nests. The order is visible; nothing is hidden.
+
+   *Rejected (built as step 5, reverted in use):* collapsing a chain into
+   **one row** owned by the newest segment with a "N segments" pill for the
+   predecessors. The theory was that a long linear track would indent off
+   the right edge; in practice the source appeared to vanish from the list
+   entirely, which is the opposite of the visible trail the feature exists
+   to provide. If deep chains ever become a real indentation problem, fix
+   it with sidebar-wide depth folding, not a handoff-specific exception.
 
 ## API
 
@@ -313,18 +325,11 @@ record).
    `tests/test_handoff_api.py` (seam: commit → child prelude carries
    document + predecessor + shared open beads; closing via the child drops
    the source's openBeadCount), `frontend/.../HandoffBanner.test.tsx`.
-   Interim: a continuation currently nests under its source like a fork
-   (the chain row is step 5).
-5. **Done.** Chat-list chain row. `buildHandoffChains` in
-   `frontend/src/utils/lineage.ts` is the pure rule: a segment link A→B
-   requires `B.lineageKind='handoff'`, `B.branchedFrom=A` and
-   `A.handedOffTo=B` (all three — a superseded second continuation is not a
-   link and nests under its parent like a fork). The tail owns the row;
-   predecessors become its `handoffSegment` children, hidden by
-   `flattenVisibleNodes` until the "N segments" pill expands them; the
-   tail's other children (forks, task-plan folders) stay inline. The row
-   sorts by the tail's own activity — a send into an old segment does not
-   bump the chain. Tests: `frontend/.../handoffChains.test.ts`.
+   A continuation nests under its source like a fork.
+5. **Reverted.** Chat-list chain row (`buildHandoffChains`, `handoffSegment`
+   children, "N segments" pill). Shipped, then removed after use: the source
+   disappeared from the list. See "Chat list" under UX surfaces. The ⛓ / ⇢
+   row marks from step 4 are the whole chat-list treatment.
 6. Check-coverage agent.
 
 ## Tests that matter
