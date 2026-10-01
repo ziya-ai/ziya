@@ -4,14 +4,29 @@ import { v4 as uuidv4 } from 'uuid';
 import { purgeExpiredConversations } from './retentionPurge';
 import { message } from 'antd';
 import { performEmergencyRecovery } from './emergencyRecovery';
+import { scopedName, whenInstanceKnown } from './instanceIdentity';
+import { shouldPreserveExistingMessages } from './syncMerge';
 
 declare global {
     interface IDBDatabase { }
 }
 
-// Get database name from localStorage or use default
-const DB_ROOT_NAME = 'ZiyaDB';
-const DB_NAME_KEY = 'ZIYA_DB_NAME';
+// Every origin-scoped name below is suffixed with the connected server's
+// instance id (see instanceIdentity.ts) and therefore cannot be known until
+// /projects/startup has answered.  They are assigned once in
+// _bindInstance(), which init() awaits before touching IndexedDB,
+// localStorage or a Web Lock.  An unowned legacy 'ZiyaDB' on this origin is
+// never opened by a server that reports an id: there is no way to tell our
+// own pre-upgrade cache from a dead server's leftovers, so neither is
+// trusted.  A server reporting no id (pre-feature backend) yields the
+// unsuffixed names, i.e. today's behaviour.
+let DB_ROOT_NAME = 'ZiyaDB';
+let DB_NAME_KEY = 'ZIYA_DB_NAME';
+const LOCK = {
+    init: 'ziya-db-init',
+    read: 'ziya-db-read',
+    write: 'ziya-db-write',
+};
 const DB_RECOVERY_MAX = 9; // ZiyaDB_r1 … ZiyaDB_r9
 // A genuine cross-tab upgrade barrier (another tab holding an older
 // version open) can no longer be self-inflicted after the probe removal,
@@ -43,14 +58,10 @@ function persistDbName(name: string): void {
     } catch { /* localStorage may be blocked in some private-browse modes */ }
 }
 
-const DB_BASE_NAME = (() => {
-    try {
-        const stored = localStorage.getItem(DB_NAME_KEY);
-        if (stored) console.log('Using promoted database name:', stored);
-        return stored || DB_ROOT_NAME;
-    } catch { return DB_ROOT_NAME; }
-})();
-let currentDbName = DB_BASE_NAME;
+// Assigned by _bindInstance(); empty until then so an accidental early open
+// fails on an invalid name rather than silently opening the unscoped DB.
+let DB_BASE_NAME = '';
+let currentDbName = '';
 let currentVersion = 3; // Increment version to force upgrade
 const STORE_NAME = 'conversations';
 const BACKUP_STORE_NAME = 'conversationsBackup';
@@ -94,6 +105,8 @@ class ConversationDB implements DB {
     private initPromise: Promise<void> | null = null;
     /** Set permanently true when every promoted name is exhausted. */
     private isUnavailable = false;
+    /** True once DB/LS/lock names have been resolved for this instance. */
+    private instanceBound = false;
 
     // Shell-array cache for getConversationShells().  The cursor scan
     // structured-clones every record's full message bodies on each
@@ -167,19 +180,45 @@ class ConversationDB implements DB {
 
     db: IDBDatabase | null = null;
 
+    /**
+     * Resolve every origin-scoped name for the connected server instance.
+     * Runs once; waits for ProjectContext / the fetch latch to establish the
+     * id.  Must complete before any IndexedDB, localStorage or Web Lock use.
+     */
+    private async _bindInstance(): Promise<void> {
+        if (this.instanceBound) return;
+        const id = await whenInstanceKnown();
+        DB_ROOT_NAME = scopedName('ZiyaDB', id);
+        DB_NAME_KEY = scopedName('ZIYA_DB_NAME', id);
+        LOCK.init = scopedName('ziya-db-init', id);
+        LOCK.read = scopedName('ziya-db-read', id);
+        LOCK.write = scopedName('ziya-db-write', id);
+        try {
+            const stored = localStorage.getItem(DB_NAME_KEY);
+            if (stored) console.log('Using promoted database name:', stored);
+            DB_BASE_NAME = stored || DB_ROOT_NAME;
+        } catch { DB_BASE_NAME = DB_ROOT_NAME; }
+        currentDbName = DB_BASE_NAME;
+        this.instanceBound = true;
+    }
+
     async init(): Promise<void> {
         if (this.initPromise) return this.initPromise;
         if (this.isUnavailable) throw new Error('IDB backing store permanently unavailable');
 
         this.initializing = true;
-        if (navigator.locks) {
-            const lockPromise: Promise<void> = navigator.locks.request<void>('ziya-db-init', async _lock => {
-                await this._initWithLock();
-            });
-            this.initPromise = lockPromise;
-            return lockPromise;
-        }
-        this.initPromise = this._initWithLock();
+        // initPromise is assigned synchronously so concurrent callers share
+        // one init even though the instance bind is asynchronous.
+        this.initPromise = (async () => {
+            await this._bindInstance();
+            if (navigator.locks) {
+                await navigator.locks.request<void>(LOCK.init, async _lock => {
+                    await this._initWithLock();
+                });
+                return;
+            }
+            await this._initWithLock();
+        })();
         return this.initPromise;
     }
 
@@ -592,7 +631,7 @@ class ConversationDB implements DB {
         }
 
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-write', async _lock => {
+            return navigator.locks.request(LOCK.write, async _lock => {
                 // FAST PATH: small batch with no shells — skip dedup/getAll overhead
                 const hasShells = conversations.some(c => (c as any)._isShell);
                 const allHaveIds = conversations.every(c => c?.id);
@@ -941,7 +980,7 @@ class ConversationDB implements DB {
         };
 
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-read', { mode: 'shared' }, () => readFn());
+            return navigator.locks.request(LOCK.read, { mode: 'shared' }, () => readFn());
         }
         return readFn();
     }
@@ -1015,7 +1054,7 @@ class ConversationDB implements DB {
         };
 
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-write', () => writeFn());
+            return navigator.locks.request(LOCK.write, () => writeFn());
         }
         return writeFn();
     }
@@ -1055,7 +1094,7 @@ class ConversationDB implements DB {
         }
 
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-read', { mode: 'shared' }, async _lock => {
+            return navigator.locks.request(LOCK.read, { mode: 'shared' }, async _lock => {
                 return this._getConversationsWithLock();
             });
         }
@@ -1187,7 +1226,7 @@ class ConversationDB implements DB {
                 });
             };
             if (navigator.locks) {
-                await navigator.locks.request('ziya-db-read', { mode: 'shared' }, () => refreshFn());
+                await navigator.locks.request(LOCK.read, { mode: 'shared' }, () => refreshFn());
             } else {
                 await refreshFn();
             }
@@ -1244,7 +1283,7 @@ class ConversationDB implements DB {
         };
 
         const shells = navigator.locks
-            ? await navigator.locks.request('ziya-db-read', { mode: 'shared' }, () => readFn())
+            ? await navigator.locks.request(LOCK.read, { mode: 'shared' }, () => readFn())
             : await readFn();
         this.shellCache = new Map(shells.map(s => [s.id, s]));
         this.shellCacheTs = Date.now();
@@ -1269,7 +1308,7 @@ class ConversationDB implements DB {
         // Force version increment to trigger schema recreation
         currentVersion++;
         this.initPromise = null;
-        localStorage.removeItem('ZIYA_DB_NAME'); // Clear any custom DB name
+        localStorage.removeItem(DB_NAME_KEY); // Clear any custom DB name
 
         try {
             // Reinitialize with new version
@@ -1294,7 +1333,7 @@ class ConversationDB implements DB {
 
     async exportConversations(): Promise<string> {
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-read', { mode: 'shared' }, async _lock => {
+            return navigator.locks.request(LOCK.read, { mode: 'shared' }, async _lock => {
                 return this._exportConversations();
             });
         }
@@ -1345,7 +1384,7 @@ class ConversationDB implements DB {
 
     async importConversations(data: string, importRootFolderId?: string): Promise<void> {
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-write', async _lock => {
+            return navigator.locks.request(LOCK.write, async _lock => {
                 return this._importConversations(data, importRootFolderId);
             });
         }
@@ -1663,7 +1702,7 @@ class ConversationDB implements DB {
 
     async repairDatabase(): Promise<void> {
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-write', async _lock => {
+            return navigator.locks.request(LOCK.write, async _lock => {
                 return this._repairDatabase();
             });
         }
@@ -1693,7 +1732,7 @@ class ConversationDB implements DB {
 
     async clearDatabase(): Promise<void> {
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-write', async _lock => {
+            return navigator.locks.request(LOCK.write, async _lock => {
                 return this._clearDatabase();
             });
         }
