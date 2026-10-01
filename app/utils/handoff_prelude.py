@@ -82,8 +82,13 @@ def nudge_ratio() -> float:
 
 
 def estimate_messages_tokens(messages: List[Any]) -> int:
-    """Cheap chars/4 estimate over assembled messages.  A nudge threshold
-    does not justify a tokenizer pass over a 150k-token context per turn."""
+    """Cheap calibrated estimate over assembled messages.  A nudge threshold
+    does not justify a tokenizer pass over a 150k-token context per turn,
+    but it does need the learned ratio: the original ``chars // 4`` read a
+    2.04M-char payload as 51% of a 1M limit, so the 70% nudge never fired,
+    and Bedrock then rejected the same payload at 1,017,040 tokens (the
+    model's ratio on line-numbered code is ~2.4, plus ~168k of tool schema
+    the messages do not contain at all)."""
     total = 0
     for m in messages or []:
         content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
@@ -97,7 +102,8 @@ def estimate_messages_tokens(messages: List[Any]) -> int:
                         total += len(t)
                 elif isinstance(block, str):
                     total += len(block)
-    return total // 4
+    from app.utils.context_debug import estimate_payload_tokens
+    return estimate_payload_tokens(total)
 
 
 def record_context_pressure(conversation_id: Optional[str], tokens: int,

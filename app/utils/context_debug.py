@@ -75,6 +75,7 @@ even measurably slowing) an actual model turn.
 
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -394,6 +395,51 @@ def record_iteration(
         logger.debug(f"context_debug.record_iteration failed (non-fatal): {e}")
 
 
+_PROVIDER_REJECTION_RE = re.compile(
+    r"(?:prompt|input) is too long:\s*(\d[\d,]*)\s*tokens?\s*>\s*(\d[\d,]*)\s*maximum",
+    re.IGNORECASE,
+)
+
+
+def parse_provider_token_rejection(error_message: Any) -> Optional[Tuple[int, int]]:
+    """``(tokens, limit)`` from a provider's context-overflow message, else None.
+
+    Anthropic-on-Bedrock rejects with ``prompt is too long: N tokens > M
+    maximum``.  Those two numbers are the only authoritative figure that
+    exists for a call that never streamed, so the failure record prefers
+    them over any char-based estimate.  Other providers' overflow messages
+    ("Input is too long for requested model") carry no count and yield None.
+    """
+    if not isinstance(error_message, str):
+        return None
+    m = _PROVIDER_REJECTION_RE.search(error_message)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(",", "")), int(m.group(2).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def estimate_payload_tokens(total_chars: int) -> int:
+    """Calibrated estimate for a whole assembled payload of ``total_chars``.
+
+    Uses the learned chars/token ratio for the current model family plus
+    the measured fixed overhead (tool schemas + static prompt), because a
+    hardcoded ``chars // 4`` reported 509k for a payload Bedrock counted at
+    1,017,040: on line-numbered code the real ratio is ~2.4 and the tools
+    alone are ~168k.  Falls back to ``// 4`` only when the calibrator
+    cannot be loaded.
+    """
+    try:
+        from app.utils.token_calibrator import get_token_calibrator
+        return get_token_calibrator().estimate_tokens_from_chars(
+            total_chars, include_baseline=True)
+    except Exception as e:  # noqa: BLE001 - diagnostics must never break a turn
+        logger.debug(f"context_debug: calibrated estimate unavailable ({e}); using chars/4")
+        return int(total_chars / 4) if total_chars else 0
+
+
 def record_failure(
     conversation_id: Optional[str],
     iteration: int,
@@ -433,18 +479,30 @@ def record_failure(
         system_chars = _measure_system_chars(system_content)
         conversation_chars = _measure_conversation_chars(conversation)
         total_chars = system_chars + conversation_chars
-        # Rough, clearly-labelled estimate only.
-        estimated_tokens = int(total_chars / 4) if total_chars else 0
+        estimated_tokens = estimate_payload_tokens(total_chars)
+        # Bedrock's rejection text carries the exact count and the limit
+        # ("prompt is too long: 1017040 tokens > 1000000 maximum").  That is
+        # the provider's own number, not an estimate; using it is what makes
+        # the panel agree with the error the user just read.
+        reported = parse_provider_token_rejection(error_message)
+        if reported:
+            total_input, reported_limit = reported
+            is_estimated = False
+            if not effective_limit and reported_limit:
+                effective_limit = reported_limit
+        else:
+            total_input = estimated_tokens
+            is_estimated = True
         entry = {
             "iteration": iteration,
             "timestamp": time.time(),
             "fresh_tokens": 0,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
-            "total_input_tokens": estimated_tokens,
+            "total_input_tokens": total_input,
             "effective_limit": effective_limit,
             "pct_of_limit": (
-                round(100 * estimated_tokens / effective_limit, 1)
+                round(100 * total_input / effective_limit, 1)
                 if effective_limit else None
             ),
             "estimated_tokens": estimated_tokens,
@@ -452,7 +510,7 @@ def record_failure(
             "conversation_chars": conversation_chars,
             "message_count": len(conversation) if conversation else None,
             "note": f"FAILED before any usage event [{origin}]: {error_message[:300]}",
-            "is_estimated": True,
+            "is_estimated": is_estimated,
             "is_failure": True,
             "origin": origin,
         }
