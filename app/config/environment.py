@@ -85,6 +85,13 @@ def setup_environment(args: Any) -> None:
     (e.g. AST/MCP/ephemeral for the server; debug logging for the CLI).
     """
 
+    # A TeX Live that ziya-install-extras installed under $HOME is on no PATH
+    # until the user edits their shell startup. Find it the way the installer
+    # does, so the startup banner, the renderer's probe and its latex/dvisvgm
+    # subprocesses all see one toolchain -- ahead of any older distro TeX.
+    from app.utils.optional_features import ensure_home_texlive_on_path
+    ensure_home_texlive_on_path()
+
     # -- Root directory (always direct-assign; never setdefault) ------------
     root_arg = getattr(args, 'root', None)
     root_dir = root_arg or os.getcwd()
@@ -161,6 +168,19 @@ def setup_environment(args: Any) -> None:
     elif os.environ.get("ZIYA_AWS_PROFILE") and not os.environ.get("AWS_PROFILE"):
         os.environ["AWS_PROFILE"] = os.environ["ZIYA_AWS_PROFILE"]
         logger.info(f"Using AWS profile from ZIYA_AWS_PROFILE: {os.environ['ZIYA_AWS_PROFILE']}")
+    elif endpoint == "bedrock":
+        # No profile named anywhere.  If ~/.aws holds exactly one (or the
+        # "ziya" convenience profile), run against it rather than failing
+        # on boto3's empty default chain and telling the user to pass
+        # --profile for the only profile they have.  Exported here, not
+        # just resolved in create_fresh_boto3_session, so the provider
+        # paths that build boto3 clients directly see the same choice.
+        from app.utils.aws_utils import implicit_aws_profile
+        implicit = implicit_aws_profile()
+        if implicit:
+            os.environ["ZIYA_AWS_PROFILE"] = implicit
+            os.environ["AWS_PROFILE"] = implicit
+            logger.info(f"No --profile given; using the only AWS profile found: {implicit}")
 
     # -- AWS region ---------------------------------------------------------
     # args.region is None when the user didn't pass --region (default changed
