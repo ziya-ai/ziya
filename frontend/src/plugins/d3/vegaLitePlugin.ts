@@ -1,6 +1,7 @@
 import { type EmbedOptions } from 'vega-embed';
 import { D3RenderPlugin } from '../../types/d3';
 import { applyHeightFloor, applySizing, isCompositeSpec, resolveAutosize, resolveSpecWidth } from './vegaSizing';
+import { estimateChartWidthPx, relocateOverflowingSideLegend } from './vegaLegendPlacement';
 import {
   MAX_AXIS_LABEL_LIMIT,
   applySharedAxisDefaults,
@@ -5239,6 +5240,24 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Apply legend optimization before rendering
       optimizeLegendLayout(vegaSpec);
+
+      // A composite spec keeps its authored per-view pixel width, and Vega
+      // adds the y-axis and a default right-hand legend outside it. When that
+      // sum is wider than the pane the whole SVG gets scaled down to fit (the
+      // PDF pipeline shrinks any figure wider than the print column), so the
+      // plot and its text shrink to make room for a legend that fits for free
+      // below the plot. optimizeLegendLayout does not visit concat sub-views
+      // and keys off entry count, not width; this pass is width-driven.
+      const relocatedLegend = relocateOverflowingSideLegend(
+        vegaSpec, estimateChartWidthPx(vegaSpec, _sizing.width), fitWidthPx,
+      );
+      if (relocatedLegend) {
+        console.log(
+          `🔧 VEGA-LEGEND: side legend (~${relocatedLegend.estimatedSideLegendPx}px) would push a ` +
+          `${relocatedLegend.chartWidthPx}px chart past the ${relocatedLegend.paneWidthPx}px pane; ` +
+          `moved below the plot in ${relocatedLegend.columns} column(s)`
+        );
+      }
 
       // D-262: thin dense text-mark layers so labels don't overprint into
       // unreadable composites. Data/point marks are untouched — only the labels
