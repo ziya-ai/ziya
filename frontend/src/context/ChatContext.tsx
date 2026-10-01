@@ -3035,6 +3035,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
 
         const syncWithServer = async () => {
+            // The origin is being served by a different Ziya instance than
+            // the one this tab latched (port reuse, or a half-bound tunnel
+            // flipping per connection).  Nothing this loop could do with a
+            // mixed list is safe: a shrunken list would run the deletion
+            // pass, a foreign list would be pushed.  Writes are already
+            // refused by the fetch latch; stop the reads here too.
+            if (isInstanceHalted()) {
+                console.warn('📡 SERVER_SYNC: skipped — server instance changed underneath this tab');
+                return;
+            }
             // Recompute switch-vs-poll PER INVOCATION.  The effect-body
             // \`isActualProjectSwitch\` is captured once at effect-mount and
             // reused by setInterval — so after a genuine project switch,

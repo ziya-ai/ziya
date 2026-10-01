@@ -1,6 +1,11 @@
 // Import environment utilities
 import './utils/logUtils';
 
+// Latch the server instance id off every response before any module fetches.
+// Side-effect import so it evaluates ahead of the provider imports below
+// (imports are hoisted; a call statement here would run after all of them).
+import './utils/installFetchLatchSideEffect';
+
 // Initialize FormatterRegistry globally
 import './utils/formatterRegistry';
 

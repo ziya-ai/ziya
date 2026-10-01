@@ -6,10 +6,16 @@
  *   - Live streaming chunks and processing state
  *   - Folder changes
  *
- * Different-project tabs are completely isolated (different channel names).
+ * Different-project tabs are completely isolated (different channel names),
+ * and so are tabs on the same origin talking to DIFFERENT Ziya installations:
+ * the channel name carries the server instance id.  Without that, a tab on a
+ * reused/tunnelled port that happened to resolve the same project id would
+ * deliver 'conversation-deleted' straight into another installation's tab.
  *
  * Each tab has a unique tabId so it can ignore its own broadcasts.
  */
+
+import { scopedName, whenInstanceKnown } from './instanceIdentity';
 
 const TAB_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -38,25 +44,38 @@ type SyncHandler = (msg: SyncMessage) => void;
 class ProjectSyncChannel {
   private channel: BroadcastChannel | null = null;
   private projectId: string | null = null;
+  // Increments on every join/leave so a join still awaiting the instance id
+  // when the project changes does not open a channel for the old project.
+  private joinEpoch = 0;
   private listeners: Map<SyncMessageType, Set<SyncHandler>> = new Map();
 
-  /** Join the sync channel for a project. Leaves any previous channel. */
+  /**
+   * Join the sync channel for a project. Leaves any previous channel.
+   * Opens asynchronously once the server instance id is known; posts made
+   * before then are dropped, exactly as they are today with no channel.
+   */
   join(projectId: string): void {
     if (this.projectId === projectId && this.channel) return;
     this.leave();
     this.projectId = projectId;
-    this.channel = new BroadcastChannel(`ziya-project-${projectId}`);
-    this.channel.onmessage = (event: MessageEvent<SyncMessage>) => {
-      const msg = event.data;
-      // Ignore our own messages
-      if (msg._sender === TAB_ID) return;
-      this.dispatch(msg);
-    };
-    console.log(`📡 ProjectSync: Joined channel for project ${projectId} (tab ${TAB_ID})`);
+    const epoch = ++this.joinEpoch;
+    whenInstanceKnown().then(instanceId => {
+      if (epoch !== this.joinEpoch) return; // superseded by a later join/leave
+      const name = scopedName(`ziya-project-${projectId}`, instanceId);
+      this.channel = new BroadcastChannel(name);
+      this.channel.onmessage = (event: MessageEvent<SyncMessage>) => {
+        const msg = event.data;
+        // Ignore our own messages
+        if (msg._sender === TAB_ID) return;
+        this.dispatch(msg);
+      };
+      console.log(`📡 ProjectSync: Joined channel ${name} (tab ${TAB_ID})`);
+    });
   }
 
   /** Leave the current channel. */
   leave(): void {
+    this.joinEpoch++;
     if (this.channel) {
       this.channel.close();
       this.channel = null;
