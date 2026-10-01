@@ -437,6 +437,19 @@ def _rewrite_content(content: Any,
     return content
 
 
+def _rewrite_content_images_only(content: Any) -> Any:
+    if isinstance(content, str):
+        return elide_inline_images(content)
+    if isinstance(content, list):
+        return [
+            {**blk, "text": elide_inline_images(blk["text"])}
+            if isinstance(blk, dict) and blk.get("type") == "text"
+            and isinstance(blk.get("text"), str) else blk
+            for blk in content
+        ]
+    return content
+
+
 def rewrite_tool_history(history: List[Any],
                          elide_redundant: Optional[bool] = None) -> List[Any]:
     """Rewrite tool blocks in every assistant message of ``history``.
@@ -451,7 +464,22 @@ def rewrite_tool_history(history: List[Any],
     setting; tests pass an explicit value.
     """
     if not is_enabled():
-        return history
+        # The kill switch is for the block RE-ENCODING.  Replaying base64
+        # image bytes as assistant text is never wanted, so that pass
+        # stays on.  Identity when there is nothing to strip, so callers
+        # (and the existing kill-switch test) can rely on ``is``.
+        if not any(
+            isinstance(m, dict) and m.get("type") in _ASSISTANT_TYPES
+            and "data:image" in str(m.get("content", ""))
+            for m in history
+        ):
+            return history
+        return [
+            {**msg, "content": _rewrite_content_images_only(msg.get("content"))}
+            if isinstance(msg, dict) and msg.get("type") in _ASSISTANT_TYPES
+            else msg
+            for msg in history
+        ]
     if elide_redundant is None:
         elide_redundant = resolve_elide_redundant()
     plan = plan_elisions(history) if elide_redundant else {}
@@ -479,7 +507,9 @@ def rewrite_tool_history(history: List[Any],
 
 __all__ = [
     "ToolBlock",
+    "INLINE_IMAGE_NOTE",
     "MIN_ELIDABLE_CHARS",
+    "elide_inline_images",
     "find_tool_blocks",
     "read_path_for_block",
     "payload_for_block",
