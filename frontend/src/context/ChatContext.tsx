@@ -4016,6 +4016,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 ? await db.getConversation(activeId)
                                 : null;
                             const fcMsgs = fullConv?.messages ?? [];
+                            // A longer copy is not automatically the right one.
+                            // An edit-and-resubmit near the top truncates the
+                            // active conversation to <= 2 messages ON PURPOSE,
+                            // and this finally also runs on the early streaming
+                            // return, so a bare length check restored the
+                            // removed tail under the new answer.  See
+                            // syncMerge.shouldRehydrateActiveFromFuller.
+                            const rehydrateCtx = { isStreaming: streamingConversationsRef.current.has(activeId) };
                             // No `return` anywhere in this `finally`.  A return here
                             // skips the statements below it in the same block —
                             // including the cleanup at the bottom, and specifically
@@ -4024,8 +4032,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // armed, every later 30s tick bails at the in-flight
                             // guard and cross-instance sync silently stops for the
                             // life of the page.  Fold the check into the condition.
-                            if (fullConv && fcMsgs.length > (activeConv.messages?.length || 0)
-                                && !isStale()) {
+                            if (!isStale()
+                                && syncMerge.shouldRehydrateActiveFromFuller(activeConv, fullConv, rehydrateCtx)) {
                                 React.startTransition(() => {
                                     setConversations(prev => prev.map(c =>
                                         c.id === activeId
@@ -4045,10 +4053,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const localMsgCount = activeConv.messages?.length || 0;
                             const idbUnusable = !fullConv || fcMsgs.length <= localMsgCount;
                             const activePid = (activeConv as any).projectId || projectId;
-                            if (idbUnusable && activePid && !isStale()) {
+                            if (idbUnusable && activePid && !isStale() && !rehydrateCtx.isStreaming) {
                                 const srv = await syncApi.getChat(activePid, activeId);
                                 const srvMsgs = srv?.messages ?? [];
-                                if (srvMsgs.length > localMsgCount && !isStale()) {
+                                if (!isStale()
+                                    && syncMerge.shouldRehydrateActiveFromFuller(activeConv, srv, rehydrateCtx)) {
                                     React.startTransition(() => {
                                         setConversations(prev => prev.map(c =>
                                             c.id === activeId

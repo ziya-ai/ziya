@@ -819,3 +819,52 @@ export function decideCrossTabMerge(
 export function adoptMetadataOnly(local: any, remote: any): any {
     return { ...remote, messages: local.messages || [], isActive: local.isActive ?? true };
 }
+
+// ---------------------------------------------------------------------------
+// Post-sync active-conversation rehydration
+// ---------------------------------------------------------------------------
+
+/** True when every message in `fullerMsgs` that the local record lacks is
+ *  tombstoned on the local record, and at least one is: the local list is
+ *  shorter because the user deleted or rewound, not because it is partial.
+ *  Mirror of shrinkExplainedByTombstones with the roles swapped; id-less
+ *  messages are matched by content fingerprint there too. */
+export function growthExplainedByTombstones(local: any, fullerMsgs: any[] | undefined): boolean {
+    return extraExplainedByTombstones(fullerMsgs, local);
+}
+
+/**
+ * Whether syncWithServer's post-sync step may replace the ACTIVE
+ * conversation's messages with a longer copy from IndexedDB or the server.
+ *
+ * That step exists for a genuine hydration gap (a shell, or a lazy-load
+ * clobbered by the sync commit) and used to fire on bare length: any active
+ * conversation holding <= 2 messages adopted any longer copy it found.  An
+ * edit-and-resubmit near the top of a long conversation produces exactly
+ * that shape on purpose — replaceMessages truncates to the edited message
+ * — while the debounced IDB save and the server rewind are still landing,
+ * so a sync tick (or the stream-end sync) restored the removed tail and the
+ * new answer was appended after it.  The request itself was correct; only
+ * the display regressed.
+ *
+ * A longer copy is adopted only when the local record is a shell, or is no
+ * newer than the copy and does not tombstone the copy's extra messages.
+ * Nothing is adopted while the conversation is streaming: mid-turn the
+ * local state is authoritative (same rule as decideCrossTabMerge).
+ */
+export function shouldRehydrateActiveFromFuller(
+    local: any,
+    candidate: any,
+    ctx: { isStreaming: boolean },
+): boolean {
+    if (!local || !candidate) return false;
+    const localMsgs = Array.isArray(local.messages) ? local.messages : [];
+    const candMsgs = Array.isArray(candidate.messages) ? candidate.messages : [];
+    if (candMsgs.length <= localMsgs.length) return false;
+    if (ctx.isStreaming) return false;
+    if (local._isShell) return true;
+    // A local record newer than the copy shrank deliberately; the copy is stale.
+    if ((local._version || 0) > (candidate._version || 0)) return false;
+    if (growthExplainedByTombstones(local, candMsgs)) return false;
+    return true;
+}
