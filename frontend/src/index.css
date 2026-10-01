@@ -2452,6 +2452,16 @@ body:not(.dark) .token.attr-name {
   opacity: 0.5;
 }
 
+/* Muted turns auto-collapse: hide the dimmed body so a muted message occupies
+   only its header row (which carries a clickable caret) until the user expands
+   it by clicking the "(muted · …)" label. */
+.message.muted-collapsed > *:not(.message-header) {
+  display: none;
+}
+.message.muted-collapsed .message-header {
+  opacity: 0.6;
+}
+
 .message.human:hover .ant-btn[title*="Resubmit"] {
   opacity: 1;
   visibility: visible;
