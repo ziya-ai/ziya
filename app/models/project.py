@@ -94,3 +94,7 @@ class StartupInfo(BaseModel):
     hasAnyProjects: bool
     # Project already rooted at ``root``, if one exists (never auto-created).
     rootProject: Optional[Project] = None
+    # Stable id of this installation's data store (~/.ziya/instance_id).
+    # The client namespaces all origin-scoped browser storage by it so a
+    # cache built against one server is never read as belonging to another.
+    instanceId: str = ""

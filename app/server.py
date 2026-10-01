@@ -1576,6 +1576,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
+    expose_headers=["X-Ziya-Instance"],
 )
 
 # Add streaming middleware
@@ -1605,6 +1606,11 @@ app.add_middleware(ProjectContextMiddleware)
 
 # Security headers — XSS protection, CSP, clickjacking prevention.
 app.add_middleware(SecurityHeadersMiddleware)
+
+# Instance identity — every response carries X-Ziya-Instance so a client can
+# tell when the server behind its origin has changed (port reuse, tunnels).
+from app.middleware.instance_header import InstanceHeaderMiddleware
+app.add_middleware(InstanceHeaderMiddleware)
 
 # Origin guard — reject cross-origin state-changing requests (CSRF /
 # browser drive-by protection). Pairs with the loopback CORS policy above.
