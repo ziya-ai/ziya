@@ -254,6 +254,22 @@ def _unwrap(tool: Any) -> Any:
     return getattr(tool, "tool_instance", tool)
 
 
+def fails_closed(tool: Any, args: Dict[str, Any]) -> bool:
+    """True when a gate malfunction must REFUSE this call rather than dispatch.
+
+    The executor degrades a broken gate to "ungated" so an ordinary tool is
+    never stuck behind a consent bug.  That is wrong for a tool that declares
+    ``ask`` for this op: unattended execution is exactly what it opted out
+    of.  Configuration is deliberately not consulted — it may be what broke.
+    Never raises; an unreadable tool is treated as not declaring ``ask``.
+    """
+    try:
+        inst = _unwrap(tool)
+        return declared_mode(inst, op_for_call(inst, args or {})) == MODE_ASK
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # ── the gate ──────────────────────────────────────────────────────────────
 
 def refusal_text(tool_name: str, op: str, answer: Dict[str, Any]) -> str:
