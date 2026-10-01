@@ -147,6 +147,8 @@ interface ChatContext {
     // Saved per-conversation model pin (alias, or null to clear).  Persists.
     setConversationModelPreference: (conversationId: string, model: string | null) => void;
     toggleMessageMute: (conversationId: string, messageIndex: number) => void;
+    removeMessage: (conversationId: string, messageIndex: number) => void;
+    replaceMessages: (conversationId: string, update: (messages: Message[]) => Message[], extra?: Partial<Conversation>) => void;
     editingMessageIndex: number | null;
     setEditingMessageIndex: (index: number | null) => void;
     throttlingRecoveryData: Map<string, { toolResults?: any[]; partialContent?: string }>;
@@ -4576,6 +4578,60 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     }, [queueSave]);
 
+    // Delete one message locally AND in IndexedDB.  The server half is the
+    // explicit DELETE the caller sends (bulk-sync cannot remove a message).
+    // Updating React state alone left IDB holding the deleted message under
+    // its old _version, and every path that reads IDB back (sync shells,
+    // hydration, cross-tab reload, reopening the chat) restored it.
+    const removeMessage = useCallback((conversationId: string, messageIndex: number) => {
+        setConversations(prev => {
+            const updated = prev.map(conv =>
+                conv.id === conversationId
+                    ? {
+                        ...conv,
+                        messages: conv.messages.filter((_, i) => i !== messageIndex),
+                        // Lets other tabs adopt the shorter list instead of
+                        // treating it as a stale copy (syncMerge).
+                        [syncMerge.TOMBSTONE_FIELD]: syncMerge.addTombstones(conv, conv.messages.filter((_, i) => i === messageIndex)),
+                        _version: Date.now(),
+                    }
+                    : conv
+            );
+            queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
+            return updated;
+        });
+    }, [queueSave]);
+
+    // Rewrite a conversation's message list (resubmit truncation, edit in
+    // place, edit-and-resubmit) in React state AND IndexedDB.  The server
+    // half is the caller's explicit rewind/PATCH.  Messages dropped by the
+    // rewrite are tombstoned locally, as in removeMessage — by id when
+    // they have one, by content fingerprint otherwise, so a conversation
+    // whose early messages predate id minting can still shrink past the
+    // IDB guards instead of having its pre-edit tail restored forever.
+    const replaceMessages = useCallback((
+        conversationId: string,
+        update: (messages: Message[]) => Message[],
+        extra?: Partial<Conversation>,
+    ) => {
+        setConversations(prev => {
+            const updated = prev.map(conv => {
+                if (conv.id !== conversationId) return conv;
+                const next = update(conv.messages);
+                const dropped = syncMerge.droppedMessages(conv.messages, next);
+                return {
+                    ...conv,
+                    ...extra,
+                    messages: next,
+                    [syncMerge.TOMBSTONE_FIELD]: syncMerge.addTombstones(conv, dropped),
+                    _version: Date.now(),
+                };
+            });
+            queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
+            return updated;
+        });
+    }, [queueSave]);
+
     // New functions for session management integration
     const moveChatToGroup = useCallback(async (chatId: string, groupId: string | null) => {
         // TODO: Get project context here when needed
@@ -5070,6 +5126,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         isLoadingConversation,
         isProjectSwitching,
         toggleMessageMute,
+        removeMessage,
+        replaceMessages,
         editingMessageIndex,
         setEditingMessageIndex,
         throttlingRecoveryData,
@@ -5139,6 +5197,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         isLoadingConversation,
         isProjectSwitching,
         toggleMessageMute,
+        removeMessage,
+        replaceMessages,
         setEditingMessageIndex,
         throttlingRecoveryData,
         setThrottlingRecoveryData,
@@ -5275,6 +5335,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         lastResponseIncomplete={lastResponseIncomplete}
                         setDisplayMode={setDisplayMode}
                         toggleMessageMute={toggleMessageMute}
+                        removeMessage={removeMessage}
+                        replaceMessages={replaceMessages}
                         setChatContexts={setChatContexts}
                         throttlingRecoveryData={throttlingRecoveryData}
                         setThrottlingRecoveryData={setThrottlingRecoveryData}
