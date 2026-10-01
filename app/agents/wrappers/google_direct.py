@@ -249,6 +249,7 @@ class DirectGoogleModel:
                 gen_config_params["system_instruction"] = system_instruction
             supports_thinking = (
                 "gemini-3" in self.model_name.lower() or
+                "gemini-4" in self.model_name.lower() or
                 "thinking" in self.model_name.lower()
             )
             if self.thinking_level and supports_thinking:

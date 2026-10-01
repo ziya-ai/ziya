@@ -232,13 +232,13 @@ How task-card work is fired on a timer, tracked through its states, observed liv
 | **AWS Bedrock — Claude** | Sonnet 4.6 (default), Sonnet 4.5/4.0/3.7/3.5, Opus 4.6/4.5/4.1/4.0/3, Haiku 4.5/3 |
 | **AWS Bedrock — Nova** | Nova Premier (1M ctx), Nova Pro, Nova Lite, Nova Micro |
 | **AWS Bedrock — Other** | DeepSeek R1/V3/V3.2, Qwen3 Coder 480B, Kimi K2.5, MiniMax M2.1, GLM 4.7/4.7 Flash, OpenAI GPT 120B/20B (via Bedrock) |
-| **Google Gemini** | Gemini 3.1 Pro, Gemini 3 Pro *(deprecated)*/Flash, Gemini 2.5 Pro/Flash Lite, Gemini 2.0 Flash/Lite |
+| **Google Gemini** | Gemini 4 Argon *(provisional id; API rollout pending)*, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3.5/3.1 Flash‑Lite, Gemini 3.1 Pro (incl. `-customtools`), Gemini 3 Flash preview, Gemini 2.5 Pro/Flash/Flash‑Lite. `gemini-2.0-flash(-lite)` are shut down by Google and resolve as aliases |
 | **OpenAI** | GPT-4.1/Mini/Nano, GPT-4o/Mini, o3, o3-mini, o4-mini |
 | **Mid-conversation model switching** | Change models at any point without losing history |
 | **Per-conversation / per-project model pinning** | Pin a model to one conversation or project without changing the server default; requests resolve conversation pin → project pin → server default (per-tab, non-persisted — reload falls back to server default) |
 | **Folder-scoped & persistent model pins** | Model pins also apply at folder scope (greyed when not in a folder), and each pin can be tab-only (ephemeral) or persisted to the conversation/folder/project record (syncs, survives restarts). Resolution: conversation → folder → project → server; tab pin overrides saved pref at the same level. Sidebar chip shows scope (`conv`/`folder`/`proj`) and layer (`tab`/`saved`). Pins are stored as a model alias string; validation and resolution of that alias are handled by the model-config subsystem | <!-- cap: per-conversation-model-pin -->
 | **Adaptive / extended thinking** | Sonnet 4.6, Opus 4.6: configurable reasoning effort (`low`–`max`); Sonnet 3.7, 4.0–4.5, Nova Pro/Premier: extended thinking toggle |
-| **Gemini thinking levels** | `low`, `medium`, `high` per-request on all Gemini 3.x family models (3 Pro, 3.1 Pro, 3 Flash) |
+| **Gemini thinking levels** | `low`, `medium`, `high` per-request on every Gemini 3.x and 4 model (3.7/3.8 Flash reject `minimal`) |
 | **Model parameter tuning** | Temperature, top-p, top-k, max output tokens — configurable in UI without restart |
 | **Custom model filtering** | `~/.ziya/models.json` to restrict or extend the model picker |
 | **Custom inference profiles** | Add custom Bedrock ARNs (provisioned throughput, etc.) via `~/.ziya/models.json` |
