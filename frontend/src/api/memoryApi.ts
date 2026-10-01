@@ -155,7 +155,7 @@ export async function expandMindMapNode(nodeId: string): Promise<{ node: MindMap
 export async function getReview(): Promise<ReviewSummary> {
   const res = await fetch('/api/v1/memory/review', { headers: headers() });
   if (!res.ok) throw new Error(`Review failed: ${res.status}`);
-  return res.json();
+  return normalizeReview(await res.json());
 }
 
 export async function runMaintenance(): Promise<{ divided: string[]; cross_linked: string[] }> {
@@ -379,4 +379,82 @@ export function embeddingCoverage(
       ? `Embeddings: partial coverage (${embedded}/${total}, ${pct}%) — Backfill to enable full cross-linking.`
       : `Embeddings: full coverage (${embedded}/${total}).`,
   };
+}
+
+/**
+ * Raw payload of GET /api/v1/memory/review (app/memory/maintenance.py
+ * get_review_summary).  The backend names the lists ``stale_memories`` /
+ * ``orphan_memories`` / ``large_nodes``; the Health tab reads ``stale`` /
+ * ``orphans`` / ``oversized_nodes``.  Nothing renamed them, so the tab always
+ * showed "all healthy" and the orphan-threshold line always read 0.  The two
+ * shapes meet here, at the one fetch site; the component keeps its names.
+ */
+export interface ReviewPayload {
+  stale_memories?: MemoryItem[];
+  orphan_memories?: MemoryItem[];
+  large_nodes?: Array<{ id: string; handle?: string; memory_count: number }>;
+  // Already-normalised shape is accepted too.
+  stale?: MemoryItem[];
+  orphans?: MemoryItem[];
+  oversized_nodes?: Array<{ node_id: string; memory_count: number }>;
+}
+
+export function normalizeReview(raw: ReviewPayload | null | undefined): ReviewSummary {
+  const r = raw || {};
+  return {
+    stale: r.stale ?? r.stale_memories ?? [],
+    orphans: r.orphans ?? r.orphan_memories ?? [],
+    oversized_nodes: r.oversized_nodes
+      ?? (r.large_nodes || []).map(n => ({ node_id: n.id, memory_count: n.memory_count })),
+  };
+}
+
+/**
+ * The review endpoint returns slices (id, truncated content, tags — orphans
+ * carry no layer/importance/last_accessed) but MemoryCard renders those
+ * fields.  Swap in the full record when the browser already holds it.
+ */
+export function hydrateReview(review: ReviewSummary, known: MemoryItem[]): ReviewSummary {
+  const byId = new Map(known.map(m => [m.id, m]));
+  const full = (m: MemoryItem) => byId.get(m.id) ?? m;
+  return { ...review, stale: review.stale.map(full), orphans: review.orphans.map(full) };
+}
+
+/** Record written by app/utils/memory_pause.py when a memory pass hit an outage. */
+export interface MemoryPauseRecord {
+  paused_at: number | null;
+  last_seen_at?: number;
+  repeat_count?: number;
+  kind?: string;
+  error?: string;
+  where?: string[];
+}
+
+export async function getMemoryPause(): Promise<{ paused: boolean; record: MemoryPauseRecord | null }> {
+  const res = await fetch('/api/v1/memory/pause', { headers: headers() });
+  if (!res.ok) throw new Error(`Pause status failed: ${res.status}`);
+  return res.json();
+}
+
+/** Human-in-the-loop continuation: clear the pause so the next turn extracts. */
+export async function resumeMemory(): Promise<{ resumed: boolean; cleared: MemoryPauseRecord | null }> {
+  const res = await fetch('/api/v1/memory/resume', { method: 'POST', headers: headers() });
+  if (!res.ok) throw new Error(`Resume failed: ${res.status}`);
+  return res.json();
+}
+
+/** One-line banner text for a pause record; null when not paused. */
+export function memoryPauseLabel(
+  rec: MemoryPauseRecord | null | undefined,
+  now: number = Date.now(),
+): string | null {
+  if (!rec) return null;
+  const since = rec.paused_at ? formatLastRunLabel(rec.paused_at, now) : 'at an unknown time';
+  const where = (rec.where || []).filter(Boolean).join(', ') || 'a memory pass';
+  const n = rec.repeat_count || 0;
+  const repeats = n > 0 ? ` (${n} further failure${n === 1 ? '' : 's'} since)` : '';
+  return (
+    `Memory paused ${since} — ${rec.kind || 'infrastructure failure'} in ${where}${repeats}. ` +
+    'It retries on its own with backoff; Resume skips the wait.'
+  );
 }
