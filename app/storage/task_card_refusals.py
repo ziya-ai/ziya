@@ -165,7 +165,7 @@ class RefusalLog:
                 if enc.is_enabled(_CATEGORY) else plaintext
             )
             temp.write_bytes(payload)
-            temp.rename(self._path)
+            temp.replace(self._path)
         except Exception:
             if temp.exists():
                 temp.unlink()

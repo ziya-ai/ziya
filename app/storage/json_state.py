@@ -10,7 +10,7 @@ Guarantees:
     encryption policy like every other session artifact.
   * ``write`` is atomic (temp file + ``os.replace``): a concurrent reader
     never sees a torn document.
-  * ``update`` holds an ``fcntl`` lock across read-modify-write, so two
+  * ``update`` holds a file lock across read-modify-write, so two
     server workers (or two tabs racing through the API) cannot lose each
     other's edits.  The lock is a sibling ``.lock`` file, never the data
     file, because ``os.replace`` would swap the locked inode out from under
@@ -19,12 +19,12 @@ Guarantees:
 
 from __future__ import annotations
 
-import fcntl
 import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Optional
 
+from app.utils.file_locking import lock_exclusive, unlock
 from app.utils.json_storage import read_json_file, write_json_file
 
 
@@ -62,11 +62,11 @@ class JsonStateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_name(self.path.name + ".lock")
         with open(lock_path, "a+") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
+            lock_exclusive(fh)
             try:
                 yield
             finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+                unlock(fh)
 
     def update(self, fn: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]) -> Dict[str, Any]:
         """Apply ``fn`` to the current document under lock and persist.

@@ -314,7 +314,7 @@ class EmbeddingCache:
                     payload = enc.encrypt(payload, "session_data")
                 tmp = self._file.with_suffix(".tmp.npz")
                 tmp.write_bytes(payload)
-                tmp.rename(self._file)
+                tmp.replace(self._file)
                 self._dirty = False
                 logger.debug(f"Flushed {len(self._ids)} embeddings to disk")
             except Exception as e:

@@ -17,6 +17,7 @@ import warnings
 from typing import Optional
 
 from app.utils.logging_utils import logger
+from app.utils.process_utils import configure_stdio
 from app.utils.version_util import get_current_version, get_latest_version
 
 from app.config.env_registry import ziya_env
@@ -662,6 +663,8 @@ def check_auth(args):
         return False
 
 def main():
+    configure_stdio()
+
     # Check if running as CLI subcommand (ziya chat, ziya ask, etc.)
     # Check if any argument is a CLI command (handles both "ziya chat" and "ziya --profile x chat")
     if any(arg in TOP_LEVEL_COMMANDS for arg in sys.argv[1:]):
