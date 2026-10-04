@@ -4,6 +4,7 @@ MCP server that provides shell command execution functionality.
 """
 
 import asyncio
+import functools
 import json
 import subprocess
 import sys
@@ -16,6 +17,13 @@ import shlex
 import shutil
 from typing import Dict, Any, Optional
 from contextvars import ContextVar
+
+_IS_WINDOWS = sys.platform == 'win32'
+
+# cmd.exe parses the command line of a .bat/.cmd file (npm, npx) again, and
+# subprocess does not escape for it, so an argument containing one of these
+# could run a command the allowlist never saw.
+_BATCH_UNSAFE_CHARS = re.compile(r'["%&<>^|\r\n]')
 
 # Shell keywords that begin compound constructs requiring a shell interpreter
 # '{' begins a brace group ({ cmd; }); it is only ever a standalone first
@@ -90,9 +98,143 @@ def _clean_child_env(extra: dict | None = None) -> dict:
     """
     env = {k: v for k, v in os.environ.items() if not k.startswith('Malloc')}
     env.update(_ledger_env())
+    usr_bin = _git_usr_bin()
+    if usr_bin:
+        env['PATH'] = usr_bin + os.pathsep + env.get('PATH', '')
     if extra:
         env.update(extra)
     return env
+
+
+@functools.lru_cache(maxsize=None)
+def _git_usr_bin() -> Optional[str]:
+    """Return Git for Windows' ``usr\\bin`` directory on Windows, else None.
+
+    Allowed commands are POSIX tools run without a shell, and Windows has
+    none of them; Git for Windows ships them (plus ``sh``) in ``usr\\bin``.
+    Children get it first on PATH, the order Git Bash uses, because two of
+    them (find, sort) also name unrelated System32 programs.
+    """
+    if not _IS_WINDOWS:
+        return None
+    roots = []
+    git = resolve_executable('git')
+    if os.path.isabs(git):
+        # git.exe lives in Git\cmd, Git\bin or Git\mingw64\bin
+        git_dir = os.path.dirname(os.path.realpath(git))
+        roots += [os.path.dirname(git_dir), os.path.dirname(os.path.dirname(git_dir))]
+    # Default machine-wide and per-user install locations
+    if os.environ.get('ProgramFiles'):
+        roots.append(os.path.join(os.environ['ProgramFiles'], 'Git'))
+    if os.environ.get('LOCALAPPDATA'):
+        roots.append(os.path.join(os.environ['LOCALAPPDATA'], 'Programs', 'Git'))
+    for root in roots:
+        usr_bin = os.path.join(root, 'usr', 'bin')
+        if os.path.isfile(os.path.join(usr_bin, 'sh.exe')):
+            return usr_bin
+    return None
+
+
+def _windows_executable(argv: list, env: dict) -> list:
+    """Resolve argv[0] through *env*'s PATH, as a shell would.
+
+    CreateProcess searches System32 before PATH and finds only ``.exe``
+    files, so ``find`` would run System32\\find.exe and ``npm`` (npm.cmd)
+    would not be found at all.
+    """
+    command = resolve_executable(argv[0], env.get('PATH'))
+    if command.lower().endswith(('.bat', '.cmd')) and any(
+            _BATCH_UNSAFE_CHARS.search(arg) for arg in argv[1:]):
+        raise ValueError(
+            f"{argv[0]} is a batch file on Windows; its arguments cannot "
+            "contain any of: \" % & < > ^ | or a newline"
+        )
+    return [command, *argv[1:]]
+
+
+def _windows_note() -> str:
+    """Tool-description caveats for Windows; empty elsewhere."""
+    if not _IS_WINDOWS:
+        return ""
+    if _git_usr_bin() is None:
+        return (". On this Windows host most of these commands are unavailable: "
+                "they come from Git for Windows, which was not found")
+    return (". On this Windows host the commands come from Git for Windows. As in "
+            "bash, an unquoted backslash is an escape: write paths as C:/Users/... "
+            "or quote them")
+
+
+def _shell_path(path: str) -> str:
+    """Return *path* in the form the shell reports it: '/' separators on Windows.
+
+    Expanded variables are tokenized like typed input, where a backslash is
+    an escape, so ``$PWD`` holding C:\\Users\\me would arrive as C:Usersme.
+    Windows, native programs and Git's tools all accept C:/Users/me.
+    """
+    return path.replace('\\', '/') if _IS_WINDOWS else path
+
+
+def _decode_output(data: Optional[bytes]) -> Optional[str]:
+    """Decode child output as UTF-8 with the newline translation of text mode."""
+    if data is None:
+        return None
+    return data.decode('utf-8', errors='replace').replace('\r\n', '\n').replace('\r', '\n')
+
+
+if _IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+
+    _kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    _kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    _kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _PROCESS_SET_QUOTA_AND_TERMINATE = 0x0100 | 0x0001
+
+
+def _windows_job(proc: subprocess.Popen) -> Optional[int]:
+    """Put *proc* in a new job object and return its handle, or None.
+
+    Windows has no process groups.  Processes that a job member starts
+    join the job, so terminating it reaches the whole tree; ``taskkill /T``
+    follows parent PIDs instead, which MSYS programs (Git's sh, used for
+    compound commands) break when they fork and exec.
+    """
+    job = _kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    process = _kernel32.OpenProcess(_PROCESS_SET_QUOTA_AND_TERMINATE, False, proc.pid)
+    assigned = bool(process) and bool(_kernel32.AssignProcessToJobObject(job, process))
+    if process:
+        _kernel32.CloseHandle(process)
+    if not assigned:
+        _kernel32.CloseHandle(job)
+        return None
+    return job
+
+
+def _kill_process_group(proc: subprocess.Popen, job: Optional[int] = None) -> None:
+    """Kill *proc* and everything it started (see _popen_group)."""
+    if _IS_WINDOWS:
+        if job:
+            _kernel32.TerminateJobObject(job, 1)
+        else:
+            subprocess.run(
+                ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        # Group already gone, or a setuid grandchild we can't signal.
+        pass
 
 
 def _popen_group(argv: list, timeout: float, cwd: Optional[str],
@@ -110,7 +252,20 @@ def _popen_group(argv: list, timeout: float, cwd: Optional[str],
     to exit.  Running the child in a new session lets us kill the entire
     process group on timeout so the pipes close and the server recovers
     immediately.
+
+    Output is decoded here rather than with ``text=True``, which uses the
+    locale encoding (cp1252 on Windows) and, on Windows, would also turn
+    every ``\\n`` of piped *input_data* into ``\\r\\n``.
     """
+    # A child that reads PWD from its environment (rather than calling
+    # getcwd) must see the directory it actually runs in, not the one
+    # this server process was launched from.  Callers that build their
+    # own env are responsible for PWD themselves (an explicit
+    # ``PWD=x cmd`` prefix must win, as in a shell).
+    if env is None:
+        env = _clean_child_env({'PWD': cwd} if cwd else None)
+    if _IS_WINDOWS:
+        argv = _windows_executable(argv, env)
     proc = subprocess.Popen(
         argv,
         # stdin=DEVNULL unless we're feeding pipe data: our stdin is the
@@ -118,24 +273,18 @@ def _popen_group(argv: list, timeout: float, cwd: Optional[str],
         stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
         stdout=stdout,
         stderr=stderr,
-        text=True,
-        # A child that reads PWD from its environment (rather than calling
-        # getcwd) must see the directory it actually runs in, not the one
-        # this server process was launched from.  Callers that build their
-        # own env are responsible for PWD themselves (an explicit
-        # ``PWD=x cmd`` prefix must win, as in a shell).
-        env=env if env is not None else _clean_child_env({'PWD': cwd} if cwd else None),
+        env=env,
         cwd=cwd,
         start_new_session=True,
     )
+    job = _windows_job(proc) if _IS_WINDOWS else None
     try:
-        out, err = proc.communicate(input=input_data, timeout=timeout)
+        out, err = proc.communicate(
+            input=input_data.encode('utf-8') if input_data is not None else None,
+            timeout=timeout,
+        )
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            # Group already gone, or a setuid grandchild we can't signal.
-            pass
+        _kill_process_group(proc, job)
         try:
             # Reap the child and drain pipes; with the group dead this
             # returns promptly.  Bounded as a last-resort safety net.
@@ -143,7 +292,11 @@ def _popen_group(argv: list, timeout: float, cwd: Optional[str],
         except Exception:
             proc.kill()
         raise
-    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+    finally:
+        if job:
+            _kernel32.CloseHandle(job)
+    return subprocess.CompletedProcess(
+        proc.args, proc.returncode, _decode_output(out), _decode_output(err))
 
 
 def _run_sh_group(command: str, timeout: float, cwd: Optional[str]) -> subprocess.CompletedProcess:
@@ -678,6 +831,7 @@ def _extract_command_substitutions(command: str) -> list:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.config.shell_config import get_default_shell_config
 from app.config.write_policy import WritePolicyManager
+from app.utils.process_utils import resolve_executable
 from app.config.scope_canonical import (
     is_env_scope_authorized, strip_escalations,
     SIG_ENV_KEY, SESSION_GRANT_ENV_KEY, SESSION_NONCE_ENV_KEY,
@@ -941,6 +1095,8 @@ class ShellServer:
         print(f"Safe write paths: {self.wp_manager.policy.get('safe_write_paths', [])}", file=sys.stderr)
         print(f"Write patterns: {self.wp_manager.policy.get('allowed_write_patterns', [])}", file=sys.stderr)
         print(f"Interpreters: {self.wp_manager.policy.get('allowed_interpreters', [])}", file=sys.stderr)
+        if _IS_WINDOWS:
+            print(f"Git for Windows tools: {_git_usr_bin() or 'not found'}", file=sys.stderr)
         
     def _timeout_bounds(self, task_scope: Any) -> tuple:
         """Return ``(default, ceiling)`` seconds for one shell call.
@@ -1463,7 +1619,7 @@ class ShellServer:
             # assignments and, later, the segment's own VAR=value prefix
             # layer on top so an explicit ``PWD=x`` still wins.
             seg_cwd = effective_cwd or os.getcwd()
-            seg_vars = {'PWD': seg_cwd, **shell_vars}
+            seg_vars = {'PWD': _shell_path(seg_cwd), **shell_vars}
             # Resolve command substitutions first -- in the segment's cwd,
             # so ``cd sub && echo $(pwd)`` runs ``pwd`` inside ``sub``.
             resolved = self._resolve_substitutions(cmd_segment, timeout, seg_cwd, seg_vars)
@@ -1486,7 +1642,9 @@ class ShellServer:
             # Assignments are expanded left to right so ``A=x; B=$A/y`` works.
             for _name, _value in segment_env.items():
                 _value = self._expand_vars(_value, {**seg_vars, **segment_env})
-                segment_env[_name] = os.path.expanduser(_value)
+                _expanded = os.path.expanduser(_value)
+                # A later $NAME is re-tokenized; see _shell_path.
+                segment_env[_name] = _shell_path(_expanded) if _expanded != _value else _value
             # Expand using pipeline-local vars plus this segment's own inline
             # VAR=value cmd prefix (the latter wins for the segment).
             seg_vars = {**seg_vars, **segment_env}
@@ -1518,6 +1676,17 @@ class ShellServer:
                 else:
                     last_result = subprocess.CompletedProcess(args=args, returncode=1, stdout='', stderr=f'cd: {target}: No such file or directory\n')
                 accumulated_stderr += last_result.stderr
+                continue
+
+            # Answer a bare ``pwd`` in-process on Windows, as the shell
+            # builtin would: Git for Windows' pwd.exe prints an MSYS path
+            # (/c/Users/..., /tmp/...) that native programs and the
+            # in-process ``cd`` above cannot use.
+            if _IS_WINDOWS and args == ['pwd']:
+                last_result = subprocess.CompletedProcess(
+                    args=args, returncode=0, stdout=_shell_path(seg_cwd) + '\n', stderr='')
+                if not next_is_pipe:
+                    accumulated_stdout += last_result.stdout
                 continue
 
             # Extract redirections (2>&1, >/dev/null, etc.) from args.
@@ -2474,7 +2643,7 @@ class ShellServer:
                     "tools": [
                         {
                             "name": "run_shell_command",
-                            "description": f"Execute a complete, non-interactive shell command. Commands must be self-contained with all arguments provided - do NOT use interactive mode (e.g., use 'echo \"2+2\" | bc' not just 'bc'). Allowed commands: {self.get_allowed_commands_description()}",
+                            "description": f"Execute a complete, non-interactive shell command. Commands must be self-contained with all arguments provided - do NOT use interactive mode (e.g., use 'echo \"2+2\" | bc' not just 'bc'). Allowed commands: {self.get_allowed_commands_description()}{_windows_note()}",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
