@@ -269,7 +269,7 @@ class TestNoUngatedPathBuildersRemain:
 
     @classmethod
     def _ungated_builders(cls, path: Path) -> list:
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         offenders = []
         for func in ast.walk(tree):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
