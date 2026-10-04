@@ -771,8 +771,10 @@ async def execute_context_request(file_path: str, conversation_id: str) -> str:
     Returns:
         File content or error message
     """
-    # Security check - prevent path traversal
-    if ".." in file_path or file_path.startswith("/"):
+    # Security check - prevent path traversal. os.path.isabs and splitdrive also
+    # catch Windows forms such as C:\..., C:relative, \\server\share and \root.
+    if (".." in file_path or file_path.startswith(("/", "\\"))
+            or os.path.isabs(file_path) or os.path.splitdrive(file_path)[0]):
         return "❌ **Security Error**: Invalid file path. Path must be relative to the current directory and cannot contain '..'."
     
     # Read file content
