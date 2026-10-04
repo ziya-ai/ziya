@@ -196,6 +196,19 @@ ziya review --staged                   # review your staged git changes
 git diff main | ziya review            # pipe anything for review
 ```
 
+### Windows
+
+Ziya runs natively on Windows 10 and 11. In PowerShell:
+
+```powershell
+pip install ziya
+$env:ANTHROPIC_API_KEY = "..."    # or any provider above; setx persists it
+cd C:\path\to\your\project
+ziya
+```
+
+Install [Git for Windows](https://git-scm.com/download/win) as well. Diffs are applied with `git apply` (GNU `patch` is not needed), and the model's shell tool runs the Unix tools Git for Windows bundles (`ls`, `grep`, `find`, `sed`, …). Ziya finds them next to `git.exe`, so they do not have to be on `PATH`. Applied diffs keep each file's own line endings, LF or CRLF. `ziya shadow` needs a POSIX terminal and is not available on Windows.
+
 For more detail (model selection, configuration, troubleshooting), see [Getting Started](Docs/NewUser.md).
 
 ---
