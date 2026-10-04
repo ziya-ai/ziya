@@ -52,7 +52,7 @@ class RustHandler(LanguageHandler):
             try:
                 # Use rustc to check syntax
                 result = subprocess.run(
-                    ['rustc', '--emit=metadata', '-o', '/dev/null', temp_path],
+                    ['rustc', '--emit=metadata', '-o', os.devnull, temp_path],
                     capture_output=True,
                     text=True,
                     timeout=5  # 5 second timeout

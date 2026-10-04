@@ -18,7 +18,7 @@ from ..core.exceptions import PatchApplicationError
 from ..parsing.diff_parser import extract_target_file_from_diff, split_combined_diff, restore_leading_slash
 from ..validation.validators import is_new_file_creation
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
-from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts, remove_reject_file_if_exists
+from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts, remove_reject_file_if_exists, detect_line_ending
 # Remove circular import
 # from .patch_apply import apply_diff_with_difflib
 
@@ -947,13 +947,15 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
         # then replace.  os.replace() is atomic on POSIX; on Windows it is
         # the best available primitive (overwrites target if it exists).
         target_dir = os.path.dirname(file_path) or '.'
+        # Keep the file's own line ending instead of os.linesep
+        newline = detect_line_ending(file_path)
         fd = None
         tmp_path = None
         try:
             fd, tmp_path = tempfile.mkstemp(dir=target_dir, suffix='.tmp')
-            with os.fdopen(fd, 'w', encoding='utf-8') as tmp_f:
+            with os.fdopen(fd, 'w', encoding='utf-8', newline=newline) as tmp_f:
                 fd = None  # os.fdopen takes ownership of the fd
-                tmp_f.write(modified_content)
+                tmp_f.write(modified_content.replace('\r\n', '\n'))
                 tmp_f.flush()
                 os.fsync(tmp_f.fileno())
             # Preserve original file permissions
