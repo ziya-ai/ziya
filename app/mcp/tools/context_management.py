@@ -33,6 +33,7 @@ Frontend live-sync:
   flow.  No new SSE event type is introduced.
 """
 
+import errno
 import os
 import stat
 from pathlib import Path
@@ -202,6 +203,27 @@ def _validate_relative_path(path_str: str, project_root: str) -> Path:
     )
 
 
+def _open_no_follow(path: Path) -> int:
+    """Open *path* read-only, refusing a symlink as the final component.
+
+    POSIX does this with O_NOFOLLOW.  Windows has no such flag, so the
+    path is lstat()ed first and the opened file must be that same file
+    (same volume and file index): a symlink swapped in between the two
+    calls is refused too.
+    """
+    if hasattr(os, "O_NOFOLLOW"):
+        return os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    before = os.lstat(path)
+    if stat.S_ISLNK(before.st_mode):
+        raise OSError(errno.ELOOP, "final component is a symlink", str(path))
+    fd = os.open(path, os.O_RDONLY)
+    opened = os.fstat(fd)
+    if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+        os.close(fd)
+        raise OSError(errno.ELOOP, "file changed while opening", str(path))
+    return fd
+
+
 # ---------------------------------------------------------------------------
 # Tool: context_add_file
 # ---------------------------------------------------------------------------
@@ -257,7 +279,7 @@ class ContextAddFileTool(BaseMCPTool):
 
         # Normalise: store the project-relative form when possible.
         try:
-            rel_path = str(resolved.relative_to(Path(ctx["project_root"]).resolve()))
+            rel_path = resolved.relative_to(Path(ctx["project_root"]).resolve()).as_posix()
         except ValueError:
             # Absolute path under safe-write prefix; keep original string.
             rel_path = path_str
@@ -351,7 +373,7 @@ class ContextAddFileTool(BaseMCPTool):
             # pull an out-of-scope file's contents into model context. fstat on
             # the open fd is immune to concurrent path manipulation.
             try:
-                fd = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW)
+                fd = _open_no_follow(resolved)
             except OSError as oe:
                 # ELOOP: final component is (now) a symlink — reject the read.
                 logger.warning(

@@ -18,6 +18,7 @@ validation — exactly the race.
 import inspect
 import os
 import stat as stat_mod
+import sys
 import tempfile
 import shutil
 
@@ -38,7 +39,8 @@ class TestONofollowReadGate:
         shutil.rmtree(self.d, ignore_errors=True)
 
     def _read_nofollow(self, path):
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        from app.mcp.tools.context_management import _open_no_follow
+        fd = _open_no_follow(path)
         try:
             st = os.fstat(fd)
             if not stat_mod.S_ISREG(st.st_mode):
@@ -70,7 +72,12 @@ class TestONofollowReadGate:
         sub = os.path.join(self.d, "sub")
         os.mkdir(sub)
         # os.open on a dir succeeds; the S_ISREG guard returns None.
-        assert self._read_nofollow(sub) is None
+        # Windows refuses to open a directory at all.
+        if sys.platform == "win32":
+            with pytest.raises(OSError):
+                self._read_nofollow(sub)
+        else:
+            assert self._read_nofollow(sub) is None
 
 
 class TestSourceContract:
