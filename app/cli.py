@@ -855,7 +855,8 @@ def get_git_staged_diff() -> Optional[str]:
     """Get diff of staged changes."""
     import subprocess
     try:
-        result = subprocess.run(['git', 'diff', '--cached'], capture_output=True, text=True)
+        result = subprocess.run(['git', 'diff', '--cached'], capture_output=True,
+                                encoding='utf-8', errors='replace')
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
     except (OSError, subprocess.SubprocessError):
@@ -867,7 +868,8 @@ def get_git_diff() -> Optional[str]:
     """Get diff of unstaged changes."""
     import subprocess
     try:
-        result = subprocess.run(['git', 'diff'], capture_output=True, text=True)
+        result = subprocess.run(['git', 'diff'], capture_output=True,
+                                encoding='utf-8', errors='replace')
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
     except (OSError, subprocess.SubprocessError):
@@ -1175,7 +1177,19 @@ class CLI:
         self._attach_baseline_sig = None
         # Pending join request from `ziya chat --join`, applied in chat().
         self._pending_join = None
-        self._setup_prompt_session()
+        self._session = None
+
+    @property
+    def session(self) -> PromptSession:
+        """The interactive input prompt, built on first use.
+
+        Only interactive chat reads from it.  Building it up front made
+        one-shot commands (ask, review) fail on Windows whenever stdout is
+        not a console, because prompt_toolkit's Windows output requires one.
+        """
+        if self._session is None:
+            self._setup_prompt_session()
+        return self._session
     
     @property
     def conversation_id(self) -> str:
@@ -1495,7 +1509,7 @@ class CLI:
                 return
             buffer.validate_and_handle()
         
-        self.session = PromptSession(
+        self._session = PromptSession(
             history=FileHistory(str(history_file)),
             completer=SmartCompleter(),
             complete_while_typing=True,
@@ -4958,6 +4972,11 @@ def cmd_jobs(args):
 
 def cmd_shadow(args):
     """Handle: ziya shadow [--label L] [--allow-exec] [--allow-control] [--meta k=v] [cmd...]"""
+    if sys.platform == 'win32':
+        # Sessions run on a pseudo-terminal (pty/termios) and are reached
+        # over AF_UNIX sockets, none of which Windows provides.
+        print("\033[31mziya shadow is not supported on Windows.\033[0m", file=sys.stderr)
+        sys.exit(2)
     if args.list_sessions:
         from app.shadow.client import list_sessions, format_session_table
         print(format_session_table(list_sessions()))
