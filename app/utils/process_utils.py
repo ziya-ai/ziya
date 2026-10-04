@@ -23,6 +23,27 @@ def configure_stdio() -> None:
             reconfigure(errors="backslashreplace")
         except (ValueError, OSError):
             pass
+    if sys.platform == "win32":
+        enable_virtual_terminal()
+
+
+def enable_virtual_terminal(kernel32=None) -> None:
+    """Have Windows consoles interpret ANSI colour and title sequences.
+
+    Windows Terminal does by default; a conhost window (cmd.exe or
+    PowerShell 5 on Windows 10, or any console when Windows Terminal is not
+    the default) shows them as text, e.g. ``←[33m``.  Redirected streams
+    are left alone.
+    """
+    import ctypes
+    if kernel32 is None:
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetStdHandle.restype = ctypes.c_void_p
+    for std_handle in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+        handle = kernel32.GetStdHandle(std_handle)
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(ctypes.c_void_p(handle), ctypes.byref(mode)):
+            kernel32.SetConsoleMode(ctypes.c_void_p(handle), mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
 
 
 _EXPORT = re.compile(r"export ([A-Z_][A-Z0-9_]*=\S+(?:[ \t]+[A-Z_][A-Z0-9_]*=\S+)*)")
