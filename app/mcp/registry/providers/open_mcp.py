@@ -22,6 +22,7 @@ from app.mcp.registry.command_policy import (
 )
 from app.mcp.registry.installation_helper import InstallationHelper
 from app.utils.logging_utils import logger
+from app.utils.process_utils import resolve_executable
 
 
 class OpenMCPProvider(RegistryProvider):
@@ -193,7 +194,7 @@ class OpenMCPProvider(RegistryProvider):
                 )
                 # Install npm package
                 result = await asyncio.to_thread(
-                    subprocess.run, ['npm', 'install', '-g', package_name],
+                    subprocess.run, [resolve_executable('npm'), 'install', '-g', package_name],
                     capture_output=True, text=True, timeout=300)
                 if result.returncode != 0:
                     raise RuntimeError(f"NPM install failed: {result.stderr}")
