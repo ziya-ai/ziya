@@ -56,7 +56,7 @@ class TestAddExternalPathToCache:
         # Verify nested structure: [external] > outside > data.txt
         ext_children = data['[external]']['children']
         # Walk to the file
-        path_parts = str(ext_file).strip('/').split('/')
+        path_parts = ext_file.as_posix().strip('/').split('/')
         current = ext_children
         for part in path_parts[:-1]:
             assert part in current, f"Expected '{part}' in external path structure"
@@ -88,7 +88,7 @@ class TestAddExternalPathToCache:
 
         # Walk to the directory entry
         ext_children = data['[external]']['children']
-        path_parts = str(ext_dir).strip('/').split('/')
+        path_parts = ext_dir.as_posix().strip('/').split('/')
         current = ext_children
         for part in path_parts:
             assert part in current, f"Expected '{part}' in path"
@@ -181,8 +181,8 @@ class TestAddExternalPathToCache:
 
         ext = srv._folder_cache[project_dir]['data']['[external]']['children']
         # Both paths should exist under their respective intermediate dirs
-        path_a_parts = str(file_a).strip('/').split('/')
-        path_b_parts = str(file_b).strip('/').split('/')
+        path_a_parts = file_a.as_posix().strip('/').split('/')
+        path_b_parts = file_b.as_posix().strip('/').split('/')
         # Just check the distinguishing directory names exist
         a_dir = path_a_parts[-2]  # 'a'
         b_dir = path_b_parts[-2]  # 'b'
