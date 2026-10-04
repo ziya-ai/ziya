@@ -11,6 +11,7 @@ from langchain_aws import ChatBedrock
 from langchain_core.language_models import BaseChatModel
 from langchain_classic.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger
+from app.utils.process_utils import env_hint
 from app.config.env_registry import ziya_env
 import app.config.models_config as config
 from app.config.models_config import get_supported_parameters, DEFAULT_MAX_OUTPUT_TOKENS
@@ -1567,10 +1568,10 @@ class ModelManager:
 
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
-            raise ValueError(
+            raise ValueError(env_hint(
                 "Anthropic credentials not found. Please set ANTHROPIC_API_KEY:\n"
                 "  export ANTHROPIC_API_KEY=sk-ant-..."
-            )
+            ))
         logger.info("Anthropic API key found in environment variables")
 
         logger.info(f"Initializing Anthropic model: {model_id} (temp={temperature}, max_output_tokens={max_output_tokens})")

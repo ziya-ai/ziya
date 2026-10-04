@@ -71,7 +71,7 @@ import traceback
 from pathlib import Path
 import sys
 from app.utils.logging_utils import logger
-from app.utils.process_utils import configure_stdio
+from app.utils.process_utils import configure_stdio, env_hint
 from app.config.env_registry import ziya_env
 from app.utils.interruptible_input import interruptible_input
 from typing import List, Tuple 
@@ -2380,18 +2380,18 @@ class CLI:
         if endpoint == "bedrock":
             print("\033[33mTo fix AWS credentials:\033[0m", file=sys.stderr)
             print("  • Run: aws configure", file=sys.stderr)
-            print("  • Or set AWS_PROFILE: export AWS_PROFILE=your-profile", file=sys.stderr)
+            print(env_hint("  • Or set AWS_PROFILE: export AWS_PROFILE=your-profile"), file=sys.stderr)
             print("  • Or refresh SSO: aws sso login --profile your-profile", file=sys.stderr)
         elif endpoint == "google":
             print("\033[33mTo fix Google credentials:\033[0m", file=sys.stderr)
             print("  • Set GOOGLE_API_KEY environment variable", file=sys.stderr)
         elif endpoint == "openai":
             print("\033[33mTo fix OpenAI credentials:\033[0m", file=sys.stderr)
-            print("  • Set OPENAI_API_KEY: export OPENAI_API_KEY=sk-...", file=sys.stderr)
+            print(env_hint("  • Set OPENAI_API_KEY: export OPENAI_API_KEY=sk-..."), file=sys.stderr)
             print("  • Or set OPENAI_BASE_URL for a compatible local server", file=sys.stderr)
         elif endpoint == "anthropic":
             print("\033[33mTo fix Anthropic credentials:\033[0m", file=sys.stderr)
-            print("  • Set ANTHROPIC_API_KEY: export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
+            print(env_hint("  • Set ANTHROPIC_API_KEY: export ANTHROPIC_API_KEY=sk-ant-..."), file=sys.stderr)
         print(file=sys.stderr)
     
     async def chat(self):
@@ -4791,23 +4791,23 @@ def _print_auth_error(message: str = None):
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
         print("  aws sso login --profile <your-profile>", file=sys.stderr)
         print("  # or", file=sys.stderr)
-        print("  export AWS_PROFILE=<your-profile>", file=sys.stderr)
+        print(env_hint("  export AWS_PROFILE=<your-profile>"), file=sys.stderr)
         print("  # or", file=sys.stderr)
         print("  aws configure", file=sys.stderr)
     elif endpoint == "google":
         print("GOOGLE_API_KEY environment variable is not set.\n", file=sys.stderr)
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
-        print("  export GOOGLE_API_KEY=<your-api-key>", file=sys.stderr)
+        print(env_hint("  export GOOGLE_API_KEY=<your-api-key>"), file=sys.stderr)
     elif endpoint == "openai":
         print("OPENAI_API_KEY environment variable is not set.\n", file=sys.stderr)
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
-        print("  export OPENAI_API_KEY=sk-...", file=sys.stderr)
+        print(env_hint("  export OPENAI_API_KEY=sk-..."), file=sys.stderr)
     elif endpoint == "anthropic":
         print("ANTHROPIC_API_KEY environment variable is not set.\n", file=sys.stderr)
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
-        print("  export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
+        print(env_hint("  export ANTHROPIC_API_KEY=sk-ant-..."), file=sys.stderr)
         print("  # or for a compatible local server:", file=sys.stderr)
-        print("  export OPENAI_BASE_URL=http://localhost:8080/v1", file=sys.stderr)
+        print(env_hint("  export OPENAI_BASE_URL=http://localhost:8080/v1"), file=sys.stderr)
     
     print(file=sys.stderr)
 

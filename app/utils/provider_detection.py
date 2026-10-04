@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
+from app.utils.process_utils import env_hint
 
 
 @dataclass(frozen=True)
@@ -159,7 +160,7 @@ def credential_error(endpoint: str) -> str:
         lines.append(p.note)
     if len(p.keys) > 1:
         lines.append(f"Also accepted: {', '.join(p.keys[1:])}")
-    return "\n".join(lines)
+    return env_hint("\n".join(lines))
 def available_aws_profiles() -> List[str]:
     """Return configured AWS profile names, or [] if none / boto3 missing."""
     try:
@@ -436,4 +437,4 @@ def build_setup_help(include_profile_hint: bool = True) -> str:
             "Ziya will auto-select a provider if exactly one of the above is "
             "configured."
         )
-    return "\n".join(lines)
+    return env_hint("\n".join(lines))

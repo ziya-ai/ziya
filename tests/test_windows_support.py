@@ -469,3 +469,30 @@ def test_upgrade_command_matches_the_installer(tmp_path, monkeypatch, marker, co
         (tmp_path / marker).write_text("")
     monkeypatch.setattr(ziya_main.sys, "prefix", str(tmp_path))
     assert command in ziya_main._upgrade_command()
+
+
+# -- setup hints ----------------------------------------------------------------
+
+def test_env_hints_use_powershell_syntax_on_windows(monkeypatch):
+    from app.utils import process_utils
+    monkeypatch.setattr(process_utils.sys, "platform", "win32")
+    assert process_utils.env_hint("  export ANTHROPIC_API_KEY=sk-ant-...") == '  $env:ANTHROPIC_API_KEY = "sk-ant-..."'
+    assert process_utils.env_hint("export AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...") == (
+        '$env:AWS_ACCESS_KEY_ID = "..."; $env:AWS_SECRET_ACCESS_KEY = "..."'
+    )
+    assert process_utils.env_hint("export A=1\nexport B=2\n") == '$env:A = "1"\n$env:B = "2"\n'
+    assert process_utils.env_hint("aws configure") == "aws configure"
+
+
+def test_env_hints_are_unchanged_off_windows(monkeypatch):
+    from app.utils import process_utils
+    monkeypatch.setattr(process_utils.sys, "platform", "linux")
+    assert process_utils.env_hint("  export AWS_PROFILE=<p>") == "  export AWS_PROFILE=<p>"
+
+
+def test_missing_credential_help_shows_powershell_syntax_on_windows(monkeypatch):
+    from app.utils import process_utils, provider_detection
+    monkeypatch.setattr(process_utils.sys, "platform", "win32")
+    help_text = provider_detection.build_setup_help()
+    assert "export " not in help_text
+    assert "$env:ANTHROPIC_API_KEY" in help_text

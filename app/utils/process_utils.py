@@ -1,6 +1,7 @@
 """Cross-platform helpers for launching external commands and process I/O."""
 
 import os
+import re
 import sys
 from typing import Optional, Sequence
 
@@ -22,6 +23,24 @@ def configure_stdio() -> None:
             reconfigure(errors="backslashreplace")
         except (ValueError, OSError):
             pass
+
+
+_EXPORT = re.compile(r"export ([A-Z_][A-Z0-9_]*=\S+(?:[ \t]+[A-Z_][A-Z0-9_]*=\S+)*)")
+
+
+def env_hint(text: str) -> str:
+    """Rewrite ``export NAME=value`` advice for the user's shell.
+
+    ``export`` exists in neither PowerShell nor cmd.exe, so on Windows each
+    assignment becomes PowerShell's ``$env:NAME = "value"``.
+    """
+    if sys.platform != "win32":
+        return text
+
+    def powershell(match):
+        return "; ".join('$env:{} = "{}"'.format(*pair.split("=", 1)) for pair in match.group(1).split())
+
+    return _EXPORT.sub(powershell, text)
 
 
 def resolve_executable(command: str, path: Optional[str] = None) -> str:
