@@ -427,3 +427,20 @@ async def test_file_write_writes_content_as_given(tmp_path):
                                                _workspace_path=str(tmp_path))
     assert result.get("success") is True
     assert (tmp_path / "new.md").read_bytes() == b"a\nb\n"
+
+
+# -- frontend assets ----------------------------------------------------------
+
+def test_frontend_scripts_are_served_as_javascript_despite_a_bad_registry():
+    import mimetypes
+    from app.server import _pin_frontend_mime_types
+    broken = mimetypes.MimeTypes()
+    broken.add_type("text/plain", ".js")  # what the Windows registry often says
+    _pin_frontend_mime_types(broken)
+    assert broken.guess_type("main.js")[0] == "text/javascript"
+    assert broken.guess_type("main.css")[0] == "text/css"
+
+    fine = mimetypes.MimeTypes()
+    fine.add_type("application/javascript", ".js")
+    _pin_frontend_mime_types(fine)
+    assert fine.guess_type("main.js")[0] == "application/javascript"  # left alone
