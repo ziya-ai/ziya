@@ -209,6 +209,8 @@ ziya
 
 Install [Git for Windows](https://git-scm.com/download/win) as well. Diffs are applied with `git apply` (GNU `patch` is not needed), and the model's shell tool runs the Unix tools Git for Windows bundles (`ls`, `grep`, `find`, `sed`, …). Ziya finds them next to `git.exe`, so they do not have to be on `PATH`. Applied diffs keep each file's own line endings, LF or CRLF. `ziya shadow` needs a POSIX terminal and is not available on Windows.
 
+To upgrade on Windows, close ziya first: Windows will not let `pip` replace `ziya.exe` while it is running. Ziya prints the upgrade command at startup when a new version is available.
+
 For more detail (model selection, configuration, troubleshooting), see [Getting Started](Docs/NewUser.md).
 
 ---

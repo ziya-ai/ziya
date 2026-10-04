@@ -444,3 +444,28 @@ def test_frontend_scripts_are_served_as_javascript_despite_a_bad_registry():
     fine.add_type("application/javascript", ".js")
     _pin_frontend_mime_types(fine)
     assert fine.guess_type("main.js")[0] == "application/javascript"  # left alone
+
+
+# -- upgrades -----------------------------------------------------------------
+
+def test_windows_auto_update_never_runs_pip_in_process(monkeypatch):
+    import app.main as ziya_main
+    calls = []
+    monkeypatch.setattr(ziya_main.sys, "platform", "win32")
+    monkeypatch.setattr(ziya_main.subprocess, "check_call", lambda *args, **kw: calls.append(args))
+    monkeypatch.setattr(ziya_main.subprocess, "run", lambda *args, **kw: calls.append(args))
+    ziya_main.update_package("0.0.1", "0.0.2")
+    assert calls == []
+
+
+@pytest.mark.parametrize("marker, command", [
+    ("uv-receipt.toml", "uv tool upgrade ziya"),
+    ("pipx_metadata.json", "pipx upgrade ziya"),
+    (None, "-m pip install --upgrade ziya"),
+])
+def test_upgrade_command_matches_the_installer(tmp_path, monkeypatch, marker, command):
+    import app.main as ziya_main
+    if marker:
+        (tmp_path / marker).write_text("")
+    monkeypatch.setattr(ziya_main.sys, "prefix", str(tmp_path))
+    assert command in ziya_main._upgrade_command()
