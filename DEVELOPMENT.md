@@ -53,6 +53,23 @@ deactivate
 rm -rf /tmp/test_ziya_clean
 ```
 
+#### On Windows
+The same steps work in PowerShell. Put Python 3.10–3.14, Node.js, Git for Windows and Poetry on `PATH`. The first `python ziya_build.py` takes about 20 minutes, most of it `npm install` and `poetry install`.
+```powershell
+$env:PYTHONPATH = (Get-Location).Path      # instead of PYTHONPATH=$(pwd)
+poetry run python app/main.py
+python tests/run_diff_tests.py --multi
+
+# test the wheel in a clean environment
+py -m venv $env:TEMP\ziya-clean
+& $env:TEMP\ziya-clean\Scripts\python -m pip install (Get-Item dist\*.whl).FullName
+& $env:TEMP\ziya-clean\Scripts\ziya --version
+Remove-Item -Recurse -Force $env:TEMP\ziya-clean
+```
+- On Windows, pytest-timeout can stop a hung test only by ending the whole run. For long suites, run test files one at a time.
+- Some existing tests assume POSIX (`/tmp`, `bash`, UTF-8 as the default file encoding) and fail on Windows on `main` too.
+- Git for Windows defaults to `core.autocrlf=true`, so the working tree is CRLF.
+
 ### To Publish
 #### To publish to PyPi:
 ```bash
