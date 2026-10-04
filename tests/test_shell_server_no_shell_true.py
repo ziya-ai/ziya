@@ -239,7 +239,7 @@ class TestExecutePipeline(unittest.TestCase):
         """Timeout parameter is passed to the child's communicate()."""
         with patch("subprocess.Popen") as mock_popen:
             mock_proc = mock_popen.return_value
-            mock_proc.communicate.return_value = ("hi\n", "")
+            mock_proc.communicate.return_value = (b"hi\n", b"")
             mock_proc.returncode = 0
             mock_proc.args = ["echo", "hi"]
             self.srv._execute_pipeline("echo hi", 42, "/tmp")
