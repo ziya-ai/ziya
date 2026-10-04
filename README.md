@@ -201,11 +201,13 @@ git diff main | ziya review            # pipe anything for review
 Ziya runs natively on Windows 10 and 11. In PowerShell:
 
 ```powershell
-pip install ziya
+py -m pip install ziya            # python -m pip if you have no py launcher
 $env:ANTHROPIC_API_KEY = "..."    # or any provider above; setx persists it
 cd C:\path\to\your\project
 ziya
 ```
+
+If PowerShell then says `ziya` is not recognized, pip put `ziya.exe` in a `Scripts` folder that isn't on `PATH` (pip's warning names it). Add that folder to `PATH`, or install with [pipx](https://pipx.pypa.io/) (`pipx install ziya`) or [uv](https://docs.astral.sh/uv/) (`uv tool install ziya`), which keep their tools on `PATH`.
 
 Install [Git for Windows](https://git-scm.com/download/win) as well. Diffs are applied with `git apply` (GNU `patch` is not needed), and the model's shell tool runs the Unix tools Git for Windows bundles (`ls`, `grep`, `find`, `sed`, …). Ziya finds them next to `git.exe`, so they do not have to be on `PATH`. Applied diffs keep each file's own line endings, LF or CRLF. `ziya shadow` needs a POSIX terminal and is not available on Windows.
 
