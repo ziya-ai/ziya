@@ -17,9 +17,14 @@ proving the old write-then-chmod pattern is observably exposed.
 import json
 import os
 import stat
+import sys
 import tempfile
 
 import pytest
+
+posix_modes = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows has no POSIX permission bits"
+)
 
 
 @pytest.fixture
@@ -35,6 +40,7 @@ def _mode(path):
     return stat.S_IMODE(os.stat(path).st_mode)
 
 
+@posix_modes
 class TestZiyaHomeHardened:
     def test_get_ziya_home_is_owner_only(self, fresh_ziya_home):
         from app.utils.paths import get_ziya_home
@@ -57,6 +63,7 @@ class TestZiyaHomeHardened:
 
 
 class TestKeyringSavePrivate:
+    @posix_modes
     def test_saved_keyring_is_owner_only(self, fresh_ziya_home):
         from app.utils.encryption import Keyring
 
@@ -77,6 +84,7 @@ class TestKeyringSavePrivate:
         assert "keys" in data and isinstance(data["keys"], list)
 
 
+@posix_modes
 class TestSaltWriterPrivate:
     def test_salt_file_is_owner_only_and_stable(self, fresh_ziya_home):
         from app.utils.encryption import DataEncryptor
@@ -108,6 +116,7 @@ class TestNegativeControlOldPattern:
             f"(temp mode {oct(window_mode)})"
         )
 
+    @posix_modes
     def test_atomic_create_has_no_window(self, tmp_path):
         target = tmp_path / "new_keyring.json"
         # The fix's primitive: create private from byte zero.
