@@ -320,13 +320,13 @@ class TestTaskParserWiring:
     def test_task_in_commands_set(self):
         """'task' must be in the commands set for flag reordering."""
         import app.cli
-        source = open(app.cli.__file__).read()
+        source = open(app.cli.__file__, encoding="utf-8").read()
         assert "'task'" in source or '"task"' in source
 
     def test_task_in_main_py_routing(self):
         """main.py must route 'task' to CLI."""
         import app.main
-        source = open(app.main.__file__).read()
+        source = open(app.main.__file__, encoding="utf-8").read()
         assert "'task'" in source or '"task"' in source
 
 
