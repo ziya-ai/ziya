@@ -576,3 +576,43 @@ def test_mcp_servers_do_not_receive_the_consoles_ctrl_c():
         asyncio.run(client.connect())
     assert spawn.call_args.kwargs["start_new_session"] is True
     assert spawn.call_args.kwargs["creationflags"] == getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+
+# -- ziya-install-extras --------------------------------------------------------
+
+@pytest.fixture
+def windows_installer(monkeypatch):
+    from app.utils import install_extras
+    ran = []
+    monkeypatch.setattr(install_extras.sys, "platform", "win32")
+    monkeypatch.setattr(install_extras.subprocess, "run",
+                        lambda cmd, **kw: ran.append(list(cmd)) or SimpleNamespace(returncode=0))
+    return install_extras, ran
+
+
+def test_install_extras_never_runs_bash_on_windows(windows_installer, monkeypatch, capsys):
+    """`bash` on Windows is WSL's launcher (installs into the Linux VM) or Git Bash."""
+    install_extras, ran = windows_installer
+    monkeypatch.setattr(install_extras.shutil, "which", lambda name: None)
+    assert install_extras.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert ran == []
+    assert "playwright install chromium" in out and "No TeX distribution" in out
+    assert install_extras.main(["--latex", "--yes"]) == 1
+    assert ran == []
+
+
+def test_install_extras_installs_chromium_natively_on_windows(windows_installer):
+    install_extras, ran = windows_installer
+    assert install_extras.main(["--browser", "--yes"]) == 0
+    assert ran == [[sys.executable, "-m", "playwright", "install", "chromium"]]
+
+
+def test_install_extras_uses_tex_lives_tlmgr_on_windows(windows_installer, monkeypatch):
+    install_extras, ran = windows_installer
+    monkeypatch.setattr(install_extras.shutil, "which",
+                        lambda name: r"C:\texlive\bin\windows\tlmgr.bat" if name == "tlmgr" else None)
+    assert install_extras.main(["--latex", "--yes"]) == 0
+    packages = install_extras.tex_packages(install_extras.latex_script_path())
+    assert "circuitikz" in packages and "tikz-cd" in packages
+    assert [cmd[1:] for cmd in ran] == [["install", *packages]]
