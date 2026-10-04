@@ -1347,7 +1347,8 @@ class LatexRenderer:
             logger.warning("LaTeX step timed out, killing process group: %s", argv[0])
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+            except (ProcessLookupError, PermissionError, AttributeError):
+                # AttributeError: no process groups (or SIGKILL) on Windows
                 proc.kill()
             proc.wait(timeout=5)
             return None

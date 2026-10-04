@@ -305,8 +305,7 @@ def print_info(args):
     print(f"  AST: {'Enabled' if args.ast else 'Disabled'}")
     if args.ast:
         print(f"  AST Resolution: {args.ast_resolution}")
-    print(f"  MCP: {'Enabled' if args.mcp else 'Disabled'}")
-    
+    print(f"  MCP: {'Enabled' if args.mcp else 'Disabled'}")    
     print()
 
     # Deployment-specific diagnostics (enterprise registries, CLIs, ...)
