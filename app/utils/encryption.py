@@ -118,7 +118,8 @@ class Keyring:
         payload = json.dumps(data, indent=2).encode("utf-8")
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):  # no group/other bits on Windows
+                os.fchmod(fd, 0o600)
             with os.fdopen(fd, "wb") as f:
                 f.write(payload)
         except BaseException:
@@ -407,7 +408,8 @@ class DataEncryptor:
         # the write-then-chmod window exposed it world-readable identically.
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):  # no group/other bits on Windows
+                os.fchmod(fd, 0o600)
             with os.fdopen(fd, "wb") as f:
                 f.write(salt)
         except BaseException:
