@@ -5,9 +5,65 @@ Utilities for file operations related to diffs and patches.
 import os
 import re
 import glob
+from contextlib import contextmanager
 from typing import List
 
 from app.utils.logging_utils import logger
+
+
+def detect_line_ending(file_path: str) -> str:
+    """Return a file's dominant line ending, defaulting to LF."""
+    try:
+        with open(file_path, 'rb') as f:
+            data = f.read()
+    except OSError:
+        return '\n'
+    return '\r\n' if data.count(b'\r\n') * 2 > data.count(b'\n') else '\n'
+
+
+def write_preserving_line_endings(file_path: str, content: str) -> None:
+    """
+    Write text to an existing file using that file's dominant line ending.
+
+    The pipeline reads files with universal newlines, so content arrives
+    LF-only. A plain text-mode write emits os.linesep, which rewrote every line
+    of LF files on Windows (and of CRLF files on POSIX).
+    """
+    newline = detect_line_ending(file_path)
+    with open(file_path, 'w', encoding='utf-8', newline=newline) as f:
+        f.write(content.replace('\r\n', '\n'))
+
+
+@contextmanager
+def preserved_line_endings(file_path: str):
+    """
+    Keep a file's dominant line ending when an external tool modifies it.
+
+    With core.autocrlf=true (the Git for Windows default), git apply writes the
+    lines it adds to an LF file as CRLF, leaving mixed line endings.
+    """
+    try:
+        with open(file_path, 'rb') as f:
+            before = f.read()
+    except OSError:
+        yield
+        return
+    crlf = before.count(b'\r\n') * 2 > before.count(b'\n')
+    yield
+    try:
+        with open(file_path, 'rb') as f:
+            after = f.read()
+    except OSError:
+        return
+    if after == before:
+        return
+    normalized = after.replace(b'\r\n', b'\n')
+    if crlf:
+        normalized = normalized.replace(b'\n', b'\r\n')
+    if normalized != after:
+        with open(file_path, 'wb') as f:
+            f.write(normalized)
+
 
 def delete_file(git_diff: str, base_dir: str) -> str:
     """
@@ -140,7 +196,8 @@ def create_new_file(git_diff: str, base_dir: str) -> None:
         logger.debug("First 10 content lines:")
         logger.debug('\n'.join(content_lines[:10]))
         content = '\n'.join(content_lines)
-        with open(full_path, 'w', encoding='utf-8') as f:
+        # LF on every platform, rather than os.linesep
+        with open(full_path, 'w', encoding='utf-8', newline='\n') as f:
             f.write(content)
             if not content.endswith('\n'):
                 f.write('\n')

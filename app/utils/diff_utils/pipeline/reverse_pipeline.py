@@ -15,6 +15,7 @@ from ..core.diff_reverser import reverse_diff
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
 from .pipeline_manager import apply_diff_pipeline
 from ..file_ops.file_lock import diff_file_lock
+from ..file_ops.file_handlers import write_preserving_line_endings
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +88,7 @@ def _apply_reverse_diff_pipeline_locked(diff_content: str, file_path: str, expec
         with open(file_path, 'r', encoding='utf-8') as f:
             best_effort_content = f.read()
         # Restore file for subsequent stages
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(current_content)
+        write_preserving_line_endings(file_path, current_content)
     
     # Stage 3: Try reversed diff with simplified application
     result = _try_reversed_diff_simple(diff_content, file_path, current_content, expected_content)
@@ -108,8 +108,7 @@ def _apply_reverse_diff_pipeline_locked(diff_content: str, file_path: str, expec
             stage4_ratio = difflib.SequenceMatcher(None, stage4_content, expected_content).ratio()
             if stage2_ratio > stage4_ratio:
                 logger.info(f"Stage 2 result closer to expected ({stage2_ratio:.3f} vs {stage4_ratio:.3f}), using it")
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(best_effort_content)
+                write_preserving_line_endings(file_path, best_effort_content)
                 return {'status': 'success', 'stage': 'direct_reverse_best_effort', 'changes_written': True}
         logger.info("Reverse succeeded via full forward pipeline")
         return {'status': 'success', 'stage': 'reversed_diff_full', 'changes_written': True}
@@ -117,8 +116,7 @@ def _apply_reverse_diff_pipeline_locked(diff_content: str, file_path: str, expec
     # If all verified stages failed but we have a best-effort result, use it
     if best_effort_content is not None:
         logger.info("Using best-effort direct reverse result")
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(best_effort_content)
+        write_preserving_line_endings(file_path, best_effort_content)
         return {'status': 'success', 'stage': 'direct_reverse_best_effort', 'changes_written': True}
     
     logger.error("All reverse stages failed")
@@ -130,6 +128,11 @@ def _try_patch_reverse(diff_content: str, file_path: str, current_content: str, 
     import shutil
     import re
     
+    # GNU patch is not installed by default on Windows; fall through to the
+    # pure-Python stages instead of aborting the whole undo.
+    if shutil.which('patch') is None:
+        return {'success': False}
+
     # Extract the path from the diff header to set up correct directory structure
     match = re.search(r'^---\s+a/(.+)$', diff_content, re.MULTILINE)
     if not match:
@@ -184,7 +187,7 @@ def _try_patch_reverse(diff_content: str, file_path: str, current_content: str, 
 
         # Write diff file
         diff_file = os.path.join(temp_dir, 'changes.diff')
-        with open(diff_file, 'w') as f:
+        with open(diff_file, 'w', encoding='utf-8') as f:
             f.write(text_to_apply)
         
         # Run patch from the temp directory
@@ -192,12 +195,13 @@ def _try_patch_reverse(diff_content: str, file_path: str, current_content: str, 
             patch_args + ['-i', diff_file],
             cwd=temp_dir,
             capture_output=True,
-            text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=5
         )
         
         if result.returncode == 0:
-            with open(target_file, 'r') as f:
+            with open(target_file, 'r', encoding='utf-8') as f:
                 result_content = f.read()
             
             # If we have expected content, verify the result
@@ -206,12 +210,13 @@ def _try_patch_reverse(diff_content: str, file_path: str, current_content: str, 
                     logger.debug("patch -R succeeded but result doesn't match expected")
                     return {'success': False}
             
-            # Copy the result back
-            shutil.copy2(target_file, file_path)
+            # Write the result back in the file's own line ending; patch
+            # emits LF for the lines it restores, even into a CRLF file
+            write_preserving_line_endings(file_path, result_content)
             return {'success': True}
         
         return {'success': False}
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError):
         return {'success': False}
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -337,8 +342,7 @@ def _try_direct_reverse(diff_content: str, file_path: str, current_content: str,
                 logger.debug("Direct reverse succeeded but result doesn't match expected")
                 return {'success': False}
         
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(result_content)
+        write_preserving_line_endings(file_path, result_content)
         
         return {'success': True}
     
@@ -467,8 +471,7 @@ def _try_reversed_diff_simple(diff_content: str, file_path: str, current_content
                 logger.debug("Reversed diff simple succeeded but result doesn't match expected")
                 return {'success': False}
         
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(result_content)
+        write_preserving_line_endings(file_path, result_content)
         
         return {'success': True}
     
