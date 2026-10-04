@@ -496,3 +496,30 @@ def test_missing_credential_help_shows_powershell_syntax_on_windows(monkeypatch)
     help_text = provider_detection.build_setup_help()
     assert "export " not in help_text
     assert "$env:ANTHROPIC_API_KEY" in help_text
+
+
+# -- consoles -------------------------------------------------------------------
+
+def test_virtual_terminal_is_enabled_only_on_consoles():
+    from app.utils.process_utils import enable_virtual_terminal
+
+    class Kernel32:
+        modes_set = []
+
+        def GetStdHandle(self, which):
+            return {-11: 7, -12: 8}[which]
+
+        def GetConsoleMode(self, handle, mode):
+            if handle.value != 7:  # stderr is redirected to a file
+                return 0
+            mode._obj.value = 0x3
+            return 1
+
+        def SetConsoleMode(self, handle, mode):
+            self.modes_set.append((handle.value, mode))
+            return 1
+
+    kernel32 = Kernel32()
+    enable_virtual_terminal(kernel32)
+    assert kernel32.modes_set == [(7, 0x7)]
+
