@@ -293,3 +293,137 @@ def test_windows_shell_paths_survive_tokenizing(tmp_path):
     # find must be GNU find from Git, not System32\find.exe
     (tmp_path / "a.py").write_text("")
     assert srv._execute_pipeline("find . -name '*.py'", 30, str(tmp_path)).stdout.split() == ["./a.py"]
+
+
+# -- read allowlist and external paths ----------------------------------------
+
+def test_allowed_absolute_prefix_admits_native_paths(tmp_path):
+    from app.mcp.tools.fileio import _resolve_and_validate
+    project = tmp_path / "project"
+    project.mkdir()
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside-other").mkdir()
+    target = tmp_path / "outside" / "notes.txt"
+    target.write_text("hi")
+    sibling = tmp_path / "outside-other" / "x.txt"
+    sibling.write_text("no")
+
+    prefixes = [str(tmp_path / "outside")]
+    assert _resolve_and_validate(str(target), str(project), prefixes) == target.resolve()
+    with pytest.raises(ValueError):
+        _resolve_and_validate(str(sibling), str(project), prefixes)
+
+
+@windows_only
+def test_allowed_absolute_prefix_ignores_case_on_windows(tmp_path):
+    from app.mcp.tools.fileio import _resolve_and_validate
+    (tmp_path / "project").mkdir()
+    (tmp_path / "Outside").mkdir()
+    target = tmp_path / "Outside" / "notes.txt"
+    target.write_text("hi")
+    prefixes = [str(tmp_path / "Outside").lower()]
+    assert _resolve_and_validate(str(target), str(tmp_path / "project"), prefixes) == target.resolve()
+
+
+def test_external_tree_keys_use_slashes_and_resolve_to_the_file(tmp_path, monkeypatch):
+    from app.utils.file_utils import external_key, resolve_external_path
+    outside = tmp_path / "outside"
+    (outside / "sub").mkdir(parents=True)
+    target = outside / "sub" / "notes.md"
+    target.write_text("hi")
+    monkeypatch.setattr(folder_service, "_explicit_external_paths", {str(outside)})
+
+    key = external_key(str(target))
+    assert key.startswith("[external]/") and "\\" not in key
+    assert os.path.samefile(resolve_external_path(key, str(tmp_path / "project")), target)
+    assert folder_service.collect_leaf_file_keys(str(outside), False, str(tmp_path / "project")) == [key]
+
+
+def test_collected_project_keys_use_forward_slashes(tmp_path):
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "pkg" / "sub" / "a.py").write_text("x = 1\n")
+    assert folder_service.collect_leaf_file_keys(str(tmp_path), True, str(tmp_path)) == ["pkg/sub/a.py"]
+
+
+# -- context_add_file's symlink-safe read without O_NOFOLLOW --------------------
+
+@pytest.fixture
+def without_o_nofollow(monkeypatch):
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+
+
+def test_no_follow_open_reads_regular_files_without_o_nofollow(tmp_path, without_o_nofollow):
+    from app.mcp.tools.context_management import _open_no_follow
+    path = tmp_path / "a.txt"
+    path.write_bytes(b"hello")
+    fd = _open_no_follow(path)
+    try:
+        assert os.read(fd, 10) == b"hello"
+    finally:
+        os.close(fd)
+
+
+def test_no_follow_open_refuses_a_file_swapped_in_after_lstat(tmp_path, monkeypatch, without_o_nofollow):
+    from app.mcp.tools.context_management import _open_no_follow
+    validated = tmp_path / "validated.txt"
+    validated.write_text("ok")
+    swapped = tmp_path / "secret.txt"
+    swapped.write_text("secret")
+    real_lstat = os.lstat
+    # lstat() sees the validated file; the open() then lands on another one
+    monkeypatch.setattr(os, "lstat", lambda p, *a, **k:
+                        real_lstat(validated) if str(p) == str(swapped) else real_lstat(p, *a, **k))
+    with pytest.raises(OSError):
+        _open_no_follow(swapped)
+
+
+def test_no_follow_open_refuses_symlinks_without_o_nofollow(tmp_path, without_o_nofollow):
+    from app.mcp.tools.context_management import _open_no_follow
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret")
+    link = tmp_path / "link.txt"
+    try:
+        os.symlink(secret, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
+    with pytest.raises(OSError):
+        _open_no_follow(link)
+
+
+# -- encryption key material without os.fchmod --------------------------------
+
+def test_keyring_and_salt_are_written_without_fchmod(tmp_path, monkeypatch):
+    import json
+    from app.utils.encryption import DataEncryptor, Keyring
+    monkeypatch.delattr(os, "fchmod", raising=False)  # as on Windows before Python 3.13
+    monkeypatch.setenv("ZIYA_HOME", str(tmp_path / ".ziya"))
+
+    keyring = Keyring()
+    keyring._save()
+    assert json.loads(keyring.path.read_text())["keys"] == []
+    encryptor = DataEncryptor()
+    salt = encryptor._get_or_create_passphrase_salt()
+    assert len(salt) == 16 and encryptor._get_or_create_passphrase_salt() == salt
+
+
+# -- file_write line endings -------------------------------------------------
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+async def test_file_write_patch_keeps_line_endings(tmp_path, newline):
+    from app.mcp.tools.fileio import FileWriteTool
+    target = tmp_path / "notes.md"
+    target.write_bytes(b"one" + newline + b"two" + newline)
+    with patch("app.mcp.tools.fileio._check_write_allowed", return_value=""):
+        result = await FileWriteTool().execute(path="notes.md", patch="two", content="2\n3",
+                                               _workspace_path=str(tmp_path))
+    assert result.get("success") is True
+    assert target.read_bytes() == newline.join([b"one", b"2", b"3", b""])
+
+
+async def test_file_write_writes_content_as_given(tmp_path):
+    from app.mcp.tools.fileio import FileWriteTool
+    with patch("app.mcp.tools.fileio._check_write_allowed", return_value=""):
+        result = await FileWriteTool().execute(path="new.md", content="a\nb\n",
+                                               _workspace_path=str(tmp_path))
+    assert result.get("success") is True
+    assert (tmp_path / "new.md").read_bytes() == b"a\nb\n"

@@ -10,6 +10,7 @@ Verifies that:
 
 import os
 import stat
+import sys
 import tempfile
 from unittest.mock import patch, MagicMock
 
@@ -88,6 +89,7 @@ class TestAtomicWriteMechanism:
         assert tmp_files == [], f"Leftover temp files: {tmp_files}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX permission bits")
 class TestAtomicWritePermissions:
     """Verify that file permissions survive the atomic write."""
 

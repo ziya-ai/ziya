@@ -143,7 +143,7 @@ def _write(d, run_id, status, conv="c1", root=None, attempt=1, bulk=0):
         payload["block_states"] = {f"b{i}": {"x": "y" * 200} for i in range(bulk)}
     tmp = d / f"{run_id}.tmp"
     tmp.write_text(json.dumps(payload))
-    tmp.rename(d / f"{run_id}.json")
+    tmp.replace(d / f"{run_id}.json")
 
 
 def _reader(path):
@@ -371,7 +371,7 @@ class TestHeartbeatDoesNotDefeatTheCache:
                 "source_conversation_id": "c1", "root_run_id": "live",
                 "attempt": 1, "last_activity_at": time.time(),
             }))
-            tmp.rename(runs_dir / "live.json")
+            tmp.replace(runs_dir / "live.json")
             cache.get(_reader)
             assert cache.reads_last_scan == 1, (
                 "a heartbeat re-read %d of 21 files; a per-directory memo "
@@ -386,7 +386,7 @@ class TestHeartbeatDoesNotDefeatTheCache:
         time.sleep(0.01)
         tmp = runs_dir / "r1.tmp"
         tmp.write_text('{"id":"r1","status":"done"}')
-        tmp.rename(runs_dir / "r1.json")
+        tmp.replace(runs_dir / "r1.json")
         assert os.stat(runs_dir).st_mtime != before, (
             "temp+rename did not move the directory mtime on this platform; "
             "the per-file cache is still correct, but the rationale in the "
@@ -486,7 +486,7 @@ class TestReaderContract:
         }
         tmp = proj / "task_runs" / "r1.tmp"
         tmp.write_text(json.dumps(rec))
-        tmp.rename(proj / "task_runs" / "r1.json")
+        tmp.replace(proj / "task_runs" / "r1.json")
 
         storage = TaskRunStorage(proj)
         assert hasattr(storage, "read_run_file"), (

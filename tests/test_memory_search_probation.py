@@ -176,7 +176,7 @@ def test_regresses_on_prefix_source():
     try:
         head = subprocess.run(
             ["git", "show", "HEAD:app/mcp/tools/memory_tools.py"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, encoding="utf-8", check=True,
         ).stdout
     except Exception:
         pytest.skip("no git HEAD")

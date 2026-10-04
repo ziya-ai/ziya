@@ -96,7 +96,7 @@ def load_corpus(scope: str = "full", engine: str | None = None
         exp_path = eng_dir / "expectations.json"
         if not exp_path.exists():
             continue
-        exp = json.loads(exp_path.read_text())
+        exp = json.loads(exp_path.read_text(encoding="utf-8"))
         for sid, rec in sorted(exp.get("specs", {}).items()):
             if scope == "smoke" and not any(
                     o.get("origin") == "regression_set" for o in rec.get("origins", [])):
@@ -104,7 +104,7 @@ def load_corpus(scope: str = "full", engine: str | None = None
             spec_path = eng_dir / f"{sid}.json"
             if not spec_path.exists():
                 continue
-            out.append((eng_dir.name, sid, json.loads(spec_path.read_text()), rec))
+            out.append((eng_dir.name, sid, json.loads(spec_path.read_text(encoding="utf-8")), rec))
     return out
 
 

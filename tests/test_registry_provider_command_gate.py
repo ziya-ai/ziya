@@ -289,7 +289,7 @@ class TestEveryProviderRoutesThroughTheGate:
         import ast
 
         offenders = []
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.Assign):
                 continue
             for target in node.targets:
@@ -310,7 +310,7 @@ class TestEveryProviderRoutesThroughTheGate:
         import ast
 
         offenders = []
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.Dict):
                 continue
             for key, value in zip(node.keys, node.values):
@@ -566,7 +566,7 @@ class TestEveryIdentifierSinkIsGated:
         assert providers.is_dir(), f"provider package not found at {providers}"
         offenders = []
         for path in sorted(providers.glob("*.py")):
-            tree = ast.parse(path.read_text())
+            tree = ast.parse(path.read_text(encoding="utf-8"))
             for fn in ast.walk(tree):
                 if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue

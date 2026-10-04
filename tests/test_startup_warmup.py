@@ -219,7 +219,7 @@ def test_background_warmup_swallows_integrity_failure(ziya_home):
 # --------------------------------------------------------------------------
 
 def test_lifespan_uses_background_warmup_not_inline_integrity():
-    src = (Path(__file__).resolve().parents[1] / "app" / "server.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "app" / "server.py").read_text(encoding="utf-8")
     code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
     assert "start_background_warmup(" in code, "lifespan must start the warm-up thread"
     assert "integrity_check=run_startup_check" in code, \
