@@ -5,8 +5,8 @@ from abc import ABC, abstractmethod
 from typing import TypeVar, Generic, Optional, List
 from pathlib import Path
 import json
-import fcntl
 from contextlib import contextmanager
+from app.utils.file_locking import lock_exclusive, unlock
 from app.utils.logging_utils import logger
 from app.utils.paths import validate_relative_path
 
@@ -66,10 +66,10 @@ class BaseStorage(ABC, Generic[T]):
         
         with open(filepath, mode) as f:
             try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                lock_exclusive(f)
                 yield f
             finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                unlock(f)
     
     def _read_json(self, filepath: Path) -> Optional[dict]:
         """Read JSON file with locking."""
@@ -142,7 +142,7 @@ class BaseStorage(ABC, Generic[T]):
             else:
                 temp_path.write_bytes(plaintext)
 
-            temp_path.rename(filepath)
+            temp_path.replace(filepath)
         except Exception as e:
             # Clean up temp file on error
             if temp_path.exists():

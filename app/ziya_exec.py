@@ -65,6 +65,9 @@ def _deploy_sourcemaps():
     print(f"   cp frontend/build/static/js/main.* <site-packages>/app/templates/static/js/")
 
 def ziya():
+    from app.utils.process_utils import configure_stdio
+    configure_stdio()
+
     # Check installation before anything else
     _check_installation()
     
