@@ -523,3 +523,56 @@ def test_virtual_terminal_is_enabled_only_on_consoles():
     enable_virtual_terminal(kernel32)
     assert kernel32.modes_set == [(7, 0x7)]
 
+
+def test_chat_ctrl_c_cancels_the_answer_without_add_signal_handler(monkeypatch):
+    """Windows event loops have no add_signal_handler; ^C must still cancel only the answer."""
+    import asyncio
+    import signal
+    from app import cli as ziya_cli
+
+    async def no_mcp():
+        pass
+
+    monkeypatch.setattr(ziya_cli, "_initialize_mcp", no_mcp)
+    original = signal.getsignal(signal.SIGINT)
+
+    class Chat:
+        _plugins_future = None
+        _ask_task = None
+        _cancel_event = None
+        _cancellation_requested = False
+        survived = False
+
+        async def chat(self):
+            self._active_task = asyncio.ensure_future(asyncio.sleep(3600))
+            assert signal.getsignal(signal.SIGINT) is not original  # never raise ^C into pytest
+            signal.raise_signal(signal.SIGINT)
+            with pytest.raises(asyncio.CancelledError):
+                await self._active_task
+            self.survived = True
+
+    def unsupported(*args):
+        raise NotImplementedError
+
+    loop = asyncio.new_event_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", unsupported)
+    chat = Chat()
+    try:
+        loop.run_until_complete(ziya_cli._run_async_cli(chat))
+    finally:
+        loop.close()
+    assert chat.survived and chat._cancellation_requested
+    assert signal.getsignal(signal.SIGINT) is original
+
+
+def test_mcp_servers_do_not_receive_the_consoles_ctrl_c():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from app.mcp.client import MCPClient
+
+    client = MCPClient({"name": "srv", "command": [sys.executable, "-c", "pass"]})
+    spawn = AsyncMock(side_effect=OSError("not launched in this test"))
+    with patch("asyncio.create_subprocess_exec", new=spawn):
+        asyncio.run(client.connect())
+    assert spawn.call_args.kwargs["start_new_session"] is True
+    assert spawn.call_args.kwargs["creationflags"] == getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
