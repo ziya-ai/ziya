@@ -168,7 +168,9 @@ def add_file_to_folder_cache(rel_path: str, base_dir: str = None) -> bool:
         full_path = os.path.join(project_root, rel_path)
         from app.utils.directory_util import estimate_tokens_fast
         token_count = estimate_tokens_fast(full_path)
-        path_parts = rel_path.split(os.sep)
+        # Accept either separator; broadcasts to the frontend must use '/'
+        rel_path = rel_path.replace(os.sep, '/')
+        path_parts = rel_path.split('/')
 
         with _cache_lock:
             current_level = entry['data']
@@ -205,7 +207,8 @@ def update_file_in_folder_cache(rel_path: str, base_dir: str = None) -> bool:
         full_path = os.path.join(project_root, rel_path)
         from app.utils.directory_util import estimate_tokens_fast
         token_count = estimate_tokens_fast(full_path)
-        path_parts = rel_path.split(os.sep)
+        rel_path = rel_path.replace(os.sep, '/')
+        path_parts = rel_path.split('/')
 
         with _cache_lock:
             current_level = entry['data']
@@ -239,7 +242,8 @@ def remove_file_from_folder_cache(rel_path: str, base_dir: str = None) -> bool:
         return False
 
     try:
-        path_parts = rel_path.split(os.sep)
+        rel_path = rel_path.replace(os.sep, '/')
+        path_parts = rel_path.split('/')
         with _cache_lock:
             current_level = entry['data']
             for part in path_parts[:-1]:
@@ -472,7 +476,7 @@ def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_works
         dir_structure = scan_directory(full_path)
 
         with _cache_lock:
-            path_parts = rel_path.split(os.sep)
+            path_parts = rel_path.replace(os.sep, '/').split('/')
             current_level = entry['data']
             for part in path_parts[:-1]:
                 if part not in current_level:

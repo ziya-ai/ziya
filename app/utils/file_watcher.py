@@ -242,12 +242,13 @@ class FileChangeHandler(FileSystemEventHandler):
             # New directories are handled in on_created.
             return
             
-        # Get the relative path from the base directory
+        # Get the relative path from the base directory, '/'-separated because
+        # conversation state and the frontend key files that way on every OS
         abs_path = os.path.abspath(event.src_path)
         if not abs_path.startswith(self.base_dir):
             return
             
-        rel_path = os.path.relpath(abs_path, self.base_dir)
+        rel_path = os.path.relpath(abs_path, self.base_dir).replace(os.sep, '/')
 
         # If a delete for this path was pending (atomic save in flight),
         # cancel it — the modify proves the file is alive.
@@ -318,7 +319,7 @@ class FileChangeHandler(FileSystemEventHandler):
         if not abs_path.startswith(self.base_dir):
             return
 
-        rel_path = os.path.relpath(abs_path, self.base_dir)
+        rel_path = os.path.relpath(abs_path, self.base_dir).replace(os.sep, '/')
 
         # If a delete for this path was pending (atomic save in flight),
         # cancel it — the create proves this is a save, not a removal.
@@ -412,7 +413,7 @@ class FileChangeHandler(FileSystemEventHandler):
         if not abs_path.startswith(self.base_dir):
             return
             
-        rel_path = os.path.relpath(abs_path, self.base_dir)
+        rel_path = os.path.relpath(abs_path, self.base_dir).replace(os.sep, '/')
         
         # Skip editor temp files
         if self._is_editor_temp_file(abs_path):
