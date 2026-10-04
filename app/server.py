@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any, List, Tuple, Union
 import asyncio
 from contextlib import asynccontextmanager
 
+import mimetypes
 import os
 import os.path
 import re
@@ -1852,11 +1853,29 @@ def get_templates_dir():
     
     return app_templates_dir
 
+def _pin_frontend_mime_types(db=mimetypes):
+    """Make sure the UI's scripts and styles are served with usable types.
+
+    On Windows, mimetypes is filled from the registry, where ``.js`` is often
+    ``text/plain`` (editors and SDKs set it).  The security middleware sends
+    ``X-Content-Type-Options: nosniff``, so browsers then refuse to run the
+    UI's scripts and the page stays blank.  Correct entries are left alone.
+    """
+    for ext, wanted, accepted in (
+        (".js", "text/javascript", ("text/javascript", "application/javascript")),
+        (".mjs", "text/javascript", ("text/javascript", "application/javascript")),
+        (".css", "text/css", ("text/css",)),
+    ):
+        if db.guess_type("x" + ext)[0] not in accepted:
+            db.add_type(wanted, ext)
+
+
 templates_dir = get_templates_dir()
 templates = Jinja2Templates(directory=templates_dir)
 
 # Mount static files from templates directory
 static_dir = os.path.join(templates_dir, "static")
+_pin_frontend_mime_types()
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     logger.debug(f"Mounted static files from {static_dir}")
