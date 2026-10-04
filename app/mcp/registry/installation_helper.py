@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from app.mcp.registry.interface import InstallationType
 from app.utils.logging_utils import logger
+from app.utils.process_utils import resolve_executable
 
 
 class InstallationHelper:
@@ -64,7 +65,7 @@ class InstallationHelper:
         """Install NPM package."""
         try:
             result = subprocess.run(
-                ['npm', 'install', package],
+                [resolve_executable('npm'), 'install', package],
                 cwd=str(install_dir),
                 capture_output=True,
                 text=True,
@@ -155,8 +156,7 @@ class InstallationHelper:
                 return {'success': False, 'error': f"{venv_error} (for {package})"}
 
             result = subprocess.run(
-                [str(python), '-m', 'pip', 'install', package],
-                capture_output=True,
+                [str(python), '-m', 'pip', 'install', package],                capture_output=True,
                 text=True,
                 timeout=300
             )
