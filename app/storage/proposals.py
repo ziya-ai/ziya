@@ -177,7 +177,7 @@ class ProposalsStore:
             payload = (enc.encrypt(plaintext, "session_data")
                        if enc.is_enabled("session_data") else plaintext)
             temp.write_bytes(payload)
-            temp.rename(self._path)
+            temp.replace(self._path)
         except Exception:
             if temp.exists():
                 temp.unlink()
