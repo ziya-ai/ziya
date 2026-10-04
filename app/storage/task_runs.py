@@ -14,16 +14,12 @@ import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-try:
-    import fcntl
-except ImportError:  # Windows: no flock; liveness falls back to the
-    fcntl = None       # process-local registry alone.
-
 from .base import BaseStorage, contained_path
 from ..models.task_run import (
     TaskRun, TaskRunCreate, TaskRunBlockState, IterationSummary, ProgressNote,
     TERMINAL_RUN_STATUSES,
 )
+from ..utils.file_locking import lock_exclusive
 
 # Cap on the retained progress trail.  Bounded because a long campaign
 # emits a note per tool call: the trail is a readable narrative, not an
@@ -838,12 +834,13 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     #
     # Two layers.  ``_active_runs`` is process-local and answers "is the
     # executor coroutine in THIS process" (the cancel endpoint's
-    # question).  The advisory flock answers the question the startup
+    # question).  The executor lock (flock; a byte-range lock on Windows,
+    # see file_locking) answers the question the startup
     # reconciler needs, "does ANY live process own this run": several
     # ziya servers can share one ~/.ziya, and a freshly started one used
     # to sweep a sibling's healthy in-flight run to "failed" on the
     # theory that a live row must be a zombie (run d2c18548, 2026-09-16).
-    # The kernel drops a flock when its holder dies, so a crashed
+    # The OS drops the lock when its holder dies, so a crashed
     # owner's lock is simply not held and the row reconciles as before.
 
     def _lock_file(self, run_id: str) -> Path:
@@ -854,7 +851,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         process and take its cross-process executor lock.  Called from
         the start of ``_run`` in the launch path."""
         self._active_runs.add(run_id)
-        if fcntl is None or run_id in self._run_locks:
+        if run_id in self._run_locks:
             return
         fd = None
         try:
@@ -862,7 +859,8 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             fd = os.open(
                 str(self._lock_file(run_id)), os.O_RDWR | os.O_CREAT, 0o600
             )
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not lock_exclusive(fd, blocking=False):
+                raise BlockingIOError("held by another process")
             self._run_locks[run_id] = fd
         except OSError as e:
             if fd is not None:
@@ -900,27 +898,24 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         """Return True iff some live process, this one or a sibling,
         holds ``run_id``'s executor lock.
 
-        False when there is no lock file, when the file exists but nobody
-        holds it (the owner exited or crashed), and on platforms without
-        flock, where it degrades to the process-local set.  The probe
-        opens its own descriptor: flock locks are per open-file-
-        description, so this conflicts with a holder even in-process.
+        False when there is no lock file, or when the file exists but
+        nobody holds it (the owner exited or crashed).  The probe opens
+        its own descriptor: flock locks are per open-file-description,
+        and Windows locks per handle, so this conflicts with a holder
+        even in-process.
         """
         if run_id in self._run_locks:
             return True
-        if fcntl is None:
-            return run_id in self._active_runs
         try:
             fd = os.open(str(self._lock_file(run_id)), os.O_RDONLY)
         except OSError:
             return False
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return not lock_exclusive(fd, blocking=False)
         except OSError:
             return True
         finally:
             os.close(fd)  # releases the probe lock if we got it
-        return False
 
     # ---- startup reconciliation -----------------------------------
 
