@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.utils.logging_utils import logger
 from app.utils.directory_util import get_ignored_patterns, MAX_SYMLINK_HOPS
+from app.utils.file_utils import external_key
 
 
 # Folder structure cache, keyed by absolute directory path
@@ -266,8 +267,14 @@ def remove_file_from_folder_cache(rel_path: str, base_dir: str = None) -> bool:
 
 def is_under_external_path(path: str) -> bool:
     """True if path is an added external path or inside one (project root excluded)."""
+    # Tree code passes '/'-joined paths (and '/C:' drive-colon forms on
+    # Windows), while approved paths may use either separator.
+    p = path.replace(os.sep, '/')
+    if re.match(r'^/[A-Za-z]:', p):
+        p = p[1:]
     for external in _explicit_external_paths:
-        if path == external or path.startswith(external + os.sep):
+        e = str(external).replace(os.sep, '/')
+        if p == e or p.startswith(e + '/'):
             return True
     return False
 
@@ -317,7 +324,8 @@ def add_external_path_to_cache(full_path: str, mode: str = 'shallow') -> bool:
 
         with _cache_lock:
             ext = _external_root(user_codebase_dir)
-            old = xt.get_node(ext, full_path)
+            key_path = full_path.replace(os.sep, '/')
+            old = xt.get_node(ext, key_path)
             if new is None:
                 # Keep what is cached below it (placeholders leading to other
                 # added paths), but have all of it re-listed when expanded.
@@ -327,11 +335,11 @@ def add_external_path_to_cache(full_path: str, mode: str = 'shallow') -> bool:
                 node = xt.merge_listing(old, new, distrust_existing=True)
             else:
                 node = new
-            xt.set_node(ext, full_path, node, listable=is_under_external_path)
+            xt.set_node(ext, key_path, node, listable=is_under_external_path)
             token_count = node.get('token_count', 0)
             logger.info(f"Added external path to cache: {full_path} "
                         f"({mode if is_dir else 'file'}, {token_count} tokens)")
-            _schedule_broadcast('file_added', f"[external]{full_path}", token_count)
+            _schedule_broadcast('file_added', external_key(full_path), token_count)
             return True
 
     except Exception as e:
@@ -512,9 +520,9 @@ def collect_leaf_file_keys(dir_path: str, is_inside_workspace: bool, user_codeba
                 return keys
             full = os.path.join(root, fname)
             if is_inside_workspace:
-                key = os.path.relpath(full, user_codebase_dir)
+                key = os.path.relpath(full, user_codebase_dir).replace(os.sep, '/')
             else:
-                key = "[external]" + full
+                key = external_key(full)
             keys.append(key)
     return keys
 
@@ -541,9 +549,9 @@ def collect_documentation_file_keys(dir_path: str, is_inside_workspace: bool, us
             if fname in doc_files:
                 full = os.path.join(root, fname)
                 if is_inside_workspace:
-                    key = os.path.relpath(full, user_codebase_dir)
+                    key = os.path.relpath(full, user_codebase_dir).replace(os.sep, '/')
                 else:
-                    key = "[external]" + full
+                    key = external_key(full)
                 keys.append(key)
     if keys:
         logger.info(f"Auto-context: found {len(keys)} documentation file(s) in {dir_path}")
