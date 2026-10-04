@@ -60,6 +60,84 @@ def latex_script_path() -> Optional[Path]:
     return candidate if candidate.is_file() else None
 
 
+def tex_packages(script: Path) -> List[str]:
+    """The TeX Live package list, read from the script's TEX_PACKAGES=(...) line."""
+    for line in script.read_text(encoding="utf-8").splitlines():
+        if line.startswith("TEX_PACKAGES=("):
+            return line[len("TEX_PACKAGES=("):line.index(")")].split()
+    return []
+
+
+WINDOWS_USAGE = """usage: ziya-install-extras [--browser | --latex | --all] [--dry-run] [--yes]
+
+  --browser  the Chromium build Playwright drives (~150 MB)
+  --latex    the TeX Live packages the LaTeX renderer needs, installed with
+             TeX Live's tlmgr; without a TeX distribution, how to get one
+  --all      both (the default)
+  --dry-run  print the plan and exit; install nothing
+  --yes      skip the confirmation prompt"""
+
+
+def run_windows(args: List[str], script: Optional[Path]) -> int:
+    """The installer for Windows, where the bash script cannot run.
+
+    ``bash`` there is WSL's launcher, which would install into the Linux VM,
+    or Git Bash, which has no package manager.  Chromium installs natively.
+    For TeX, TeX Live's tlmgr is used if one is installed; otherwise this
+    says how to get a distribution, as the script does for Homebrew.
+    """
+    from app.utils.process_utils import resolve_executable
+
+    if "-h" in args or "--help" in args:
+        print(WINDOWS_USAGE)
+        return 0
+    targets = {a for a in args if a in ("--browser", "--latex", "--all")}
+    browser = not targets or bool(targets & {"--all", "--browser"})
+    latex = not targets or bool(targets & {"--all", "--latex"})
+    steps = []
+    print("Ziya optional extras")
+    if browser:
+        cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        print("  * Chromium for Playwright (~150 MB):  " + subprocess.list2cmdline(cmd))
+        steps.append(("Chromium", cmd))
+    missing = 0
+    if latex:
+        tlmgr = shutil.which("tlmgr")
+        packages = tex_packages(script) if script else []
+        if tlmgr and packages:
+            cmd = [resolve_executable("tlmgr"), "install", *packages]
+            print("  * TeX Live packages:  " + subprocess.list2cmdline(["tlmgr", "install", *packages]))
+            steps.append(("TeX Live packages", cmd))
+        elif shutil.which("latex") and shutil.which("dvisvgm"):
+            print("  ok A TeX distribution is on PATH (latex, dvisvgm). If a diagram reports a missing")
+            print("     package, install it with your distribution's package manager.")
+        else:
+            missing = 1
+            print("  !! No TeX distribution found. Install TeX Live (https://tug.org/texlive/windows.html)")
+            print("     or MiKTeX (winget install MiKTeX.MiKTeX), open a new terminal, then re-run:")
+            print("         ziya-install-extras --latex")
+    if "--dry-run" in args or "--plan" in args:
+        print("(--dry-run: nothing was installed.)")
+        return 0
+    if not steps:
+        return missing
+    if not ({"-y", "--yes"} & set(args)):
+        try:
+            answer = input("Proceed with the above? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Aborted; nothing installed.")
+            return 0
+    failed = 0
+    for name, cmd in steps:
+        print(f"  -> {subprocess.list2cmdline(cmd)}", flush=True)
+        if subprocess.run(cmd).returncode != 0:
+            print(f"  !! {name} failed.")
+            failed = 1
+    return failed or missing
+
+
 def run(args: List[str]) -> int:
     """Install what ``args`` names and return the exit code.
 
@@ -108,6 +186,8 @@ def _script_targets_requested(args: List[str]) -> List[str]:
 def _run_script(args: List[str]) -> int:
     """Run the packaged shell installer with ``args``; return its exit code."""
     script = latex_script_path()
+    if sys.platform == "win32":
+        return run_windows(args, script)
     if script is None:
         print("!! Packaged installer not found (app/scripts/install_extras.sh).")
         print("   Reinstall ziya, or install a TeX distribution manually.")

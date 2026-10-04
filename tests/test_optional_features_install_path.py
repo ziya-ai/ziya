@@ -306,6 +306,8 @@ class TestPlaywrightProbeUsesZiyaPython:
             return _R()
 
         monkeypatch.setattr(install_extras.subprocess, "run", fake_run)
+        monkeypatch.setattr(install_extras.sys, "platform", "linux")  # the script path; Windows has its own
+        monkeypatch.setattr(install_extras.shutil, "which", lambda name: sys.executable)  # any existing "bash"
         install_extras.run(["--dry-run"])
         env = captured.get("env")
         assert env is not None, "run() did not pass an explicit env to the script"
