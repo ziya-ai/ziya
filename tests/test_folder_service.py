@@ -162,8 +162,8 @@ class TestCollectDocumentationFileKeys:
             # root AGENTS.md, root README.md, nested AGENTS.md — but NOT nested README.md
             assert 'AGENTS.md' in keys
             assert 'README.md' in keys
-            assert os.path.join('pkg', 'sub', 'AGENTS.md') in keys
-            assert os.path.join('pkg', 'sub', 'README.md') not in keys
+            assert 'pkg/sub/AGENTS.md' in keys
+            assert 'pkg/sub/README.md' not in keys
             assert len(keys) == 3
 
     def test_readme_root_only_with_no_root_readme(self):
@@ -177,7 +177,7 @@ class TestCollectDocumentationFileKeys:
             keys = collect_documentation_file_keys(
                 tmpdir, True, tmpdir, readme_root_only=True
             )
-            assert keys == [os.path.join('pkg', 'AGENTS.md')]
+            assert keys == ['pkg/AGENTS.md']  # tree keys use '/'
 
     def test_empty_when_no_docs(self):
         """Returns an empty list when there are no documentation files."""

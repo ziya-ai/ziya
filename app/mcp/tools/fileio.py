@@ -94,19 +94,15 @@ def _resolve_and_validate(relative_path: str, workspace_path: str, allowed_absol
 
 def _is_under_allowed_prefix(resolved: Path, prefixes: list) -> bool:
     """Return True if *resolved* falls under any of the allowed absolute prefixes."""
-    resolved_str = str(resolved)
     for prefix in prefixes:
-        if not prefix.startswith("/"):
+        if not (prefix.startswith("/") or os.path.isabs(prefix)):
             continue
         # Resolve the prefix too so symlinks like /tmp -> /private/tmp
-        # are handled correctly on macOS.
-        prefix_resolved = str(Path(prefix.rstrip("/")).resolve())
-        if resolved_str.startswith(prefix_resolved + "/") or resolved_str == prefix_resolved:
-            return True
-        # Also check the literal (non-resolved) form
-        literal = prefix.rstrip("/")
-        if resolved_str.startswith(literal + "/") or resolved_str == literal:
-            return True
+        # are handled correctly on macOS; also check the literal form.
+        # Path comparison is per component, and case-insensitive on Windows.
+        for allowed in (Path(prefix).resolve(), Path(prefix)):
+            if resolved == allowed or allowed in resolved.parents:
+                return True
     return False
 
 
