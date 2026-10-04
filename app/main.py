@@ -17,7 +17,7 @@ import warnings
 from typing import Optional
 
 from app.utils.logging_utils import logger
-from app.utils.process_utils import configure_stdio
+from app.utils.process_utils import configure_stdio, env_hint
 from app.utils.version_util import get_current_version, get_latest_version
 
 from app.config.env_registry import ziya_env
@@ -665,7 +665,7 @@ def check_auth(args):
                 return True
             else:
                 print("\n⚠️ ERROR: GOOGLE_API_KEY environment variable is not set.")
-                print("Please set your Google API key: export GOOGLE_API_KEY=<your-key>")
+                print(env_hint("Please set your Google API key: export GOOGLE_API_KEY=<your-key>"))
                 return False
         else:
             print(f"\n⚠️ ERROR: Unknown endpoint '{args.endpoint}'")

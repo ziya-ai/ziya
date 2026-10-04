@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Tuple, Optional, Dict, Any, List
 from .interfaces import AuthProvider, ConfigProvider, DirectoryScanProvider, ScanCustomization
 from app.utils.logging_utils import logger
+from app.utils.process_utils import env_hint
 
 class DefaultAuthProvider(AuthProvider):
     """Standard AWS SDK authentication (community edition)."""
@@ -38,7 +39,7 @@ class DefaultAuthProvider(AuthProvider):
     
     def get_credential_help_message(self, error_context: Optional[str] = None) -> str:
         """Return generic AWS credential help."""
-        return (
+        return env_hint(
             "AWS credentials are not configured or have expired.\n"
             "\n"
             "Please configure AWS credentials using one of these methods:\n"
