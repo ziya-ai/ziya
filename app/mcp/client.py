@@ -524,6 +524,10 @@ class MCPClient:
                  # MCP server exits with code 0, leaving clients
                  # unhealthy mid-conversation.
                  start_new_session=True,
+                 # Windows has no sessions: the console sends ^C to every
+                 # process attached to it, except those in a new process
+                 # group.
+                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
             
             # Start background task to capture logs

@@ -4252,14 +4252,22 @@ async def _run_async_cli(cli):
             # prevent the default asyncio SIGINT teardown.
             pass
 
+    previous_handler = None
     try:
         loop.add_signal_handler(signal.SIGINT, _sigint_handler)
     except NotImplementedError:
-        # Windows doesn't support add_signal_handler; fall back to
-        # default behavior (KeyboardInterrupt).
-        pass
+        # Windows event loops have no add_signal_handler.  Left to the
+        # default, ^C raises KeyboardInterrupt wherever the main thread
+        # happens to be: sometimes that cancels the answer, sometimes it
+        # silently ends the session.
+        previous_handler = signal.signal(
+            signal.SIGINT, lambda signum, frame: loop.call_soon_threadsafe(_sigint_handler))
 
-    await cli.chat()
+    try:
+        await cli.chat()
+    finally:
+        if previous_handler is not None:
+            signal.signal(signal.SIGINT, previous_handler)
 
 
 # ============================================================================
