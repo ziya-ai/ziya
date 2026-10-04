@@ -242,7 +242,9 @@ class ZiyaASTEnhancer:
             os.path.abspath("/tmp"),
             os.path.abspath("/var"),
         }
-        if abs_dir in hostile_dirs:
+        # Any filesystem root, including a Windows drive root such as C:\
+        is_root = os.path.dirname(abs_dir) == abs_dir
+        if is_root or abs_dir in hostile_dirs:
             logger.warning(
                 f"AST indexing skipped: '{abs_dir}' is too broad to index. "
                 f"Open a specific project directory for full AST support."
