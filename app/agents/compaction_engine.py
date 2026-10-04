@@ -343,7 +343,7 @@ class CompactionEngine:
             full_path = os.path.join(project_root, path) if not os.path.isabs(path) else path
             try:
                 if os.path.isfile(full_path):
-                    with open(full_path, 'r', errors='replace') as f:
+                    with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
                         content = f.read()
                     if content.strip():
                         remaining = max_total - total_len
