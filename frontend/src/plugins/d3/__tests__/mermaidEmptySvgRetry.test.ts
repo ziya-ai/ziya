@@ -135,8 +135,13 @@ describe('empty-SVG retry wiring (seam)', () => {
     it('renderSingleDiagram calls renderMermaidWithRetry (helper is not dead code)', () => {
         const fnStart = source.indexOf('async function renderSingleDiagram');
         expect(fnStart).toBeGreaterThan(-1);
-        // Look only within renderSingleDiagram's body for the wired call.
-        const body = source.slice(fnStart, fnStart + 8000);
+        // Scope to renderSingleDiagram's body: from its declaration to the next
+        // top-level declaration. A fixed-size slice went stale as the function
+        // grew (the call site moved past the 8000-char window).
+        const rest = source.slice(fnStart + 1);
+        const next = rest.search(/\n(?:export\s+)?(?:async\s+)?(?:function|const|class)\s/);
+        const body = next === -1 ? rest : rest.slice(0, next);
+        expect(body.length).toBeGreaterThan(1000);
         expect(body).toContain('renderMermaidWithRetry(');
     });
 
