@@ -4,7 +4,7 @@ import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } 
 import { ConversationHealthDebugModal } from './ConversationHealthDebug';
 import ExportConversationModal from './ExportConversationModal';
 import ConversationInfoModal from './ConversationInfoModal';
-import HandoffDrawer from './HandoffDrawer';
+import ForkGlyph from './ForkGlyph';
 import { useConversationList } from '../context/ConversationListContext';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useStreamingContext } from '../context/StreamingContext';
@@ -14,7 +14,7 @@ import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import { db } from '../utils/db';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal, globalMenuItemState } from '../utils/folderUtil';import { v4 as uuidv4 } from 'uuid';
-import { subscribeHandoffOpen } from '../utils/handoffOpen';
+import { dispatchHandoffOpen } from '../utils/handoffOpen';
 import { handoffSegmentOrdinals } from '../utils/lineage';
 import { sortComparator } from '../utils/chatTreeSort';
 import { computeStructuralHash, fnv1a } from '../utils/chatTreeHash';
@@ -63,6 +63,7 @@ import RunStatusGears from './TaskCard/RunStatusGears';
 import type { TaskBinding } from '../types/task_binding';
 import { useRunStatusIndex } from '../hooks/useRunStatusIndex';
 import { toLayoutPx } from '../utils/uiScale';
+import { classifyRowGesture, hasSelectionWithin } from '../utils/rowGesture';
 // Ant Design Icons for the menu items
 import {
   EditOutlined,
@@ -128,6 +129,9 @@ interface ChatTreeItemProps {
   // disabled.  isHandoffContinuation: this row IS a continuation (⛓).
   isHandedOff?: boolean;
   isHandoffContinuation?: boolean;
+  // Plain fork (lineageKind='fork'): child row under its source, marked
+  // with ForkGlyph the way a continuation is marked with ⛓.
+  isForkChild?: boolean;
   // Position in a handoff chain (1-based / length).  Present on every
   // segment of a chain, including the root source.  Rows are never hidden.
   handoffOrdinal?: { index: number; total: number };
@@ -221,6 +225,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     delegateStatus,
     isHandedOff = false,
     isHandoffContinuation = false,
+    isForkChild = false,
     handoffOrdinal,
     isPinned = false,
     isCurrentItem = false,
@@ -433,6 +438,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   {isHandoffContinuation && !handoffOrdinal && (
                     <span title="Continuation of an earlier segment" style={{ marginRight: 4, opacity: 0.8 }}>⛓</span>
                   )}
+                  {isForkChild && !isHandoffContinuation && <ForkGlyph />}
                   {labelText}
                   {handoffOrdinal && (
                     <Typography component="span" variant="caption"
@@ -1139,7 +1145,6 @@ const MUIChatHistory = () => {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportConversationId, setExportConversationId] = useState<string | null>(null);
   const [infoConversationId, setInfoConversationId] = useState<string | null>(null);
-  const [handoffConversationId, setHandoffConversationId] = useState<string | null>(null);
   const [showHealthDebug, setShowHealthDebug] = useState(false);
   const [swarmRecoveryFolderId, setSwarmRecoveryFolderId] = useState<string | null>(null);
   const [showSwarmRecovery, setShowSwarmRecovery] = useState(false);
@@ -2455,12 +2460,12 @@ const MUIChatHistory = () => {
   };
 
   // Hand off: open the drawer (draft review / edit / commit).  The drawer
-  // owns the commit and the shell insert; see HandoffDrawer.
+  // owns the commit and the shell insert; see HandoffDrawer.  It is mounted
+  // by HandoffDrawerHost (App), not here: this component only exists once
+  // the sidebar's Chats tab has been opened.
   const handleHandoffConversation = (id: string) => {
-    setHandoffConversationId(id.startsWith('conv-') ? id.substring(5) : id);
+    dispatchHandoffOpen(id.startsWith('conv-') ? id.substring(5) : id);
   };
-  // The token bar's pressure affordance opens the same drawer.
-  useEffect(() => subscribeHandoffOpen(id => setHandoffConversationId(id)), []);
 
   // Handle compressing a conversation (placeholder)
   const handleCompressConversation = (conversationId: string) => {
@@ -4221,6 +4226,7 @@ const MUIChatHistory = () => {
                 const openWorkItemCount = isFolder ? 0 : (node.conversation?.openWorkItemCount || 0);
                 const rowHandedOff = !isFolder && !!node.conversation?.handedOffTo;
                 const rowIsContinuation = !isFolder && node.conversation?.lineageKind === 'handoff';
+                const rowIsFork = !isFolder && node.conversation?.lineageKind === 'fork';
                 const rowOrdinal = !isFolder ? node.handoffOrdinal : undefined;
                 const rowFlags = isFolder ? [] : (node.conversation?.flags || []);
                 const rowFlagColor = isFolder ? null : (node.conversation?.flagColor || null);
@@ -4235,9 +4241,15 @@ const MUIChatHistory = () => {
                   let down = true;
                   const detect = (me: MouseEvent) => {
                     if (!down) { document.removeEventListener('mousemove', detect); return; }
-                    if (Math.abs(me.clientX - startX) > 12 || Math.abs(me.clientY - startY) > 12) {
+                    const gesture = classifyRowGesture(me.clientX - startX, me.clientY - startY);
+                    if (gesture === 'drag') {
                       me.preventDefault();
                       startCustomDrag(nodeId, isFolder ? 'folder' : 'conversation', labelText);
+                      cleanup();
+                    } else if (gesture === 'select') {
+                      // Horizontal motion is text selection: stop watching
+                      // this press so the browser's native selection proceeds
+                      // and the title can be copied.
                       cleanup();
                     }
                   };
@@ -4257,6 +4269,9 @@ const MUIChatHistory = () => {
                     // ChatTreeItem's own onClick, which fired redundantly on
                     // every click since that div is nested inside this one).
                     if (e.detail > 1) return;
+                    // Mouseup that ends a text selection is not a click:
+                    // navigating would discard the selection the user wants to copy.
+                    if (hasSelectionWithin(e.currentTarget)) return;
                     // Don't navigate on icon button clicks
                     if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('.MuiIconButton-root')) return;
                     if (nodeId.startsWith('conv-')) {
@@ -4298,6 +4313,7 @@ const MUIChatHistory = () => {
                       isTaskPlanFolder={isTaskPlanFolder} taskPlanProgress={taskPlanProgress}
                       delegateStatus={delegateStatus} isPinned={isPinned}
                       isHandedOff={rowHandedOff} isHandoffContinuation={rowIsContinuation}
+                      isForkChild={rowIsFork}
                       handoffOrdinal={rowOrdinal}
                       isCurrentItem={isCurrentItem} isGlobalItem={isGlobalItem}
                       isEphemeralItem={isEphemeralItem}
@@ -4388,16 +4404,6 @@ const MUIChatHistory = () => {
       )}
 
       {/* Conversation Info modal — id, project id, and storage statistics */}
-      {/* Handoff drawer — draft review / edit / commit to a continuation */}
-      <HandoffDrawer
-        conversationId={handoffConversationId}
-        onClose={() => setHandoffConversationId(null)}
-      />
-      {/* Handoff drawer — draft review / edit / commit to a continuation */}
-      <HandoffDrawer
-        conversationId={handoffConversationId}
-        onClose={() => setHandoffConversationId(null)}
-      />
       {infoConversationId && (
         <ConversationInfoModal
           visible={!!infoConversationId}
