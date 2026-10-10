@@ -79,9 +79,13 @@ class CustomBedrockClient:
         self.region = self.client.meta.region_name if hasattr(self.client, 'meta') else None
         logger.debug(f"Initialized CustomBedrockClient with user_max_tokens={max_tokens}, region={self.region}")
 
-        # Store region in environment variable to ensure consistency
-        if self.region:
-            os.environ["AWS_REGION"] = self.region
+        # Do NOT publish self.region to os.environ["AWS_REGION"].  This
+        # wrapper is also built for every BedrockRegionRouter failover
+        # region; writing the process-wide variable there re-homed the whole
+        # server (get_current_region() reads it) to the failover region for
+        # every later request.  Observed 2026-10-07: an opus5.5 failover to
+        # eu-west-1 sent fable5.1 to eu-west-1, whose data-retention switch
+        # had never been set.  The session region is owned by ModelManager.
         
         # Store the original methods
         self.original_invoke = self.client.invoke_model_with_response_stream
@@ -403,7 +407,8 @@ class CustomBedrockClient:
                     # Log more details about the error
                     logger.error(f"Error in custom invoke: {e}")
                     if 'modelId' in kwargs:
-                        logger.error(f"Model ID being used: {kwargs['modelId']}")
+                        logger.error(f"Model ID being used: {kwargs['modelId']} "
+                                     f"(client region={self.region})")
                     
                     # For streaming calls, let StreamingToolExecutor handle extended context
                     # to avoid breaking async context
