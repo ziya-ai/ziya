@@ -173,6 +173,66 @@ export function normalizeOutsideStrings(text: string): string {
 }
 
 /**
+ * Undo uniform template brace escaping: `{{` for `{` and `}}` for `}`, which
+ * models carry over from Python f-strings / Jinja / C# interpolation.
+ *
+ * Neither JSON nor JSON5 can open an object with `{{` (a key or `}` must
+ * follow `{`), so a body that opens with `{{` and closes with `}}` is never a
+ * valid spec. The escape covers the whole document, so string contents are
+ * collapsed too (`"{{}}"` -> `"{}"`).
+ *
+ * JSON-bodied specs only. Mermaid hexagons (`A{{x}}`) and LaTeX groups use
+ * `{{` legitimately, so this must never run on DSL text.
+ *
+ * The whole text is collapsed, not sliced, so the caller's parser still does
+ * its own slicing: a top-level array of escaped objects (`[{{...}}]`, which
+ * joint accepts) keeps its brackets.
+ * Returns the collapsed text, or null when the text is not brace-escaped.
+ */
+export function collapseUniformDoubleBraces(raw: string): string | null {
+  if (typeof raw !== 'string') return null;
+  const text = normalizeSmartQuotes(stripDefinitionFence(raw.trim())).trim();
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first === -1 || last < first + 3) return null;
+  if (text[first + 1] !== '{' || text[last - 1] !== '}') return null;
+  return text.replace(/\{\{/g, '{').replace(/\}\}/g, '}');
+}
+
+/**
+ * Run a lenient parser, and if it fails on brace-escaped input, run it again
+ * on the collapsed text. Retrying through the SAME parser keeps its own
+ * repairs (semicolons, missing commas, Python literals) in effect.
+ *
+ * Failure is null/undefined OR a thrown error: the vega parser and bare
+ * JSON5.parse throw. When a throwing parser also fails the retry, the
+ * ORIGINAL error is rethrown, since it describes the text the author wrote.
+ * Input that parses on the first attempt never reaches the retry.
+ */
+export function withBraceCollapse<T>(parse: (s: string) => T, raw: string): T {
+  let result: T;
+  try {
+    result = parse(raw);
+  } catch (err) {
+    const collapsed = collapseUniformDoubleBraces(raw);
+    if (collapsed === null) throw err;
+    try {
+      return parse(collapsed);
+    } catch (_retryErr) {
+      throw err;
+    }
+  }
+  if (result !== null && result !== undefined) return result;
+  const collapsed = collapseUniformDoubleBraces(raw);
+  return collapsed === null ? result : parse(collapsed);
+}
+
+/** Shared lenient parse: lenientParseOnce, retried once on brace-escaped input. */
+export function lenientParse(raw: string): any | null {
+  return withBraceCollapse(lenientParseOnce, raw);
+}
+
+/**
  * Lenient parse of a JSON-ish spec string. Order of attempts, most-faithful
  * first, so a well-formed spec is parsed byte-identically and never mutated:
  *   0. fence strip + smart-quote fold + slice to the outermost {...}
@@ -182,7 +242,7 @@ export function normalizeOutsideStrings(text: string): string {
  *   4. legacy jsObjectToJson  (last-resort regex rewrite)
  * Returns the parsed value, or null when unrecoverable. Pure/testable.
  */
-export function lenientParse(raw: string): any | null {
+ function lenientParseOnce(raw: string): any | null {
   let text = normalizeSmartQuotes(stripDefinitionFence(String(raw).trim())).trim();
   if (!text) return null;
 
