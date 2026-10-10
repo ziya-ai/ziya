@@ -754,6 +754,66 @@ export function shouldEnhanceMermaidVisibility(definition: string): boolean {
     return !explicitTextColor.test(definition);
 }
 
+/** Sentinel thrown by a mermaid render attempt when the renderer returns an
+ * empty SVG. Distinguished from a genuine Error so a transient empty result
+ * can be retried once rather than immediately reported as a syntax error. */
+export const MERMAID_EMPTY_SVG = '__MERMAID_EMPTY_SVG__';
+
+/** Sentinel thrown when a mermaid render attempt returns a too-short / non-SVG
+ * result -- the other transient shape worth a single retry. */
+export const MERMAID_MALFORMED_SVG = '__MERMAID_MALFORMED_SVG__';
+
+/**
+ * True when a first-attempt render failure is a transient shape (empty or
+ * malformed SVG) that is worth retrying once. Deterministic failures such as a
+ * genuine syntax error are not retryable -- a second parse would fail again.
+ */
+export function isRetryableMermaidFailure(message: string): boolean {
+    return message === MERMAID_EMPTY_SVG || message === MERMAID_MALFORMED_SVG;
+}
+
+/**
+ * Map a render-failure message to an honest, user-facing description. The old
+ * code asserted that an empty SVG "usually indicates syntax errors", which was
+ * misleading: the identical definition frequently renders on a later attempt.
+ * Once a retry has been spent we describe it as a likely transient renderer
+ * failure and mention syntax only as a possibility.
+ * Non-sentinel messages (real syntax errors, etc.) pass through unchanged.
+ */
+export function describeMermaidRenderFailure(message: string): string {
+    if (message === MERMAID_EMPTY_SVG) {
+        return 'Mermaid rendering produced no output after retrying. This is usually a transient renderer failure (the identical diagram often succeeds on a later attempt); if it persists, the definition may contain a syntax error.';
+    }
+    if (message === MERMAID_MALFORMED_SVG) {
+        return 'Mermaid rendering produced malformed output after retrying. This is usually a transient renderer failure; if it persists, the definition may contain a syntax error.';
+    }
+    return message;
+}
+
+/**
+ * Run a mermaid render `attempt`, retrying once with a fresh element id when the
+ * first attempt fails with a transient shape (empty / malformed SVG). `attempt`
+ * must throw MERMAID_EMPTY_SVG / MERMAID_MALFORMED_SVG for those cases and a
+ * normal Error for a genuine syntax error (which is never retried). `onRetry`
+ * is invoked with the transient reason just before the second attempt.
+ */
+export async function renderMermaidWithRetry(
+    attempt: (attemptId: string) => Promise<string>,
+    baseId: string,
+    onRetry?: (reason: string) => void,
+): Promise<string> {
+    try {
+        return await attempt(baseId);
+    } catch (firstError) {
+        const message = firstError instanceof Error ? firstError.message : String(firstError);
+        if (!isRetryableMermaidFailure(message)) {
+            throw firstError;
+        }
+        onRetry?.(message);
+        return await attempt(`${baseId}-retry`);
+    }
+}
+
 // POST-RENDER (G-961e2c / D-424): make sequenceDiagram `autonumber` step
 // numerals legible. Mermaid paints the numeral disc from a <marker
 // id$="-sequencenumber"> whose fill is the theme `signalColor`, and the numeral
@@ -1268,56 +1328,58 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         console.log(`Attempting to render mermaid with ID: ${mermaidId}`);
 
         let svg: string;
-        let renderError: Error | null = null;
-        try {
-            const result = await mermaid.render(mermaidId, rawDefinition);
-
-            // Check if result is valid
+        // The mermaid renderer is not fully reentrant: under concurrent render
+        // activity it can intermittently return an empty (or truncated) SVG for
+        // a definition that is actually valid. attemptMermaidRender throws a
+        // sentinel for those transient shapes so renderMermaidWithRetry can retry
+        // once with a fresh element id. A genuine syntax error is deterministic,
+        // is not retried, and is surfaced unchanged.
+        const attemptMermaidRender = async (attemptId: string): Promise<string> => {
+            const result = await mermaid.render(attemptId, rawDefinition);
             if (!result || typeof result !== 'object') {
                 console.error('Invalid mermaid render result:', result);
                 throw new Error('Mermaid render returned invalid result');
             }
-            console.log('Mermaid render result:', result);
-            svg = result.svg;
-
-            // Check if we got a valid SVG
-            if (!svg || svg.trim() === '') {
-                console.error('Empty SVG returned from Mermaid render - likely parse error');
-                console.error('Definition that failed (first 500 chars):', rawDefinition.substring(0, 500));
-
-                // Check if there was a parsing error that Mermaid swallowed
-                // This is a common issue where Mermaid returns empty result instead of throwing
-                throw new Error('Mermaid parsing failed - empty SVG returned. This usually indicates syntax errors in the diagram definition.');
+            const out: string = result.svg;
+            if (!out || out.trim() === '') {
+                throw new Error(MERMAID_EMPTY_SVG);
             }
-
-            // Additional validation - check if SVG contains actual content
-            if (svg.length < 100 || !svg.includes('<svg')) {
-                console.error('SVG appears to be malformed or too short:', svg.substring(0, 200));
-                throw new Error('Mermaid returned malformed SVG - likely parsing error');
+            if (out.length < 100 || !out.includes('<svg')) {
+                throw new Error(MERMAID_MALFORMED_SVG);
             }
-
-            renderSuccessful = true;
-            console.log(`Mermaid render successful, got SVG of length: ${svg.length}`);
-
-            // Check if the SVG contains an error message
-            if (svg.includes('syntax error') || svg.includes('Parse error')) {
+            if (out.includes('syntax error') || out.includes('Parse error')) {
                 throw new Error('Mermaid syntax error in diagram');
             }
+            return out;
+        };
+
+        try {
+            svg = await renderMermaidWithRetry(
+                attemptMermaidRender,
+                mermaidId,
+                (reason) => {
+                    console.warn(
+                        `⚠️ MERMAID-RETRY: first attempt produced ${reason === MERMAID_EMPTY_SVG ? 'an empty' : 'a malformed'} ` +
+                        `SVG; retrying once with a fresh id`,
+                    );
+                },
+            );
+            renderSuccessful = true;
+            console.log(`Mermaid render successful, got SVG of length: ${svg.length}`);
         } catch (renderError) {
             console.error('Error rendering mermaid diagram:', renderError);
 
-            // Normalize for better error reporting
-            const normalizedError = renderError instanceof Error ? renderError : new Error(String(renderError));
+            // A transient sentinel that survived the retry is rewritten into an
+            // honest message; real errors pass through describeMermaidRenderFailure
+            // unchanged.
+            const rawErr = renderError instanceof Error ? renderError : new Error(String(renderError));
+            const normalizedError = new Error(describeMermaidRenderFailure(rawErr.message));
+            normalizedError.name = rawErr.name;
+            normalizedError.stack = rawErr.stack;
 
-            // Log the specific error details
-            if (normalizedError instanceof Error) {
-                console.error('Error name:', normalizedError.name);
-                console.error('Error message:', normalizedError.message);
-                console.error('Error stack:', normalizedError.stack);
-            }
-
+            console.error('Error name:', normalizedError.name);
+            console.error('Error message:', normalizedError.message);
             console.error('Failed definition (first 500 chars):', rawDefinition.substring(0, 500));
-            console.error('Raw definition that failed:', rawDefinition.substring(0, 500));
             throw normalizedError;
         }
 
