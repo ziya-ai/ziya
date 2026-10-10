@@ -4,8 +4,23 @@ Claude-specific prompt extensions.
 This module contains prompt extensions for Claude models.
 """
 
+import re
+
 from app.utils.prompt_extensions import prompt_extension
 from app.utils.logging_utils import logger
+
+_CONTEXT_BUDGET_INSTRUCTION = """
+CONTEXT BUDGET: Do not act as if your context window is about to run out. Do not estimate how much remains, cut work short, or suggest a new conversation because of it. Being economical with reads is fine when it makes sense on its own. If context is a constraint, the user will say so.
+"""
+
+
+def _claude_major_version(model_name):
+    """Major version from a Claude model name (opus4.8 -> 4, claude-opus-5-5 -> 5).
+
+    Returns None for unversioned aliases such as "sonnet" or "haiku".
+    """
+    match = re.search(r"\d+", model_name or "")
+    return int(match.group()) if match else None
 
 @prompt_extension(
     name="claude_family_extension",
@@ -90,6 +105,9 @@ CRITICAL: Use ONLY native tool calling. Never generate fake tool calling syntax 
 
 If the provided context doesn't fully answer the user's request, use tools to gather the missing information. However, if file contents or directory structures are already shown in the context, work with that information directly instead of re-examining files. When you find relevant files through exploration, examine their contents. Check that all the required parameters for each tool call are provided or can reasonably be inferred from context. IF there are no relevant tools or there are missing values for required parameters, ask the user to supply these values; otherwise proceed with the tool calls. If the user provides a specific value for a parameter (for example provided in quotes), make sure to use that value EXACTLY. DO NOT make up values for or ask about optional parameters. Carefully analyze descriptive terms in the request as they may indicate required parameter values that should be included even if not explicitly quoted.
 """
+
+    if (_claude_major_version(context.get("model_name")) or 0) >= 5:
+        claude_instructions = _CONTEXT_BUDGET_INSTRUCTION + claude_instructions
     
     # Find a good place to insert the instructions
     if "CRITICAL: INSTRUCTION PRESERVATION:" in prompt:
