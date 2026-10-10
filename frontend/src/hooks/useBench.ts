@@ -23,6 +23,10 @@ const migrationStarted = new Set<string>();
 // announces itself here so the others re-fetch instead of showing a stale
 // bench until the next remount.
 export const BENCH_CHANGED_EVENT = 'ziya:bench-changed';
+// Fired by the MCP Servers panel after Reload Config (re-read from disk and
+// reconnect), enable/disable and re-authorize.  Servers added to or removed
+// from mcp_config.json only reach the bench through a refetch.
+export const MCP_STATUS_CHANGED_EVENT = 'mcpStatusChanged';
 
 export interface UseBenchArgs {
     projectId: string | null | undefined;
@@ -76,6 +80,12 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
         window.addEventListener(BENCH_CHANGED_EVENT, onChanged);
         return () => window.removeEventListener(BENCH_CHANGED_EVENT, onChanged);
     }, [projectId, refresh]);
+
+    useEffect(() => {
+        const onMcp = () => { refresh(); };
+        window.addEventListener(MCP_STATUS_CHANGED_EVENT, onMcp);
+        return () => window.removeEventListener(MCP_STATUS_CHANGED_EVENT, onMcp);
+    }, [refresh]);
 
     // One-shot migration, once the skills for THIS project are loaded (a
     // stale list from the previous project must not be converted).

@@ -49,7 +49,7 @@ export interface BenchPanelProps {
 }
 
 export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, onOpenShellConfig, onOpenPalette }) => {
-    const { openRegistry } = useBenchActions();
+    const { openRegistry, openMcpServers } = useBenchActions();
     const [selectedKey, setSelectedKey] = useState<string | null>(null);
     // arrange = the board; find = a query to the sources (slice 8b).
     const [mode, setMode] = useState<'arrange' | 'find'>('arrange');
@@ -112,13 +112,30 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
                     )}
                 </div>
             )}
-            {openRegistry && !finding && (
-                <button type="button" data-testid="bench-find-more" onClick={openRegistry}
-                        style={{ alignSelf: 'flex-start', fontSize: 11, padding: '4px 10px', borderRadius: 6,
-                                 cursor: 'pointer', color: 'inherit', background: 'none',
-                                 border: '1px dashed var(--mockup-border, rgba(127,127,127,0.5))' }}>
-                    ＋ <b>Find more</b> <span style={{ opacity: 0.6 }}>· browse MCP servers in the registry</span>
-                </button>
+            {!finding && (openRegistry || openMcpServers) && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {openRegistry && (
+                        <button type="button" data-testid="bench-find-more" onClick={openRegistry}
+                                style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6,
+                                         cursor: 'pointer', color: 'inherit', background: 'none',
+                                         border: '1px dashed var(--mockup-border, rgba(127,127,127,0.5))' }}>
+                            ＋ <b>Find more</b> <span style={{ opacity: 0.6 }}>· browse MCP servers in the registry</span>
+                        </button>
+                    )}
+                    {/* The MCP Servers panel is where Reload Config lives.  A card's
+                        drawer reaches it for THAT server; a server just added to
+                        mcp_config.json has no card yet, so the board needs its own
+                        way in. */}
+                    {openMcpServers && (
+                        <button type="button" data-testid="bench-mcp-servers" onClick={() => openMcpServers()}
+                                title="Status, startup logs and permissions for every configured server; Reload Config re-reads mcp_config.json and reconnects"
+                                style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6,
+                                         cursor: 'pointer', color: 'inherit', background: 'none',
+                                         border: '1px solid var(--mockup-border, rgba(127,127,127,0.35))' }}>
+                            ⚙ <b>MCP servers</b> <span style={{ opacity: 0.6 }}>· status, logs, reload config</span>
+                        </button>
+                    )}
+                </div>
             )}
             {notHere.length > 0 && (
                 <div data-testid="bench-not-installed" style={{ fontSize: 11, opacity: 0.7 }}>
