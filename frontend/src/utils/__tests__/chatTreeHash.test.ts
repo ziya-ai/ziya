@@ -117,6 +117,29 @@ describe('computeStructuralHash', () => {
     expect(root).not.toBe(nested);
   });
 
+  // ── Regression: green "ready" checkmark resurrects on the row you leave ──
+  // loadConversation clears hasUnreadResponse without bumping _version or
+  // lastAccessedAt, so if the flag is not hashed the tree cache keeps the
+  // stale `true` node.  The row hides it only while it is current; switching
+  // away re-shows it until an unrelated sync forces a rebuild (~minutes).
+  it('changes when hasUnreadResponse is cleared', () => {
+    const unread = computeStructuralHash([], [conv({ hasUnreadResponse: true })]);
+    const read = computeStructuralHash([], [conv({ hasUnreadResponse: false })]);
+    expect(read).not.toBe(unread);
+  });
+
+  it('changes when hasUnreadResponse is set', () => {
+    const read = computeStructuralHash([], [conv()]);
+    const unread = computeStructuralHash([], [conv({ hasUnreadResponse: true })]);
+    expect(unread).not.toBe(read);
+  });
+
+  it('treats undefined hasUnreadResponse the same as false', () => {
+    const bare = computeStructuralHash([], [conv()]);
+    const explicit = computeStructuralHash([], [conv({ hasUnreadResponse: false })]);
+    expect(explicit).toBe(bare);
+  });
+
   it('does NOT change for lastAccessedAt (sort-only, not structural)', () => {
     const a = computeStructuralHash([], [conv({ lastAccessedAt: 1 })]);
     const b = computeStructuralHash([], [conv({ lastAccessedAt: 999 })]);
