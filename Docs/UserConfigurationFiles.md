@@ -82,8 +82,13 @@ entry is removed, so a server you were told was installed always has a reason
 if it isn't working. Install the dependency named in the error and install it
 again; downloaded files are kept, so the retry is fast.
 
-After installing a missing command, click **Reload Config** to re-check —
-cached per-server details are discarded so you see the fresh result.
+After installing a missing command, or editing this file, click **Reload
+Config** to re-read it and reconnect every server — cached per-server details
+are discarded so you see the fresh result. Reload Config is in the **MCP
+servers** panel, reached from the Bench (ℤ) by the *MCP servers · status, logs,
+reload config* button under the board, or from a server card's drawer. The
+Bench refreshes itself after the reload, so a newly configured server gets a
+card without reopening it.
 
 Search order — the **first** file found wins, and this one is last:
 
