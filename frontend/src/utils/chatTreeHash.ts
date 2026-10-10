@@ -60,6 +60,11 @@ export function computeStructuralHash(folders: any[], conversations: any[]): num
     sh.add(c.branchedFrom || '');
     sh.add((c.flags || []).join(','));
     sh.add(c.flagColor || '');
+    // Drives the green "ready" checkmark.  loadConversation clears it
+    // without a _version bump, so omitting it here leaves the cached row
+    // holding the stale `true` and the mark reappears when the user
+    // switches away.
+    sh.add(c.hasUnreadResponse ? 'u' : '');
   });
   return sh.value();
 }
