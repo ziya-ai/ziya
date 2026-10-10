@@ -6,19 +6,30 @@ through BaseStorage, which provides file locking and optional
 ALE encryption.
 """
 
+import re
 import time
 import uuid
 import logging
 from pathlib import Path
-from typing import Optional, List
+from typing import Any, Dict, List, Optional
 
 from .base import BaseStorage, contained_path
 from ..models.task_card import Block, TaskCard, TaskCardCreate, TaskCardUpdate
 
 logger = logging.getLogger(__name__)
 
+# A {{sibling("...")}} reference.  Must recognise exactly what
+# task_card_validation._SIBLING_REF_RE does (tests assert it), so the
+# validator never accepts a form the remint rewrite would skip.  Group 1 is
+# the opening quote and group 2 the id, so a rewrite replaces only the id
+# and keeps the author's quoting.
+_SIBLING_REF_RE = re.compile(r"sibling\(\s*(['\"])([^'\"]+)['\"]\s*\)")
 
-def _assign_block_ids(block_dict: dict, prefix: str = "b", force: bool = False) -> None:
+
+def _assign_block_ids(
+    block_dict: dict, prefix: str = "b", force: bool = False,
+    remap: Optional[Dict[str, str]] = None,
+) -> None:
     """Walk a block tree (as a plain dict) and assign IDs where missing.
 
     ``force=True`` regenerates EVERY id, including ones already set.
@@ -30,13 +41,50 @@ def _assign_block_ids(block_dict: dict, prefix: str = "b", force: bool = False) 
     ledger, which keys an approval by block id alone: an approval
     signed for one card's block would silently authorize the other
     card's unchanged block too.
+
+    ``remap``, when given, collects ``old id -> new id`` for every id a
+    forced remint replaced, so ``_rewrite_sibling_refs`` can carry the
+    by-id references with it.  Fill-only assignment records nothing:
+    filling an empty id breaks no reference.
     """
     if not isinstance(block_dict, dict):
         return
     if force or not block_dict.get("id"):
-        block_dict["id"] = f"{prefix}-{uuid.uuid4().hex[:8]}"
+        old = block_dict.get("id")
+        new = f"{prefix}-{uuid.uuid4().hex[:8]}"
+        block_dict["id"] = new
+        if remap is not None and force and old:
+            remap[old] = new
     for child in block_dict.get("body", []) or []:
-        _assign_block_ids(child, prefix, force=force)
+        _assign_block_ids(child, prefix, force=force, remap=remap)
+
+
+def _rewrite_sibling_refs(node: Any, remap: Dict[str, str]) -> Any:
+    """Rewrite every ``sibling("old")`` in every string field of ``node``.
+
+    ``sibling()`` resolves by block id, so a remint without this leaves
+    each reference pointing at a block that exists only in the ORIGINAL
+    card: it renders empty and a for_each over it runs zero iterations.
+    Ids not in ``remap`` (a calling card's block) are left verbatim.
+    Mutates dicts and lists in place; returns the (possibly new) value so
+    a bare string can be rewritten too.
+    """
+    if isinstance(node, str):
+        def _sub(m: "re.Match[str]") -> str:
+            new = remap.get(m.group(2))
+            if new is None:
+                return m.group(0)
+            s, a, b = m.start(), m.start(2), m.end(2)
+            whole = m.group(0)
+            return whole[:a - s] + new + whole[b - s:]
+        return _SIBLING_REF_RE.sub(_sub, node)
+    if isinstance(node, dict):
+        for k, v in node.items():
+            node[k] = _rewrite_sibling_refs(v, remap)
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            node[i] = _rewrite_sibling_refs(v, remap)
+    return node
 
 
 class TaskCardStorage(BaseStorage[TaskCard]):
@@ -111,7 +159,10 @@ class TaskCardStorage(BaseStorage[TaskCard]):
         card_id = str(uuid.uuid4())
         now = int(time.time() * 1000)
         root_dict = data.root.model_dump()
-        _assign_block_ids(root_dict, force=force_new_ids)
+        remap: Dict[str, str] = {}
+        _assign_block_ids(root_dict, force=force_new_ids, remap=remap)
+        if remap:
+            _rewrite_sibling_refs(root_dict, remap)
         card = TaskCard(
             id=card_id,
             name=data.name,
