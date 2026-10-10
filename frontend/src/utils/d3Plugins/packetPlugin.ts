@@ -1080,12 +1080,15 @@ export function normalizePacketSpec(raw: unknown): PacketSpec | null {
   if (!obj || typeof obj !== 'object') return null;
 
   const hasSections = Array.isArray(obj.sections) && obj.sections.length > 0;
+  // A flat `fields` list is just as renderable (it is converted to rows
+  // below), so it earns a default title too.
+  const hasFields = Array.isArray(obj.fields) && obj.fields.length > 0;
   // Only bail for a missing title when there is nothing else to render. When a
   // valid non-empty `sections` array is present, synthesize a default title
   // rather than returning null — otherwise the whole (renderable) spec would
   // fall through to the renderer UNNORMALIZED, so section `name`→`label` and
   // object-shape-row aliasing never runs and `sec.label.split` crashes.
-  const title = obj.title || obj.name || (hasSections ? 'Packet' : undefined);
+  const title = obj.title || obj.name || (hasSections || hasFields ? 'Packet' : undefined);
   if (!title) return null;
 
   // Coerce to a positive integer once here so every downstream consumer

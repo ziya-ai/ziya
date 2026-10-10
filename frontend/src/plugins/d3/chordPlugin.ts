@@ -602,10 +602,25 @@ function buildMatrix(nodes: ChordNode[], links: ChordLink[]): number[][] {
   return matrix;
 }
 
-/** Coerce every cell of a matrix-form input to a finite non-negative number. */
-function sanitizeMatrix(matrix: any[][]): number[][] {
-  return matrix.map(row =>
-    Array.isArray(row) ? row.map(cell => coerceFlowValue(cell, 0)) : []);
+/**
+ * Coerce a matrix-form input into a square N x N grid of finite non-negative
+ * numbers, N = max(row count, longest row) (Issue 10).
+ *
+ * d3.chord() reads matrix[i][j] for every i, j < matrix.length, so a ragged
+ * row (or a non-array row) yields undefined -> NaN group sums and
+ * `<path d="MNaN,NaN...">`: every arc and ribbon vanishes. Missing cells are
+ * padded with 0; each cell goes through coerceFlowValue (negative, NaN and
+ * Infinity -> 0; numeric strings parsed). A clean square matrix is unchanged.
+ *
+ * Exported for regression testing.
+ */
+export function sanitizeChordMatrix(matrix: any[]): number[][] {
+  const rows = Array.isArray(matrix) ? matrix : [];
+  const n = rows.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), rows.length);
+  return Array.from({ length: n }, (_, i) => {
+    const row = Array.isArray(rows[i]) ? rows[i] : [];
+    return Array.from({ length: n }, (_, j) => coerceFlowValue(row[j], 0));
+  });
 }
 
 /**
@@ -1050,7 +1065,7 @@ export const chordPlugin: D3RenderPlugin = {
     let rawColors: (string | undefined)[];
 
     if (Array.isArray(spec.matrix)) {
-      matrix = sanitizeMatrix(spec.matrix);
+      matrix = sanitizeChordMatrix(spec.matrix);
       const n = matrix.length;
       // Fit names/colors to n rather than discarding a length-mismatched list
       // wholesale (D-067): a short list is padded (extra slots take their index

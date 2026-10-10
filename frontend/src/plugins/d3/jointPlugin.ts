@@ -16,6 +16,11 @@ import {
 } from './jointLinkRouting';
 import { normalizeJointCells } from './jointShapeResolver';
 import { classifyColor, ensureReadableFill, namedColorToHex } from './chartTheme';
+import {
+    stripDefinitionFence,
+    normalizeSmartQuotes,
+    withBraceCollapse,
+} from '../../utils/d3SpecParser';
 
 // ---------------------------------------------------------------------------
 // Tolerant JSON recovery for the `definition` string (G-17 / D-139, D-140).
@@ -82,6 +87,10 @@ export function repairJsonSeparators(s: string): string {
  * value, or `undefined` when unrecoverable (so control falls to the text DSL).
  */
 export function parseJointJsonish(raw: string): any {
+    return withBraceCollapse(parseJointJsonishOnce, String(raw ?? ''));
+}
+
+function parseJointJsonishOnce(raw: string): any {
     const cleaned = normalizeJointSmartQuotes(stripJointFence(String(raw ?? ''))).trim();
     if (!cleaned) return undefined;
     const firstObj = cleaned.indexOf('{');
@@ -2273,6 +2282,10 @@ export function computeJointElementStyle(
     let effectiveFill = expandJointHex(opts.defaultBodyFill) || opts.defaultBodyFill;
     let bodyFillChanged = false;
     let fillAbsent = false;
+    // True only when the AUTHOR supplied the body fill. D-417 below lifts an
+    // author fill that matches the page; the dark container ramp (D-150) and
+    // the theme's default body fill are deliberate and must reach the output.
+    let authorFillSet = false;
 
     // (1) Container dark fill ramp (author attrs may override below).
     if (opts.isContainer) {
@@ -2289,6 +2302,7 @@ export function computeJointElementStyle(
                     const n = normalizeJointColor(a.body.fill);
                     if (n.value !== null) {
                         body.fill = n.value; bodyFillChanged = true;
+                        authorFillSet = true;
                         effectiveFill = n.absent ? opts.pageBg : (n.hex || effectiveFill);
                         fillAbsent = !!n.absent;
                     }
@@ -2330,7 +2344,7 @@ export function computeJointElementStyle(
         // page (contrast > 1.35) are untouched, so ordinary opaque nodes — and the
         // w1-13 dark-stroke-on-vivid-fill nodes whose fill itself is visible — keep
         // their author stroke verbatim.
-        if (!fillAbsent) {
+        if (!fillAbsent && authorFillSet) {
             const surfHex = expandJointHex(effectiveFill)
                 || (/^#[0-9a-f]{6}$/i.test(effectiveFill) ? effectiveFill : null);
             if (surfHex && jointContrastRatio(surfHex, opts.pageBg) < 1.35) {
@@ -2444,6 +2458,7 @@ export function standardJointPortGroups(theme: 'light' | 'dark') {
 export const jointPlugin: D3RenderPlugin = {
     name: 'joint-renderer',
     priority: 6, // Higher than basic charts, lower than mermaid/graphviz
+    pointerInteractive: true, // paper pan / element drag own the pointer
     sizingConfig: {
         sizingStrategy: 'auto-expand',
         needsDynamicHeight: true,
