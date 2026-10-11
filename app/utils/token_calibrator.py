@@ -15,6 +15,8 @@ Strategy:
 - Export aggregate stats for baking into releases
 """
 
+import atexit
+import copy
 import json
 import os
 import threading
@@ -93,7 +95,20 @@ class TokenCalibrator:
         self.has_unsaved_data = False
         logger.debug(f"📊 Token calibration storage: {self.cache_file}")
         
-        self.lock = threading.Lock()
+        # Reentrant: _save_calibration_data snapshots under it and may be
+        # called by a thread that already holds it.
+        self.lock = threading.RLock()
+
+        # Background writer.  Saving takes a cross-process FileLock (up to
+        # 10 s), re-reads the file and rewrites it; record_actual_usage runs
+        # on the server's event loop (StreamingToolExecutor._handle_usage_event),
+        # where that stalled the loop (stall watchdog, 2026-10-10).  Callers
+        # on hot paths use request_save(); a single daemon thread coalesces
+        # requests and writes.  _save_calibration_data() stays synchronous.
+        self._save_cond = threading.Condition()
+        self._save_requested = 0
+        self._save_completed = 0
+        self._save_thread: Optional[threading.Thread] = None
         
         # GENERIC STORAGE: model_family -> file_type -> [samples]
         # This automatically learns ANY file type it encounters
@@ -170,11 +185,83 @@ class TokenCalibrator:
             logger.debug(f"Could not load calibration data: {e}")
             # Continue with defaults if load fails
     
+    def _snapshot(self) -> Dict[str, Any]:
+        """Copy of the persisted state, taken under self.lock so the writer
+        thread never serializes structures another thread is mutating."""
+        with self.lock:
+            self.has_unsaved_data = False
+            return copy.deepcopy({
+                'stats_by_model_and_type': dict(self.stats_by_model_and_type),
+                'global_by_model': self.global_by_model,
+                'samples': self._samples_for_disk(),
+                # document_cache is written by the directory-scan thread
+                # without self.lock; dict() is a single C-level copy.
+                'document_cache': dict(self.document_cache),
+                'global_fallback': self.global_fallback,
+                'baseline_overhead_tokens': dict(self.baseline_overhead_tokens),
+                'baselines_measured': set(self.baselines_measured),
+                'baseline_tool_counts': dict(self.baseline_tool_counts),
+            })
+
+    # ── background writer ────────────────────────────────────────────────
+
+    def request_save(self) -> None:
+        """Schedule a save on the writer thread and return immediately.
+
+        Requests made while a write is in progress coalesce into one more
+        write.  Safe to call from the event loop and from under self.lock.
+        """
+        with self._save_cond:
+            self._save_requested += 1
+            if self._save_thread is None or not self._save_thread.is_alive():
+                self._save_thread = threading.Thread(
+                    target=self._save_worker, name="ziya-calibration-writer",
+                    daemon=True)
+                self._save_thread.start()
+                atexit.register(self.flush)
+            self._save_cond.notify_all()
+
+    def _save_worker(self) -> None:
+        while True:
+            with self._save_cond:
+                while self._save_completed >= self._save_requested:
+                    self._save_cond.wait()
+                target = self._save_requested
+            self._save_calibration_data()
+            with self._save_cond:
+                self._save_completed = max(self._save_completed, target)
+                self._save_cond.notify_all()
+
+    def wait_for_save(self, timeout: Optional[float] = None) -> bool:
+        """Block until every save requested so far has been written."""
+        with self._save_cond:
+            target = self._save_requested
+            return self._save_cond.wait_for(
+                lambda: self._save_completed >= target, timeout=timeout)
+
+    def flush(self) -> None:
+        """Write now, on this thread, if a requested save is outstanding.
+        Registered with atexit so the daemon writer cannot drop the last
+        samples at shutdown."""
+        with self._save_cond:
+            target = self._save_requested
+            if self._save_completed >= target:
+                return
+        self._save_calibration_data()
+        with self._save_cond:
+            self._save_completed = max(self._save_completed, target)
+            self._save_cond.notify_all()
+
     def _save_calibration_data(self):
-        """Save calibration data to disk with safe concurrent access."""
+        """Save calibration data to disk with safe concurrent access.
+
+        Synchronous: blocks on the cross-process file lock and disk I/O.
+        Do not call it from the event loop; use request_save().
+        """
         try:
             logger.info(f"📊 SAVE: Attempting to save to {self.cache_file}")
             temp_file = self.cache_file + '.tmp'
+            snap = self._snapshot()
             
             # Safe concurrent write with atomic rename and retry logic
             with self.file_lock:
@@ -207,17 +294,17 @@ class TokenCalibrator:
                     logger.debug(f"📊 SAVE: Could not read existing baselines for merge: {merge_err}")
                 
                 merged_baselines = dict(on_disk_baselines)
-                merged_baselines.update(self.baseline_overhead_tokens)
-                merged_measured = on_disk_measured | self.baselines_measured
+                merged_baselines.update(snap['baseline_overhead_tokens'])
+                merged_measured = on_disk_measured | snap['baselines_measured']
                 merged_tool_counts = dict(on_disk_tool_counts)
-                merged_tool_counts.update(self.baseline_tool_counts)
+                merged_tool_counts.update(snap['baseline_tool_counts'])
                 
                 data = {
-                    'stats_by_model_and_type': dict(self.stats_by_model_and_type),
-                    'global_by_model': self.global_by_model,
-                    'samples': self._samples_for_disk(),
-                    'document_cache': self.document_cache,
-                    'global_fallback': self.global_fallback,
+                    'stats_by_model_and_type': snap['stats_by_model_and_type'],
+                    'global_by_model': snap['global_by_model'],
+                    'samples': snap['samples'],
+                    'document_cache': snap['document_cache'],
+                    'global_fallback': snap['global_fallback'],
                     'baseline_overhead_tokens': merged_baselines,
                     'baselines_measured': list(merged_measured),
                     'baseline_tool_counts': merged_tool_counts,
@@ -300,7 +387,7 @@ class TokenCalibrator:
             logger.info(f"📊 BASELINE ESTABLISHED for {model_family}: {baseline_overhead:,} tokens "
                        f"(~{self.baseline_mcp_tokens_per_tool:.0f} per tool)")
             
-            self._save_calibration_data()
+            self.request_save()
     
     def get_baseline_overhead(self, model_family: str) -> int:
         """
@@ -415,7 +502,9 @@ class TokenCalibrator:
             
             if should_save:
                 logger.info(f"📊 CALIBRATION: Saving to disk (total_samples={total_samples})")
-                self._save_calibration_data()
+                # Off-thread: this runs on the event loop via
+                # StreamingToolExecutor._handle_usage_event.
+                self.request_save()
             else:
                 logger.debug(f"📊 CALIBRATION: Data recorded but not saved yet ({total_samples} samples, will save at next multiple of 5)")
             
