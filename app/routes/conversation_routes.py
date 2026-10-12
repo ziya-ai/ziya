@@ -1,5 +1,11 @@
 """
 API routes for model-initiated conversation and folder management.
+
+Handlers that await nothing are plain ``def``: they read and rewrite
+``.ziya/folders.json`` / ``.ziya/conversations.json`` synchronously, and as
+``async def`` that disk I/O ran ON the event loop, stalling every request.
+As ``def`` Starlette runs them on its worker threadpool.  Guarded by
+``tests/test_conversation_routes_not_event_loop_blocking.py``.
 """
 
 from typing import List, Optional, Dict, Any
@@ -63,7 +69,7 @@ class ConversationResponse(BaseModel):
 
 
 @router.post("/folders")
-async def create_folder(request: CreateFolderRequest) -> FolderResponse:
+def create_folder(request: CreateFolderRequest) -> FolderResponse:
     """Create a new conversation folder."""
     try:
         # Generate a unique folder ID
@@ -120,7 +126,7 @@ async def create_folder(request: CreateFolderRequest) -> FolderResponse:
 
 
 @router.post("/conversations")
-async def create_conversation(request: CreateConversationRequest) -> ConversationResponse:
+def create_conversation(request: CreateConversationRequest) -> ConversationResponse:
     """Create a new conversation."""
     try:
         # Generate a unique conversation ID
@@ -182,7 +188,7 @@ async def create_conversation(request: CreateConversationRequest) -> Conversatio
 
 
 @router.post("/conversations/move")
-async def move_conversation(request: MoveConversationRequest) -> Dict[str, Any]:
+def move_conversation(request: MoveConversationRequest) -> Dict[str, Any]:
     """Move a conversation to a different folder."""
     try:
         # Get the user's codebase directory for storing metadata
