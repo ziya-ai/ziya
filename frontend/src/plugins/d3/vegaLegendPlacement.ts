@@ -261,3 +261,179 @@ export function relocateOverflowingSideLegend(
   }
   return { orient: 'bottom', columns, labelLimit, chartWidthPx, paneWidthPx, estimatedSideLegendPx };
 }
+
+// ── A top/bottom legend wider than its own hconcat cell ─────────────────────
+//
+// A horizontal legend is laid out inside its concat cell, and Vega sizes each
+// grid column to the full bounds of its cell, guides included. A legend wider
+// than its view therefore widens the whole column and pushes every later
+// panel right. Measured on the reported spec (14px colour stripe with a
+// 3-column bottom legend, then 200px and 260px panels): the stripe's column
+// came out 525px wide and the next panel started at x=530 instead of 18.
+// Vega-Lite has no per-cell bounds, so the repair is:
+//   1. fewer legend columns, when one column fits inside the cell; otherwise
+//   2. `bounds: "flush"` on the row (columns sized by view width alone, guides
+//      overhang), with the column count fitted to the room before the next
+//      cell's same-side legend so the two cannot overprint.
+// Flush is applied only when no non-first cell has a left-side guide and no
+// non-last cell has a right-side guide; those would overhang a neighbour's
+// plot. Otherwise the legend falls back to one column. An authored `bounds`
+// is never replaced. Gradient legends (fixed length) are not fitted here.
+
+/** vega-lite config.concat.spacing default. */
+export const VL_DEFAULT_CONCAT_SPACING_PX = 20;
+/** Tolerance before a legend counts as wider than its cell. */
+export const CELL_LEGEND_SLACK_PX = 8;
+
+export interface CellLegendFit {
+  cellIndex: number;
+  channel: string;
+  cellWidthPx: number;
+  estimatedLegendPx: number;
+  columns: number;
+  /** True when the row lays out with bounds "flush" (set here or authored). */
+  flushed: boolean;
+}
+
+const HORIZONTAL_ORIENTS = new Set(['top', 'bottom']);
+const LEFT_ORIENTS = new Set(['left', 'top-left', 'bottom-left']);
+const RIGHT_ORIENTS = new Set(['right', 'top-right', 'bottom-right']);
+const GRADIENT_CHANNELS = new Set(['color', 'fill', 'stroke', 'opacity']);
+
+function siteOrient(root: any, site: LegendSite): string {
+  const lg = site.encoding[site.channel]?.legend;
+  if (isObj(lg) && typeof lg.orient === 'string') return lg.orient;
+  const cfg = root?.config?.legend;
+  if (isObj(cfg) && typeof cfg.orient === 'string') return cfg.orient;
+  return 'right';
+}
+
+function isGradientSite(site: LegendSite): boolean {
+  const t = site.encoding[site.channel]?.type;
+  return GRADIENT_CHANNELS.has(site.channel) && (t === 'quantitative' || t === 'temporal');
+}
+
+/** Columns a top/bottom symbol legend lays out: all entries in one row
+ *  unless columns or a vertical direction say otherwise. */
+function horizontalColumns(root: any, site: LegendSite): number {
+  const lg = site.encoding[site.channel]?.legend;
+  if (isObj(lg) && positiveNumber(lg.columns) !== null) return lg.columns;
+  const cfg = root?.config?.legend;
+  if (isObj(cfg) && positiveNumber(cfg.columns) !== null) return cfg.columns;
+  if ((isObj(lg) && lg.direction === 'vertical') || (isObj(cfg) && cfg.direction === 'vertical')) return 1;
+  return Math.max(1, site.labels.length || LEGEND_FALLBACK_COLUMNS);
+}
+
+/** Which sides of a cell carry guides drawn outside its view, or null when
+ *  the cell is a shape this pass does not reason about (nested composites). */
+function cellGuideSides(root: any, cell: any, data: any): { left: boolean; right: boolean } | null {
+  if (!isObj(cell)) return null;
+  if (['hconcat', 'vconcat', 'concat', 'facet', 'repeat', 'spec'].some(k => k in cell)) return null;
+  const layers: any[] = Array.isArray(cell.layer) ? cell.layer : [];
+  if (layers.some(l => !isObj(l) || Array.isArray(l.layer))) return null;
+  const encs = [cell.encoding, ...layers.map(l => l.encoding)].filter(isObj);
+  if (encs.some(e => e.row || e.column || e.facet)) return null;
+  let left = false;
+  let right = false;
+  const ys = encs.map(e => e.y).filter(y => isObj(y) && (y.field || y.aggregate));
+  // vega-lite merges a layered axis: axis:null on any layer hides it (observed).
+  if (ys.length && !ys.some(y => y.axis === null || y.axis === false)) {
+    const orient = ys.map(y => y.axis?.orient).find(o => typeof o === 'string');
+    if (orient === 'right') right = true; else left = true;
+  }
+  for (const s of collectLegendSites(cell, data)) {
+    const o = siteOrient(root, s);
+    if (LEFT_ORIENTS.has(o)) left = true;
+    if (RIGHT_ORIENTS.has(o)) right = true;
+  }
+  return { left, right };
+}
+
+/** Horizontal room from cell i's left edge to the next cell carrying a
+ *  same-side legend (or the end of the row). Unknown widths stop the walk. */
+function roomBeforeNextLegend(
+  root: any, i: number, orient: string, widths: (number | null)[],
+  sites: LegendSite[][], spacing: number,
+): number {
+  let room = widths[i] as number;
+  for (let j = i + 1; j < widths.length; j++) {
+    if (sites[j].some(s => siteOrient(root, s) === orient)) return room;
+    const wj = widths[j];
+    if (wj === null) return room;
+    room += spacing + wj;
+  }
+  return room;
+}
+
+function fitRow(root: any, row: any, data: any, fits: CellLegendFit[]): void {
+  const cells: any[] = row.hconcat;
+  const cfgSpacing = root?.config?.concat?.spacing;
+  const spacing = typeof row.spacing === 'number' && row.spacing >= 0 ? row.spacing
+    : (typeof cfgSpacing === 'number' && cfgSpacing >= 0 ? cfgSpacing : VL_DEFAULT_CONCAT_SPACING_PX);
+  const widths = cells.map(c => positiveNumber(c?.width));
+  const sites = cells.map(c => collectLegendSites(c, data).filter(s => HORIZONTAL_ORIENTS.has(siteOrient(root, s))));
+  let flushSafe: boolean | null = null;
+  const canFlush = (): boolean => {
+    if (flushSafe === null) {
+      flushSafe = cells.every((c, i) => {
+        const g = cellGuideSides(root, c, data);
+        return g !== null && !(i > 0 && g.left) && !(i < cells.length - 1 && g.right);
+      });
+    }
+    return flushSafe;
+  };
+  cells.forEach((cell, i) => {
+    const w = widths[i];
+    if (w === null) return;
+    for (const site of sites[i]) {
+      if (isGradientSite(site)) continue;
+      const entry = entryPx(root, site);
+      const cols = horizontalColumns(root, site);
+      const estimatedLegendPx = cols * entry + LEGEND_BLOCK_PADDING_PX;
+      if (estimatedLegendPx <= w + CELL_LEGEND_SLACK_PX) continue;
+      let room = w;
+      let boundsChanged = false;
+      if (entry + LEGEND_BLOCK_PADDING_PX > w + CELL_LEGEND_SLACK_PX) {
+        if (row.bounds === undefined && canFlush()) {
+          row.bounds = 'flush';
+          boundsChanged = true;
+        }
+        if (row.bounds === 'flush') {
+          room = roomBeforeNextLegend(root, i, siteOrient(root, site), widths, sites, spacing);
+        }
+      }
+      const maxCols = Math.max(1, Math.min(cols, site.labels.length || cols));
+      const columns = Math.max(1, Math.min(maxCols, Math.floor((room - LEGEND_BLOCK_PADDING_PX) / entry)));
+      if (columns >= cols && !boundsChanged) continue;
+      if (columns < cols) {
+        const lg = site.encoding[site.channel].legend;
+        site.encoding[site.channel].legend = { ...(isObj(lg) ? lg : {}), columns };
+      }
+      fits.push({
+        cellIndex: i, channel: site.channel, cellWidthPx: w, estimatedLegendPx,
+        columns: Math.min(columns, cols), flushed: row.bounds === 'flush',
+      });
+    }
+  });
+}
+
+/**
+ * Stop a top/bottom legend that is wider than its own hconcat cell from
+ * widening that cell's grid column. Visits every hconcat row in the tree
+ * (including rows nested in vconcat). Mutates the spec; returns one record
+ * per legend it changed, empty when nothing needed fitting.
+ */
+export function fitNarrowConcatCellLegends(spec: any): CellLegendFit[] {
+  const fits: CellLegendFit[] = [];
+  const visit = (node: any, data: any): void => {
+    if (!isObj(node)) return;
+    const d = node.data ?? data;
+    if (Array.isArray(node.hconcat)) fitRow(spec, node, d, fits);
+    for (const key of ['vconcat', 'hconcat', 'concat']) {
+      if (Array.isArray(node[key])) node[key].forEach((c: any) => visit(c, d));
+    }
+    if (isObj(node.spec)) visit(node.spec, d);
+  };
+  visit(spec, undefined);
+  return fits;
+}
