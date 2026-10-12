@@ -12,6 +12,7 @@
  *   esc       close
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { theme } from 'antd';
 import type { BenchItemView } from '../../hooks/useBench';
 import type { Layer, PlacementState } from '../../utils/activation';
 import { KindMark } from './KindMark';
@@ -44,6 +45,8 @@ export function filterItems(items: BenchItemView[], q: string): BenchItemView[] 
 }
 
 export const BenchPalette: React.FC<BenchPaletteProps> = ({ bench, open, onClose }) => {
+    // Same reason as CapabilityCard's menu: 'Canvas' is white without a document color-scheme.
+    const { token } = theme.useToken();
     const [q, setQ] = useState('');
     const [row, setRow] = useState(0);
     const [verb, setVerb] = useState(0);
@@ -90,8 +93,8 @@ export const BenchPalette: React.FC<BenchPaletteProps> = ({ bench, open, onClose
                       alignItems: 'flex-start', paddingTop: 40, background: 'rgba(0,0,0,0.25)' }}
              onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
             <div style={{ width: 'min(640px, 90%)', borderRadius: 10, padding: 10, fontSize: 12,
-                          background: 'var(--ant-color-bg-elevated, Canvas)',
-                          border: '1px solid var(--mockup-border, rgba(127,127,127,0.35))' }}>
+                          background: token.colorBgElevated, color: token.colorText,
+                          border: '1px solid ' + token.colorBorderSecondary }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <span style={{ opacity: 0.6 }}>›</span>
                     <input ref={inputRef} data-testid="palette-input" value={q} onChange={e => setQ(e.target.value)}
