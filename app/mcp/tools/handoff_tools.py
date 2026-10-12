@@ -25,8 +25,8 @@ from pydantic import BaseModel, Field
 from app.mcp.tools.base import BaseMCPTool
 from app.mcp.tools.context_management import _resolve_chat_for_request
 from app.utils.handoff_prelude import (
-    DRAFT_FIELD, DRAFT_SECTIONS, HANDOFF_FIELD, get_context_pressure,
-    merge_draft, nudge_ratio,
+    DRAFT_FIELD, DRAFT_SECTIONS, HANDOFF_FIELD,
+    merge_draft,
 )
 from app.utils.logging_utils import logger
 
@@ -52,10 +52,9 @@ class HandoffReadTool(BaseMCPTool):
     description: str = (
         "Read this conversation's handoff draft — the document a continuation "
         "conversation will receive if the user hands off.  Returns the draft "
-        "(or null), the inherited handoff document if THIS conversation is "
-        "itself a continuation, and the context pressure measured on the "
-        "previous turn (fraction of the model's limit).  Read before a "
-        "merge so you update the right sections."
+        "(or null) and the inherited handoff document if THIS conversation is "
+        "itself a continuation.  Read before a merge so you update the right "
+        "sections."
     )
     InputSchema = HandoffReadInput
 
@@ -67,14 +66,11 @@ class HandoffReadTool(BaseMCPTool):
         chat = ctx["chat_data"]
         draft = chat.get(DRAFT_FIELD)
         inherited = chat.get(HANDOFF_FIELD)
-        pressure = get_context_pressure(ctx["chat_id"])
         return {
             "conversation_id": ctx["chat_id"],
             "draft": draft if isinstance(draft, dict) else None,
             "inherited_handoff": inherited if isinstance(inherited, dict) else None,
             "predecessor_id": chat.get("branchedFrom") if chat.get("lineageKind") == "handoff" else None,
-            "context_pressure": round(pressure, 3) if pressure is not None else None,
-            "nudge_ratio": nudge_ratio(),
             "sections": list(DRAFT_SECTIONS),
         }
 
@@ -106,8 +102,8 @@ class HandoffWriteTool(BaseMCPTool):
         "Create or update this conversation's handoff draft — the document a "
         "continuation conversation receives when the user hands off.  This "
         "record IS the handoff; never write a handoff to a file.  Start one "
-        "when asked, or when the context-pressure prelude suggests it; once "
-        "it exists, merge in decisions, state changes, gotchas and "
+        "when asked, or when the prelude tells you to; once it exists, "
+        "merge in decisions, state changes, gotchas and "
         "references as they happen (touch only the sections that changed).  "
         "The user can edit the draft at any time and commits the handoff "
         "themselves — this tool never creates a new conversation."

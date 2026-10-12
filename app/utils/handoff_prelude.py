@@ -9,16 +9,20 @@ Two documents, one shape (``HandoffDoc``):
   the ``handoff_write`` tool as context tightens.  While it exists, every
   turn's prelude carries it plus an instruction to merge in anything
   relevant that changed this turn.  A continuation child carries no draft
-  until the user asks for one or context pressure recommends it.
+  until the user asks for one or context pressure triggers one.
 
 Context pressure is measured server-side from the messages actually
 assembled for the previous turn (``record_context_pressure``, called from
 ``build_messages_for_streaming``) and kept in a process-local cache — one
 turn stale, lost on restart, never written to the chat record (a per-turn
 server write would race the frontend's sync).  At or above
-``ZIYA_HANDOFF_NUDGE_RATIO`` (default 0.7, the same 70% the frontend's
-TokenCountDisplay turns orange at) a conversation with no draft gets a
-nudge to start one.  The nudge is text; nothing is automatic.
+``ZIYA_HANDOFF_NUDGE_RATIO`` (default 0.9) a conversation with no draft is
+told, SILENTLY, to write one this turn with ``handoff_write``.  The model is
+never told how full the context is, and is told not to mention the draft,
+context size or wrapping up: the original 70% nudge ("a suggestion to raise
+with the user", replaced 2026-10-10) made every long conversation end in
+the model announcing context pressure and winding its work down.  The
+figure itself feeds the handoff drawer and ``GET .../handoff`` only.
 
 A handoff (design/conversation-handoff.md) creates a child conversation with
 an EMPTY transcript and a user-editable handoff document stored on the child
@@ -64,7 +68,9 @@ LINEAGE_KIND_HANDOFF = "handoff"
 # Section keys handoff_write(mode='merge') accepts, in render order.
 DRAFT_SECTIONS = ("objective", "state", "decisions", "gotchas", "references")
 
-DEFAULT_NUDGE_RATIO = 0.7
+# Late on purpose: users work in the last stretch of the window, and a draft
+# started at 70% ran for most of the conversation.
+DEFAULT_NUDGE_RATIO = 0.9
 
 # conversation_id -> (tokens, limit) from the last assembled turn.
 _pressure_cache: Dict[str, Tuple[int, int]] = {}
@@ -424,26 +430,28 @@ def render_draft_prelude(draft: dict) -> str:
     return "\n".join(lines)
 
 
-def render_pressure_nudge(ratio: float, has_inherited: bool) -> str:
-    # Deliberately NO percentage: the text must be byte-identical from one
-    # turn to the next, or every turn past the threshold re-bills whatever
-    # prefix it shares a cache block with.  The exact figure is available
-    # to the model via handoff_read.
+def render_auto_draft_instruction(ratio: float, has_inherited: bool) -> str:
+    # Shown once the threshold is crossed and until a draft exists (one
+    # turn, if the model complies).  Deliberately NO percentage and no
+    # "context" language: the text must be byte-identical turn to turn for
+    # caching, and the model must not learn from it that the window is
+    # filling up — that is what turned every long conversation into a
+    # wrap-up announcement.
     lines = [
-        "[Context pressure]",
-        "This conversation's assembled context is above the handoff "
-        "threshold of the model's limit (handoff_read reports the exact "
-        "fraction).  Consider starting a handoff draft with "
+        "[Handoff draft — start one now]",
+        "Write a handoff draft for this conversation THIS turn with "
         "handoff_write(sections={objective, state, decisions, gotchas, "
-        "references}, mode='replace') so the user can continue in a fresh "
-        "conversation without losing the thread.  Cite turns or message "
-        "indices in `references` so the continuation can retrieve them with "
-        "chat_read.  Do not write a handoff to a file.  This is a suggestion "
-        "to raise with the user, not an instruction to stop working.",
+        "references}, mode='replace'), together with your other tool calls "
+        "and BEFORE your reply.  Cite turns or message indices in "
+        "`references` so a continuation can retrieve them with chat_read.  "
+        "Do not write it to a file.  This is harness bookkeeping, not a "
+        "signal about the conversation: do not mention the draft, context "
+        "size, or wrapping up to the user, and do not change how you work.  "
+        "Continue the user's request exactly as you otherwise would.",
     ]
     if has_inherited:
         lines.append(
-            "Start the new draft from the current state of THIS segment; the "
+            "Draft the current state of THIS segment; the "
             "inherited handoff above already covers the earlier ones.")
     return "\n".join(lines)
 
@@ -501,7 +509,7 @@ def split_handoff_prelude(conversation_id: Optional[str], storage=None,
             if pressure is None:
                 pressure = get_context_pressure(conversation_id)
             if pressure is not None and pressure >= nudge_ratio():
-                turn_parts.append(render_pressure_nudge(pressure, has_inherited))
+                turn_parts.append(render_auto_draft_instruction(pressure, has_inherited))
 
         return system_part, "\n\n".join(p for p in turn_parts if p)
     except Exception as e:

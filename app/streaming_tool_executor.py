@@ -2030,33 +2030,21 @@ class StreamingToolExecutor:
                 logger.warning("   they STILL count toward 'Too many tokens' rate limits")
                 logger.warning("   Consider reducing max_output_tokens on retries")
 
-        # --- Token-budget warning (every iteration) ---
-        # The iteration-count countdown in the main loop is a proxy: a
-        # single large tool result can jump the submitted context from 50k
-        # to 900k tokens without consuming iterations. This tracks the
-        # number that actually determines whether the NEXT provider call
-        # fails. throttle_state is the only state that survives into the
-        # next main-loop iteration, so both the pending message and the
-        # fired-tier record live there.
+        # --- Context-size logging (every iteration) ---
+        # Log-only.  Until 2026-10-10 this staged a "Context Size Notice" for
+        # the model at 85/90/95% ("consider wrapping up", "stop reading new
+        # content and summarize now"), which made the model narrate context
+        # pressure and refuse ordinary reads in exactly the stretch where
+        # users want it working.  The user's surface is the token bar.
         if effective_limit:
             _pct = effective_input / effective_limit
             _fired = throttle_state.setdefault('token_pct_fired', set())
-            _crossed = [p for p in (0.75, 0.90, 0.95) if _pct >= p and p not in _fired]
+            _crossed = [p for p in (0.85, 0.90, 0.95) if _pct >= p and p not in _fired]
             if _crossed:
-                _tier = max(_crossed)
                 _fired.update(_crossed)
-                _guidance = {
-                    0.75: "Consider wrapping up large reads and searches soon.",
-                    0.90: "Avoid opening new large file reads or searches this turn.",
-                    0.95: "Stop reading new content and summarize now — the next call risks exceeding the model's input limit.",
-                }[_tier]
-                throttle_state['token_budget_warning'] = (
-                    f"\n\n⚠️ **Context Size Notice:** This turn has submitted ~{effective_input:,} of "
-                    f"~{effective_limit:,} input tokens ({int(_pct * 100)}%). {_guidance}\n\n"
-                )
                 logger.warning(
-                    f"🔔 TOKEN_BUDGET_WARNING: {int(_pct * 100)}% of input limit "
-                    f"({effective_input:,}/{effective_limit:,}), staging model notice"
+                    f"🔔 CONTEXT_SIZE: {int(_pct * 100)}% of input limit "
+                    f"({effective_input:,}/{effective_limit:,}); not shown to the model"
                 )
 
         # --- Handoff pressure (every iteration) ---
@@ -3028,25 +3016,17 @@ class StreamingToolExecutor:
                         f"({iteration}/{max_iterations}), notifying model"
                     )
             
-            # Token-budget warning staged by _handle_usage_event during the
-            # previous iteration's stream. Distinct from the iteration-count
-            # warning above: a single tool result can jump the submitted
-            # context from 50k to 900k tokens without consuming iterations,
-            # so this is the signal that actually predicts a "prompt is too
-            # long" failure on the next call.
-            _token_warning = throttle_state.pop('token_budget_warning', None)
-            if _token_warning:
-                warning_message = (
-                    (warning_message + _token_warning) if warning_message else _token_warning
-                )
+            # The iteration warnings above are shown to the MODEL only.
+            # Streamed as text they were persisted in the reply and replayed
+            # in later turns with numbers that were no longer true.
+            model_message = warning_message
 
             # Inject warning message into conversation if needed
-            if warning_message:
-                yield track_yield({'type': 'text', 'content': warning_message})
-                # The yield above only reaches the user's screen. Without also
-                # placing the notice in the conversation the model never sees
-                # it and cannot react to it.
-                _notice = f"[System: {warning_message.strip()}]"
+            if model_message:
+                # The visible yield above only reaches the user's screen.
+                # Without also placing the notice in the conversation the
+                # model never sees it and cannot react to it.
+                _notice = f"[System: {model_message.strip()}]"
                 _last = conversation[-1] if conversation else None
                 if _last is not None and _last.get("role") == "user":
                     _prev = _last.get("content")
