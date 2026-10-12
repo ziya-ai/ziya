@@ -1593,6 +1593,7 @@ export const vegaPlugin: D3RenderPlugin = {
   // VL's canHandle won't match these anyway ($schema check, singular `mark`),
   // but the priority ordering makes the intent explicit.
   priority: 9,
+  pointerInteractive: true, // interval selections / brushes own the pointer
   sizingConfig: {
     sizingStrategy: 'responsive',
     needsDynamicHeight: true,
