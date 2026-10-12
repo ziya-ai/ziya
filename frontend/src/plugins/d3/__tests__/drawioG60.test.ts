@@ -22,12 +22,15 @@ const TEXT_FLOOR = 4.5;
 
 // ───────────────────────── D-114 ─────────────────────────
 describe('D-114 — named/mid-luminance fill bypasses the contrast autofix', () => {
-    it('documents the pre-fix mis-pick: getOptimalTextColor chooses white on cornflowerblue', () => {
-        // The OLD contrast pass used getOptimalTextColor(fill) directly. For
-        // cornflowerblue (now resolvable) it returns white — white-on-cornflowerblue
-        // is only 2.97:1, i.e. the autofix "fixed" white with white.
-        expect(getOptimalTextColor('cornflowerblue')).toBe('#ffffff');
+    it('getOptimalTextColor no longer mis-picks white on cornflowerblue', () => {
+        // The OLD contrast pass used getOptimalTextColor(fill) directly, and
+        // for cornflowerblue it returned white: white-on-cornflowerblue is only
+        // 2.97:1, so the autofix "fixed" white with white. This assertion used
+        // to pin that mis-pick; the shared helper has since been fixed, so it
+        // now pins the correct choice and its contrast.
         expect(calculateContrastRatio('#ffffff', 'cornflowerblue')).toBeLessThan(3.0);
+        expect(getOptimalTextColor('cornflowerblue')).toBe('#000000');
+        expect(calculateContrastRatio('#000000', 'cornflowerblue')).toBeGreaterThanOrEqual(4.5);
     });
 
     it('picks BLACK on cornflowerblue so the label clears the 4.5 text floor', () => {
