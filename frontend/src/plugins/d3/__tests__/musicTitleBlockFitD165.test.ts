@@ -24,6 +24,20 @@ const TITLE_FONT = '700 20px "Times New Roman", Georgia, serif';
 // The canvas-count estimate used in jsdom (no 2d context): ~0.55em per glyph.
 const estWidth = (s: string, fontPx: number) => s.length * fontPx * 0.55;
 
+// setupTests.ts stubs canvas measureText at a flat 8px per character for
+// every font size, so under the project runner fitTextToWidth measured with
+// that stub while these assertions use the 0.55em estimate above (11px per
+// glyph at 20px), and the "fits" check compared two different rulers.
+// Disable the stub here so the helper takes the same estimate the test uses.
+let savedGetContext: any;
+beforeAll(() => {
+  savedGetContext = (HTMLCanvasElement.prototype as any).getContext;
+  (HTMLCanvasElement.prototype as any).getContext = () => null;
+});
+afterAll(() => {
+  (HTMLCanvasElement.prototype as any).getContext = savedGetContext;
+});
+
 describe('D-165 title-block horizontal fit (fitTextToWidth)', () => {
   it('leaves a string that already fits byte-identical', () => {
     const short = 'Sonata in C';
