@@ -15,6 +15,7 @@ import React, { useEffect, useState } from 'react';
 import { Tooltip } from 'antd';
 import { CodeOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
+import { publishAttachedShadow } from '../utils/shadowPresence';
 
 export interface AttachedShadowSession {
     session_id: string;
@@ -44,7 +45,12 @@ export function useAttachedShadowSessions(conversationId: string | null | undefi
                 const r = await fetch(`/api/shadow/attached?conversation_id=${encodeURIComponent(conversationId)}`);
                 if (!r.ok) return;
                 const data = await r.json();
-                if (!cancelled) setSessions(Array.isArray(data?.sessions) ? data.sessions : []);
+                if (cancelled) return;
+                const list: AttachedShadowSession[] = Array.isArray(data?.sessions) ? data.sessions : [];
+                setSessions(list);
+                // Terminal panes tag themselves LOCAL only while a shadow
+                // is in play; this poll is the "attached" half of that.
+                publishAttachedShadow(conversationId, list.length > 0);
             } catch {
                 /* backend unreachable: keep the last known state */
             }
