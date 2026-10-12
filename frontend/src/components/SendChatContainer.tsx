@@ -666,31 +666,13 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     }
   }, [supportsVision]);
 
-  const handleFileSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) return;
-
-    const images: File[] = [];
-    const docs: File[] = [];
-    for (const f of Array.from(files)) {
-      const ext = f.name.split('.').pop()?.toLowerCase() || '';
-      if (f.type.startsWith('image/')) images.push(f);
-      else if (DOCUMENT_EXTENSIONS.has(ext)) docs.push(f);
-    }
-
-    if (images.length > 0) { const dt = new DataTransfer(); images.forEach(f => dt.items.add(f)); await processImageFiles(dt.files); }
-    if (docs.length > 0) await processDocumentFiles(docs);
-
-    // Reset file input so same file can be selected again
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [processImageFiles, processDocumentFiles, DOCUMENT_EXTENSIONS]);
-
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingOver(false);
-
-    const files = e.dataTransfer.files;
+  // Route a batch of files -- from the attach button or a drop -- to the
+  // right attachment path: images into the editor, text/code files into
+  // document chips, extractable documents to the backend.  One function so
+  // the button cannot accept less than a drop does: the button path used to
+  // route only images and extractable documents, so a .md or .json chosen
+  // in the picker was discarded without a message.
+  const ingestFiles = useCallback(async (files: FileList | File[]) => {
     if (!files.length) return;
 
     const imageFiles: File[] = [];
@@ -767,6 +749,20 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       message.warning(`Unsupported file type${unsupported.length > 1 ? 's' : ''}: ${unsupported.join(', ')}`);
     }
   }, [supportsVision, processImageFiles, isTextFile, isDocumentFile, getLanguageFromFilename, processDocumentFiles]);
+
+  const handleFileSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files && files.length > 0) await ingestFiles(files);
+    // Reset file input so same file can be selected again
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [ingestFiles]);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    await ingestFiles(e.dataTransfer.files);
+  }, [ingestFiles]);
 
   // Serialize editor content to text with image markers and extract image order
   const serializeEditorContent = useCallback((): { text: string; orderedImages: ImageAttachment[]; } => {
@@ -1481,7 +1477,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
+          // No `accept`: the picker offers whatever a drop accepts (images,
+          // text/code, extractable documents); ingestFiles warns on the rest.
           multiple
           style={{ display: 'none' }}
           onChange={handleFileSelect}
