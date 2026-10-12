@@ -122,12 +122,19 @@ describe('D-152 computeJointElementStyle — author attrs honoured + legible', (
     it('resolves a named pale fill and rescues a white-on-pale label (w4-13 dst), BOTH themes', () => {
         const spec = { id: 'dst', type: 'rect', label: 'Dest',
             attrs: { body: { fill: 'lightgoldenrodyellow' }, label: { fill: 'white' } } };
+        // Dark: #fafad2 stands well off the #1e1e1e page and is kept verbatim.
+        // Light: it is 1.07:1 against the white page, so D-417 (written after
+        // this suite) nudges it to stand off the page rather than vanish.
+        expect(computeJointElementStyle(spec, DARK)!.body!.fill).toBe('#fafad2');
+        const lightFill = computeJointElementStyle(spec, LIGHT)!.body!.fill as string;
+        expect(lightFill).not.toBe('#fafad2');
+        expect(jointContrastRatio(lightFill, LIGHT.pageBg)).toBeGreaterThanOrEqual(1.5);
         for (const opts of [LIGHT, DARK]) {
             const out = computeJointElementStyle(spec, opts)!;
-            expect(out.body!.fill).toBe('#fafad2');
-            // white on #fafad2 is 1.07:1 verbatim -> clamped legible
+            const fill = out.body!.fill as string;
+            // white on the pale fill is ~1.1:1 verbatim -> clamped legible
             expect(out.label!.fill).not.toBe('#ffffff');
-            expect(jointContrastRatio(out.label!.fill, '#fafad2')).toBeGreaterThanOrEqual(4.5);
+            expect(jointContrastRatio(out.label!.fill, fill)).toBeGreaterThanOrEqual(4.5);
         }
     });
 });
@@ -169,6 +176,19 @@ describe('D-150 nested containers — top-anchored title + dark depth ramp', () 
         expect(light.label!.textVerticalAnchor).toBe('top');     // occlusion fix applies to both
         // parity: the dark-only ramp must NOT leak into light output
         expect(light.body && light.body.fill).toBeUndefined();
+    });
+
+    it('the dark container ramp reaches the output unchanged at every depth (D-150 x D-417)', () => {
+        // D-417 lifts author fills that match the page. It once also caught the
+        // ramp's darkest (outermost) entry, lifting depth 0 above depths 1-3 so
+        // the outer container read as nested inside its children.
+        const fills = [0, 1, 2, 3, 4].map(depth => computeJointElementStyle(
+            { id: 'c' + depth, type: 'rect', embeds: ['a'], attrs: { label: { text: 'r' } } },
+            { ...DARK, depth, isContainer: true },
+        )!.body!.fill);
+        expect(fills).toEqual([0, 1, 2, 3, 4].map(d => jointContainerFill(d, 'dark')));
+        const lum = fills.map(f => jointContrastRatio(f as string, DARK.pageBg));
+        for (let i = 1; i < lum.length; i++) expect(lum[i]).toBeGreaterThan(lum[i - 1]);
     });
 });
 
