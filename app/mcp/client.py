@@ -1857,7 +1857,7 @@ class MCPClient:
     # misleading warning on every escalated call, so the validator recognizes
     # and passes them through silently.
     _KNOWN_ROUTING_KEYS = frozenset({
-        "_task_scope", "_workspace_path", "conversation_id", "_project_root",
+        "_task_scope", "_ledger_scope", "_workspace_path", "conversation_id", "_project_root",
     })
 
     def _validate_and_convert_arguments(self, arguments: Dict[str, Any], schema: Dict[str, Any]) -> Optional[Dict[str, Any]]:
