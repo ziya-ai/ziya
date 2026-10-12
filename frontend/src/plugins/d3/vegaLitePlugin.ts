@@ -1,7 +1,8 @@
 import { type EmbedOptions } from 'vega-embed';
 import { D3RenderPlugin } from '../../types/d3';
 import { applyHeightFloor, applySizing, isCompositeSpec, resolveAutosize, resolveSpecWidth } from './vegaSizing';
-import { estimateChartWidthPx, relocateOverflowingSideLegend } from './vegaLegendPlacement';
+import { estimateChartWidthPx, fitNarrowConcatCellLegends, relocateOverflowingSideLegend } from './vegaLegendPlacement';
+import { fixUnparsedDateFormatting } from './vegaDateExpr';
 import {
   MAX_AXIS_LABEL_LIMIT,
   applySharedAxisDefaults,
