@@ -64,7 +64,7 @@ def _summary(cards, ziya_home, monkeypatch):
     monkeypatch.setattr(tc, "_get_storage", lambda _pid: _Storage())
     monkeypatch.setattr(tc, "ProjectStorage", _ProjectStorage)
     monkeypatch.setattr(tc, "get_ziya_home", lambda: ziya_home)
-    return asyncio.run(tc.get_signature_summary("proj1"))
+    return tc.get_signature_summary("proj1")
 
 
 def _approve(card):
