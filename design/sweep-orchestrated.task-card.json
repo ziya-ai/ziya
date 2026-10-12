@@ -71,12 +71,54 @@
           {
             "block_type": "task",
             "name": "P3a - Batch the unclaimed files",
-            "instructions": "Split the unclaimed-file set into batches small enough that one agent can judge each file carefully. Read-only.\n\nRead 'entry_index' from {{var.ledger}} and take its 'unclaimed' list. Group the paths into batches of at most 15, keeping files from the same directory or subsystem together so one agent sees related files at once. If there are no unclaimed files, emit an EMPTY list of batches so the fan-out below runs zero iterations - do not emit one empty batch, which would dispatch an iteration with nothing to do.\n\nemit_artifact a data part named \"unclaimed\" holding {\"batches\": [[\"path\", ...], ...]} - a JSON array of arrays and nothing else. Then state the batch count and total file count in prose.",
-            "scope": { "model_tier": "small" }
+            "instructions": "Batch the unclaimed paths that still need a verdict. Read-only. Do NOT build the batches by hand: a hand-built batching dropped 25 paths and duplicated 8 on 2026-10-10, which made the commit-plan gate refuse.\n\nRun `python3 scripts/release_plan.py batches --ledger {{var.ledger}} --triage-dir {{var.triage_dir}} --size 15`. It takes entry_index.unclaimed, skips every path that already carries a verdict in some {{var.triage_dir}}/batch-*.json (so a rerun triages only what is missing), and prints {\"batches\": [{\"id\": ..., \"paths\": [...]}], \"pending\": N, \"triaged\": M}. Each path appears in exactly one batch, and each batch's id is a hash of its paths, so batch files cannot overwrite an earlier run's verdicts.\n\nemit_artifact a data part named \"unclaimed\" holding exactly the script's {\"batches\": [...]} array, unmodified - an empty array when nothing is pending, so the fan-out below runs zero iterations. Then state the pending and already-triaged counts in prose.",
+            "scope": {
+              "model_tier": "small",
+              "tools": [
+                "run_shell_command",
+                "file_read"
+              ]
+            },
+            "output_contract": [
+              {
+                "name": "unclaimed",
+                "required": true,
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "batches"
+                  ],
+                  "properties": {
+                    "batches": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "paths"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "paths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
           },
           {
             "block_type": "repeat",
             "name": "P3b - Classify one batch",
+            "required": false,
             "repeat_mode": "for_each",
             "repeat_for_each_source": "{{previous_sibling.outputs.unclaimed.batches}}",
             "repeat_parallel": true,
@@ -86,8 +128,15 @@
               {
                 "block_type": "task",
                 "name": "Triage a batch of unclaimed files",
-                "instructions": "Classify each file in this batch. Your batch is: {{item}}\n\nRead-only with respect to git. Do not stage or commit anything.\n\nFor each path, apply the EXCLUSION RULE from your standing context and assign exactly one disposition:\n  - assign: it belongs to an existing Unreleased entry that failed to cite it (name the entry_id). Check 'entry_index' in {{var.ledger}} for a plausible owner - a test file usually belongs with the source change it covers.\n  - new_entry: it is a real user-visible change with no entry. DRAFT the changelog entry text and the '### ' category it belongs under, but do NOT write it into CHANGELOG.md - a later single stage owns that file, and concurrent writes to it would interleave.\n  - exclude: in-progress work. Record a one-line reason.\n\nBefore excluding any untracked module, grep the committed tree for its module path and bare filename, including `require(...)` and `import` forms under frontend/src. If committed code references it, it is 'assign' or 'new_entry', never 'exclude' - a committed reference to an uncommitted module breaks a clean checkout at build time even when wrapped in try/catch.\n\nWrite your verdicts to {{var.triage_dir}}/batch-{{index}}.json as {\"verdicts\": [{\"path\": ..., \"disposition\": ..., \"entry_id\": ..., \"draft_entry\": ..., \"category\": ..., \"reason\": ...}]}. Do NOT write the shared ledger - siblings are running and would clobber each other; the reconcile stage merges these files.\n\nemit_artifact that file, plus a text part named \"triage\" summarizing the disposition counts. Then state in prose anything you were unsure about and which way you resolved it.",
-                "scope": { "model_tier": "small" }
+                "instructions": "Classify each file in this batch. Your batch is: {{item.paths}}\n\nRead-only with respect to git. Do not stage or commit anything.\n\nFor each path, apply the EXCLUSION RULE from your standing context and assign exactly one disposition:\n  - assign: it belongs to an existing Unreleased entry that failed to cite it (name the entry_id). Check 'entry_index' in {{var.ledger}} for a plausible owner - a test file usually belongs with the source change it covers.\n  - new_entry: it is a real user-visible change with no entry. DRAFT the changelog entry text and the '### ' category it belongs under, but do NOT write it into CHANGELOG.md - a later single stage owns that file, and concurrent writes to it would interleave.\n  - exclude: in-progress work. Record a one-line reason.\n\nBefore excluding any untracked module, grep the committed tree for its module path and bare filename, including `require(...)` and `import` forms under frontend/src. If committed code references it, it is 'assign' or 'new_entry', never 'exclude' - a committed reference to an uncommitted module breaks a clean checkout at build time even when wrapped in try/catch.\n\nWrite your verdicts to {{var.triage_dir}}/batch-{{item.id}}.json as {\"verdicts\": [{\"path\": ..., \"disposition\": ..., \"entry_id\": ..., \"draft_entry\": ..., \"category\": ..., \"reason\": ...}]}. Do NOT write the shared ledger - siblings are running and would clobber each other; the reconcile stage merges these files.\n\nemit_artifact that file, plus a text part named \"triage\" summarizing the disposition counts. Then state in prose anything you were unsure about and which way you resolved it.",
+                "scope": {
+                  "model_tier": "small",
+                  "tools": [
+                    "run_shell_command",
+                    "file_read",
+                    "file_write"
+                  ]
+                }
               }
             ]
           }
