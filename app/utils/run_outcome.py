@@ -88,7 +88,10 @@ def _iteration_statuses(state: Any) -> List[str]:
     never made.
     """
     out: List[str] = []
-    for summary in (_get(state, "iteration_summaries", []) or []):
+    # Highest attempt per iteration: a short iteration that a gather
+    # contract re-ran is one iteration, judged by its re-run.
+    from .iteration_attempts import latest_attempts
+    for summary in latest_attempts(_get(state, "iteration_summaries", []) or []):
         if _get(summary, "replayed", False):
             continue
         status = _get(summary, "status", None)
