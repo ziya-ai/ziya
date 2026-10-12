@@ -162,6 +162,39 @@ def test_launch_binds_run_into_current_conversation(monkeypatch, tmp_path):
     assert "binding_id" in out and out["binding_id"]
 
 
+def test_launch_promotes_a_staged_binding_instead_of_adding_one(monkeypatch, tmp_path):
+    """stage-then-launch in one chat must leave ONE tile, the monitor.
+
+    task_card_stage mints a binding with run_id=None (the Run/Edit/Discard
+    tile).  A following task_card_launch used to create a second binding
+    for the run, so the staged tile stayed on screen offering to run a
+    card that was already running, next to its monitor.  The launch must
+    promote the staged binding the way the tile's own Run button does.
+    """
+    card = _Card()
+    _stub_resolution(monkeypatch, card)
+    monkeypatch.setattr(tcl, "_escalation_rows_for", lambda c, p: [])
+    _stub_launch(monkeypatch)
+    monkeypatch.setattr(
+        "app.context.get_conversation_id_or_none", lambda: "chat-1")
+    store = _real_binding_storage(monkeypatch, tmp_path)
+    staged = store.create(chat_id="chat-1", card_id="card-1", run_id=None,
+                          anchor_message_id=None)
+    # An unrelated staged card in the same chat must be left alone.
+    other = store.create(chat_id="chat-1", card_id="card-2", run_id=None,
+                         anchor_message_id=None)
+
+    out = asyncio.get_event_loop().run_until_complete(
+        tcl.TaskCardLaunchTool().execute(card_id="card-1"))
+
+    assert out["success"] is True
+    assert out["binding_id"] == staged.id
+    by_id = {b.id: b for b in store.list_for_chat("chat-1")}
+    assert set(by_id) == {staged.id, other.id}, "no second binding minted"
+    assert by_id[staged.id].run_id == "run-9"   # staged tile became the monitor
+    assert by_id[other.id].run_id is None       # untouched
+
+
 def test_launch_without_conversation_binds_nothing(monkeypatch, tmp_path):
     """CLI / headless: no chat to bind into.  Launch still succeeds, and
     the result says so rather than claiming a tile exists."""
