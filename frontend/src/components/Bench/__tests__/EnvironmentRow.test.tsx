@@ -52,15 +52,45 @@ describe('EnvironmentRow', () => {
         expect(screen.getByRole('status')).toHaveTextContent('Skill discovery is off');
     });
 
-    it('shell attention shows a badge on the collapsed row that opens shell config', () => {
+    // Shell Configuration lost its toolbar button when the Bench absorbed it
+    // (c9434722); the environment row is now its only entry point, so the
+    // control must exist in the healthy state too, not only under attention.
+    it('shell config is reachable from the collapsed row even with no attention', () => {
         const open = jest.fn();
-        const { rerender } = render(<EnvironmentRow items={env()} shellAttention={{ level: 'none', reasons: [] }} onOpenShellConfig={open} />);
-        expect(screen.queryByTestId('environment-shell-badge')).toBeNull();
-        rerender(<EnvironmentRow items={env()} onOpenShellConfig={open}
-                                 shellAttention={{ level: 'warning', reasons: ['escalation unsigned'] }} />);
-        const badge = screen.getByTestId('environment-shell-badge');
+        render(<EnvironmentRow items={env()} shellAttention={{ level: 'none', reasons: [] }} onOpenShellConfig={open} />);
+        const btn = screen.getByTestId('environment-shell-config');
+        expect(btn).toHaveAttribute('data-attention', 'none');
+        expect(btn).toHaveAttribute('title', 'Shell configuration');
+        expect(btn).toHaveTextContent('⚙ shell');
+        fireEvent.click(btn);
+        expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it('shell config is also reachable from the expanded list with no attention', () => {
+        const open = jest.fn();
+        render(<EnvironmentRow items={env()} onOpenShellConfig={open} />);
+        fireEvent.click(screen.getByText('inspect ▸'));
+        fireEvent.click(within(screen.getByTestId('env-mcp:shell')).getByText('configure'));
+        expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it('shell attention turns the row control into a badge carrying the reasons', () => {
+        const open = jest.fn();
+        render(<EnvironmentRow items={env()} onOpenShellConfig={open}
+                               shellAttention={{ level: 'warning', reasons: ['escalation unsigned'] }} />);
+        const badge = screen.getByTestId('environment-shell-config');
+        expect(badge).toHaveAttribute('data-attention', 'warning');
         expect(badge).toHaveAttribute('title', 'escalation unsigned');
+        expect(badge).toHaveTextContent('⚠ shell');
         fireEvent.click(badge);
         expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it('the shell control is absent without an opener or without a shell item', () => {
+        render(<EnvironmentRow items={env()} shellAttention={{ level: 'warning', reasons: ['x'] }} />);
+        expect(screen.queryByTestId('environment-shell-config')).toBeNull();
+        const open = jest.fn();
+        render(<EnvironmentRow items={env().filter(i => i.key !== 'mcp:shell')} onOpenShellConfig={open} />);
+        expect(screen.queryByTestId('environment-shell-config')).toBeNull();
     });
 });
