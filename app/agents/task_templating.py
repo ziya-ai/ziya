@@ -91,6 +91,16 @@ class IterationBindings:
     # a task can stamp evidence it writes with the run that produced it —
     # the ledger scripts need this to append rather than overwrite.
     run_id: Optional[str] = None
+    # Set only inside an Until block with an explicit condition.
+    # ``until_condition`` is the (rendered) exit condition the evaluator
+    # judges; ``until_rationale`` is the evaluator's reason the PREVIOUS
+    # iteration did not satisfy it (empty on iteration 0, or when the
+    # evaluator gave no reason).  Resolve {{until.condition}} and
+    # {{until.last_rationale}}; the executor also prepends them to the
+    # iteration-context preamble so the body is told what to fix without
+    # any templating on the card's part.
+    until_condition: Optional[str] = None
+    until_rationale: Optional[str] = None
     # Resolutions recorded by the tasks dispatched under this iteration,
     # appended by the block executor as each one renders and copied onto
     # the iteration's artifact when the body completes.  Lives on the
@@ -396,6 +406,16 @@ def _resolve(name: str, bindings: IterationBindings) -> Optional[str]:
         if field_name == "summaries":
             return "\n\n".join(bindings.all_summaries or [])
         return ""
+    if head == "until":
+        # {{until.condition}} / {{until.last_rationale}} — the Until
+        # block's exit condition and the evaluator's reason the previous
+        # iteration did not meet it.  Empty (not literal) outside an
+        # Until or on the first iteration, matching {{previous}}.
+        if rest == ["condition"]:
+            return bindings.until_condition or ""
+        if rest == ["last_rationale"]:
+            return bindings.until_rationale or ""
+        return None
     if head == "var":
         # {{var.NAME}} / {{var.NAME.sub}} — read-only run-scoped state.
         # An unknown key is left literal (returns None) so typos surface
