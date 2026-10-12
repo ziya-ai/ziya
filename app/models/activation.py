@@ -4,7 +4,7 @@ Activation model for the capabilities hub (design/capabilities-hub.md, slice 2).
 Vocabulary only.  The API speaks ``always|ondemand|off``; the lane names
 (on hand / within reach / shelved) are frontend strings and never appear here.
 
-Keys are ``kind:name`` (``skill:kuiper-conventions``, ``mcp:kuiper-jira-mcp``),
+Keys are ``kind:name`` (``skill:team-conventions``, ``mcp:jira-mcp``),
 never ``Skill.id``: ``skill_discovery._stable_id`` hashes the install path, so
 a reinstall to another tier or a registry update changes the id and would
 orphan every placement.  Name is already the tier-shadowing key, so a placement
