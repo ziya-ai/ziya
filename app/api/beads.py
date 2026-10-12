@@ -3,6 +3,11 @@ Bead API endpoints — read/manage bead trees for the frontend.
 
 Beads are created by the model silently via MCP tools.  These endpoints
 let the frontend read the tree and let the user resume parked beads.
+
+Handlers that await nothing are plain ``def``: they load/save chat JSON
+from disk, and a zero-await ``async def`` would run that I/O ON the event
+loop and stall every request.  Starlette runs ``def`` handlers on its
+threadpool.  Guarded by tests/test_beads_not_event_loop_blocking.py.
 """
 from fastapi import APIRouter, HTTPException, Request
 from typing import Optional
@@ -23,7 +28,7 @@ class ForkBeadRequest(BaseModel):
 
 
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}/beads")
-async def get_beads(project_id: str, chat_id: str, request: Request):
+def get_beads(project_id: str, chat_id: str, request: Request):
     """Return the bead tree for a conversation."""
     from app.storage.chats import ChatStorage
     from app.storage.beads import load_bead_tree
@@ -46,7 +51,7 @@ async def get_beads(project_id: str, chat_id: str, request: Request):
 
 
 @router.post("/api/v1/projects/{project_id}/chats/{chat_id}/beads/resume")
-async def resume_bead(project_id: str, chat_id: str, body: ResumeBeadRequest, request: Request):
+def resume_bead(project_id: str, chat_id: str, body: ResumeBeadRequest, request: Request):
     """Resume a parked bead — sets it active, parks the current active one.
 
     The frontend should follow this call by injecting a user message like
@@ -91,7 +96,7 @@ async def resume_bead(project_id: str, chat_id: str, body: ResumeBeadRequest, re
 
 
 @router.post("/api/v1/projects/{project_id}/chats/{chat_id}/beads/fork")
-async def fork_from_bead(project_id: str, chat_id: str, body: ForkBeadRequest, request: Request):
+def fork_from_bead(project_id: str, chat_id: str, body: ForkBeadRequest, request: Request):
     """Split a conversation at a bead's seam into a new branched conversation.
 
     Mode-1 non-destructive fork (design/bead-branching.md): the source
