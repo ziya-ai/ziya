@@ -733,6 +733,7 @@ function installContextLossRecovery(
 export const plotlyPlugin: D3RenderPlugin = {
   name: 'plotly-renderer',
   priority: 9,
+  pointerInteractive: true, // drag-zoom / box-select own the pointer
   sizingConfig: {
     sizingStrategy: 'responsive',
     needsDynamicHeight: true,
@@ -995,6 +996,15 @@ export const plotlyPlugin: D3RenderPlugin = {
     // Teardown hook run by D3Renderer on re-render and unmount (the plugin
     // contract returns void, so this is the only channel back to the host).
     (container as any).__vizCleanup = () => teardownPlotlyContainer(container, Plotly);
+    // PNG for the host's drag-out handle. The SVG layers omit WebGL traces,
+    // so the host cannot rasterize the plot itself; Plotly.toImage composites
+    // every layer at the plot's current on-screen size.
+    (container as any).__vizExportPng = () => {
+      const opts: any = { format: 'png', scale: 2 };
+      if (renderDiv.clientWidth > 0) opts.width = renderDiv.clientWidth;
+      if (renderDiv.clientHeight > 0) opts.height = renderDiv.clientHeight;
+      return Plotly.toImage(renderDiv, opts);
+    };
 
     addActionButtons(container, renderDiv, plotlySpec, isDarkMode, Plotly);
 
