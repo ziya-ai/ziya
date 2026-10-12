@@ -45,27 +45,31 @@ import { contrastRatio } from '../chartTheme';
 
 // ── recording d3 mock (evaluates function-valued attrs over bound data) ──────
 function makeRecorder() {
-    const records: Array<{ key: string; value: any }> = [];
-    function selection(data: any[], bound = false): any {
+    // `tag` is the element the attribute was set on (the last append), so a
+    // test can select e.g. circle fills by element rather than by position in
+    // the flat record list; positions shift whenever the render draws another
+    // element first (the D-448 self-loop path did exactly that).
+    const records: Array<{ key: string; value: any; tag?: string }> = [];
+    function selection(data: any[], bound = false, tag?: string): any {
         const self: any = {};
         const rec = (key: string, val: any) => {
             if (typeof val === 'function') {
                 const rows = bound ? data : (data.length ? data : [undefined]);
-                rows.forEach((d, i) => records.push({ key, value: val(d, i) }));
+                rows.forEach((d, i) => records.push({ key, value: val(d, i), tag }));
             } else {
-                records.push({ key, value: val });
+                records.push({ key, value: val, tag });
             }
         };
-        self.append = () => selection(data, bound);
-        self.select = () => selection(data, bound);
+        self.append = (name?: string) => selection(data, bound, name);
+        self.select = () => selection(data, bound, tag);
         self.selectAll = () => selection([], false);
-        self.data = (arr: any[]) => selection(Array.isArray(arr) ? arr : [], true);
-        self.datum = (d: any) => selection([d], true);
+        self.data = (arr: any[]) => selection(Array.isArray(arr) ? arr : [], true, tag);
+        self.datum = (d: any) => selection([d], true, tag);
         self.enter = () => self;
         self.exit = () => self;
         self.merge = () => self;
-        self.join = () => selection(data, bound);
-        self.filter = (fn?: any) => selection(typeof fn === 'function' ? data.filter(fn) : data, bound);
+        self.join = () => selection(data, bound, tag);
+        self.filter = (fn?: any) => selection(typeof fn === 'function' ? data.filter(fn) : data, bound, tag);
         self.each = () => self;
         self.call = () => self;
         self.remove = () => self;
@@ -77,8 +81,8 @@ function makeRecorder() {
     const d3: any = { select: () => selection([]) }; // no forceSimulation -> layout path not taken (nodes have x/y)
     return { d3, records };
 }
-const valuesFor = (records: Array<{ key: string; value: any }>, key: string) =>
-    records.filter(r => r.key === key).map(r => r.value);
+const valuesFor = (records: Array<{ key: string; value: any; tag?: string }>, key: string, tag?: string) =>
+    records.filter(r => r.key === key && (tag === undefined || r.tag === tag)).map(r => r.value);
 
 // ── D-210: alias mapping + tolerant detection (network-w4-15) ────────────────
 describe('D-210 — missing/aliased endpoint fields no longer reject the whole graph', () => {
@@ -206,9 +210,9 @@ describe('D-212 — semantically-empty node colours substituted; valid ones hono
     it.each([false, true])('transparent node fills -> readable default, valid hex kept (isDarkMode=%p)', (dark) => {
         const r = makeRecorder();
         networkDiagramPlugin.render(document.createElement('div'), r.d3, transparentSpec, dark);
-        // node circles are drawn before labels; both record 'fill', so the first
-        // 4 are the node-circle fills (one per node).
-        const fills = valuesFor(r.records, 'fill').slice(0, 4);
+        // Circle fills only (one per node, in node order); labels, links and
+        // the self-loop path also set 'fill'.
+        const fills = valuesFor(r.records, 'fill', 'circle');
         expect(fills).toHaveLength(4);
         expect(fills[2]).toBe('#2e6eaa'); // author colour honoured verbatim
         const bg = bgFor(dark);
@@ -222,7 +226,8 @@ describe('D-212 — semantically-empty node colours substituted; valid ones hono
     it.each([false, true])('unresolvable token fills -> readable default, not black (isDarkMode=%p)', (dark) => {
         const r = makeRecorder();
         networkDiagramPlugin.render(document.createElement('div'), r.d3, tokenSpec, dark);
-        const fills = valuesFor(r.records, 'fill').slice(0, 4); // node-circle fills
+        const fills = valuesFor(r.records, 'fill', 'circle'); // node-circle fills
+        expect(fills).toHaveLength(4);
         expect(fills[3]).toBe('#2e6eaa');
         const bg = bgFor(dark);
         [0, 1, 2].forEach(i => {
