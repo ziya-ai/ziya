@@ -1,0 +1,159 @@
+/* Consent request body: summary sentence, detail grid, raw-plan toggle.
+   Palette: Docs/BrandGuide.md "Consent & approval panels".  The panel
+   reuses .tc-ask-panel for structure but NOT its amber: that colour is the
+   task-card 'awaiting_input' status, and a tool-consent prompt is not a
+   paused run.  Everything below is scoped to .consent-panel so the
+   task-card Ask panel is untouched. */
+
+.tc-ask-panel.consent-panel {
+  overflow: hidden;                       /* clip the band to the radius */
+  border-color: rgba(45, 212, 191, 0.35);
+  background: rgba(255, 255, 255, 0.03);
+}
+/* Header band.  The negative margins cancel .tc-ask-panel's 10px 12px
+   padding so the band reaches the border; keep them in step with it. */
+.consent-panel__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: -10px -12px 10px;
+  padding: 7px 12px;
+  background: rgba(45, 212, 191, 0.14);
+  border-bottom: 1px solid rgba(45, 212, 191, 0.35);
+}
+.consent-panel .tc-ask-panel__icon { color: #2dd4bf; }
+.consent-panel .tc-ask-panel__question { font-weight: 600; }
+.consent-panel .consent-actions { border-top-color: rgba(45, 212, 191, 0.25); }
+
+body:not(.dark) .tc-ask-panel.consent-panel {
+  border-color: #99e6dc;
+  background: #ffffff;
+}
+body:not(.dark) .consent-panel__head {
+  background: #d9f5f0;
+  border-bottom-color: #99e6dc;
+}
+body:not(.dark) .consent-panel .tc-ask-panel__icon { color: #0d9488; }
+body:not(.dark) .consent-panel .consent-pf__code { background: rgba(13, 148, 136, 0.1); }
+body:not(.dark) .consent-panel .consent-pf__grid {
+  background: #f6fcfb;
+  border: 1px solid #d5f3ee;
+}
+body:not(.dark) .consent-panel .consent-actions { border-top-color: #d5f3ee; }
+
+.consent-pf { margin: 2px 0 10px; font-size: 12.5px; line-height: 1.5; }
+
+.consent-pf__summary {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.consent-pf__grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 14px;
+  row-gap: 3px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.18);
+}
+body:not(.dark) .consent-pf__grid { background: rgba(0, 0, 0, 0.04); }
+
+.consent-pf__label {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.6;
+  align-self: baseline;
+  padding-top: 2px;
+}
+.consent-pf__value { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+.consent-pf__code,
+.consent-pf__sha {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+}
+body:not(.dark) .consent-pf__code,
+body:not(.dark) .consent-pf__sha { background: rgba(0, 0, 0, 0.06); }
+.consent-pf__sha { color: #2dd4bf; }
+body:not(.dark) .consent-pf__sha { color: #0d9488; }
+
+.consent-pf__yes { color: #52c41a; }
+.consent-pf__muted { opacity: 0.55; }
+
+.consent-pf__list { margin: 0; padding: 0; list-style: none; }
+.consent-pf__list li { margin: 0 0 2px; }
+
+.consent-pf__block { margin-bottom: 8px; }
+.consent-pf__block .consent-pf__label { margin-bottom: 3px; }
+.consent-pf__block--warning .consent-pf__pre {
+  border-left: 3px solid #d48806;
+  background: rgba(212, 136, 6, 0.08);
+}
+
+/* Editable block (payload.editable): same look as the read-only block, plus
+   a visible edge so it reads as an input. */
+textarea.consent-pf__edit {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  color: inherit;
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+textarea.consent-pf__edit:focus { outline: none; border-color: #2dd4bf; }
+body:not(.dark) textarea.consent-pf__edit { border-color: #99e6dc; }
+body:not(.dark) textarea.consent-pf__edit:focus { border-color: #0d9488; }
+.consent-pf__edited { text-transform: none; opacity: 0.9; color: #2dd4bf; }
+body:not(.dark) .consent-pf__edited { color: #0d9488; }
+.consent-pf__reset {
+  margin-left: 8px; padding: 0; border: none; background: none; cursor: pointer;
+  color: inherit; text-decoration: underline; font-size: 11px; text-transform: none;
+}
+
+.consent-pf__pre {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}
+body:not(.dark) .consent-pf__pre { background: rgba(0, 0, 0, 0.04); }
+.consent-pf__pre--raw { margin-top: 6px; }
+
+.consent-pf__raw-toggle {
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.55;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.consent-pf__raw-toggle:hover { opacity: 0.9; }
+
+/* Footer: approve group left, reject group right. */
+.consent-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.consent-actions__approve { display: flex; gap: 6px; align-items: center; }
+.consent-actions__reject { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 240px; justify-content: flex-end; }
+.consent-actions__reject .ant-input { flex: 1; min-width: 160px; max-width: 460px; }

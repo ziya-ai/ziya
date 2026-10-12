@@ -107,11 +107,11 @@ async def test_approve_via_api_dispatches_the_tool():
 
     # Parked: nothing dispatched yet, and the handshake sees it as open.
     assert manager.call_tool.await_count == 0
-    open_now = await consent_api.list_open_consents(conversation_id=CONV)
+    open_now = consent_api.list_open_consents(conversation_id=CONV)
     assert [r["request_id"] for r in open_now] == [rid]
 
     # Answer through the real route handler.
-    res = await consent_api.answer_consent(
+    res = consent_api.answer_consent(
         rid, consent_api.ConsentAnswer(decision="approve", answered_by="tester"))
     assert res["settled"] is True
 
@@ -122,7 +122,7 @@ async def test_approve_via_api_dispatches_the_tool():
     results = [e for e in events if e.get("type") == "_tool_result"]
     assert results and "wrote x.txt" in str(results[-1]["result"])
     # Closed after the turn consumed the answer: no longer listed as open.
-    assert await consent_api.list_open_consents(conversation_id=CONV) == []
+    assert consent_api.list_open_consents(conversation_id=CONV) == []
 
 
 @pytest.mark.asyncio
@@ -138,7 +138,7 @@ async def test_reject_via_api_refuses_without_dispatch():
     await _collect_until_parked(gen, events)
     rid = _request_id(events)
 
-    await consent_api.answer_consent(
+    consent_api.answer_consent(
         rid, consent_api.ConsentAnswer(decision="reject", answer="not now"))
     await _finish(gen, events)
 
@@ -177,8 +177,8 @@ async def test_second_answer_is_reported_not_errored():
     await _collect_until_parked(gen, events)
     rid = _request_id(events)
 
-    first = await consent_api.answer_consent(rid, consent_api.ConsentAnswer(decision="approve"))
-    second = await consent_api.answer_consent(rid, consent_api.ConsentAnswer(decision="reject"))
+    first = consent_api.answer_consent(rid, consent_api.ConsentAnswer(decision="approve"))
+    second = consent_api.answer_consent(rid, consent_api.ConsentAnswer(decision="reject"))
     # First answer wins; the second call succeeds but returns the settled one.
     assert first["answer"]["decision"] == "approve"
     assert second["answer"]["decision"] == "approve"
@@ -191,6 +191,6 @@ async def test_second_answer_is_reported_not_errored():
 async def test_unknown_request_is_404():
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as ei:
-        await consent_api.answer_consent(
+        consent_api.answer_consent(
             "conv:nope:nope", consent_api.ConsentAnswer(decision="approve"))
     assert ei.value.status_code == 404

@@ -52,6 +52,11 @@ _HAZARDS: Dict[str, Tuple[str, ...]] = {
         "`fetch --prune` deletes remote-tracking refs",
         "`fetch +<refspec>` force-updates local refs",
     ),
+    "clone": (
+        "`clone --upload-pack=<cmd>` / an `ext::` URL runs an arbitrary command",
+        "`clone --config` / `--template` sets configuration and hooks in the new repository",
+        "the destination is any path, not checked against the project write policy",
+    ),
     "checkout": (
         "`checkout -- <path>` / `checkout .` discards uncommitted changes",
         "`checkout -f` overwrites untracked and modified files",
@@ -116,13 +121,20 @@ _READ_ONLY = frozenset({
 
 # Subcommand → the consent-gated git tool op that covers the common use.
 _TOOL_ALTERNATIVE: Dict[str, str] = {
-    "add": "git tool op=add (stages only files the write policy allows)",
+    "add": "git tool op=add (never -f; every file to be staged is listed for approval)",
     "commit": "git tool op=commit (no --amend / --no-verify; you approve each commit)",
     "push": "git tool op=push (current branch only, never forced)",
-    "stash": "git tool op=stash_push (never takes untracked files)",
+    "stash": ("git tool op=stash_push (never takes untracked files) or op=stash_pop "
+              "(clean tree; each file it writes is listed for approval)"),
+    "fetch": "git tool op=fetch (configured remotes only, never prunes)",
+    "clone": ("git tool op=clone (https/ssh/git URLs only, into a new directory "
+              "inside the project)"),
     "switch": "git tool op=switch (refuses a dirty tree; never forces)",
-    "checkout": "git tool op=switch to change branch (refuses a dirty tree)",
-    "restore": "git tool op=unstage for `restore --staged` (index only)",
+    "checkout": ("git tool op=checkout (paths: each file whose edits would be lost is "
+                 "listed for approval; rev alone: detach at a commit) or op=switch "
+                 "to change branch"),
+    "restore": ("git tool op=unstage for `restore --staged` (index only); "
+                "op=checkout with paths for a consented worktree restore"),
     "reset": "git tool op=unstage for `reset <path>` (index only)",
 }
 

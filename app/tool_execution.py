@@ -221,6 +221,12 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
     # tool that declares ``ask`` for this op: that call is refused, because
     # unattended execution is exactly what it opted out of.
     _gate_tool = None
+    # Paths outside the write policy that the human approved for THIS call
+    # (design/scope-consent.md); activated around execute() below.
+    _write_grant = None
+    # Argument values the human rewrote in the approval panel (e.g. a commit
+    # message); they replace the model's for THIS call.
+    _arg_edits = None
     try:
         from app.utils import consent_gate as _consent
         for _t in (ctx.all_tools or []):
@@ -258,6 +264,9 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                 'result': _consent.refusal_text(ctx.actual_tool_name, _op, _decision.get("answer") or {}),
             }
             return
+        if _decision is not None:
+            _write_grant = _decision.get("write_grant")
+            _arg_edits = _decision.get("arg_edits") or None
     except Exception as _gate_err:  # noqa: BLE001
         try:
             from app.utils.consent_gate import fails_closed as _fails_closed
@@ -279,6 +288,9 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             }
             return
         logger.warning(f"consent gate failed for {ctx.actual_tool_name}; dispatching ungated: {_gate_err}")
+
+    if _arg_edits:
+        ctx.args.update(_arg_edits)
 
     # --- Execute the tool ---
     try:
@@ -393,10 +405,21 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                 # bypass the MCP manager's normalize/coerce path).
                 from app.mcp.tools.base import coerce_json_string_args
                 ctx.args = coerce_json_string_args(builtin_tool.tool_instance, ctx.args)
-                result = await _await_tool_result(
-                    builtin_tool.tool_instance.execute(**ctx.args),
-                    TOOL_EXEC_TIMEOUT, ctx,
-                )
+                # The grant lives exactly as long as this call; the task and any
+                # thread the tool starts copy it, and reset() ends it.
+                from app.utils import write_grants as _write_grants
+                _wg_token = _write_grants.activate(_write_grant)
+                try:
+                    result = await _await_tool_result(
+                        builtin_tool.tool_instance.execute(**ctx.args),
+                        TOOL_EXEC_TIMEOUT, ctx,
+                    )
+                finally:
+                    _write_grants.reset(_wg_token)
+                # Tell the model its argument was replaced, so it does not
+                # assume its own text landed.
+                if _arg_edits and isinstance(result, dict) and not result.get("error"):
+                    result = {**result, "edited_by_user": sorted(_arg_edits)}
             # Sign builtin results (external tools are signed in MCPClient)
             if result and not isinstance(result, dict):
                 result = {"content": [{"type": "text", "text": str(result)}]}

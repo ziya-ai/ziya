@@ -100,20 +100,27 @@ class ConsentRecord:
 
 def make_answer(
     decision: str, *, scope: str = "once", answer: str = "", answered_by: str = "",
+    edits: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
+    """``edits`` are argument values the human replaced before approving
+    (e.g. a commit message).  Kept only on an approval; which keys a tool
+    accepts is enforced by the gate and the API, not here."""
     decision = (decision or "").strip().lower()
     if decision not in DECISIONS:
         raise ValueError(f"decision must be one of {DECISIONS}, got {decision!r}")
     scope = (scope or "once").strip().lower()
     if scope not in SCOPES:
         raise ValueError(f"scope must be one of {SCOPES}, got {scope!r}")
-    return {
+    out = {
         "decision": decision,
         "scope": scope if decision == "approve" else "once",
         "answer": answer or "",
         "answered_by": answered_by or "",
         "answered_at": _now_ms(),
     }
+    if edits and decision == "approve":
+        out["edits"] = dict(edits)
+    return out
 
 
 # ── store protocol ────────────────────────────────────────────────────────
@@ -365,10 +372,12 @@ class ConsentLedger:
     def record_answer(
         self, request_id: str, decision: str, *, scope: str = "once",
         answer: str = "", answered_by: str = "",
+        edits: Optional[Dict[str, str]] = None,
     ) -> Optional[ConsentRecord]:
         return self.store.record_answer(
             request_id,
-            make_answer(decision, scope=scope, answer=answer, answered_by=answered_by),
+            make_answer(decision, scope=scope, answer=answer, answered_by=answered_by,
+                        edits=edits),
         )
 
     def close(self, request_id: str) -> Optional[ConsentRecord]:

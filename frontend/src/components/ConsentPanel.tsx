@@ -18,7 +18,7 @@
  * look like the same thing, which they are.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Input, Select, Tooltip } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import {
@@ -27,7 +27,44 @@ import {
   fetchOpenConsents, openFor,
 } from '../utils/consentStore';
 import type { ConsentRecord, ConsentScope, OpenConsents } from '../utils/consentStore';
+import { ConsentPreflight, originalText } from './ConsentPreflight';
+import { lazyWithRetry } from '../utils/lazyWithRetry';
 import './TaskCard/task-card-inline-tile.css';
+
+// The chat's diff renderer without its Apply button.  Lazy because
+// MarkdownRenderer is its own chunk (StreamedContent loads it the same way).
+const ReadOnlyDiffView = lazyWithRetry(() =>
+  import('./MarkdownRenderer').then(m => ({ default: m.ReadOnlyDiffView })));
+
+// write_grants.write_preview appends this when it caps a preview.
+const CAP_MARKER = /\n?… \((\d+) more characters\)\n?$/;
+
+/**
+ * Shape a preflight diff for the chat diff renderer: drop the display-cap
+ * marker (not a diff line), and add the ``diff --git`` header difflib does
+ * not emit.  ``truncated`` is the character count the cap cut, 0 if none.
+ */
+export function asRenderableDiff(raw: string, fallbackPath = 'file'): { diff: string; truncated: number } {
+  const m = CAP_MARKER.exec(raw);
+  let diff = m ? raw.slice(0, m.index) + '\n' : raw;
+  if (!/^diff --git /.test(diff)) {
+    const path = /^\+\+\+ b\/(.+)$/m.exec(diff)?.[1]
+      ?? /^--- a\/(.+)$/m.exec(diff)?.[1]
+      ?? fallbackPath;
+    diff = `diff --git a/${path} b/${path}\n${diff}`;
+  }
+  return { diff, truncated: m ? Number(m[1]) : 0 };
+}
+
+// A chunk that fails to load must not take the approval panel down with it:
+// fall back to the plain text the panel showed before.
+class DiffFallbackBoundary extends React.Component<
+  { fallback: React.ReactNode; children: React.ReactNode }, { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
 
 interface Props {
   conversationId: string;
@@ -83,9 +120,10 @@ const ConsentPanel: React.FC<Props> = ({ conversationId }) => {
 
   const answer = useCallback(async (
     rec: ConsentRecord, decision: 'approve' | 'reject', scope: ConsentScope, text: string,
+    edits: Record<string, string> = {},
   ) => {
     setBusy(rec.request_id);
-    const res = await answerConsent(rec.request_id, decision, scope, text);
+    const res = await answerConsent(rec.request_id, decision, scope, text, edits);
     setBusy(null);
     // Success, or the server says nothing is waiting any more: either way
     // the request leaves the panel.  The stream's consent_answered frame
@@ -105,7 +143,7 @@ const ConsentPanel: React.FC<Props> = ({ conversationId }) => {
           key={rec.request_id}
           rec={rec}
           busy={busy === rec.request_id}
-          onAnswer={(d, s, t) => answer(rec, d, s, t)}
+          onAnswer={(d, s, t, e) => answer(rec, d, s, t, e)}
         />
       ))}
     </div>
@@ -115,68 +153,141 @@ const ConsentPanel: React.FC<Props> = ({ conversationId }) => {
 const ConsentRequest: React.FC<{
   rec: ConsentRecord;
   busy: boolean;
-  onAnswer: (decision: 'approve' | 'reject', scope: ConsentScope, text: string) => void;
+  onAnswer: (decision: 'approve' | 'reject', scope: ConsentScope, text: string,
+             edits?: Record<string, string>) => void;
 }> = ({ rec, busy, onAnswer }) => {
   const [scope, setScope] = useState<ConsentScope>('once');
   const [text, setText] = useState('');
+  const [edits, setEdits] = useState<Record<string, string>>({});
   const p = rec.payload;
   const scopes: ConsentScope[] = rec.scopes ?? ['once', 'conversation', 'session', 'always'];
   const preflight = p.kind === 'tool_call' ? p.preflight : null;
   const args = p.kind === 'tool_call' ? p.args : null;
+  // design/scope-consent.md: paths outside the write policy, and the
+  // proposed change when the tool supplies one (file_write).
+  const outside = p.kind === 'tool_call' ? (p.outside_policy ?? []) : [];
+  const rawDiff = preflight ? preflight['diff'] : undefined;
+  const diffText = typeof rawDiff === 'string' ? rawDiff : null;
+  const detail = preflight && diffText !== null
+    ? Object.fromEntries(Object.entries(preflight).filter(([k]) => k !== 'diff'))
+    : (preflight ?? args);
+  const renderable = useMemo(
+    () => (diffText ? asRenderableDiff(diffText, String(preflight?.['path'] ?? 'file')) : null),
+    [diffText, preflight],
+  );
+  const tool = p.kind === 'tool_call' ? p.tool : '';
+  const op = p.kind === 'tool_call' ? p.op : undefined;
+  // Only a preflight is editable: its value is the full text, whereas the
+  // raw args shown as a fallback are truncated for display.
+  const editable = p.kind === 'tool_call' && preflight ? (p.editable ?? []) : [];
+  const onEdit = useCallback((k: string, v: string | undefined) => {
+    setEdits(prev => {
+      const next = { ...prev };
+      if (v === undefined) delete next[k]; else next[k] = v;
+      return next;
+    });
+  }, []);
+  // Emptying a value the model supplied (a commit message) cannot succeed.
+  const blanked = Object.entries(edits).some(([k, v]) =>
+    !v.trim() && detail && originalText(detail as Record<string, unknown>, k).trim() !== '');
 
   return (
-    <div className="tc-ask-panel" role="group" aria-label="Tool call — awaiting your approval">
-      <div className="tc-ask-panel__q">
+    <div className="tc-ask-panel consent-panel" role="group" aria-label="Tool call — awaiting your approval">
+      <div className="consent-panel__head">
         <span aria-hidden className="tc-ask-panel__icon">?</span>
         <span className="tc-ask-panel__question">{describe(rec)}</span>
       </div>
 
-      {/* You approve what WILL happen: preflight first, raw args as fallback. */}
-      {(preflight || args) && (
-        <pre className="tc-ask-panel__detail" style={{ maxHeight: 220, overflow: 'auto', fontSize: 12 }}>
-          {JSON.stringify(preflight ?? args, null, 2)}
-        </pre>
+      {outside.length > 0 && (
+        <div
+          className="tc-ask-panel__detail"
+          role="alert"
+          aria-label="Outside the write policy"
+          style={{ borderLeft: '3px solid #d48806', paddingLeft: 8, fontSize: 12 }}
+        >
+          <strong>Outside the write policy.</strong>{' '}
+          Approving once allows writes to exactly these paths, for this call only.
+          A conversation or session scope also remembers these exact files for this
+          tool, so later writes to them won't ask again (or show a diff).
+          <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+            {outside.map(o => (
+              <li key={o.path}><code>{o.path}</code></li>
+            ))}
+          </ul>
+        </div>
       )}
 
-      <div className="tc-ask-panel__free" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Select<ConsentScope>
-          size="small"
-          value={scope}
-          onChange={setScope}
-          disabled={busy}
-          style={{ minWidth: 220 }}
-          options={scopes.map(s => ({ value: s, label: SCOPE_LABELS[s] }))}
-          aria-label="Approval scope"
+      {diffText && renderable && (
+        <div className="consent-panel__diff" aria-label="Proposed change" style={{ maxHeight: 420, overflow: 'auto' }}>
+          <DiffFallbackBoundary fallback={<pre className="tc-ask-panel__detail" style={{ fontSize: 12 }}>{diffText}</pre>}>
+            <Suspense fallback={<pre className="tc-ask-panel__detail" style={{ fontSize: 12 }}>{diffText}</pre>}>
+              <ReadOnlyDiffView diff={renderable.diff} elementId={`consent-${rec.request_id}`} />
+            </Suspense>
+          </DiffFallbackBoundary>
+          {renderable.truncated > 0 && (
+            <div style={{ fontSize: 12, opacity: 0.7, padding: '4px 8px' }}>
+              … {renderable.truncated} more characters not shown
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* You approve what WILL happen: preflight first, raw args as fallback. */}
+      {detail && Object.keys(detail).length > 0 && (
+        <ConsentPreflight
+          tool={tool}
+          op={op}
+          detail={detail as Record<string, unknown>}
+          isArgs={!preflight}
+          editable={editable}
+          edits={edits}
+          onEdit={editable.length ? onEdit : undefined}
         />
-        <Tooltip title="Approve this tool call with the selected scope">
-          <Button
-            type="primary"
+      )}
+
+      <div className="tc-ask-panel__free consent-actions">
+        <div className="consent-actions__approve">
+          <Tooltip title={blanked ? 'An edited value is empty' : 'Approve this tool call with the selected scope'}>
+            <Button
+              type="primary"
+              size="small"
+              icon={<CheckCircleOutlined />}
+              loading={busy}
+              disabled={blanked}
+              onClick={() => onAnswer('approve', scope, text, edits)}
+            >
+              Approve
+            </Button>
+          </Tooltip>
+          <Select<ConsentScope>
             size="small"
-            icon={<CheckCircleOutlined />}
-            loading={busy}
-            onClick={() => onAnswer('approve', scope, text)}
+            value={scope}
+            onChange={setScope}
+            disabled={busy}
+            style={{ minWidth: 150 }}
+            options={scopes.map(s => ({ value: s, label: SCOPE_LABELS[s] }))}
+            aria-label="Approval scope"
+          />
+        </div>
+        <div className="consent-actions__reject">
+          <Input
+            size="small"
+            placeholder="Reason for rejecting (optional, shown to the model)"
+            value={text}
+            onChange={e => setText(e.target.value)}
+            disabled={busy}
+            onPressEnter={() => onAnswer('reject', 'once', text)}
+          />
+          <Button
+            danger
+            size="small"
+            icon={<CloseCircleOutlined />}
+            disabled={busy}
+            onClick={() => onAnswer('reject', 'once', text)}
           >
-            Approve
+            Reject
           </Button>
-        </Tooltip>
-        <Input
-          size="small"
-          placeholder="Reason (optional, shown to the model on reject)"
-          value={text}
-          onChange={e => setText(e.target.value)}
-          disabled={busy}
-          style={{ flex: 1, minWidth: 180 }}
-          onPressEnter={() => onAnswer('reject', 'once', text)}
-        />
-        <Button
-          danger
-          size="small"
-          icon={<CloseCircleOutlined />}
-          disabled={busy}
-          onClick={() => onAnswer('reject', 'once', text)}
-        >
-          Reject
-        </Button>
+        </div>
       </div>
     </div>
   );
