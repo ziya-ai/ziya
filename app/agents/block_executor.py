@@ -53,7 +53,10 @@ from . import task_templating
 from .task_executor import TaskExecutorError, execute_task_block
 from . import task_run_stream_relay as _relay
 from ..utils.self_improve import stage_counts, stage_evidence
-from .until_evaluator import evaluate_condition as _evaluate_until_condition_with_model
+from .until_evaluator import (
+    UntilVerdict,
+    evaluate_condition_verdict as _evaluate_until_condition_with_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1266,7 +1269,8 @@ def _build_iteration_context(bindings: "task_templating.IterationBindings") -> s
     has_previous = bindings.previous is not None
     has_item = bindings.item is not None
     has_history = bool(bindings.all_summaries)
-    if not (has_previous or has_item or has_history):
+    has_rationale = bool((bindings.until_rationale or "").strip())
+    if not (has_previous or has_item or has_history or has_rationale):
         return ""
     lines = ["[Iteration context -- automatically provided to help your task]"]
     lines.append(f"- Iteration number: {bindings.index}")
@@ -1276,6 +1280,21 @@ def _build_iteration_context(bindings: "task_templating.IterationBindings") -> s
         prev = (bindings.previous.summary or "").strip()
         if prev:
             lines.append(f"- Previous iteration produced: {prev}")
+    if has_rationale:
+        # The Until evaluator's objection to the previous pass.  Without
+        # this the body has no idea what the condition judge wanted and
+        # re-does the same work until until_max (run 7dfb90f6).
+        cond = (bindings.until_condition or "").strip()
+        if cond:
+            lines.append(f"- This loop exits when: {cond}")
+        lines.append(
+            "- The previous iteration did NOT satisfy that condition. "
+            f"Evaluator's reason: {bindings.until_rationale.strip()}"
+        )
+        lines.append(
+            "- Address that reason in this iteration; if it cannot be "
+            "addressed, say so explicitly in your summary."
+        )
     if has_history:
         prior = [s.strip() for s in bindings.all_summaries if s.strip()]
         if prior:
@@ -2783,6 +2802,49 @@ def _iteration_signature(a: Artifact) -> str:
 # stuck rather than merely slow.
 _UNTIL_STALL_LIMIT = 3
 
+# Artifact.signature of an Until block that ran out of until_max (or
+# stopped as unreachable) with its explicit condition still unmet.
+# task_run_read.failure_reason_of reads it to pick the decision carrying
+# the evaluator's reason.
+UNTIL_CONDITION_UNMET = "until_condition_unmet"
+
+
+def _coerce_until_verdict(result: Any) -> UntilVerdict:
+    """Accept what the evaluator (or a test stub standing in for it)
+    returned: an UntilVerdict, a (satisfied, rationale) pair, or the bare
+    bool the evaluator returned before it carried a reason."""
+    if isinstance(result, UntilVerdict):
+        return result
+    if isinstance(result, tuple) and len(result) == 2:
+        return UntilVerdict(bool(result[0]), str(result[1] or ""))
+    sat = getattr(result, "satisfied", None)
+    if sat is not None:
+        return UntilVerdict(bool(sat), str(getattr(result, "rationale", "") or ""))
+    return UntilVerdict(bool(result), "")
+
+
+def _until_output_signature(a: Artifact) -> str:
+    """Signature of everything an iteration handed back: summary,
+    decisions, emitted data parts and named files.  Broader than
+    ``_iteration_signature`` (summary only) because the question it
+    answers is "did the body change ANYTHING after being told why the
+    condition was unmet" -- a terse constant summary over changing data
+    parts is progress and must not match."""
+    import json as _json
+    parts: List[str] = [" ".join((a.summary or "").lower().split())]
+    parts.extend(d.strip() for d in (a.decisions or []))
+    for o in (a.outputs or []):
+        if getattr(o, "data", None) is not None:
+            try:
+                parts.append(_json.dumps(o.data, sort_keys=True, default=str))
+            except (TypeError, ValueError):
+                parts.append(repr(o.data))
+        if getattr(o, "file_uri", None):
+            parts.append(str(o.file_uri))
+        if getattr(o, "text", None):
+            parts.append(str(o.text))
+    return hashlib.sha256("\x00".join(parts).encode("utf-8", errors="replace")).hexdigest()[:16]
+
 
 async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     """Repeat the body until a model-evaluated condition is true.
@@ -2820,6 +2882,16 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     # for.
     stall_streak = 0
     prev_sig: Optional[str] = None
+    # Layer-3 feedback state.  ``last_rationale`` is the evaluator's reason
+    # the previous iteration was judged unmet; it is bound into the next
+    # iteration (``{{until.last_rationale}}`` and the iteration-context
+    # preamble) and recorded on the block.  ``prev_out_sig`` is the
+    # previous iteration's full-output signature, and ``fed_back`` says
+    # whether that iteration ran WITH a rationale in hand -- the
+    # unreachability check below needs both.
+    last_rationale = ""
+    prev_out_sig: Optional[str] = None
+    fed_back = False
 
     _begin_loop_pass(block, ctx)
     await _emit(ctx, {
@@ -2883,7 +2955,10 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         })
         bindings = task_templating.IterationBindings(
             index=i, item=_enclosing_item, previous=last_artifact, all_summaries=[],
+            until_condition=(condition or None),
+            until_rationale=(last_rationale or None),
         )
+        fed_back = bool(last_rationale)
         ctx.binding_stack.append(bindings)
         # See _execute_repeat._run_one — stamp iteration context so
         # nested task_executor emissions are tagged with this until
@@ -3015,14 +3090,57 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
             continue
         # mode == "model"
         try:
-            satisfied = await _evaluate_until_condition_with_model(condition, artifact)
+            verdict = _coerce_until_verdict(
+                await _evaluate_until_condition_with_model(condition, artifact))
         except Exception as e:
             logger.warning(f"until condition eval failed (continuing): {e}")
-            satisfied = False
-        if satisfied:
+            verdict = UntilVerdict(False, f"evaluator error: {e}")
+        # The verdict is the one thing a reader of this run cannot
+        # reconstruct from the body's files, so it is recorded three ways:
+        # an event (live inspector + journal), a decision (the block's
+        # record), and -- below -- the next iteration's instructions.
+        await _emit(ctx, {
+            "type": "until_evaluated",
+            "block_id": block.id, "index": i,
+            "satisfied": verdict.satisfied,
+            "rationale": verdict.rationale or None,
+            "at": time.time(),
+        })
+        if verdict.satisfied:
             condition_satisfied = True
             decisions.append(f"until condition satisfied at iter {i}")
             break
+        decisions.append(
+            f"until condition not satisfied at iter {i}"
+            + (f": {verdict.rationale}" if verdict.rationale else "")
+        )
+        # ---------- Layer 3b: unreachable condition ----------------------
+        # Run 7dfb90f6: iterations 2 and 3 re-emitted iteration 1's files
+        # and the evaluator said no each time; the loop only ended at
+        # until_max.  Stop early when the body has been TOLD why the
+        # condition is unmet and then handed back an identical pass
+        # anyway.  Both halves are required: the rationale must have been
+        # fed into this iteration (otherwise the body changed nothing
+        # because it was told nothing, which the stall breaker and the
+        # documented "only the evaluator decides" contract already cover),
+        # and the full output -- summary, decisions, data parts, files --
+        # must be unchanged, so a terse constant summary over advancing
+        # data is still progress.  A failed iteration is left to the
+        # stall breaker, which owns that shape.
+        out_sig = _until_output_signature(artifact)
+        if (
+            fed_back and not artifact.failed
+            and prev_out_sig is not None and out_sig == prev_out_sig
+        ):
+            decisions.append(
+                f"condition unreachable: body output unchanged at iter {i} "
+                f"after being told why the condition was unmet "
+                f"(stopped at iter {i} of max {n_max})"
+            )
+            last_rationale = verdict.rationale or last_rationale
+            break
+        prev_out_sig = out_sig
+        last_rationale = verdict.rationale
 
     # Exhaustion is a verdict on the GOAL, not on the last body pass.
     # GFX Stage 2 run 3068d3d0: condition "every defect verified or
@@ -3037,9 +3155,13 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         and last_artifact is not None
     )
     if condition_failed:
+        # Carries the evaluator's last reason so the block's
+        # failure_reason (task_run_read.failure_reason_of) says WHY, not
+        # the bare "failed" run 7dfb90f6 recorded.
         decisions.append(
             f"until condition not satisfied after {len(stages)} iteration(s) "
             f"(until_max={n_max}); the goal was not reached"
+            + (f": {last_rationale}" if last_rationale else "")
         )
 
     elapsed_ms = int((time.time() - start) * 1000)
@@ -3053,6 +3175,9 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         stages=stages,
         created_at=now_ms(),
         failed=bool(last_artifact and last_artifact.failed) or condition_failed,
+        # Names the failure class for failure_reason_of; None when the
+        # body itself failed (that failure keeps its own signature path).
+        signature=(UNTIL_CONDITION_UNMET if condition_failed else None),
     )
 
 
