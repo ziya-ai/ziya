@@ -1,5 +1,10 @@
 import { D3RenderPlugin, D3Node, D3Link, D3Style } from '../../types/d3';
 import JSON5 from 'json5';
+import {
+    stripDefinitionFence,
+    normalizeSmartQuotes,
+    withBraceCollapse,
+} from '../../utils/d3SpecParser';
 import { classifyColor, contrastRatio, compositeOver, isDarkBackground, ensureReadableFill, truncateLabel } from './chartTheme';
 
 /** Canonical effective canvas surfaces for network contrast resolution.
@@ -14,20 +19,10 @@ export const NETWORK_DARK_BG = '#1f1f1f';
  * old recovery bailed on the first char not being '{' and never saw the JSON
  * inside the fence. Pure/testable.
  */
-export function stripNetworkFence(raw: string): string {
-    let t = String(raw).trim();
-    const matched = /^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/.exec(t);
-    if (matched) return matched[1].trim();
-    t = t.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/```\s*$/, '');
-    return t.trim();
-}
+export const stripNetworkFence = stripDefinitionFence;
 
 /** Fold smart/curly quotes to ASCII (D-208 w4-05); JSON5 rejects U+201C/D/U+2018/9. */
-export function normalizeNetworkSmartQuotes(raw: string): string {
-    return String(raw)
-        .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-        .replace(/[\u2018\u2019\u201A\u201B]/g, "'");
-}
+export const normalizeNetworkSmartQuotes = normalizeSmartQuotes;
 
 /**
  * Replace object-member separator semicolons with commas OUTSIDE string
@@ -113,6 +108,10 @@ export function insertMissingItemCommas(body: string): string {
  */
 export function lenientParseNetworkObject(raw: any): any {
     if (typeof raw !== 'string') return undefined;
+    return withBraceCollapse(lenientParseNetworkObjectOnce, raw);
+}
+
+function lenientParseNetworkObjectOnce(raw: string): any {
     const cleaned = normalizeNetworkSmartQuotes(stripNetworkFence(raw)).trim();
     if (!cleaned) return undefined;
     const first = cleaned.indexOf('{');
