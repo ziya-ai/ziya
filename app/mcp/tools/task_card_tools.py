@@ -261,6 +261,17 @@ class TaskCardWriteInput(BaseModel):
                      "block_type and, for non-leaf blocks, a body list). "
                      "Omit to leave the structure unchanged."),
     )
+    edits: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description=(
+            "Targeted field edits applied to the SAVED tree, instead of "
+            "re-sending the whole root.  Each item is {block_id: ..., "
+            "set: {field: value}} or {block_type: 'task', set: {...}} "
+            "(every block of that type).  set keys are Block fields "
+            "(instructions, name, repeat_count, ...) or 'scope.cwd'; id, "
+            "body, block_type and other scope fields are not editable here. "
+            "Preferred for small changes to a large card."),
+    )
     name: Optional[str] = Field(None, description="New card name (optional).")
     description: Optional[str] = Field(None, description="New description (optional).")
 
@@ -272,8 +283,10 @@ class TaskCardWriteTool(BaseMCPTool):
     description: str = (
         "Update a Task Card's definition in place — replace its root block "
         "tree (to fix loop structure, instructions, counts, conditions), "
-        "and/or its name/description.  Read the card first with "
-        "task_card_read, edit the block tree, then write it back.  Blocks "
+        "apply targeted 'edits' to named blocks (set instructions, counts, "
+        "scope.cwd... without re-sending the tree — prefer this for a "
+        "small change to a large card), and/or its name/description.  "
+        "Read the card first with task_card_read.  For a root, blocks "
         "WITHOUT an id get one on write; explicit ids are kept, so set an "
         "id on any block another block references via sibling(\"id\").  "
         "The response carries the launch validator's findings; fix any "
@@ -287,17 +300,40 @@ class TaskCardWriteTool(BaseMCPTool):
         if not card_id:
             return {"error": True, "message": "card_id is required"}
         root = kwargs.get("root")
+        edits = kwargs.get("edits")
         name = kwargs.get("name")
         description = kwargs.get("description")
-        if root is None and name is None and description is None:
+        if root is None and edits is None and name is None and description is None:
             return {"error": True, "message": (
-                "Nothing to update — provide at least one of root, name, "
-                "or description.")}
+                "Nothing to update — provide at least one of root, edits, "
+                "name, or description.")}
+        if root is not None and edits is not None:
+            return {"error": True, "message": (
+                "Give either root (whole-tree replacement) or edits "
+                "(targeted), not both.")}
 
         res = _resolve_card_storage()
         if not res["ok"]:
             return {"error": True, "message": res["error"]}
         storage = res["storage"]
+
+        # Targeted edits: resolve into a replacement root against the
+        # SAVED tree, then fall through to the same guard and save a
+        # whole-root write takes.  See app/utils/task_card_edits.py.
+        touched = 0
+        if edits is not None:
+            stored = storage.get(card_id)
+            if not stored:
+                return {"error": True,
+                        "message": (f"No task card with id '{card_id}' "
+                                    f"in this project.")}
+            from app.utils.task_card_edits import apply_block_edits
+            root, touched, problems = apply_block_edits(
+                stored.root.model_dump(), edits)
+            if problems:
+                return {"error": True, "problems": problems,
+                        "message": ("No edits applied — "
+                                    + "; ".join(problems))}
 
         # ── Scope-preservation guard ────────────────────────────
         # This tool's charter is text and structure; permissions are
@@ -362,11 +398,13 @@ class TaskCardWriteTool(BaseMCPTool):
             tail = (f"It has {n} structural error(s) and launch will "
                     f"refuse it - see 'validation' and write a corrected "
                     f"root.")
+        edited = f" {touched} block(s) edited." if touched else ""
         return {
             "success": True,
             "card_id": card_id,
             "name": card.name,
-            "message": f"Task card '{card.name}' ({card_id[:8]}) updated. {tail}",
+            "blocks_edited": touched,
+            "message": f"Task card '{card.name}' ({card_id[:8]}) updated.{edited} {tail}",
             "validation": validation,
         }
 
