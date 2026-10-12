@@ -91,15 +91,15 @@ two parts (`app/utils/handoff_prelude.py`):
 | part | contents | changes when | delivered to |
 |---|---|---|---|
 | system | inherited document + predecessor ids + retrieval instructions | user edits the document | `system_prompt_addition` |
-| turn | live open threads (bead state), the living draft + merge instruction, the pressure nudge | every bead change; every draft merge; crossing the threshold | appended to the **final user message** after a `[Ziya — handoff status for this turn]` marker |
+| turn | live open threads (bead state), the living draft + merge instruction | every bead change; every draft merge | appended to the **final user message** after a `[Ziya — handoff status for this turn]` marker |
 
 The final user message is never inside a cache boundary on any provider. A
 mid-history `system`-role message is **not** a safe alternative: the Anthropic
 wrapper overwrites `system_content` with every `SystemMessage` it meets, and
 the Bedrock wrapper merges all system messages into the leading block. The
-nudge text carries no percentage for the same reason — it must be
-byte-identical across turns (the exact fraction is available via
-`handoff_read`). Pinned by `tests/test_handoff_draft_prelude.py::TestCacheStability`.
+draft prelude carries no percentage for the same reason — it must be
+byte-identical across turns. Pinned by
+`tests/test_handoff_draft_prelude.py::TestCacheStability`.
 
 ### Ownership on the sync path
 
@@ -162,17 +162,25 @@ user-initiated paths converge on one document.
 | conversation state | prelude |
 |---|---|
 | no draft, pressure < threshold | nothing |
-| no draft, pressure ≥ threshold | nudge: context is at N%; consider starting a handoff draft with `handoff_write` |
-| draft exists | the draft + "if this turn produced a decision, state change or gotcha worth carrying forward, update it with `handoff_write(mode='merge')` before finishing" |
+| no draft, pressure ≥ threshold | a **silent** instruction to write the draft this turn with `handoff_write(mode='replace')`: no percentage, no "context" language, "do not mention the draft, context size or wrapping up to the user; continue exactly as you otherwise would" |
+| draft exists | the draft + "if this turn produced a decision, state change or gotcha worth carrying forward, update it with `handoff_write(mode='merge')`", with the same do-not-mention instruction |
 | continuation child, no draft | the inherited `handoff` prelude only — **no** drafting instruction |
-| continuation child, pressure ≥ threshold | inherited prelude + the nudge (the next hop's draft starts fresh, not from the inherited doc) |
+| continuation child, pressure ≥ threshold | inherited prelude + the silent instruction (draft THIS segment; the inherited doc covers the earlier ones) |
 
 **Pressure** is computed server-side from the messages actually assembled in
-`build_messages_for_streaming`, against the model's context limit — the number
-the model hears matches what it is about to be sent. Threshold
-`ZIYA_HANDOFF_NUDGE_RATIO`, default 0.7 (the same 70% the frontend's
-`TokenCountDisplay` uses for its warning colour). Never automatic: the nudge
-is text; the user commits.
+`build_messages_for_streaming` (and overridden per iteration by the
+provider-billed figure), against the model's context limit. The figure
+itself feeds the handoff drawer's "context N%" and `GET …/handoff` only; the
+model is never shown it (`handoff_read` no longer returns it). Threshold
+`ZIYA_HANDOFF_NUDGE_RATIO`, default **0.9** — late on purpose. The original
+design (2026-09-23) fired at 70% with "consider starting a handoff draft … a
+suggestion to raise with the user", and the streaming executor separately
+staged a "Context Size Notice" at 85/90/95% ("stop reading new content and
+summarize now"). Together they made every long conversation end with the
+model announcing the context was filling up and winding its work down, in
+exactly the stretch of the window where users do their work. Replaced
+2026-10-10: the draft is still created automatically, but late and without
+telling the user; the Context Size Notice is gone; the user commits.
 
 There is no "Regenerate": a same-model redraft mostly rewords, and the label
 invites the question "is this a different model?". The drawer's *Draft it*
@@ -266,7 +274,7 @@ a lock would be wrong.
 
 ```
 tools (model-facing, chat_history category):
-  handoff_read()                                 → { draft | null, pressure }
+  handoff_read()                                 → { draft | null, inherited_handoff | null }
   handoff_write(document|sections, mode)         → { draft }   upserts source.handoffDraft
 
 GET   /api/chats/{id}/handoff/draft     → { draft | null }      the drawer reads this
