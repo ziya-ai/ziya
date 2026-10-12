@@ -57,7 +57,7 @@ _READ_ONLY_BUILTINS = frozenset({
     "get_architecture_diagram_template",
     "get_skill_details",
     "task_card_list", "task_card_read", "task_card_validate",
-    "list_run_artifacts",
+    "list_run_artifacts", "validate_output",
     "shadow_list", "shadow_read",
 })
 
