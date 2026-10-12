@@ -6,6 +6,11 @@ API (providers, services listing, install, uninstall, tool search, favorites)
 is in app.routes.mcp_routes under the same /api/mcp/registry prefix; that
 router is included first in app.server, so a duplicate declared here would be
 dead code that silently takes over on any include-order change.
+
+Handlers that await nothing are plain ``def`` so Starlette runs them on its
+worker threadpool instead of on the event loop (``check_mcp_registry_binary``
+walks PATH with ``shutil.which``).  Guarded by
+tests/test_mcp_registry_routes_not_event_loop_blocking.py.
 """
 
 import shutil
@@ -20,7 +25,7 @@ router = APIRouter(prefix="/api/mcp/registry", tags=["mcp-registry"])
 
 
 @router.get("/check-binary")
-async def check_mcp_registry_binary():
+def check_mcp_registry_binary():
     """Check if the registry CLI is available in PATH.
 
     'aim' is the rebranded 'mcp-registry' (same toolbox binary); the provider
