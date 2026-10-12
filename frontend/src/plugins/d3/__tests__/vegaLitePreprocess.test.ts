@@ -1,29 +1,28 @@
 /**
- * Tests for Vega-Lite preprocessing fixes in vegaLitePlugin.
+ * Vega-Lite preprocessing helpers, tested against the shipped code.
  *
- * Since preprocessVegaSpec is defined inside the plugin's render() closure,
- * we replicate the individual fix functions here for unit testing.  The
- * integration-level behavior (full render with error handling) is verified
- * by the shouldSuppressError tests below.
+ * These tests used to replicate each helper locally, because the helpers
+ * lived inside the plugin's render() closure. The copies drifted from the
+ * plugin (error suppression, definition completeness and Fix 10 had all
+ * changed) while the tests kept passing. The helpers are now exported
+ * from vegaLitePlugin.ts and imported here; the wiring block at the end
+ * checks that the render path still calls them.
  */
+import * as fs from 'fs';
+import * as path from 'path';
+import {
+  fixDatumFieldSwap,
+  fixInvalidColorSchemeInArcs,
+  fixLayeredChartsWithMismatchedScales,
+  fixBarLogScaleBaseline,
+  isVegaLiteDefinitionComplete,
+  shouldSuppressVegaLiteError,
+} from '../vegaLitePlugin';
 
 // ── Fix 0.05: datum/field swap ──────────────────────────────────────────────
 // Vega-Lite requires the primary channel (x, y) to carry the field reference
 // and the secondary (x2, y2) to hold datum values.  LLMs frequently reverse
 // this in lollipop/dumbbell charts.
-
-function fixDatumFieldSwap(encoding: any): void {
-  if (!encoding) return;
-  const pairs: [string, string][] = [['x', 'x2'], ['y', 'y2']];
-  for (const [primary, secondary] of pairs) {
-    const prim = encoding[primary];
-    const sec = encoding[secondary];
-    if (prim && sec && 'datum' in prim && 'field' in sec) {
-      encoding[primary] = sec;
-      encoding[secondary] = prim;
-    }
-  }
-}
 
 describe('fixDatumFieldSwap', () => {
   it('swaps x:{datum} + x2:{field} to satisfy Vega-Lite channel requirements', () => {
@@ -98,185 +97,13 @@ describe('fixDatumFieldSwap', () => {
   });
 });
 
-// ── Post-render SVG dimension handling ───────────────────────────────────────
-// The post-render setTimeout in vegaLitePlugin strips SVG width/height
-// attributes to make auto-sized charts responsive.  Charts with explicit
-// dimensions (width: 600, height: 400) must NOT have their attributes
-// stripped — doing so collapses the SVG to 0px height.
-
-describe('SVG dimension preservation for explicit-dimension charts', () => {
-  /**
-   * Simulate the post-render dimension logic.
-   * Returns true if the SVG attributes would be stripped.
-   */
-  function wouldStripSvgDimensions(vegaSpec: any): boolean {
-    const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
-    const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
-    // The fixed code only strips when BOTH are missing
-    return !hasExplicitWidth && !hasExplicitHeight;
-  }
-
-  it('does NOT strip dimensions for chart with explicit width and height', () => {
-    const spec = { width: 600, height: 400, mark: 'text' };
-    expect(wouldStripSvgDimensions(spec)).toBe(false);
-  });
-
-  it('does NOT strip dimensions when only width is explicit', () => {
-    const spec = { width: 500, mark: 'bar' };
-    // height is undefined, but width is explicit — should not strip
-    expect(wouldStripSvgDimensions(spec)).toBe(false);
-  });
-
-  it('does NOT strip dimensions when only height is explicit', () => {
-    const spec = { height: 300, mark: 'bar' };
-    expect(wouldStripSvgDimensions(spec)).toBe(false);
-  });
-
-  it('strips dimensions for auto-sized charts (no explicit dimensions)', () => {
-    const spec = { mark: 'bar', data: { values: [] } };
-    expect(wouldStripSvgDimensions(spec)).toBe(true);
-  });
-
-  it('strips dimensions when width and height are 0', () => {
-    const spec = { width: 0, height: 0, mark: 'bar' };
-    expect(wouldStripSvgDimensions(spec)).toBe(true);
-  });
-
-  it('does NOT strip for the word-cloud text chart spec from the bug report', () => {
-    const spec = {
-      $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
-      width: 600,
-      height: 400,
-      mark: { type: 'text' },
-      encoding: {
-        x: { field: 'x', type: 'quantitative' },
-        y: { field: 'y', type: 'quantitative' },
-        text: { field: 'name' },
-        size: { field: 'importance', type: 'quantitative', scale: { range: [12, 40] } },
-      },
-    };
-    expect(wouldStripSvgDimensions(spec)).toBe(false);
-  });
-
-  it('does NOT strip for geoshape/map charts with explicit dimensions', () => {
-    // Geoshape specs have no encoding — they rely entirely on projection
-    // and the SVG's intrinsic dimensions for layout.  Stripping width/height
-    // is especially destructive here.
-    const spec = {
-      $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
-      width: 600,
-      height: 400,
-      data: { url: 'https://vega.github.io/vega-datasets/data/world-110m.json', format: { type: 'topojson', feature: 'countries' } },
-      projection: { type: 'mercator', center: [-8, 52], scale: 1500 },
-      mark: { type: 'geoshape', fill: '#264653', stroke: '#2a9d8f' },
-    };
-    expect(wouldStripSvgDimensions(spec)).toBe(false);
-  });
-
-  it('does NOT strip for trail charts with explicit dimensions (data clipping bug)', () => {
-    // Trail marks render axes/legends at the SVG edges but draw paths in
-    // the interior.  Stripping dimensions collapses the SVG, then
-    // forceContainerResize sets the parent to ~40px — just enough for
-    // axis labels to peek through while the trail paths are clipped.
-    const spec = {
-      $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
-      width: 600,
-      height: 400,
-      mark: { type: 'trail' },
-      encoding: {
-        x: { field: 'x', type: 'quantitative' },
-        y: { field: 'y', type: 'quantitative' },
-        size: { field: 'speed', type: 'quantitative', scale: { range: [1, 20] } },
-        color: { field: 'order', type: 'quantitative', scale: { scheme: 'goldorange' } },
-        order: { field: 'order' },
-      },
-    };
-    expect(wouldStripSvgDimensions(spec)).toBe(false);
-  });
-
-  /**
-   * Simulate the scaling guard — should skip scaling for explicit-dimension charts.
-   */
-  function wouldApplyScaling(vegaSpec: any): boolean {
-    const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
-    const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
-    return !hasExplicitWidth && !hasExplicitHeight;
-  }
-
-  it('skips post-render scaling for charts with explicit dimensions', () => {
-    expect(wouldApplyScaling({ width: 600, height: 400 })).toBe(false);
-  });
-
-  it('applies scaling for auto-sized charts', () => {
-    expect(wouldApplyScaling({ mark: 'bar' })).toBe(true);
-  });
-});
-
-// ── Division-by-zero guard in scaling ────────────────────────────────────────
-describe('scaling division-by-zero guard', () => {
-  function safeScale(containerWidth: number, containerHeight: number, svgWidth: number, svgHeight: number): number {
-    const scaleX = svgWidth > 0 ? containerWidth / svgWidth : 1;
-    const scaleY = svgHeight > 0 ? containerHeight / svgHeight : 1;
-    return Math.min(scaleX, scaleY) || 1;
-  }
-
-  it('returns 1 when SVG dimensions are zero', () => {
-    expect(safeScale(800, 600, 0, 0)).toBe(1);
-  });
-
-  it('returns 1 when only width is zero', () => {
-    expect(safeScale(800, 600, 0, 400)).toBe(1);
-  });
-
-  it('calculates correctly for normal dimensions', () => {
-    expect(safeScale(800, 600, 400, 300)).toBe(2);
-  });
-
-  it('uses the smaller scale factor', () => {
-    // 800/400=2, 600/600=1 → min is 1
-    expect(safeScale(800, 600, 400, 600)).toBe(1);
-  });
-});
-
 // ── Fix 8 (broadened): invalid hex color as scheme name ──────────────────────
 // LLMs write `scale: {scheme: "#ff6b6b"}` instead of a valid scheme name.
 // The fix must reach into layer/concat sub-specs, not just top-level encoding.
 
-function fixInvalidColorSchemes(spec: any): void {
-  const palette = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffd93d',
-    '#ff9ff3', '#54a0ff', '#5f27cd', '#ff9f43', '#0abde3'];
-
-  const fixEncoding = (encoding: any, dataLength: number) => {
-    if (!encoding) return;
-    ['color', 'fill', 'stroke'].forEach(channel => {
-      const ch = encoding[channel];
-      if (ch?.scale?.scheme && typeof ch.scale.scheme === 'string' &&
-          ch.scale.scheme.startsWith('#')) {
-        const hexColor = ch.scale.scheme;
-        delete ch.scale.scheme;
-        ch.scale.range = palette.slice(0, dataLength);
-      }
-    });
-  };
-
-  const dataLength = spec.data?.values?.length || 8;
-  fixEncoding(spec.encoding, dataLength);
-  if (spec.layer && Array.isArray(spec.layer)) {
-    spec.layer.forEach((layer: any) => {
-      fixEncoding(layer.encoding, layer.data?.values?.length || dataLength);
-    });
-  }
-  if (spec.hconcat) spec.hconcat.forEach((s: any) => {
-    fixEncoding(s.encoding, s.data?.values?.length || dataLength);
-  });
-  if (spec.vconcat) spec.vconcat.forEach((s: any) => {
-    fixEncoding(s.encoding, s.data?.values?.length || dataLength);
-  });
-}
-
-describe('fixInvalidColorSchemes', () => {
+describe('fixInvalidColorSchemeInArcs', () => {
   it('fixes hex scheme in top-level encoding', () => {
-    // `any`: fixInvalidColorSchemes mutates this object in place (adding
+    // `any`: fixInvalidColorSchemeInArcs mutates this object in place (adding
     // `.range`, deleting `.scheme`), which the literal's inferred type
     // can't reflect — the assertions below read fields the initializer
     // never had.
@@ -285,7 +112,7 @@ describe('fixInvalidColorSchemes', () => {
       data: { values: [{a:1},{a:2},{a:3}] },
       encoding: { color: { field: 'a', type: 'nominal', scale: { scheme: '#ff6b6b' } } },
     };
-    fixInvalidColorSchemes(spec);
+    fixInvalidColorSchemeInArcs(spec);
     expect(spec.encoding.color.scale.scheme).toBeUndefined();
     expect(spec.encoding.color.scale.range).toBeDefined();
     expect(spec.encoding.color.scale.range.length).toBe(3);
@@ -309,7 +136,7 @@ describe('fixInvalidColorSchemes', () => {
         },
       ],
     };
-    fixInvalidColorSchemes(spec);
+    fixInvalidColorSchemeInArcs(spec);
     // Arc layer's color scheme should be replaced with a range
     expect(spec.layer[0].encoding.color.scale.scheme).toBeUndefined();
     expect(spec.layer[0].encoding.color.scale.range).toBeDefined();
@@ -324,7 +151,7 @@ describe('fixInvalidColorSchemes', () => {
       mark: 'bar',
       encoding: { color: { field: 'x', scale: { scheme: 'tableau10' } } },
     };
-    fixInvalidColorSchemes(spec);
+    fixInvalidColorSchemeInArcs(spec);
     expect(spec.encoding.color.scale.scheme).toBe('tableau10');
     expect(spec.encoding.color.scale.range).toBeUndefined();
   });
@@ -335,7 +162,7 @@ describe('fixInvalidColorSchemes', () => {
       encoding: { color: { field: 'x', type: 'nominal' } },
     };
     const original = JSON.parse(JSON.stringify(spec));
-    fixInvalidColorSchemes(spec);
+    fixInvalidColorSchemeInArcs(spec);
     expect(spec).toEqual(original);
   });
 
@@ -347,7 +174,7 @@ describe('fixInvalidColorSchemes', () => {
         encoding: { fill: { field: 'x', scale: { scheme: '#abcdef' } } },
       }],
     };
-    fixInvalidColorSchemes(spec);
+    fixInvalidColorSchemeInArcs(spec);
     expect(spec.hconcat[0].encoding.fill.scale.scheme).toBeUndefined();
     expect(spec.hconcat[0].encoding.fill.scale.range).toBeDefined();
   });
@@ -362,7 +189,7 @@ describe('fixInvalidColorSchemes', () => {
         stroke: { field: 'a', scale: { scheme: '#654321' } },
       },
     };
-    fixInvalidColorSchemes(spec);
+    fixInvalidColorSchemeInArcs(spec);
     expect(spec.encoding.fill.scale.scheme).toBeUndefined();
     expect(spec.encoding.fill.scale.range).toBeDefined();
     expect(spec.encoding.stroke.scale.scheme).toBeUndefined();
@@ -371,45 +198,9 @@ describe('fixInvalidColorSchemes', () => {
 });
 
 // ── shouldSuppressError logic ────────────────────────────────────────────────
-// Reproduce the error-suppression decision from the plugin's catch block.
+// The error-suppression decision from the plugin's render catch block.
 
-function shouldSuppressError(spec: any, error: Error): boolean {
-  const isStreamingError =
-    error.message.includes('Unterminated string') ||
-    error.message.includes('Unexpected end of JSON input') ||
-    error.message.includes('Unexpected token');
-
-  const isIncompleteDefinition =
-    spec.definition ? !isVegaLiteDefinitionComplete(spec.definition) : false;
-
-  const specIsCompleteObject =
-    spec.$schema &&
-    (spec.data || spec.datasets) &&
-    (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
-
-  return (
-    (!spec.forceRender &&
-      ((spec.isStreaming && !spec.isMarkdownBlockClosed) ||
-       (spec.isStreaming && isIncompleteDefinition))) ||
-    (!spec.definition && !specIsCompleteObject) ||
-    (isStreamingError && !spec.forceRender)
-  );
-}
-
-function isVegaLiteDefinitionComplete(definition: string): boolean {
-  if (!definition || definition.trim().length === 0) return false;
-  const trimmed = definition.trim();
-  if (trimmed.endsWith(',') || trimmed.endsWith('{') || trimmed.endsWith('[')) return false;
-  try {
-    const parsed = JSON.parse(definition);
-    if (!parsed || typeof parsed !== 'object') return false;
-    return !!(parsed.data !== undefined && (parsed.mark || parsed.layer));
-  } catch {
-    return false;
-  }
-}
-
-describe('shouldSuppressError (fixed)', () => {
+describe('shouldSuppressVegaLiteError', () => {
   it('does NOT suppress errors for complete object specs (the lollipop chart bug)', () => {
     const spec = {
       $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
@@ -421,7 +212,7 @@ describe('shouldSuppressError (fixed)', () => {
       // definition is undefined — this was the bug trigger
     };
     const error = new Error("Cannot destructure property 'aggregate' of 'i' as it is undefined");
-    expect(shouldSuppressError(spec, error)).toBe(false);
+    expect(shouldSuppressVegaLiteError(spec, error)).toBe(false);
   });
 
   it('suppresses streaming errors when block is not closed', () => {
@@ -431,7 +222,7 @@ describe('shouldSuppressError (fixed)', () => {
       forceRender: false,
     };
     const error = new Error('Unterminated string in JSON');
-    expect(shouldSuppressError(spec, error)).toBe(true);
+    expect(shouldSuppressVegaLiteError(spec, error)).toBe(true);
   });
 
   it('does NOT suppress when forceRender is true and spec is complete', () => {
@@ -445,7 +236,7 @@ describe('shouldSuppressError (fixed)', () => {
       forceRender: true,
     };
     const error = new Error('Unterminated string in JSON');
-    expect(shouldSuppressError(spec, error)).toBe(false);
+    expect(shouldSuppressVegaLiteError(spec, error)).toBe(false);
   });
 
   it('suppresses when definition is missing AND spec is not a complete object', () => {
@@ -456,7 +247,7 @@ describe('shouldSuppressError (fixed)', () => {
       // no $schema, data, mark, or layer
     };
     const error = new Error('Some error');
-    expect(shouldSuppressError(spec, error)).toBe(true);
+    expect(shouldSuppressVegaLiteError(spec, error)).toBe(true);
   });
 
   it('does NOT suppress when definition is missing but spec has schema+data+layer', () => {
@@ -468,7 +259,7 @@ describe('shouldSuppressError (fixed)', () => {
       isMarkdownBlockClosed: true,
     };
     const error = new Error("Cannot destructure property 'aggregate'");
-    expect(shouldSuppressError(spec, error)).toBe(false);
+    expect(shouldSuppressVegaLiteError(spec, error)).toBe(false);
   });
 });
 
@@ -522,58 +313,9 @@ describe('Lollipop chart preprocessing (integration)', () => {
 });
 
 // ── Fix: Layered charts with mismatched y-axis ranges ───────────────────────
-// Replicates the logic from fixLayeredChartsWithMismatchedScales.
 // When layers use different y-fields whose data ranges differ by >3×,
 // the fix adds resolve.scale.y = 'independent' so the shared axis
 // doesn't clip one layer's marks.
-
-function fixLayeredChartsWithMismatchedScales(spec: any): any {
-  if (!spec.layer || !Array.isArray(spec.layer) || spec.layer.length < 2) {
-    return spec;
-  }
-
-  const topLevelYField = spec.encoding?.y?.field;
-  const yFields = spec.layer.map((layer: any) =>
-    layer.encoding?.y?.field || topLevelYField
-  ).filter(Boolean);
-  const uniqueYFields = [...new Set(yFields)] as string[];
-
-  const hasLogScale = spec.layer.some((layer: any) => layer.encoding?.y?.scale?.type === 'log');
-  const hasLinearScale = spec.layer.some((layer: any) => !layer.encoding?.y?.scale?.type || layer.encoding?.y?.scale?.type === 'linear');
-
-  const hasScaleTypeMismatch = hasLogScale && hasLinearScale;
-  const hasRangeMismatch = uniqueYFields.length > 1 && spec.data?.values && (() => {
-    const ranges = uniqueYFields.map((field: string) => {
-      const values = spec.data.values
-        .map((d: any) => d[field])
-        .filter((v: any) => typeof v === 'number' && !isNaN(v));
-      if (values.length === 0) return null;
-      return { field, min: Math.min(...values), max: Math.max(...values) };
-    }).filter(Boolean) as { field: string; min: number; max: number }[];
-    if (ranges.length < 2) return false;
-    for (let i = 0; i < ranges.length; i++) {
-      for (let j = i + 1; j < ranges.length; j++) {
-        const span1 = ranges[i].max - ranges[i].min || 1;
-        const span2 = ranges[j].max - ranges[j].min || 1;
-        const ratio = Math.max(span1 / span2, span2 / span1);
-        if (ratio > 3) return true;
-      }
-    }
-    return false;
-  })();
-
-  if (yFields.length > 1 && (hasScaleTypeMismatch || hasRangeMismatch)) {
-    spec.resolve = { ...(spec.resolve || {}), scale: { ...(spec.resolve?.scale || {}), y: 'independent' } };
-    spec.layer.forEach((layer: any, index: number) => {
-      if (layer.encoding?.y) {
-        if (!layer.encoding.y.axis) layer.encoding.y.axis = {};
-        layer.encoding.y.axis.orient = index === 0 ? 'left' : 'right';
-        layer.encoding.y.axis.grid = index === 0;
-      }
-    });
-  }
-  return spec;
-}
 
 describe('fixLayeredChartsWithMismatchedScales', () => {
   it('adds independent y-scales when layers use different fields with >3× range difference', () => {
@@ -654,88 +396,10 @@ describe('fixLayeredChartsWithMismatchedScales', () => {
     expect(fixed.resolve).toBeUndefined();
   });
 });
+
 // ── fixBarLogScaleBaseline ───────────────────────────────────────────────────
-// Replicated from vegaLitePlugin.ts.
 // Bar marks on a log scale are fundamentally broken (bars imply a zero
 // baseline, log(0) = -∞).  The fix converts to tick + text layers.
-
-function fixBarLogScaleBaseline(spec: any): any {
-  const markType = typeof spec.mark === 'string' ? spec.mark : spec.mark?.type;
-  if (markType !== 'bar') return spec;
-
-  let logAxis: 'x' | 'y' | null = null;
-  for (const axis of ['x', 'y'] as const) {
-    const enc = spec.encoding?.[axis];
-    if (enc?.type === 'quantitative' && enc?.scale?.type === 'log') {
-      logAxis = axis;
-    }
-  }
-  if (!logAxis) return spec;
-
-  const logEnc = spec.encoding[logAxis];
-  const field = logEnc.field;
-  if (!field || !spec.data?.values) return spec;
-
-  const values = spec.data.values
-    .map((d: any) => d[field])
-    .filter((v: any) => typeof v === 'number' && v > 0);
-  if (values.length === 0) return spec;
-
-  const minVal = Math.min(...values);
-  const maxVal = Math.max(...values);
-  const lowerBound = minVal * 0.3;
-  const upperBound = maxVal * 3;
-
-  const labelledData = spec.data.values.map((d: any) => {
-    const v = d[field];
-    let label: string;
-    if (typeof v !== 'number' || v <= 0) label = String(v);
-    else if (v >= 1e9) label = (v / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-    else if (v >= 1e6) label = (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-    else if (v >= 1e3) label = (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
-    else label = String(v);
-    return { ...d, _barLogLabel: label };
-  });
-
-  const logLow = Math.floor(Math.log10(lowerBound));
-  const logHigh = Math.ceil(Math.log10(upperBound));
-  const gridValues: number[] = [];
-  for (let exp = logLow; exp <= logHigh; exp++) {
-    const v = Math.pow(10, exp);
-    if (v >= lowerBound && v <= upperBound) gridValues.push(v);
-  }
-
-  const fixedLogEnc = {
-    ...logEnc,
-    scale: { ...logEnc.scale, domain: [lowerBound, upperBound] },
-    axis: { ...(logEnc.axis || {}), values: gridValues, gridDash: [2, 4] },
-  };
-
-  const sharedEncoding = { ...spec.encoding, [logAxis]: fixedLogEnc };
-  delete sharedEncoding.size;
-
-  const labelOffset = logAxis === 'x' ? { dy: -14 } : { dx: 12, align: 'left' as const };
-
-  const result: any = {
-    ...spec,
-    data: { values: labelledData },
-    mark: undefined,
-    encoding: undefined,
-    layer: [
-      { mark: { type: 'tick', thickness: 6, size: 40 }, encoding: { ...sharedEncoding } },
-      {
-        mark: { type: 'text', fontSize: 11, ...labelOffset },
-        encoding: {
-          ...sharedEncoding,
-          text: { field: '_barLogLabel', type: 'nominal' },
-          color: sharedEncoding.color ? { ...sharedEncoding.color, legend: null } : { value: '#999' },
-        },
-      },
-    ],
-  };
-  delete result.mark;
-  return result;
-}
 
 describe('fixBarLogScaleBaseline', () => {
   it('converts horizontal bar+log to tick+text layers (the age comparison bug)', () => {
@@ -847,5 +511,153 @@ describe('fixBarLogScaleBaseline', () => {
     const fixed = fixBarLogScaleBaseline(JSON.parse(JSON.stringify(spec)));
     const labels = fixed.data.values.map((d: any) => d._barLogLabel);
     expect(labels).toEqual(['500', '75K', '2.5M', '3.2B']);
+  });
+});
+
+// ── Behaviour the deleted local copies got wrong ────────────────────────────
+// Each case below fails against the copy this file used to carry and passes
+// against the plugin's own helper.
+
+describe('drift from the former local copies', () => {
+  it('does not suppress a complete spec whose data lives only in a layer', () => {
+    // The copy required top-level data/datasets; the plugin looks anywhere.
+    const spec = {
+      $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+      layer: [{ data: { values: [{ x: 1 }] }, mark: 'point' }],
+      isStreaming: false,
+      isMarkdownBlockClosed: true,
+    };
+    expect(shouldSuppressVegaLiteError(spec, new Error('real compile error'))).toBe(false);
+    // Paired: with no data anywhere the same spec is still suppressed.
+    const noData = { ...spec, layer: [{ mark: 'point' }] };
+    expect(shouldSuppressVegaLiteError(noData, new Error('real compile error'))).toBe(true);
+  });
+
+  it('treats a facet spec with data as a complete definition', () => {
+    const def = JSON.stringify({
+      $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+      data: { values: [{ g: 'a', v: 1 }] },
+      facet: { field: 'g', type: 'nominal' },
+      spec: { mark: 'bar' },
+    });
+    expect(isVegaLiteDefinitionComplete(def)).toBe(true);
+  });
+
+  it('treats a truncated $schema URL as incomplete, and the full URL as complete', () => {
+    const body = (schema: string) =>
+      JSON.stringify({ $schema: schema, data: { values: [{ v: 1 }] }, mark: 'bar' });
+    expect(isVegaLiteDefinitionComplete(body('https://vega.github.io/schema/vega-lite/v5'))).toBe(false);
+    expect(isVegaLiteDefinitionComplete(body('https://vega.github.io/schema/vega-lite/v5.json'))).toBe(true);
+  });
+
+  it.each(['hconcat', 'vconcat'])('treats a finished %s composition as complete', key => {
+    const def = JSON.stringify({
+      $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+      data: { values: [{ v: 1 }] },
+      [key]: [{ mark: 'bar' }, { mark: 'line' }],
+    });
+    expect(isVegaLiteDefinitionComplete(def)).toBe(true);
+    // Paired: the same composition with no data anywhere is still incomplete.
+    const noData = JSON.stringify({ [key]: [{ mark: 'bar' }] });
+    expect(isVegaLiteDefinitionComplete(noData)).toBe(false);
+  });
+
+  it('a finished hconcat with a real compile error is not suppressed while streaming', () => {
+    const def = JSON.stringify({
+      $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
+      data: { values: [{ v: 1 }] },
+      hconcat: [{ mark: 'bar' }],
+    });
+    const spec = { definition: def, isStreaming: true, isMarkdownBlockClosed: true };
+    expect(shouldSuppressVegaLiteError(spec, new Error('real compile error'))).toBe(false);
+  });
+
+  it('Fix 10 puts the first layer on the left with grid and every later layer on the right without', () => {
+    const spec: any = {
+      data: { values: [{ m: 1, a: 1, b: 100, c: 9000 }, { m: 2, a: 2, b: 900, c: 90000 }] },
+      layer: [
+        { mark: 'bar', encoding: { y: { field: 'a', type: 'quantitative' } } },
+        { mark: 'line', encoding: { y: { field: 'b', type: 'quantitative' } } },
+        { mark: 'point', encoding: { y: { field: 'c', type: 'quantitative' } } },
+      ],
+    };
+    const fixed = fixLayeredChartsWithMismatchedScales(spec);
+    expect(fixed.resolve).toEqual({ scale: { y: 'independent' } });
+    expect(fixed.layer.map((l: any) => [l.encoding.y.axis.orient, l.encoding.y.axis.grid]))
+      .toEqual([['left', true], ['right', false], ['right', false]]);
+  });
+
+  it('Fix 10 removes the conflicting layer domain when it splits the y scales', () => {
+    const spec: any = {
+      data: { values: [{ m: 1, pop: 200, infra: 5 }, { m: 2, pop: 5000, infra: 85 }] },
+      encoding: { x: { field: 'm', type: 'nominal' }, y: { field: 'pop', type: 'quantitative' } },
+      layer: [
+        { mark: 'bar' },
+        { mark: 'circle', encoding: { y: { field: 'infra', type: 'quantitative', scale: { domain: [0, 100] } } } },
+      ],
+    };
+    const fixed = fixLayeredChartsWithMismatchedScales(spec);
+    expect(fixed.resolve).toEqual({ scale: { y: 'independent' } });
+    expect(fixed.layer[1].encoding.y.scale.domain).toBeUndefined();
+  });
+
+  it('Fix 10 turns a nominal x into ordinal when a log layer is involved', () => {
+    const spec: any = {
+      data: { values: [{ c: 'a', lo: 1, hi: 100 }, { c: 'b', lo: 10, hi: 900 }] },
+      layer: [
+        { mark: 'bar', encoding: { x: { field: 'c', type: 'nominal' }, y: { field: 'lo', type: 'quantitative', scale: { type: 'log' } } } },
+        { mark: 'line', encoding: { x: { field: 'c', type: 'nominal' }, y: { field: 'hi', type: 'quantitative' } } },
+      ],
+    };
+    const fixed = fixLayeredChartsWithMismatchedScales(spec);
+    expect(fixed.layer[0].encoding.x.type).toBe('ordinal');
+    expect(fixed.layer[1].encoding.x.type).toBe('ordinal');
+  });
+
+  it('Fix 8 cycles the palette when there are more categories than colours', () => {
+    const spec: any = {
+      mark: 'arc',
+      data: { values: Array.from({ length: 17 }, (_, i) => ({ k: `k${i}` })) },
+      encoding: { color: { field: 'k', type: 'nominal', scale: { scheme: '#123456' } } },
+    };
+    fixInvalidColorSchemeInArcs(spec);
+    const range = spec.encoding.color.scale.range;
+    expect(range).toHaveLength(17);
+    expect(range[15]).toBe(range[0]);
+  });
+});
+
+/**
+ * Seam: the helpers passing in isolation proves nothing unless the render
+ * path calls them, and calls these definitions rather than a closure-local
+ * duplicate. Comments are stripped so documentation does not satisfy it.
+ */
+describe('vegaLitePlugin wiring for the exported preprocess helpers', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../vegaLitePlugin.ts'), 'utf8');
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map(line => line.replace(/\/\/.*$/, ''))
+    .join('\n');
+
+  it.each([
+    ['fixDatumFieldSwap', /fixDatumFieldSwap\(spec\.encoding\)/],
+    ['fixInvalidColorSchemeInArcs', /fixedSpec = fixInvalidColorSchemeInArcs\(fixedSpec\)/],
+    ['fixLayeredChartsWithMismatchedScales', /fixedSpec = fixLayeredChartsWithMismatchedScales\(fixedSpec\)/],
+    ['fixBarLogScaleBaseline', /fixedSpec = fixBarLogScaleBaseline\(fixedSpec\)/],
+    ['shouldSuppressVegaLiteError', /shouldSuppressError = shouldSuppressVegaLiteError\(spec, error\)/],
+    ['isVegaLiteDefinitionComplete', /return isVegaLiteDefinitionComplete\(definition\)/],
+  ])('render path calls %s', (_name, call) => {
+    expect(code).toMatch(call);
+  });
+
+  it.each([
+    'fixDatumFieldSwap', 'fixInvalidColorSchemeInArcs', 'generateColorPalette',
+    'fixLayeredChartsWithMismatchedScales', 'fixBarLogScaleBaseline',
+    'isVegaLiteDefinitionComplete',
+  ])('%s is defined once, at module level', name => {
+    const defs = code.match(new RegExp(`const ${name}\\s*=`, 'g')) || [];
+    expect(defs).toHaveLength(1);
+    expect(code).toMatch(new RegExp(`^(export )?const ${name}\\s*=`, 'm'));
   });
 });

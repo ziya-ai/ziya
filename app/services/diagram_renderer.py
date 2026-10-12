@@ -1160,7 +1160,12 @@ class DiagramRenderer:
                 warnings.append(entry)
             elif entry.startswith("[error]"):
                 errors.append(entry)
-        return {"warnings": warnings, "errors": errors}
+        # Fix-up passes log each change they make to the spec as a
+        # "🔧 TAG: ..." [log] line; collected so render_diagram can say
+        # why the image differs from the spec as written.
+        from app.utils.chart_rewrites import extract_rewrites
+        return {"warnings": warnings, "errors": errors,
+                "rewrites": extract_rewrites(console_log)}
 
     # -- Rendering ----------------------------------------------------
 
@@ -1374,6 +1379,7 @@ class DiagramRenderer:
             diagnostics: dict[str, Any] = {
                 "console_warnings": console_summary["warnings"],
                 "console_errors": console_summary["errors"],
+                "console_rewrites": console_summary["rewrites"],
                 "pageerrors": pageerror_log,
             }
 

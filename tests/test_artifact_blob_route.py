@@ -202,7 +202,7 @@ class TestArtifactBlobRoute:
     @pytest.mark.asyncio
     async def test_serves_png_inline(self, wired):
         mod, run_id = wired
-        resp = await mod.get_artifact_blob("proj", run_id, "chart.png")
+        resp = mod.get_artifact_blob("proj", run_id, "chart.png")
         assert resp.media_type == "image/png"
         assert resp.body.startswith(b"\x89PNG")
         assert "inline" in resp.headers.get("content-disposition", "")
@@ -212,7 +212,7 @@ class TestArtifactBlobRoute:
         """A model-named .html artifact must never be served inline as
         text/html — it would execute in Ziya's origin."""
         mod, run_id = wired
-        resp = await mod.get_artifact_blob("proj", run_id, "evil.html")
+        resp = mod.get_artifact_blob("proj", run_id, "evil.html")
         assert resp.media_type == "application/octet-stream"
         assert "attachment" in resp.headers.get("content-disposition", "")
 
@@ -221,7 +221,7 @@ class TestArtifactBlobRoute:
         from fastapi import HTTPException
         mod, run_id = wired
         with pytest.raises(HTTPException) as ei:
-            await mod.get_artifact_blob("proj", run_id, "../../etc/passwd")
+            mod.get_artifact_blob("proj", run_id, "../../etc/passwd")
         assert ei.value.status_code == 400
 
     @pytest.mark.asyncio
@@ -229,7 +229,7 @@ class TestArtifactBlobRoute:
         from fastapi import HTTPException
         mod, run_id = wired
         with pytest.raises(HTTPException) as ei:
-            await mod.get_artifact_blob("proj", run_id, "absent.png")
+            mod.get_artifact_blob("proj", run_id, "absent.png")
         assert ei.value.status_code == 404
 
     @pytest.mark.asyncio
@@ -237,7 +237,7 @@ class TestArtifactBlobRoute:
         from fastapi import HTTPException
         mod, _ = wired
         with pytest.raises(HTTPException) as ei:
-            await mod.get_artifact_blob("proj", "no-such-run", "chart.png")
+            mod.get_artifact_blob("proj", "no-such-run", "chart.png")
         assert ei.value.status_code == 404
 
     @pytest.mark.asyncio
@@ -246,5 +246,5 @@ class TestArtifactBlobRoute:
         mod, run_id = wired
         import app.utils.task_artifacts as ta
         monkeypatch.setattr(ta, "read_artifact_blob", lambda uri: b"DECRYPTED")
-        resp = await mod.get_artifact_blob("proj", run_id, "chart.png")
+        resp = mod.get_artifact_blob("proj", run_id, "chart.png")
         assert resp.body == b"DECRYPTED"
