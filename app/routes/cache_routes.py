@@ -1,5 +1,10 @@
 """
 API routes for prompt cache management.
+
+Handlers here await nothing and do synchronous cache-file I/O (stat, load,
+rewrite via the prompt cache), so they are plain ``def``: Starlette runs them
+on its worker threadpool instead of parking the event loop.
+``tests/test_cache_routes_not_event_loop_blocking.py`` enforces this.
 """
 
 from fastapi import APIRouter, HTTPException
@@ -19,7 +24,7 @@ class CacheInvalidateRequest(BaseModel):
 
 
 @router.get("/stats")
-async def get_cache_stats() -> Dict[str, Any]:
+def get_cache_stats() -> Dict[str, Any]:
     """
     Get prompt cache statistics.
     
@@ -55,7 +60,7 @@ async def get_cache_stats() -> Dict[str, Any]:
 
 
 @router.post("/invalidate")
-async def invalidate_cache(request: CacheInvalidateRequest) -> Dict[str, Any]:
+def invalidate_cache(request: CacheInvalidateRequest) -> Dict[str, Any]:
     """
     Invalidate cache entries.
     
@@ -89,7 +94,7 @@ async def invalidate_cache(request: CacheInvalidateRequest) -> Dict[str, Any]:
 
 
 @router.delete("/clear")
-async def clear_cache() -> Dict[str, Any]:
+def clear_cache() -> Dict[str, Any]:
     """
     Clear all cache entries.
     
