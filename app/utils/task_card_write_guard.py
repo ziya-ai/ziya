@@ -90,11 +90,15 @@ def _collect_scopes(root: Dict[str, Any]) -> Dict[str, str]:
 
 
 REMEDY = (
-    "Permissions (scope) cannot be changed through task_card_write — this "
-    "tool edits text and structure only.  Preserve every block's existing "
-    "id and scope exactly as task_card_read returned them.  To change "
-    "permissions, ask the user to edit the card in the Task Card editor, "
-    "where scope changes surface their signing requirements."
+    "A replacement root may not change any block's scope — resend the "
+    "tree with every block's id and scope exactly as task_card_read "
+    "returned them.  To change a scope field, use the 'edits' parameter "
+    "instead ({block_id, set: {'scope.<field>': value}}): it may set any "
+    "TaskScope field and may narrow a grant, but may not widen one.  "
+    "Grants (shell_commands, writable paths outside the safe-write floor) "
+    "are authorized by a root-signed approval, not by the card file, so "
+    "editing the deck file by other means gains nothing — ask the user to "
+    "add the grant in the Task Card editor and sign it."
 )
 
 
