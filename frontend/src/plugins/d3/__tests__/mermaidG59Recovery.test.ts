@@ -59,12 +59,22 @@ describe('D-174: subgraph/end balancer (w4-11)', () => {
     expect(countOpens(raw)).toBeGreaterThan(countCloses(raw));
   });
 
-  it('appends exactly the missing end(s), closing the outer subgraph last', () => {
+  it('adds exactly the missing end(s), closing the outer subgraph after the inner', () => {
     const out = balanceSubgraphEnds(raw);
+    const lines = out.split('\n');
     expect(countOpens(out)).toBe(countCloses(out));
-    expect(out.trimEnd().endsWith('\nend')).toBe(true);
     // The one pre-existing `end` (closing Inner) is preserved, not duplicated.
     expect(countCloses(out)).toBe(2);
+    // Placement follows D-426 (which superseded this suite's original EOF
+    // append): the added Outer `end` comes after Inner's `end` and before the
+    // dedented `A --> C` line, so the later nodes stay outside Outer. The
+    // full D-426 placement contract lives in
+    // mermaidSeqBoxTitleAndSubgraphEndGd34f80.test.ts.
+    const ends = lines.map((l, i) => (l.trim() === 'end' ? i : -1)).filter((i) => i >= 0);
+    const taskC = lines.findIndex((l) => l.includes('Task C'));
+    expect(ends[0]).toBeLessThan(ends[1]);
+    expect(ends[1]).toBeLessThan(taskC);
+    expect(lines[ends[1]]).toBe('  end'); // at the Outer header's indentation
   });
 
   it('leaves an already-balanced flowchart byte-for-byte unchanged', () => {
