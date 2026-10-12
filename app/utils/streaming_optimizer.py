@@ -64,8 +64,17 @@ class StreamingContentOptimizer:
                 self.buffer = parts[-1]  # Keep the last part
         
     def flush_remaining(self) -> Optional[str]:
-        """Flush any remaining content"""
-        if self.buffer.strip():
+        """Flush everything in the buffer, whitespace included.
+
+        Callers drain the optimizer before emitting text that bypasses it
+        (a buffered viz block, a tool_use start).  A whitespace-only buffer
+        has to come out here too: when it was left behind, a ``\\n\\n``
+        delta that arrived just before a ```` ```mermaid ```` block stayed in
+        the buffer while the block streamed past it, and was then emitted
+        in front of the next word -- the paragraph break vanished from
+        before the fence and split "Guardian" into "Guard\\n\\nian".
+        """
+        if self.buffer:
             content = self.buffer
             self.buffer = ""
             return content
