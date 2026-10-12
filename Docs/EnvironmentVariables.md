@@ -129,7 +129,7 @@ Retention can be scoped to a Bedrock *project* instead of the account, but **not
 | `ZIYA_MAX_TOOL_ITERATIONS` | int | `1000` | — | Maximum agentic loop iterations per streaming response for unattended/batch work: `ziya task`, Task Cards, `/goal` runs, delegates and web chat |
 | `ZIYA_MAX_TOOL_ITERATIONS_INTERACTIVE` | int | `200` | — | Iteration budget for interactive CLI commands where a human is waiting (`ziya chat`, `ask`, `review`, `explain`); also what `/tune iterations` sets. Independent of `ZIYA_MAX_TOOL_ITERATIONS` — changing one never affects the other |
 | `ZIYA_MAX_TOOLS_PER_TURN` | int | `1000` | — | Per-turn circuit breaker: max tool invocations within one streaming response before further calls are refused. Resets each turn, so long conversations are never locked out. `0` disables (ASR F-010) |
-| `ZIYA_GIT_PROVENANCE_TRAILER` | bool | `true` | — | Append `Co-authored-by: Ziya` and `Ziya-Model:` trailers to commits made by the `git` builtin tool. `false` commits the message as written |
+| `ZIYA_GIT_PROVENANCE_TRAILER` | bool | `true` | — | Append a `Co-authored-by: Ziya v<version> (<model>/<endpoint>)` trailer to commits made by the `git` builtin tool. `false` commits the message as written |
 | `ZIYA_ENABLE_GIT` | bool | `false` | — | Enable the consent-gated `git` builtin tool (every mutating op asks for approval) |
 | `ZIYA_MCP_ENV_PASSTHROUGH` | str | — | — | Comma-separated allowlist of extra parent env vars to forward to MCP server subprocesses. By default credential-bearing vars (AWS_*/MIDWAY_*/TOKEN/SECRET/…) are stripped before launch (ASR F-003) |
 

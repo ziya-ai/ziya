@@ -27,6 +27,11 @@ from app.utils import consent_gate as cg  # noqa: E402
 from app.utils import git_ops  # noqa: E402
 
 CONV = "conv-git-seam"
+# The first tool execution in a process imports app.server (signature
+# verification records its result there), which takes ~11 s cold.  Whichever
+# test pytest-randomly runs first pays it, so a 10 s budget failed one test at
+# random.  Same budget as tests/test_scope_consent_seam.py.
+FINISH_WAIT = 30.0
 
 
 def _git(cwd, *args):
@@ -82,7 +87,7 @@ async def _until_parked(gen, events, timeout=5.0):
     await asyncio.wait_for(pull(), timeout)
 
 
-async def _finish(gen, events, timeout=10.0):
+async def _finish(gen, events, timeout=FINISH_WAIT):
     async def pull():
         async for ev in gen:
             events.append(ev)
@@ -131,6 +136,30 @@ async def test_status_runs_without_asking(repo):
     assert not [e for e in events if e.get("type") == "consent_opened"]
     results = _tool_result(events)
     assert results and "docs/a.md" in str(results[-1]["result"])
+
+
+@pytest.mark.asyncio
+async def test_grep_runs_without_asking(repo):
+    """grep joined the read-only set (2026-10-01): no consent, structured hits."""
+    events = []
+    await _finish(execute_single_tool(_ctx(repo, {"op": "grep", "pattern": "changed"})), events)
+    assert not [e for e in events if e.get("type") == "consent_opened"]
+    results = _tool_result(events)
+    assert results and "docs/a.md" in str(results[-1]["result"])
+
+
+@pytest.mark.asyncio
+async def test_checkout_parks_names_the_discarded_files_and_writes_only_on_approve(repo):
+    events = []
+    gen = execute_single_tool(_ctx(repo, {"op": "checkout", "paths": ["docs"]}))
+    await _until_parked(gen, events)
+    opened = [e for e in events if e["type"] == "consent_opened"][-1]
+    pf = opened["payload"]["preflight"]
+    assert pf["discards_uncommitted"] == ["docs/a.md"], pf
+    assert (repo / "docs" / "a.md").read_text() == "changed\n", "nothing may be written while waiting"
+    cg.ledger().record_answer(opened["request_id"], "approve")
+    await _finish(gen, events)
+    assert (repo / "docs" / "a.md").read_text() == "a\n"
 
 
 @pytest.mark.asyncio

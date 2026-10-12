@@ -32,6 +32,25 @@ from typing import Any, Dict, List, Optional, Tuple
 _INSTALL_APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _INSTALL_EXTENSIONS_DIR = os.path.realpath(os.path.join(_INSTALL_APP_ROOT, "extensions"))
 
+# Directories whose contents only the Ziya server writes: the evidence
+# ledger, job manifests and data-source registrations.  They record what
+# tools did, so a tool that could write them could forge its own record.
+# A hard floor like the extension directory above: refused before any allow
+# rule, YOLO, direct_write_mode or task-scope grant.  Server code writes
+# them with ordinary file I/O, which no write-policy check sits in front of.
+# Entries are project-relative, except ``~/.ziya/`` which means the Ziya
+# home (ZIYA_HOME when set).  A constant rather than a policy key so no
+# user or project override can remove an entry.
+SERVER_ONLY_PATHS = (".ziya/ledger/", ".ziya/jobs/", "~/.ziya/datasources/")
+SERVER_ONLY_REASON = (
+    "holds records only the Ziya server writes (server_only_paths); "
+    "no write policy setting makes it writable by tools."
+)
+
+
+def _ziya_home_dir() -> str:
+    return os.environ.get("ZIYA_HOME") or os.path.join(os.path.expanduser("~"), ".ziya")
+
 
 DEFAULT_WRITE_POLICY = {
     # Controls whether file_write can operate beyond safe paths + patterns.
@@ -298,10 +317,42 @@ class WritePolicyManager:
         ext = _INSTALL_EXTENSIONS_DIR
         return resolved == ext or resolved.startswith(ext + os.sep)
 
+    @staticmethod
+    def is_server_only_path(target_path: str, project_root: str = "") -> bool:
+        """True if *target_path* resolves inside a SERVER_ONLY_PATHS entry.
+
+        realpath on both sides, so a symlink or ``..`` into an entry is
+        caught, and the comparison is case-folded because the default macOS
+        and Windows filesystems are case-insensitive: ``.ZIYA/Ledger`` is the
+        same directory.  Over-refusing a case variant on a case-sensitive
+        filesystem costs nothing.
+        """
+        if not target_path:
+            return False
+        raw = os.path.expanduser(str(target_path).strip().strip("'\""))
+        candidate = (
+            os.path.join(project_root, raw)
+            if (project_root and not os.path.isabs(raw)) else raw
+        )
+        resolved = os.path.realpath(candidate).casefold()
+        for entry in SERVER_ONLY_PATHS:
+            if entry.startswith("~/.ziya/"):
+                base = os.path.join(_ziya_home_dir(), entry[len("~/.ziya/"):])
+            elif project_root:
+                base = os.path.join(project_root, entry)
+            else:
+                continue
+            base = os.path.realpath(base.rstrip("/")).casefold()
+            if resolved == base or resolved.startswith(base + os.sep):
+                return True
+        return False
+
     def is_write_allowed(self, target_path: str, project_root: str = "") -> bool:
         root = project_root or self._project_root or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
         self._ensure_loaded_for_root(root)
         if self.is_install_extension_path(target_path, root):
+            return False
+        if self.is_server_only_path(target_path, root):
             return False
         return self._check_path(target_path, root)
 
@@ -331,6 +382,8 @@ class WritePolicyManager:
         # direct_write_mode widening below (PenPal #169).
         if self.is_install_extension_path(target_path, root):
             return False, "Writes into the install extension directory are refused (auto-executed at startup)."
+        if self.is_server_only_path(target_path, root):
+            return False, f"'{target_path}' {SERVER_ONLY_REASON}"
 
         # Always allow if the base policy already permits it
         if self._check_path(target_path, root):
@@ -353,6 +406,8 @@ class WritePolicyManager:
     def check_write(self, target_path: str, project_root: str = "") -> Tuple[bool, str]:
         root = project_root or self._project_root or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
         self._ensure_loaded_for_root(root)
+        if self.is_server_only_path(target_path, root):
+            return False, f"Write to '{target_path}' blocked: it {SERVER_ONLY_REASON}"
         if self.is_write_allowed(target_path, project_root):
             return True, ""
         patterns = self._policy.get('allowed_write_patterns', [])

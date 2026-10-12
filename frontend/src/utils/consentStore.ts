@@ -23,6 +23,10 @@ export interface ToolCallPayload {
   args: Record<string, unknown>;
   preflight: Record<string, unknown> | null;
   tool_id?: string;
+  /** Paths outside the write policy this call asks to write (design/scope-consent.md). */
+  outside_policy?: { path: string; reason?: string }[];
+  /** Argument names the human may rewrite before approving (e.g. a commit message). */
+  editable?: string[];
 }
 
 export interface QuestionPayload {
@@ -96,6 +100,9 @@ export function describe(rec: ConsentRecord): string {
   const p = rec.payload;
   if (p.kind === 'question') return p.text || 'This turn is waiting for your input.';
   const op = p.op && p.op !== '*' ? ` ${p.op}` : '';
+  if (p.outside_policy && p.outside_policy.length > 0) {
+    return `Allow ${p.tool}${op} outside the write policy?`;
+  }
   return `Allow ${p.tool}${op}?`;
 }
 
@@ -124,12 +131,16 @@ export async function answerConsent(
   decision: ConsentDecision,
   scope: ConsentScope = 'once',
   answer = '',
+  edits: Record<string, string> = {},
 ): Promise<{ ok: boolean; status: number; detail?: string }> {
   try {
+    const body: Record<string, unknown> = { decision, scope: decision === 'reject' ? 'once' : scope, answer };
+    // Edits only ride an approval; a reject runs nothing.
+    if (decision === 'approve' && Object.keys(edits).length > 0) body.edits = edits;
     const res = await fetch(`/api/consent/${encodeURIComponent(requestId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision, scope: decision === 'reject' ? 'once' : scope, answer }),
+      body: JSON.stringify(body),
     });
     if (res.ok) return { ok: true, status: res.status };
     let detail: string | undefined;

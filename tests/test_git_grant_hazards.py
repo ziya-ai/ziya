@@ -22,7 +22,7 @@ from app.utils import git_grant_hazards as gh
 @pytest.mark.parametrize("sub", [
     "push", "pull", "fetch", "checkout", "switch", "restore", "reset", "clean",
     "stash", "rebase", "merge", "rm", "mv", "branch", "tag", "worktree", "gc",
-    "filter-branch", "config", "commit", "add",
+    "filter-branch", "config", "commit", "add", "clone",
 ])
 def test_every_mutating_subcommand_has_a_hazard(sub):
     h = gh.assess(f"git {sub}")
@@ -31,8 +31,9 @@ def test_every_mutating_subcommand_has_a_hazard(sub):
 
 @pytest.mark.parametrize("sub, op", [
     ("add", "op=add"), ("commit", "op=commit"), ("push", "op=push"),
-    ("stash", "op=stash_push"), ("switch", "op=switch"), ("checkout", "op=switch"),
-    ("restore", "op=unstage"), ("reset", "op=unstage"),
+    ("stash", "op=stash_push"), ("stash", "op=stash_pop"), ("fetch", "op=fetch"),
+    ("clone", "op=clone"), ("switch", "op=switch"), ("checkout", "op=checkout"),
+    ("restore", "op=unstage"), ("restore", "op=checkout"), ("reset", "op=unstage"),
 ])
 def test_tool_covered_subcommands_redirect_to_the_right_op(sub, op):
     assert op in (gh.assess(f"git {sub}").alternative or "")

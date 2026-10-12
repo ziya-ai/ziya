@@ -412,6 +412,9 @@ class ShellWriteChecker:
         if candidates is None:
             return False
         for path in candidates:
+            # Before the task-scope fallback, which would otherwise reopen it.
+            if self.pm.is_server_only_path(path, self._project_root):
+                return False
             if self.pm.is_write_allowed(path, self._project_root):
                 continue
             if self._task_scope_grants_write(path):
@@ -463,6 +466,11 @@ class ShellWriteChecker:
         this target.  Project entries reach the shell only when it spawns
         (manager._apply_project_write_paths), so a restart is part of it.
         """
+        targets = self._resolve_targets(target_path) or [target_path]
+        if any(self.pm.is_server_only_path(p, self._project_root) for p in targets):
+            return (" This path holds records only the Ziya server writes"
+                    " (server_only_paths); no setting makes it writable from"
+                    " the shell.")
         safe = [p for p in self.policy.get('safe_write_paths', [])
                 if not _is_special_device(p)]
         return (
