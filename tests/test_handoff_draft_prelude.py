@@ -1,17 +1,25 @@
 """
-Living handoff draft + context-pressure nudge (design/conversation-handoff.md,
-build-order step 3).
+Living handoff draft prelude (design/conversation-handoff.md, build-order
+step 3).
 
 Prelude instruction states, asserted on the assembled prelude text (the
 surface the model sees), against a real ChatStorage on tmp_path:
 
-  - no draft, low pressure            → nothing
-  - no draft, pressure ≥ threshold    → nudge, exactly at the threshold
+  - no draft, below threshold         → nothing
+  - no draft, at/above threshold      → a SILENT instruction to write the
+                                        draft this turn: no percentage, no
+                                        "context" language, an explicit "do
+                                        not mention this to the user"
   - draft present                     → draft + per-turn merge instruction,
-                                        and NO nudge even under pressure
+                                        and no mention of context size
   - continuation child, no draft      → inherited prelude only, no drafting
                                         instruction (the user asked for this)
-  - continuation child under pressure → inherited + nudge
+
+Replaced 2026-10-10: the original nudge fired from 70% and said "a
+suggestion to raise with the user", so every long conversation turned into
+"the context is getting full, let's wrap up".  The threshold is now late
+(0.9) and the text is an instruction to the model, never a message for the
+user.  The pressure figure itself reaches only the drawer.
 
 Plus merge_draft, which handoff_write uses: section merge keeps unnamed
 sections, replace supersedes, and a user edit survives a merge.
@@ -67,49 +75,72 @@ class TestStates:
         assert build_handoff_prelude("a", storage=storage) == ""
         assert append_handoff_prelude("[skill]", "a", storage=storage) == "[skill]"
 
-    def test_nudge_appears_exactly_at_threshold(self, storage, monkeypatch):
+    @pytest.mark.parametrize("tokens", [0, 140_000, 150_000, 170_000, 179_999])
+    def test_no_draft_below_threshold_means_nothing(self, storage, tokens, monkeypatch):
+        """The old nudge fired from 70%; 75-89% must now be silent.  Pressure
+        is still recorded (positive control) -- the drawer reads it."""
         monkeypatch.delenv("ZIYA_HANDOFF_NUDGE_RATIO", raising=False)
         _write(storage, "a")
-        assert build_handoff_prelude("a", storage=storage, pressure=0.69) == ""
-        out = build_handoff_prelude("a", storage=storage, pressure=0.70)
-        assert "[Context pressure]" in out
-        # No percentage in the text: it must be byte-stable across turns
-        # (see TestCacheStability).  The figure is available via handoff_read.
-        assert "%" not in out
-        assert "handoff_write" in out
-        assert "Do not write a handoff to a file" in out
-        # The nudge must not carry an inherited-doc hint on a plain source.
-        assert "inherited handoff above" not in out
+        record_context_pressure("a", tokens=tokens, limit=200_000)
+        assert get_context_pressure("a") == pytest.approx(tokens / 200_000)
+        assert build_handoff_prelude("a", storage=storage) == ""
+
+    def test_default_threshold_is_late(self, monkeypatch):
+        monkeypatch.delenv("ZIYA_HANDOFF_NUDGE_RATIO", raising=False)
+        assert hp.nudge_ratio() >= 0.9
+
+    def test_at_threshold_the_model_is_told_to_write_the_draft_silently(self, storage, monkeypatch):
+        monkeypatch.delenv("ZIYA_HANDOFF_NUDGE_RATIO", raising=False)
+        _write(storage, "a")
+        assert build_handoff_prelude("a", storage=storage, pressure=0.89) == ""
+        out = build_handoff_prelude("a", storage=storage, pressure=0.90)
+        assert "[Handoff draft — start one now]" in out
+        assert "handoff_write" in out and "mode='replace'" in out
+        # What made the old text harmful: it must not read as a message for
+        # the user, must not name the context, and must not change behaviour.
+        assert "do not mention the draft, context size, or wrapping up" in out
+        assert "Continue the user's request exactly as you otherwise would" in out
+        for bad in ("[Context pressure]", "suggestion to raise", "fresh conversation",
+                    "%", "context is", "limit"):
+            assert bad not in out, bad
+        assert not hasattr(hp, "render_pressure_nudge")
 
     def test_threshold_is_configurable(self, storage, monkeypatch):
         monkeypatch.setenv("ZIYA_HANDOFF_NUDGE_RATIO", "0.5")
         _write(storage, "a")
-        assert "[Context pressure]" in build_handoff_prelude("a", storage=storage, pressure=0.5)
+        assert "start one now" in build_handoff_prelude("a", storage=storage, pressure=0.5)
         monkeypatch.setenv("ZIYA_HANDOFF_NUDGE_RATIO", "garbage")
         assert build_handoff_prelude("a", storage=storage, pressure=0.5) == ""
 
-    def test_nudge_uses_cached_pressure_from_previous_turn(self, storage):
+    def test_instruction_uses_cached_pressure_from_previous_turn(self, storage, monkeypatch):
+        monkeypatch.delenv("ZIYA_HANDOFF_NUDGE_RATIO", raising=False)
         _write(storage, "a")
-        record_context_pressure("a", tokens=150_000, limit=200_000)
-        assert get_context_pressure("a") == pytest.approx(0.75)
-        assert "[Context pressure]" in build_handoff_prelude("a", storage=storage)
-        # A different conversation is unaffected.
+        record_context_pressure("a", tokens=190_000, limit=200_000)
+        assert "start one now" in build_handoff_prelude("a", storage=storage)
         _write(storage, "b")
         assert build_handoff_prelude("b", storage=storage) == ""
 
-    def test_draft_present_gives_merge_instruction_and_suppresses_nudge(self, storage):
+    def test_draft_present_gives_merge_instruction_and_never_mentions_context(self, storage):
         _write(storage, "a", handoffDraft=_draft())
-        out = build_handoff_prelude("a", storage=storage, pressure=0.95)
+        record_context_pressure("a", tokens=198_000, limit=200_000)
+        out = build_handoff_prelude("a", storage=storage)
         assert "[Handoff draft — living]" in out
         assert "mode='merge'" in out
         assert "Finish the BFD root cause." in out
-        assert "[Context pressure]" not in out
+        # A draft exists, so the start-one instruction is gone too.
+        assert "start one now" not in out
+        # The draft prelude must not read as "the conversation is ending".
+        assert "do not mention it, context size, or wrapping up" in out
+        assert "fresh conversation" not in out
+        assert "%" not in out
 
-    def test_empty_draft_document_is_not_a_draft(self, storage):
+    def test_empty_draft_document_is_not_a_draft(self, storage, monkeypatch):
+        monkeypatch.delenv("ZIYA_HANDOFF_NUDGE_RATIO", raising=False)
         _write(storage, "a", handoffDraft=_draft(document="   "))
-        out = build_handoff_prelude("a", storage=storage, pressure=0.9)
-        assert "[Handoff draft" not in out
-        assert "[Context pressure]" in out
+        record_context_pressure("a", tokens=198_000, limit=200_000)
+        out = build_handoff_prelude("a", storage=storage)
+        assert "[Handoff draft — living]" not in out
+        assert "start one now" in out
 
     def test_user_edit_is_attributed_in_prelude(self, storage):
         _write(storage, "a", handoffDraft=_draft(editedAt=1_700_000_500_000))
@@ -120,19 +151,29 @@ class TestStates:
         _write(storage, "src", title="seg 1")
         _write(storage, "cont", branchedFrom="src", lineageKind="handoff",
                handoff={"document": "Objective: continue.", "generatedAt": 1, "sourceMessageCount": 3})
-        out = build_handoff_prelude("cont", storage=storage, pressure=0.2)
+        out = build_handoff_prelude("cont", storage=storage)
         assert "[Conversation handoff]" in out
         assert "Objective: continue." in out
         assert "handoff_write" not in out
         assert "[Handoff draft" not in out
         assert "[Context pressure]" not in out
 
-    def test_continuation_child_under_pressure_gets_inherited_plus_nudge(self, storage):
+    def test_continuation_child_below_threshold_gets_only_the_inherited_prelude(self, storage, monkeypatch):
+        monkeypatch.delenv("ZIYA_HANDOFF_NUDGE_RATIO", raising=False)
         _write(storage, "src", title="seg 1")
         _write(storage, "cont", branchedFrom="src", lineageKind="handoff",
                handoff={"document": "Objective: continue.", "generatedAt": 1, "sourceMessageCount": 3})
-        out = build_handoff_prelude("cont", storage=storage, pressure=0.8)
-        assert out.index("[Conversation handoff]") < out.index("[Context pressure]")
+        record_context_pressure("cont", tokens=160_000, limit=200_000)
+        out = build_handoff_prelude("cont", storage=storage)
+        assert "[Conversation handoff]" in out
+        assert "handoff_write" not in out
+
+    def test_continuation_child_at_threshold_drafts_this_segment_only(self, storage):
+        _write(storage, "src", title="seg 1")
+        _write(storage, "cont", branchedFrom="src", lineageKind="handoff",
+               handoff={"document": "Objective: continue.", "generatedAt": 1, "sourceMessageCount": 3})
+        out = build_handoff_prelude("cont", storage=storage, pressure=0.95)
+        assert out.index("[Conversation handoff]") < out.index("start one now")
         assert "inherited handoff above" in out
 
     def test_missing_record_is_silent(self, storage):
@@ -143,7 +184,17 @@ class TestStates:
 # ── pressure measurement ──────────────────────────────────────────
 
 class TestPressure:
-    def test_estimate_handles_string_and_block_content(self):
+    def test_estimate_handles_string_and_block_content(self, monkeypatch):
+        # Goes through the calibrator (estimate_payload_tokens), so pin the
+        # ratio: without this the user's ~/.ziya/token_calibration.json leaks
+        # into the assertion.  String content and text blocks both count;
+        # the image block does not.
+        import app.utils.token_calibrator as tc
+        from app.utils.token_calibrator import TokenCalibrator
+        cal = TokenCalibrator(cache_file="/dev/null")
+        cal.global_by_model["claude"] = 4.0
+        monkeypatch.setattr(cal, "_get_current_model_family", lambda: "claude")
+        monkeypatch.setattr(tc, "get_token_calibrator", lambda: cal)
         msgs = [{"role": "system", "content": "a" * 400},
                 {"role": "user", "content": [{"type": "text", "text": "b" * 400},
                                              {"type": "image", "source": {}}]}]
@@ -217,23 +268,27 @@ class TestCacheStability:
     must therefore NOT be in the system part — it rides on the final user
     message instead.  These tests pin that contract."""
 
-    def test_draft_and_nudge_never_enter_the_system_part(self, storage):
+    def test_draft_never_enters_the_system_part(self, storage):
         _write(storage, "a", handoffDraft=_draft())
         sys_part, turn = hp.split_handoff_prelude("a", storage=storage)
         assert sys_part == ""
         assert "[Handoff draft — living]" in turn
         assert append_handoff_prelude("[skill]", "a", storage=storage) == "[skill]"
 
-        _write(storage, "b")
-        sys_part, turn = hp.split_handoff_prelude("b", storage=storage, pressure=0.9)
-        assert sys_part == ""
-        assert "[Context pressure]" in turn
-
-    def test_nudge_text_is_identical_across_pressures(self, storage):
-        _write(storage, "a")
-        _, t1 = hp.split_handoff_prelude("a", storage=storage, pressure=0.71)
-        _, t2 = hp.split_handoff_prelude("a", storage=storage, pressure=0.93)
+    def test_draft_prelude_is_identical_across_pressures(self, storage):
+        _write(storage, "a", handoffDraft=_draft())
+        record_context_pressure("a", tokens=142_000, limit=200_000)
+        _, t1 = hp.split_handoff_prelude("a", storage=storage)
+        record_context_pressure("a", tokens=196_000, limit=200_000)
+        _, t2 = hp.split_handoff_prelude("a", storage=storage)
         assert t1 == t2
+
+    def test_start_instruction_never_enters_the_system_part_and_is_stable(self, storage):
+        _write(storage, "b")
+        s1, t1 = hp.split_handoff_prelude("b", storage=storage, pressure=0.91)
+        s2, t2 = hp.split_handoff_prelude("b", storage=storage, pressure=0.99)
+        assert s1 == s2 == ""
+        assert "start one now" in t1 and t1 == t2
 
     def test_system_part_is_stable_across_bead_changes_and_draft_merges(self, storage):
         """A continuation's system part depends only on the inherited doc."""
