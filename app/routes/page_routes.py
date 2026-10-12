@@ -2,6 +2,12 @@
 Page/UI routes (HTML pages, favicon, etc).
 
 Extracted from server.py during Phase 3b refactoring.
+
+Every handler here is plain ``def``, not ``async def``: they await nothing
+and do blocking work (Jinja2 template load/render from disk, plugin config
+iteration, favicon stat, boto3 STS on /debug2).  As ``async def`` that ran
+on the event loop; as ``def`` Starlette runs it on its worker threadpool.
+``tests/test_page_routes_not_event_loop_blocking.py`` enforces this.
 """
 import os
 import html
@@ -50,7 +56,7 @@ def _collect_formatter_scripts() -> list:
     return list(dict.fromkeys(formatter_scripts))
 
 @router.get("/")
-async def root(request: Request):
+def root(request: Request):
     try:
         formatter_scripts = _collect_formatter_scripts()
         
@@ -96,17 +102,17 @@ async def root(request: Request):
         return HTMLResponse(content=html_content)
 
 @router.get("/render")
-async def render_page(request: Request):
+def render_page(request: Request):
     """Serve the SPA shell for the /render route.
 
     React Router handles client-side routing to DiagramRenderPage.
     This catch-through is required so Playwright (and browsers navigating
     directly) get index.html instead of a 404.
     """
-    return await root(request)
+    return root(request)
 
 @router.get("/print")
-async def print_page(request: Request):
+def print_page(request: Request):
     """Serve the SPA shell for the /print route.
 
     React Router handles client-side routing to PrintRenderPage. Without this
@@ -116,19 +122,19 @@ async def print_page(request: Request):
     because a 404 body reaches networkidle immediately and the driver proceeds
     as though the page had loaded.
     """
-    return await root(request)
+    return root(request)
 
 @router.get("/print-spike")
-async def print_spike_page(request: Request):
+def print_spike_page(request: Request):
     """Serve the SPA shell for the /print-spike route.
 
     React Router handles client-side routing to PrintFeasibilitySpike.  Same
     passthrough requirement as /print and /render.
     """
-    return await root(request)
+    return root(request)
 
 @router.get("/debug")
-async def debug_page(request: Request):
+def debug_page(request: Request):
     """Serve the SPA shell for the /debug route.
 
     React Router handles client-side routing to the Debug component.  Distinct
@@ -136,10 +142,10 @@ async def debug_page(request: Request):
     /debug2 (server-rendered HTML info page) routes, neither of which serves
     the React Debug view that index.tsx routes at /debug.
     """
-    return await root(request)
+    return root(request)
 
 @router.get("/info")
-async def info_page(request: Request):
+def info_page(request: Request):
     """Render the info page as part of the React app."""
     try:
         # Check if this is a request for the telemetry dashboard
@@ -152,7 +158,7 @@ async def info_page(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @router.get("/debug2")
-async def debug_page_old(request: Request):
+def debug_page_old(request: Request):
     """Legacy route - renders full HTML info page."""
     try:
         import platform
@@ -495,14 +501,14 @@ async def debug_page_old(request: Request):
 
 @router.get("/debug1")
 
-async def debug(request: Request):
+def debug(request: Request):
     # Return the same app but with a query parameter to show debug mode
     return _get_templates().TemplateResponse(request, "index.html", context={
         "debug_mode": True
     })
 
 @router.get("/favicon.ico", include_in_schema=False)
-async def favicon():
+def favicon():
     # Look for favicon in the templates directory
     try:
         from app.server import templates_dir
