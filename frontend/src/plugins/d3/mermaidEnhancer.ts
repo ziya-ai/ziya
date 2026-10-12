@@ -3515,6 +3515,18 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['gantt']
   });
 
+  // A colon inside a gantt task name ends the name early ("In service (from
+  // 04:29) :10-10 02:16, ..." -> "Invalid date:29) :..."). Escape name colons
+  // to #58; before any other gantt pass tries to read the task data.
+  registerPreprocessor(
+    (definition: string): string => {
+      return escapeGanttTaskNameColons(definition);
+    }, {
+    name: 'gantt-task-name-colon-escape',
+    priority: 140, // Before gantt-year-offset-fix (130) and the task-definition fix
+    diagramTypes: ['gantt']
+  });
+
   // Add a preprocessor to fix Gantt diagram task definition issues
   registerPreprocessor((def: string, type: string) => {
     if (type !== 'gantt' && !def.trim().startsWith('gantt')) {
