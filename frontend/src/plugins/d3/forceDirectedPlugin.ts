@@ -20,6 +20,11 @@ import {
   truncateLabelMiddle,
 } from './chartTheme';
 import JSON5 from 'json5';
+import {
+  stripDefinitionFence,
+  normalizeSmartQuotes,
+  withBraceCollapse,
+} from '../../utils/d3SpecParser';
 
 // Re-export the contrast primitives so callers/tests can verify a resolved
 // force-directed colour against its effective background without reaching into
@@ -1051,23 +1056,11 @@ export function sanitizeForceNodes<T extends Record<string, any>>(nodes: T[]): T
  * being '{' and never saw the byte-valid JSON inside. Handles a matched fence,
  * an unmatched leading/trailing fence, and a leading language tag.
  * Pure/testable.
+ *
+ * Both helpers live in utils/d3SpecParser; re-exported here for existing
+ * callers and tests.
  */
-export function stripDefinitionFence(raw: string): string {
-  let t = String(raw).trim();
-  const matched = /^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/.exec(t);
-  if (matched) return matched[1].trim();
-  // Unmatched fences (leading or trailing only).
-  t = t.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/```\s*$/, '');
-  return t.trim();
-}
-
-/** Normalise smart/curly quotes to ASCII so a copy-pasted payload parses.
- *  json5 does NOT accept U+201C/U+201D/U+2018/U+2019 (D-024). Pure/testable. */
-export function normalizeSmartQuotes(raw: string): string {
-  return String(raw)
-    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-    .replace(/[\u2018\u2019\u201A\u201B]/g, "'");
-}
+export { stripDefinitionFence, normalizeSmartQuotes };
 
 /**
  * Rewrite statement/member-separator SEMICOLONS to commas OUTSIDE of string
@@ -1116,6 +1109,10 @@ export function normalizeSemicolonSeparators(raw: string): string {
  */
 export function lenientParseObject(raw: any): any {
   if (typeof raw !== 'string') return undefined;
+  return withBraceCollapse(lenientParseObjectOnce, raw);
+}
+
+function lenientParseObjectOnce(raw: string): any {
   const cleaned = normalizeSmartQuotes(stripDefinitionFence(raw)).trim();
   if (!cleaned) return undefined;
   const first = cleaned.indexOf('{');
@@ -1303,6 +1300,7 @@ function isForceDirectedSpec(rawSpec: any): boolean {
 export const forceDirectedPlugin: D3RenderPlugin = {
   name: 'force-directed',
   priority: 5,
+  pointerInteractive: true, // nodes are dragged with d3-drag
   sizingConfig: {
     sizingStrategy: 'fixed',
     needsDynamicHeight: false,
