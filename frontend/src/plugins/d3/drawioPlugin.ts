@@ -5494,6 +5494,7 @@ function addErrorControls(container: HTMLElement, error: any, xml: string, spec:
 export const drawioPlugin: D3RenderPlugin = {
     name: 'drawio-renderer',
     priority: 7,
+    pointerInteractive: true, // click-and-drag panning owns the pointer
     sizingConfig: {
         sizingStrategy: 'auto-expand',
         needsDynamicHeight: true,
