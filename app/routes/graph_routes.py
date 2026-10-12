@@ -3,6 +3,11 @@ API routes for conversation graph visualization.
 
 Reads from existing chat storage (app/storage/chats.py) and builds
 a graph representation of the conversation structure.
+
+Handlers that await nothing are plain ``def``: loading the chat file and the
+SQLite graph cache is blocking disk I/O, and a zero-await ``async def`` would
+run it ON the event loop.  Starlette runs ``def`` handlers on its threadpool.
+Guarded by tests/test_graph_routes_not_event_loop_blocking.py.
 """
 
 from fastapi import APIRouter, HTTPException, Query
@@ -16,7 +21,7 @@ router = APIRouter(tags=["graph"])
 
 
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}/graph")
-async def get_conversation_graph(
+def get_conversation_graph(
     project_id: str,
     chat_id: str,
     force_rebuild: bool = Query(False),
