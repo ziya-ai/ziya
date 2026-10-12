@@ -319,7 +319,25 @@ never be broader than the session's ceiling.
    grants with a keystroke **there** — same authority principle as
    exec: the granting human is physically at the session being
    delegated. The grant may also tighten (grant `gated` against an
-   `unrestricted` request) but never loosen.
+   `unrestricted` request) but never loosen. The banner answers to
+   `g`, `y` or `a` (allow) or any other key (refuse); a keystroke for a
+   banner that a re-acquire has since superseded neither grants nor
+   revokes the newer lease, which has its own banner.
+
+   **Where is the banner?** Labels are not unique (three sessions
+   named `/bin/zsh` is normal), and a chat that remembers a session id
+   will keep requesting there after the human has moved to another
+   window. So a pending grant is never a silent state: the registry
+   records the wrapper's tty; `info`, `control_acquire`, `shadow_list`
+   and the `lease_pending` refusal all carry `terminal` = {tty,
+   started_at, cwd, human_idle_s} and the pending `lease`; the chat
+   tools tell the model that a grant is a keystroke, not a journal
+   event (do not `shadow_wait` for it — re-check `shadow_list` and use
+   the session the human is typing in); and every interactive shadow
+   polls the user's other live sessions (every 5 s) and overlays "chat
+   X is waiting for control in ANOTHER shadow session: <id> (tty,
+   started, cwd; idle) — press g there, or tell the chat to use this
+   session". Headless sessions are skipped (no banner exists there).
 4. The grant is an exclusive, heartbeat-kept **lease**: one controller
    per session, indefinite while the controller's heartbeat lives
    (~10 s timeout). The lease ends on explicit release, menu revoke,
