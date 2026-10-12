@@ -9,6 +9,7 @@
  * plugins use.
  */
 import JSON5 from 'json5';
+import { withBraceCollapse } from '../d3SpecParser';
 
 /** Remove a stray markdown fence around the body. */
 function stripFence(text: string): string {
@@ -27,7 +28,7 @@ function stripFence(text: string): string {
 export function parseWaveJson(text: string): any | undefined {
     if (typeof text !== 'string') return undefined;
     try {
-        return JSON5.parse(stripFence(text));
+        return withBraceCollapse((s) => JSON5.parse(stripFence(s)), text);
     } catch {
         return undefined;
     }
