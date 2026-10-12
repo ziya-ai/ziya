@@ -3,6 +3,11 @@ Local voice-transcription routes.
 
 Audio is processed entirely on the Ziya host with faster-whisper. The model
 and its native dependencies are optional and loaded only on first use.
+
+Handlers that await nothing are plain ``def`` so Starlette runs them on its
+worker threadpool instead of the event loop (``transcription_status`` calls
+``importlib.util.find_spec``, a filesystem walk, and is polled).  Guarded by
+``tests/test_transcription_routes_not_event_loop_blocking.py``.
 """
 from __future__ import annotations
 
@@ -157,7 +162,7 @@ async def install_transcription_backend():
 
 
 @router.get("/api/transcribe/status")
-async def transcription_status():
+def transcription_status():
     """Report whether local voice transcription can be used."""
     model_name, device, compute_type = _model_configuration()
     available = _dependency_available()
