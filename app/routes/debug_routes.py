@@ -2,6 +2,12 @@
 Debug and telemetry routes.
 
 Extracted from server.py during Phase 3b refactoring.
+
+Handlers that await nothing are plain ``def`` so Starlette runs them on its
+worker threadpool: as zero-await ``async def`` they ran ON the event loop
+(``/api/info``'s STS call, ``memstats``' gc walk) and stalled every request.
+``reset_mcp_state`` and ``debug_threads`` genuinely need the loop and stay
+async.  Guarded by tests/test_debug_routes_not_event_loop_blocking.py.
 """
 import os
 import time
@@ -24,7 +30,7 @@ from app.agents.models import ModelManager
 router = APIRouter(tags=["debug"])
 
 @router.get('/api/debug/mcp-state')
-async def debug_mcp_state():
+def debug_mcp_state():
     """Debug endpoint to check MCP connection and tool execution state."""
     try:
         from app.mcp.manager import get_mcp_manager
@@ -66,7 +72,7 @@ async def debug_mcp_state():
         return {"error": str(e)}
 
 @router.get('/api/debug/execution-paths')
-async def debug_execution_paths():
+def debug_execution_paths():
     """Report which model-execution path served requests (pipeline vs
     legacy LangChain wrappers).  Measurement for wrapper retirement (arch #1)."""
     try:
@@ -77,7 +83,7 @@ async def debug_execution_paths():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @router.get('/api/info')
-async def get_system_info(request: Request):
+def get_system_info(request: Request):
     """Get comprehensive system information and configuration for debugging."""
     try:
         import platform
@@ -309,7 +315,7 @@ async def reset_mcp_state(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @router.get('/api/telemetry/cache-health')
-async def get_cache_health_telemetry():
+def get_cache_health_telemetry():
     """Get real-time cache health and efficiency metrics."""
     try:
         from app.streaming_tool_executor import get_global_usage_tracker
@@ -406,7 +412,7 @@ async def get_cache_health_telemetry():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @router.get('/api/telemetry/current-conversation')
-async def get_current_conversation_telemetry(conversation_id: str):
+def get_current_conversation_telemetry(conversation_id: str):
     """Get detailed telemetry for a specific conversation."""
     try:
         from app.streaming_tool_executor import get_global_usage_tracker
@@ -521,7 +527,7 @@ def _probe(label: str, getter):
 
 
 @router.post('/api/debug/memstats/tracemalloc/start')
-async def memstats_tracemalloc_start(nframe: int = 10):
+def memstats_tracemalloc_start(nframe: int = 10):
     """Start tracemalloc tracing. Call this, let the server run, then
     GET /api/debug/memstats to see top allocators."""
     try:
@@ -535,7 +541,7 @@ async def memstats_tracemalloc_start(nframe: int = 10):
 
 
 @router.post('/api/debug/memstats/tracemalloc/stop')
-async def memstats_tracemalloc_stop():
+def memstats_tracemalloc_stop():
     try:
         if not tracemalloc.is_tracing():
             return {"status": "not_running"}
@@ -546,7 +552,7 @@ async def memstats_tracemalloc_stop():
 
 
 @router.post('/api/debug/memstats/gc')
-async def memstats_force_gc():
+def memstats_force_gc():
     """Force a full gc.collect() pass. Useful to distinguish uncollected
     cycles from genuinely reachable memory."""
     try:
@@ -561,7 +567,7 @@ async def memstats_force_gc():
 
 
 @router.get('/api/debug/memstats')
-async def memstats(top: int = 25, by_type: int = 20):
+def memstats(top: int = 25, by_type: int = 20):
     """
     Report process memory stats plus sizes of suspect in-memory structures.
 
@@ -736,9 +742,44 @@ async def debug_threads():
     ThreadPoolExecutor queues unboundedly, so a queued connect's
     connect_timeout does not begin to fire until a worker frees up.
     """
+    report: Dict[str, Any] = {"timestamp": time.time()}
+
+    # Default asyncio executor -- MCP/tool work lands here, so its own
+    # saturation is a separate failure mode from the provider pools.
+    # Read FIRST, on the loop (needs get_running_loop), and before the
+    # to_thread call below borrows one of its workers.
+    try:
+        loop = asyncio.get_running_loop()
+        de = getattr(loop, "_default_executor", None)
+        if de is None:
+            report["default_executor"] = {"present": False}
+        else:
+            report["default_executor"] = {
+                "present": True,
+                "max_workers": getattr(de, "_max_workers", None),
+                "live_threads": len(getattr(de, "_threads", ()) or ()),
+                "queue_depth": de._work_queue.qsize(),
+            }
+    except Exception as e:
+        report["default_executor"] = {"error": str(e)}
+
+    # Pool + OS-thread census off the loop: threading.enumerate() and the
+    # pool walk are cheap but GIL-bound, and this endpoint is hit exactly
+    # when the process is already under contention.
+    report.update(await asyncio.to_thread(_pool_and_thread_census))
+
+    report["env"] = {
+        "BEDROCK_THREAD_POOL_SIZE": os.environ.get("BEDROCK_THREAD_POOL_SIZE"),
+        "BEDROCK_CONNECT_POOL_SIZE": os.environ.get("BEDROCK_CONNECT_POOL_SIZE"),
+    }
+    return report
+
+
+def _pool_and_thread_census() -> Dict[str, Any]:
+    """Sync half of debug_threads: provider pools and live OS threads."""
     import threading
 
-    report: Dict[str, Any] = {"timestamp": time.time()}
+    report: Dict[str, Any] = {}
 
     # Provider pools.  Looked up via sys.modules ONLY -- importing a
     # provider module would construct its pool as a side effect, so an
@@ -816,25 +857,4 @@ async def debug_threads():
     except Exception as e:
         report["threads"] = {"error": str(e)}
 
-    # Default asyncio executor -- MCP/tool work lands here, so its own
-    # saturation is a separate failure mode from the provider pools.
-    try:
-        loop = asyncio.get_running_loop()
-        de = getattr(loop, "_default_executor", None)
-        if de is None:
-            report["default_executor"] = {"present": False}
-        else:
-            report["default_executor"] = {
-                "present": True,
-                "max_workers": getattr(de, "_max_workers", None),
-                "live_threads": len(getattr(de, "_threads", ()) or ()),
-                "queue_depth": de._work_queue.qsize(),
-            }
-    except Exception as e:
-        report["default_executor"] = {"error": str(e)}
-
-    report["env"] = {
-        "BEDROCK_THREAD_POOL_SIZE": os.environ.get("BEDROCK_THREAD_POOL_SIZE"),
-        "BEDROCK_CONNECT_POOL_SIZE": os.environ.get("BEDROCK_CONNECT_POOL_SIZE"),
-    }
     return report
