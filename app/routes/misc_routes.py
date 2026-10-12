@@ -2,6 +2,12 @@
 Miscellaneous routes (PCAP, dynamic tools, stream control).
 
 Extracted from server.py during Phase 3b refactoring.
+
+Handlers that await nothing (pcap analysis/status, supported document types)
+are plain ``def`` so Starlette runs them on its worker threadpool; as
+zero-await ``async def`` their synchronous work (scapy parsing a whole capture
+file) ran on the event loop and stalled every other request.
+``tests/test_misc_routes_not_event_loop_blocking.py`` enforces this.
 """
 import os
 import logging
@@ -151,7 +157,7 @@ async def extract_document(file: UploadFile = File(...), request: Request = None
 
 
 @router.get("/api/extract-document/supported-types")
-async def supported_document_types():
+def supported_document_types():
     """Return the list of file extensions accepted by /api/extract-document."""
     from app.utils.document_extractor import get_supported_upload_extensions
     return JSONResponse({"extensions": get_supported_upload_extensions()})
@@ -204,7 +210,7 @@ async def update_dynamic_tools(request: Request):
 
 
 @router.post("/api/tools/pcap/analyze")
-async def analyze_pcap(request: PcapAnalyzeRequest):
+def analyze_pcap(request: PcapAnalyzeRequest):
     """
     Analyze a pcap file with various operations
     
@@ -273,7 +279,7 @@ async def analyze_pcap(request: PcapAnalyzeRequest):
 
 
 @router.get("/api/tools/pcap/status")
-async def pcap_status():
+def pcap_status():
     """Check if pcap analysis is available"""
     return {
         "available": is_pcap_supported(),
