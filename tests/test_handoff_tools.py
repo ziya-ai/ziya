@@ -88,9 +88,10 @@ class TestHandoffWrite:
         from app.mcp.tools.handoff_tools import HandoffWriteTool, HandoffReadTool
         storage, cid = env["storage"], env["cid"]
 
-        # Before: under pressure, no draft → nudge.
+        # Before: 80% full, no draft → nothing (the start-draft instruction
+        # fires only from the late threshold; the drawer reads the figure).
         record_context_pressure(cid, 160_000, 200_000)
-        assert "[Context pressure]" in build_handoff_prelude(cid, storage=storage)
+        assert build_handoff_prelude(cid, storage=storage) == ""
 
         before_version = _record(env)["_version"]
         r = run(HandoffWriteTool().execute(
@@ -103,11 +104,12 @@ class TestHandoffWrite:
         assert rec["handoffDraft"]["sourceMessageCount"] == 2
         assert rec["_version"] > before_version
 
-        # After: same pressure, draft present → merge instruction, no nudge.
+        # After: same pressure, draft present → merge instruction only.
         pre = build_handoff_prelude(cid, storage=storage)
         assert "[Handoff draft — living]" in pre
         assert "ruled out Guardian BPF" in pre
         assert "[Context pressure]" not in pre
+        assert "%" not in pre
 
         # Merge touches one section, keeps the other.
         r2 = run(HandoffWriteTool().execute(
@@ -118,11 +120,15 @@ class TestHandoffWrite:
         assert "Tunnel Start" in pre2
         assert "ruled out Guardian BPF (turn 18)" not in pre2
 
-        # handoff_read sees the same record and the pressure number.
+        # handoff_read sees the same record — and hands the model NO pressure
+        # figure to quote back to the user (the drawer has it; the model
+        # does not need it).
         rd = run(HandoffReadTool().execute())
         assert rd["draft"]["document"] == _record(env)["handoffDraft"]["document"]
-        assert rd["context_pressure"] == pytest.approx(0.8)
+        assert "context_pressure" not in rd and "nudge_ratio" not in rd
         assert rd["inherited_handoff"] is None
+        assert "pressure" not in HandoffReadTool.description.lower()
+        assert "pressure" not in HandoffWriteTool.description.lower()
 
     def test_rejects_unknown_section_and_empty_input(self, env):
         from app.mcp.tools.handoff_tools import HandoffWriteTool
