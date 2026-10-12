@@ -31,6 +31,7 @@ export const EnvironmentRow: React.FC<EnvironmentRowProps> = ({ items, onToggle,
     if (items.length === 0) return null;
     const tokens = items.filter(isEnabled).reduce((a, i) => a + i.tokens, 0);
     const shellLevel = shellAttention?.level ?? 'none';
+    const hasShell = items.some(i => i.key === 'mcp:shell');
     return (
         <div data-testid="environment-row"
              style={{ borderTop: '1px dashed var(--mockup-border, rgba(127,127,127,0.4))',
@@ -40,13 +41,18 @@ export const EnvironmentRow: React.FC<EnvironmentRowProps> = ({ items, onToggle,
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {items.filter(isEnabled).map(i => i.name).join(' · ')}
                 </span>
-                {shellLevel !== 'none' && (
-                    <button type="button" data-testid="environment-shell-badge"
-                            title={(shellAttention?.reasons ?? []).join('\n') || 'Shell configuration needs attention'}
+                {/* Shell Configuration's only entry point since the toolbar button
+                    folded into the Bench: always present, loud only under attention. */}
+                {hasShell && onOpenShellConfig && (
+                    <button type="button" data-testid="environment-shell-config" data-attention={shellLevel}
+                            title={shellLevel === 'none'
+                                ? 'Shell configuration'
+                                : (shellAttention?.reasons ?? []).join('\n') || 'Shell configuration needs attention'}
                             onClick={onOpenShellConfig}
-                            style={{ border: 'none', background: 'none', cursor: onOpenShellConfig ? 'pointer' : 'default',
-                                     color: ATTENTION_COLORS[shellLevel], fontWeight: 600, padding: 0 }}>
-                        ⚠ shell
+                            style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0,
+                                     color: shellLevel === 'none' ? 'inherit' : ATTENTION_COLORS[shellLevel],
+                                     fontWeight: shellLevel === 'none' ? 'normal' : 600 }}>
+                        {shellLevel === 'none' ? '⚙ shell' : '⚠ shell'}
                     </button>
                 )}
                 <span>{formatTokens(tokens)}</span>
@@ -78,7 +84,7 @@ export const EnvironmentRow: React.FC<EnvironmentRowProps> = ({ items, onToggle,
                                     {i.kind === 'builtin' ? `${i.health?.tool_count ?? 0} tools` : i.kind} · {formatTokens(i.tokens)}
                                 </span>
                                 {i.health?.connected === false && <span style={{ color: '#d46b08' }}>· not connected</span>}
-                                {i.key === 'mcp:shell' && shellLevel !== 'none' && onOpenShellConfig && (
+                                {i.key === 'mcp:shell' && onOpenShellConfig && (
                                     <button type="button" onClick={onOpenShellConfig}
                                             style={{ border: 'none', background: 'none', color: 'inherit', cursor: 'pointer',
                                                      textDecoration: 'underline', padding: 0, fontSize: 10 }}>configure</button>
