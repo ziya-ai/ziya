@@ -20,7 +20,12 @@ from app.shadow import policy as P
     ("echo hi > out.txt", True),
     ("echo hi >> out.txt", True),
     ("foo 2>/dev/null", True),
-    ("foo 2>&1", True),
+    ("foo 2>&1", False),                 # fd dup: writes nothing
+    ("foo >&2", False),                  # fd dup
+    ("foo 2>&1 | grep x", False),
+    ("foo >&out", True),                 # bash: both streams to a FILE
+    ("foo &>out", True),
+    ("foo >&-", True),                   # closes an fd; conservative
     ("cat a > /etc/passwd", True),
     ("sed -i 's/a/b/' f", True),
     ("perl -i -pe 's/x/y/' f", True),
@@ -31,6 +36,26 @@ from app.shadow import policy as P
 ])
 def test_has_redirection(cmd, expected):
     assert P.has_redirection(cmd) is expected
+
+
+def test_fd_dup_is_not_a_segment_separator():
+    """``2>&1`` must stay inside its command: splitting on the ``&`` produced
+    the segments ``foo 2>``, ``1``, ``grep`` and a verdict about a command
+    named ``1``."""
+    assert P.split_segments("foo 2>&1 | grep x") == ["foo 2>&1", "grep x"]
+    assert P.split_segments("ls & rm -rf /") == ["ls", "rm -rf /"]
+
+
+def test_fd_dup_reason_is_not_a_file_write():
+    """A gated command's stated reason must name the real cause.  The
+    d2f846 wedge showed ``… 2>&1 | grep …`` as 'writes a file via
+    redirection'; the command was off-policy for other reasons."""
+    pol = P.resolve_policy("builtin", "gated")
+    verdict, reason = pol.classify("pkill -f X; brazil-build 2>&1 | grep BUILD")
+    assert verdict == P.NOT_ALLOWED
+    assert "redirection" not in reason
+    # And a benign pipeline with a dup is simply allowed.
+    assert pol.classify("df -h 2>&1 | head -3")[0] == P.ALLOWED
 
 
 @pytest.mark.parametrize("cmd, expected", [
