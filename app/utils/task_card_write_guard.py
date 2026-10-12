@@ -49,9 +49,17 @@ def _normalize_scope(scope: Optional[Dict[str, Any]]) -> Optional[str]:
     except Exception:  # noqa: BLE001 — an unparseable scope IS a finding;
         # surface it as a distinct value that can never equal a parsed one.
         return json.dumps({"__unparseable__": str(scope)}, sort_keys=True)
+    # ``cwd`` is a working directory, not a grant: it is absent from the
+    # signing hash (scope_canonical.task_escalation_block keys only
+    # shell_commands and out-of-floor writable paths) and the executor
+    # confines it to the project root regardless.  It is also the one
+    # scope field the harness expects a card author -- including the
+    # model -- to set per block, so comparing it here refused the exact
+    # edit the executor permits.  Dropped before comparison.
+    normalized.pop("cwd", None)
     meaningful = any(
         normalized.get(f) for f in (
-            "paths", "tools", "skills", "shell_commands", "cwd",
+            "paths", "tools", "skills", "shell_commands",
             "shell_timeout_secs", "model_tier", "model_name",
             "model_id_override", "model_endpoint",
         )
