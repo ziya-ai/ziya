@@ -519,6 +519,13 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             del ctx.recent_commands[:-20]
 
         # --- Process result ---
+        # show_document: the document is for the user only.  Taken off the
+        # result here, after verification, so it reaches tool_display and
+        # never the model, the sanitizer or the parroting index.
+        _document_display = None
+        if isinstance(result, dict) and not result.get("error"):
+            from app.utils.show_document import DISPLAY_KEY as _DOC_KEY
+            _document_display = result.pop(_DOC_KEY, None)
         result_text = _process_result(result, ctx.tool_name, ctx.actual_tool_name)
 
         # Fetched PDFs arrive from the external fetch server as a lossy
@@ -556,6 +563,8 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                             break
             else:
                 _display_str = result_text
+            if isinstance(_document_display, str):
+                _display_str = _document_display
 
             yield {
                 'type': 'tool_display',

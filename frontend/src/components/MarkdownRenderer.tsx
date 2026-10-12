@@ -1,4 +1,5 @@
 import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId, useLayoutEffect } from 'react';
+import { DOCUMENT_CAPTION_PREFIX, parseDocumentCaption } from '../utils/renderToolPart';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 import { marked, Tokens } from 'marked';
 import { isLatexFenceLang, latexProfileForLang } from '../constants/latexProfiles';
@@ -570,7 +571,81 @@ const ToolDiffPreview: React.FC<{ diff: string; isDarkMode: boolean }> = ({ diff
     );
 };
 
-const ToolBlock: React.FC<ToolBlockProps> = ({
+/**
+ * A file shown with show_document: rendered markdown, expanded, under a
+ * caption naming the path, line range, size and SHA-256.  The model never
+ * saw this text (app/utils/show_document.py).
+ */
+const DocumentBlock: React.FC<{ content: string; isDarkMode: boolean; header: string }> = ({
+    content, isDarkMode, header,
+}) => {
+    const { fields, body } = parseDocumentCaption(content);
+    const meta = [
+        fields.lines && fields.total_lines ? `lines ${fields.lines} of ${fields.total_lines}` : '',
+        fields.bytes ? `${Number(fields.bytes).toLocaleString()} bytes` : '',
+        fields.sha256 ? `sha256 ${fields.sha256.slice(0, 12)}` : '',
+    ].filter(Boolean).join(' · ');
+    return (
+        <div className="show-document" data-testid="show-document" style={{
+            border: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`,
+            borderRadius: 6, margin: '8px 0',
+        }}>
+            <div style={{
+                padding: '4px 10px', fontSize: 12, opacity: 0.85,
+                borderBottom: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`,
+            }}>
+                📄 <strong>{fields.path || header}</strong>{meta ? ` — ${meta}` : ''}
+            </div>
+            <div style={{ padding: '4px 12px' }}>
+                <MarkdownRenderer markdown={body} enableCodeApply={false} isStreaming={false} isSubRender={true} />
+            </div>
+        </div>
+    );
+};
+
+// Tools whose formatter already produces a purpose-built body (file text,
+// memory cards, AST trees) keep it; the shape digest is for everything else.
+const DIGEST_EXEMPT_TOOLS = new Set([
+    'file_read', 'mcp_file_read', 'file_write', 'mcp_file_write', 'file_list', 'mcp_file_list',
+    'ast_get_tree', 'mcp_ast_get_tree', 'ast_search', 'mcp_ast_search', 'ast_references', 'mcp_ast_references',
+    'memory_propose', 'mcp_memory_propose', 'memory_save', 'mcp_memory_save',
+    'show_document', 'mcp_show_document', 'get_current_time', 'mcp_get_current_time',
+    'sequentialthinking', 'mcp_sequentialthinking',
+]);
+
+/**
+ * Dispatches show_document to DocumentBlock and the terminal tools (shell,
+ * shadow_send / wait / read) to TerminalPane; every other tool is unchanged.
+ */
+const ToolBlock: React.FC<ToolBlockProps> = (props) => {
+    const [name, ...rest] = props.toolName.split('|');
+    // A blocked command keeps the generic block (its security Alert), and a
+    // shadow result that is not ok:true keeps the generic error rendering.
+    const paneModel = useMemo(() => (
+        isTerminalTool(name) && !looksLikeBlockedCommand(props.content) && !looksLikeMcpError(props.content)
+            ? buildTerminalPaneModel(name, props.content, rest) : null
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    ), [props.toolName, props.content]);
+    const shadow = useShadowPresence();
+    const isRemotePane = paneModel?.kind === 'remote';
+    useEffect(() => {
+        if (isRemotePane) markShadowUsed(shadow.key);
+    }, [isRemotePane, shadow.key]);
+
+    if (name.replace(/^mcp_/, '') === 'show_document'
+        && props.content.startsWith(DOCUMENT_CAPTION_PREFIX)) {
+        const header = rest.length > 1 ? rest.slice(0, -1).join('|') : (rest[0] || '');
+        return <DocumentBlock content={props.content} isDarkMode={props.isDarkMode} header={header} />;
+    }
+    if (paneModel) {
+        return <TerminalPane model={paneModel} isDarkMode={props.isDarkMode} verified={props.verified}
+                             showLocalBadge={shadow.inPlay} />;
+    }
+    return <GenericToolBlock {...props} />;
+};
+export { ToolBlock };
+
+const GenericToolBlock: React.FC<ToolBlockProps> = ({
     toolName, content, isDarkMode, toolInput, onOpenShellConfig,
     verified: verifiedProp,
     verificationError: verificationErrorProp
