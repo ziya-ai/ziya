@@ -1,3 +1,5 @@
+import { withBraceCollapse } from '../d3SpecParser';
+
 /**
  * Timeline / chronology layout engine.
  *
@@ -186,10 +188,15 @@ function stripFence(text: string): string {
 
 /**
  * JSON.parse tolerant of the common model slips (trailing commas, comments,
- * smart quotes, stray fences).  Returns undefined rather than throwing so a
- * streaming caller can use it as an is-it-complete probe.
+ * smart quotes, stray fences, uniform `{{` brace escaping).  Returns
+ * undefined rather than throwing so a streaming caller can use it as an
+ * is-it-complete probe.
  */
 export function lenientJsonParse(text: string): any | undefined {
+    return withBraceCollapse(lenientJsonParseOnce, text);
+}
+
+function lenientJsonParseOnce(text: string): any | undefined {
     if (typeof text !== 'string') return undefined;
     const t = stripFence(text)
         .replace(/[\u201C\u201D]/g, '"')
