@@ -204,7 +204,7 @@ describe('adjustAnnotationsForTitle', () => {
 // ── composed pipeline ────────────────────────────────────────────────────────
 
 describe('preprocessPlotlySpec', () => {
-  it('applies full pipeline to the Kuiper-style spec', () => {
+  it('applies full pipeline to the reported spec', () => {
     const spec = {
       data: [
         { type: 'scatter3d', marker: { colorbar: { x: 1.02, y: 0.85 } } },
