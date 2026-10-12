@@ -49,6 +49,13 @@ import { railroadPlugin } from '../railroadPlugin';
  *  reverting the harness to its 30-second timeout path. */
 const MARKER = 'data-diagram-error';
 
+// A well-formed packet spec reaches the drawing code, which draws through the
+// d3 instance D3Renderer supplies. Passing null made the "valid spec" case
+// throw on d3.select once normalization stopped rejecting a title-less
+// fields spec. dist/d3.js is the UMD build, so it loads untransformed.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const realD3 = require('d3/dist/d3.js');
+
 function freshContainer(): HTMLElement {
     const el = document.createElement('div');
     document.body.appendChild(el);
@@ -105,7 +112,7 @@ describe('error-card marker contract — valid specs stay unmarked', () => {
 
     it('packet renders content and no marker for a well-formed spec', () => {
         const c = freshContainer();
-        packetPlugin.render(c, null, {
+        packetPlugin.render(c, realD3, {
             type: 'packet',
             definition: JSON.stringify({
                 type: 'packet',
@@ -113,5 +120,6 @@ describe('error-card marker contract — valid specs stay unmarked', () => {
             }),
         }, false);
         expect(c.querySelector(`[${MARKER}]`)).toBeNull();
+        expect(c.querySelector('svg')).not.toBeNull();   // the path ran
     });
 });
