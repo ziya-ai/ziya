@@ -15,7 +15,7 @@ const SAMPLE = `digraph P {
   node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10];
   edge [fontname="Helvetica", fontsize=8];
   KPOP [label="KPOP scheduler\\nGPS-ns SCHEDULE only", fillcolor="#e3f2fd"];
-  EDGE [label="CT customer egress\\ntx_eth0_packets_acc 1s", fillcolor="#e3f2fd"];
+  EDGE [label="edge customer egress\\ntx_eth0_packets_acc 1s", fillcolor="#e3f2fd"];
   KPOP -> FPGA -> SAT -> CTMAC -> EDGE;
   KPOP -> EDGE [style=dashed, color="#d62728", label="1s / 4s floor:\\nNO per-packet delivery time"];
 }`;
@@ -23,7 +23,7 @@ const SAMPLE = `digraph P {
 describe('quoteGraphvizKeywordNodeIds', () => {
     it('quotes an uppercase keyword-collision node id at every use site', () => {
         const out = quoteGraphvizKeywordNodeIds(SAMPLE);
-        expect(out).toContain('"EDGE" [label="CT customer egress');
+        expect(out).toContain('"EDGE" [label="edge customer egress');
         expect(out).toContain('CTMAC -> "EDGE";');
         expect(out).toContain('KPOP -> "EDGE" [style=dashed');
         expect(out).not.toMatch(/(?<!")\bEDGE\b(?!")/);
