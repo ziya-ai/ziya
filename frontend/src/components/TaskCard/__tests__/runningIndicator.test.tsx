@@ -50,7 +50,7 @@ function card(root: Block): TaskCard {
   return {
     id: 'card-1', name: 'Card', description: '', root,
     tags: [], is_template: false, source: 'user',
-    created_at: 0, updated_at: 0, run_count: 0,
+    created_at: 0, updated_at: 0, run_count: 0, version: 1,
   };
 }
 
