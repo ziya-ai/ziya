@@ -24,9 +24,26 @@ import {
   Y_AXIS_ROOM_PX,
 } from '../vegaLegendPlacement';
 
+// The fit decisions below depend on estimated label widths. setupTests.ts
+// stubs canvas measureText at a flat 8px per character regardless of font
+// size (it exists so music glyphs get a nonzero width), which inflates a
+// 10px legend by ~54% and moves the wide-pane case past the pane edge.
+// Under that stub this suite failed in the project runner while passing
+// without it. Disable the stub here so estimateTextWidthPx uses its
+// deterministic font-proportional fallback, the estimator these cases are
+// written against.
+let savedGetContext: any;
+beforeAll(() => {
+  savedGetContext = (HTMLCanvasElement.prototype as any).getContext;
+  (HTMLCanvasElement.prototype as any).getContext = () => null;
+});
+afterAll(() => {
+  (HTMLCanvasElement.prototype as any).getContext = savedGetContext;
+});
+
 const LEGEND_DOMAIN = [
-  'locked A', 'locked B', 'TX on A', 'A left idle', 'arrived via A',
-  'died at satellite', 'copy held at KPOP', 'copy replayed on B', 'rescued via B',
+  'pinned to A', 'pinned to B', 'sent on A', 'A left idle', 'arrived via A',
+  'dropped at relay', 'copy held at buffer', 'copy replayed on B', 'rescued via B',
 ];
 
 /** The reported spec, reduced to its legend- and width-relevant structure. */
@@ -38,7 +55,7 @@ const reportedSpec = () => ({
       width: 620, height: 36,
       layer: [
         {
-          data: { values: [{ row: 'RX CT beam', k: 'locked A', t0: 2, t1: 12 }] },
+          data: { values: [{ row: 'client link', k: 'pinned to A', t0: 2, t1: 12 }] },
           mark: { type: 'bar' },
           encoding: {
             x: { field: 't0', type: 'quantitative' },
@@ -160,9 +177,9 @@ describe('relocateOverflowingSideLegend — the reported case', () => {
     config: { legend: { labelFontSize: 11 } },
     layer: [{
       mark: 'rect',
-      data: { values: [{ k: 'CT beam locked to A' }] },
+      data: { values: [{ k: 'client pinned to A' }] },
       encoding: { color: { field: 'k', type: 'nominal', scale: { domain: [
-        'CT beam locked to A', 'CT beam locked to B', 'sent on A - delivered',
+        'client pinned to A', 'client pinned to B', 'sent on A - delivered',
         'sent on A - LOST (no copy exists)', 'sent on B - delivered',
       ] } } },
     }],
@@ -226,12 +243,12 @@ describe('relocateOverflowingSideLegend — the reported case', () => {
   });
 
   it('lifts the 160px default labelLimit to fit the longest label in the per-column room', () => {
-    // Observed after the relocation landed: "via B - dies at sat B (CT not yet on B)"
-    // still printed as "…(CT not yet o…" because Vega's default labelLimit is
+    // Observed after the relocation landed: "via B - dropped at relay B (client not on B)"
+    // still printed as "…(client not o…" because Vega's default labelLimit is
     // 160px and no other pass visits vconcat sub-views.
     const spec = reportedSpec();
     (spec.vconcat[0].layer[0].encoding as any).color.scale.domain = [
-      'CT beam locked to A', 'via B - dies at sat B (CT not yet on B)',
+      'client pinned to A', 'via B - dropped at relay B (client not on B)',
     ];
     delete (spec.config.legend as any).columns;
     const result = relocateOverflowingSideLegend(spec, 620, PRINT_PANE_PX)!;

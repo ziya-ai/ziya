@@ -19,7 +19,7 @@ import { applyFacetCellWidth, calibrateFacetView } from './vegaFacetFit';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { RENDERER_ENVELOPE_KEYS } from '../../utils/pluginDimensions';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
-import { getZoomScript } from '../../utils/popupScriptUtils';
+import { resolveDatasetRefs } from './datasetRefs';
 import { collectDeclaredParamNames, dropDanglingParamConditions, neutralizeFacetedSelectionParams } from './vegaLiteParamGuard';
 import {
   tolerantParseVegaSpec,
@@ -29,6 +29,7 @@ import {
   inferEncodingTypes,
   reconcileThemeColors,
   enhanceArcChartsWithTextLabels,
+  resolveConcatScaleConflicts,
   sanitizeResolveScale,
   applyCategoricalPaletteFix,
   liftLowOpacityLightCategorical,
@@ -588,7 +589,7 @@ function stripExternalDataUrls(obj: any): number {
 }
 
 // Helper to check if a Vega-Lite definition is complete
-const isVegaLiteDefinitionComplete = (definition: string): boolean => {
+export const isVegaLiteDefinitionComplete = (definition: string): boolean => {
   if (!definition || definition.trim().length === 0) return false;
 
   // Check for obviously incomplete JSON (common during streaming)
@@ -623,10 +624,11 @@ const isVegaLiteDefinitionComplete = (definition: string): boolean => {
     // Check for required Vega-Lite properties.  Data can live in the top
     // level, in datasets, in layers, or in any sub-view of a composition.
     const hasData = hasVegaLiteDataAnywhere(parsed);
-    const hasVisualization = parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat;
+    const hasVisualization = parsed.mark || parsed.layer || parsed.concat ||
+      parsed.hconcat || parsed.vconcat || parsed.facet || parsed.repeat;
 
     // A complete spec should have both data and visualization
-    return hasData && hasVisualization;
+    return Boolean(hasData && hasVisualization);
   } catch (error) {
     // If JSON is malformed, it's not complete
     return false;
@@ -695,6 +697,190 @@ export function clipZeroBaselineMarksToDomain(view: any, inheritedEncoding?: any
   if (view.spec) clipped += clipZeroBaselineMarksToDomain(view.spec, effectiveEncoding);
 
   return clipped;
+}
+
+// ---------------------------------------------------------------------------
+// Log scales (Fix 3.7).
+//
+// log is undefined at 0 and below, so a log scale that would receive a value
+// <= 0 is converted to symlog. Nothing else about an authored scale type is
+// changed: an author who wrote `log` asked for it, whatever the data range.
+// (An earlier version also deleted `log` when one field spanned < 100x. It
+// judged the scale by that field alone, so a rule from 5 to 25,000 was
+// measured by its low ends (4x) and drawn on a linear axis.)
+//
+// The decision is made per SCALE, not per field. A positional scale is
+// shared by:
+//  - the primary and secondary channel of a view (x/x2, y/y2), and
+//  - every layer of a layered view, including nested layers (Vega-Lite's
+//    default resolve is shared), unless resolve.scale.<ch> is "independent".
+// Concat children and facet/repeat sub-specs get their own scales, so each
+// starts a new group. They inherit data; facet/repeat specs also inherit
+// encodings.
+//
+// Only inline data.values and numeric datums are inspected. Values produced
+// by transforms (calculate, fold, aggregate) are not visible here.
+//
+// Returns one message per converted scale.
+const LOG_SCALE_CHANNELS: ReadonlyArray<[string, string]> = [['x', 'x2'], ['y', 'y2']];
+
+const logScaleNumber = (v: any): number | null => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+};
+
+interface LogScaleMember {
+  node: any;
+  effective: any;
+  data: any[] | undefined;
+}
+
+function collectLogScaleGroups(
+  node: any,
+  data: any[] | undefined,
+  inheritedEncoding: any,
+  channel: string,
+  members: LogScaleMember[],
+  groups: LogScaleMember[][],
+): void {
+  const nodeData = Array.isArray(node.data?.values) ? node.data.values : data;
+  const effective = { ...(inheritedEncoding || {}), ...(node.encoding || {}) };
+  members.push({ node, effective, data: nodeData });
+  if (!Array.isArray(node.layer)) return;
+  const independent = node.resolve?.scale?.[channel] === 'independent';
+  node.layer.forEach((child: any) => {
+    if (!child || typeof child !== 'object') return;
+    if (independent) {
+      const own: LogScaleMember[] = [];
+      groups.push(own);
+      collectLogScaleGroups(child, nodeData, effective, channel, own, groups);
+    } else {
+      collectLogScaleGroups(child, nodeData, effective, channel, members, groups);
+    }
+  });
+}
+
+function convertLogScaleGroup(
+  group: LogScaleMember[], channel: string, secondary: string, path: string,
+): string | null {
+  if (!group.some(m => m.effective[channel]?.scale?.type === 'log')) return null;
+
+  // Only views that draw marks put values on the scale.
+  let min = Infinity;
+  for (const m of group) {
+    if (m.node.mark === undefined) continue;
+    for (const ch of [channel, secondary]) {
+      const def = m.effective[ch];
+      if (!def || typeof def !== 'object') continue;
+      if ('datum' in def) {
+        const n = logScaleNumber(def.datum);
+        if (n !== null && n < min) min = n;
+      }
+      if (typeof def.field === 'string' && m.data) {
+        for (const row of m.data) {
+          const n = logScaleNumber(row?.[def.field]);
+          if (n !== null && n < min) min = n;
+        }
+      }
+    }
+  }
+  if (!(min <= 0)) return null;
+
+  // Every declaration in the group changes together; a shared scale with
+  // log in one layer and symlog in another is a conflict.
+  for (const m of group) {
+    const def = m.node.encoding?.[channel];
+    if (def?.scale?.type === 'log') def.scale.type = 'symlog';
+  }
+  // A leaf that still sees log inherited it from outside this group (its
+  // parent resolves this channel independently): override it locally.
+  for (const m of group) {
+    if (m.node.mark === undefined) continue;
+    const def = m.effective[channel];
+    if (def?.scale?.type === 'log') {
+      m.node.encoding = {
+        ...(m.node.encoding || {}),
+        [channel]: { ...def, scale: { ...def.scale, type: 'symlog' } },
+      };
+    }
+  }
+  return `Converted ${channel} log scale to symlog at ${path} ` +
+    `(a value on that scale is ${min}; log is undefined at 0 and below)`;
+}
+
+export function fixLogScales(
+  view: any, inheritedData?: any[], inheritedEncoding?: any, path = 'top level',
+): string[] {
+  if (!view || typeof view !== 'object') return [];
+  const rewrites: string[] = [];
+  const data = Array.isArray(view.data?.values) ? view.data.values : inheritedData;
+  const sub = (key: string) => (path === 'top level' ? key : `${path}.${key}`);
+
+  if (view.mark !== undefined || Array.isArray(view.layer)) {
+    for (const [channel, secondary] of LOG_SCALE_CHANNELS) {
+      const groups: LogScaleMember[][] = [[]];
+      collectLogScaleGroups(view, inheritedData, inheritedEncoding, channel, groups[0], groups);
+      for (const group of groups) {
+        const msg = convertLogScaleGroup(group, channel, secondary, path);
+        if (msg) rewrites.push(msg);
+      }
+    }
+  }
+  ['hconcat', 'vconcat', 'concat'].forEach(key => {
+    if (Array.isArray(view[key])) {
+      view[key].forEach((child: any, i: number) => {
+        rewrites.push(...fixLogScales(child, data, undefined, sub(`${key}[${i}]`)));
+      });
+    }
+  });
+  if (view.spec && typeof view.spec === 'object') {
+    rewrites.push(...fixLogScales(view.spec, data, view.encoding, sub('spec')));
+  }
+  return rewrites;
+}
+
+// Fix 3.8: a spec that computes log(field) in a calculate transform and plots
+// it against a small numeric domain (log10 exponents) is rewritten to plot the
+// original field on a real log scale. Skipped when the axis has a labelExpr:
+// a pre-logged axis with its own labels is a deliberate choice.
+// Top-level encoding only. Returns one message per rewritten axis.
+export function convertManualLogAxes(spec: any): string[] {
+  const rewrites: string[] = [];
+  if (!Array.isArray(spec?.transform)) return rewrites;
+  const logCalculation = spec.transform.find((t: any) =>
+    typeof t?.calculate === 'string' && t.calculate.includes('log(') && t.as);
+  const logFieldName = logCalculation?.as;
+  if (!logFieldName) return rewrites;
+
+  ['x', 'y'].forEach(axis => {
+    const axisSpec = spec.encoding?.[axis];
+    if (axisSpec?.field !== logFieldName || axisSpec.type !== 'quantitative') return;
+    if (axisSpec.axis && typeof axisSpec.axis === 'object' && axisSpec.axis.labelExpr) {
+      console.log(`🔧 LOG-SCALE-FIX: Left pre-logged ${axis} axis alone (it has a labelExpr)`);
+      return;
+    }
+    const domain = axisSpec.scale?.domain;
+    // A small domain (< 20) on a logged field is read as log10 exponents.
+    if (!(Array.isArray(domain) && domain.length === 2 &&
+      domain[0] < 20 && domain[1] < 20 && domain[1] > domain[0])) return;
+    const fieldMatch = logCalculation.calculate.match(/log\(datum\.(\w+)\)/);
+    if (!fieldMatch) return;
+
+    const originalField = fieldMatch[1];
+    axisSpec.field = originalField;
+    axisSpec.scale = axisSpec.scale || {};
+    axisSpec.scale.type = 'log';
+    axisSpec.scale.domain = [Math.pow(10, domain[0]), Math.pow(10, domain[1])];
+    rewrites.push(
+      `Replaced pre-logged ${axis} field "${logFieldName}" with "${originalField}" on a log ` +
+      `scale, domain ${JSON.stringify(axisSpec.scale.domain)}`,
+    );
+  });
+  return rewrites;
 }
 
 // ---------------------------------------------------------------------------
@@ -797,9 +983,375 @@ export function expandRepeatRefsInTransforms(spec: any): any {
   return container;
 }
 
+// Fix 0.05: Swap datum/field in primary/secondary encoding channels.
+// Vega-Lite requires the primary channel (x, y) to carry the field reference
+// and the secondary channel (x2, y2) to hold the datum value.  LLMs frequently
+// generate lollipop charts with x:{datum:0}, x2:{field:"val"}, which crashes
+// the compiler ("Cannot destructure property 'aggregate' of 'i'").
+export const fixDatumFieldSwap = (encoding: any) => {
+  if (!encoding) return;
+  const pairs: [string, string][] = [['x', 'x2'], ['y', 'y2']];
+  for (const [primary, secondary] of pairs) {
+    const prim = encoding[primary];
+    const sec = encoding[secondary];
+    if (prim && sec && 'datum' in prim && 'field' in sec) {
+      console.log(`🔧 DATUM-SWAP-FIX: Swapping ${primary} (datum) with ${secondary} (field) to satisfy Vega-Lite channel requirements`);
+      encoding[primary] = sec;
+      encoding[secondary] = prim;
+    }
+  }
+};
+
+// Helper function to generate a color palette from a base hex color
+const generateColorPalette = (baseColor: string, count: number): string[] => {
+  // Simple color variations based on the base color
+  const variations = [
+    '#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffd93d',
+    '#ff9ff3', '#54a0ff', '#5f27cd', '#ff9f43', '#0abde3',
+    '#006ba6', '#f18701', '#d00000', '#8900f2', '#a8e6cf'
+  ];
+
+  // If we have enough variations, use them; otherwise cycle through
+  const palette: string[] = [];
+  for (let i = 0; i < count; i++) {
+    palette.push(variations[i % variations.length]);
+  }
+  return palette;
+};
+
+// Fix 8: Handle arc/pie charts with invalid color schemes (hex instead of scheme name)
+export const fixInvalidColorSchemeInArcs = (spec: any): any => {
+  // Fix invalid color scheme (hex color instead of scheme name).
+  // LLMs frequently put a hex color like "#ff6b6b" in the scheme field.
+  // Vega-Lite expects a named scheme (e.g. "viridis", "category10").
+  // This must run on top-level encoding AND on each layer's encoding,
+  // since layered specs (arc + text label) don't have spec.mark at the
+  // top level.
+  const fixHexSchemeInEncoding = (encoding: any, dataLength: number) => {
+    if (!encoding) return;
+    ['color', 'fill', 'stroke'].forEach(channel => {
+      const channelSpec = encoding[channel];
+      if (channelSpec?.scale?.scheme &&
+        typeof channelSpec.scale.scheme === 'string' &&
+        channelSpec.scale.scheme.startsWith('#')) {
+        console.log(`🔧 ARC-COLOR-FIX: Converting invalid hex scheme "${channelSpec.scale.scheme}" to color range in ${channel} channel`);
+        const hexColor = channelSpec.scale.scheme;
+        delete channelSpec.scale.scheme;
+        channelSpec.scale.range = generateColorPalette(hexColor, dataLength);
+      }
+    });
+  };
+
+  const dataLength = spec.data?.values?.length || 8;
+  // Top-level encoding
+  fixHexSchemeInEncoding(spec.encoding, dataLength);
+  // Layer encodings
+  if (spec.layer && Array.isArray(spec.layer)) {
+    spec.layer.forEach((layer: any) => {
+      fixHexSchemeInEncoding(layer.encoding, layer.data?.values?.length || dataLength);
+    });
+  }
+  // Concat sub-specs
+  if (spec.hconcat) {
+    spec.hconcat.forEach((s: any) => fixHexSchemeInEncoding(s.encoding, s.data?.values?.length || dataLength));
+  }
+  if (spec.vconcat) {
+    spec.vconcat.forEach((s: any) => fixHexSchemeInEncoding(s.encoding, s.data?.values?.length || dataLength));
+  }
+
+  return spec;
+};
+
+// FOLD-DATA-FIX support. Field names produced by a top-level transform
+// chain, or null when a transform makes them unknowable (pivot names its
+// outputs after data values).
+function topLevelTransformOutputs(transforms: any[]): Set<string> | null {
+  const out = new Set<string>();
+  const addAs = (as: any) => {
+    if (typeof as === 'string') out.add(as);
+    else if (Array.isArray(as)) as.forEach((a: any) => { if (typeof a === 'string') out.add(a); });
+  };
+  for (const t of transforms) {
+    if (!t || typeof t !== 'object') continue;
+    if (t.pivot) return null;
+    if (t.fold) { addAs(t.as ?? ['key', 'value']); continue; }
+    if (t.density) { addAs(t.as ?? ['value', 'density']); continue; }
+    if (t.quantile) { addAs(t.as ?? ['prob', 'value']); continue; }
+    addAs(t.as);
+    for (const k of ['aggregate', 'window', 'joinaggregate']) {
+      if (Array.isArray(t[k])) t[k].forEach((op: any) => addAs(op?.as));
+    }
+  }
+  return out;
+}
+
+function encodingFieldNames(encoding: any): string[] {
+  const names: string[] = [];
+  const visit = (def: any) => {
+    if (Array.isArray(def)) { def.forEach(visit); return; }
+    if (!def || typeof def !== 'object') return;
+    if (typeof def.field === 'string') names.push(def.field);
+    if (def.condition) visit(def.condition);
+  };
+  Object.values(encoding || {}).forEach(visit);
+  return names;
+}
+
+/**
+ * Indices of layers that should receive the pre-transform rows because they
+ * plot a folded field directly.  Fold keeps every input field on each output
+ * row, so such a layer would draw one mark per folded column (and double an
+ * aggregate).  A layer that references any transform output (the fold's
+ * key/value, a calculate, ...) must stay on the parent data: layer-level data
+ * does not get the parent's transform, so those fields would not exist and
+ * the layer would draw nothing.
+ */
+export function layersNeedingPreTransformData(spec: any): number[] {
+  if (!Array.isArray(spec?.layer) || !Array.isArray(spec?.transform)) return [];
+  const fold = spec.transform.find((t: any) => Array.isArray(t?.fold));
+  if (!fold) return [];
+  const derived = topLevelTransformOutputs(spec.transform);
+  if (!derived) return [];
+  const folded = new Set<string>(fold.fold);
+  const picked: number[] = [];
+  spec.layer.forEach((layer: any, index: number) => {
+    if (!layer || layer.data || layer.transform || !layer.encoding) return;
+    const fields = encodingFieldNames(layer.encoding);
+    if (fields.some(f => derived.has(f))) return;
+    if (fields.some(f => folded.has(f))) picked.push(index);
+  });
+  return picked;
+}
+
+// Fix 10: Handle layered charts with mismatched y-axis scales
+export const fixLayeredChartsWithMismatchedScales = (spec: any): any => {
+  if (!spec.layer || !Array.isArray(spec.layer) || spec.layer.length < 2) {
+    return spec;
+  }
+
+  // Check layers for different y-axis fields and scales.
+  // Include top-level encoding since layers inherit from it when they
+  // don't define their own y-encoding.
+  const topLevelYField = spec.encoding?.y?.field;
+  const yFields = spec.layer.map((layer: any) =>
+    layer.encoding?.y?.field || topLevelYField
+  ).filter(Boolean);
+  const uniqueYFields: string[] = [...new Set(yFields)] as string[];
+
+  const hasLogScale = spec.layer.some((layer: any) => layer.encoding?.y?.scale?.type === 'log');
+  const hasLinearScale = spec.layer.some((layer: any) => !layer.encoding?.y?.scale?.type || layer.encoding?.y?.scale?.type === 'linear');
+
+  // Detect mismatched scales: log/linear mix OR different fields whose
+  // value ranges differ by more than 3×.  The range check catches specs
+  // like bars plotting "pop" (0–5000) layered with circles plotting
+  // "infra" (0–100) — an explicit domain on one layer constrains the
+  // shared axis and clips the other layer's marks completely.
+  const hasScaleTypeMismatch = hasLogScale && hasLinearScale;
+  const hasRangeMismatch = uniqueYFields.length > 1 && spec.data?.values && (() => {
+    const ranges = uniqueYFields.map((field: string) => {
+      const values = spec.data.values
+        .map((d: any) => d[field])
+        .filter((v: any) => typeof v === 'number' && !isNaN(v));
+      if (values.length === 0) return null;
+      return { field, min: Math.min(...values), max: Math.max(...values) };
+    }).filter(Boolean) as { field: string; min: number; max: number }[];
+
+    if (ranges.length < 2) return false;
+
+    for (let i = 0; i < ranges.length; i++) {
+      for (let j = i + 1; j < ranges.length; j++) {
+        const span1 = ranges[i].max - ranges[i].min || 1;
+        const span2 = ranges[j].max - ranges[j].min || 1;
+        const ratio = Math.max(span1 / span2, span2 / span1);
+        if (ratio > 3) {
+          console.log(`🔧 DUAL-AXIS-FIX: "${ranges[i].field}" (${ranges[i].min}–${ranges[i].max}) and "${ranges[j].field}" (${ranges[j].min}–${ranges[j].max}) differ by ${ratio.toFixed(1)}x`);
+          return true;
+        }
+      }
+    }
+    return false;
+  })();
+
+  if (yFields.length > 1 && (hasScaleTypeMismatch || hasRangeMismatch)) {
+    console.log('🔧 DUAL-AXIS-FIX: Detected layered chart with mismatched y-axis scales');
+
+    // CRITICAL: Remove problematic domains that cause scale conflicts
+    spec.layer.forEach((layer: any, index: number) => {
+      if (layer.encoding?.y?.scale?.domain) {
+        console.log(`🔧 DUAL-AXIS-FIX: Removing conflicting domain from layer ${index}`);
+        delete layer.encoding.y.scale.domain;
+      }
+    });
+
+    // Add resolve scales to use independent y-axes
+    spec.resolve = {
+      scale: {
+        y: 'independent'
+      }
+    };
+
+    // For nominal x-axis with log y-axis, ensure proper positioning
+    if (spec.layer.some(layer => layer.encoding?.x?.type === 'nominal' && layer.encoding?.y?.scale?.type === 'log')) {
+      console.log('🔧 DUAL-AXIS-FIX: Converting nominal x-axis to ordinal for better log scale compatibility');
+      spec.layer.forEach(layer => {
+        if (layer.encoding?.x?.type === 'nominal') {
+          layer.encoding.x.type = 'ordinal';
+        }
+      });
+    }
+
+    // Ensure each layer has proper axis configuration
+    spec.layer.forEach((layer, index) => {
+      if (layer.encoding?.y) {
+        if (!layer.encoding.y.axis) {
+          layer.encoding.y.axis = {};
+        }
+        // First layer gets left axis, subsequent layers get right axis
+        layer.encoding.y.axis.orient = index === 0 ? 'left' : 'right';
+        layer.encoding.y.axis.grid = index === 0; // Only show grid for first layer
+      }
+    });
+
+    console.log('🔧 DUAL-AXIS-FIX: Added independent y-axis scaling');
+  }
+
+  return spec;
+};
+
+// Fix: Bar marks on log scale are fundamentally broken — bars imply a
+// zero baseline but log(0) = -∞.  Adjusting the domain doesn't help
+// because the bar length represents distance from a meaningless
+// baseline.  Convert to tick + text layers: ticks show position on
+// the log axis, text labels show the human-readable value.
+export const fixBarLogScaleBaseline = (s: any): any => {
+  const markType = typeof s.mark === 'string' ? s.mark : s.mark?.type;
+  if (markType !== 'bar') return s;
+
+  // Identify which axis is quantitative+log
+  let logAxis: 'x' | 'y' | null = null;
+  for (const axis of ['x', 'y'] as const) {
+    const enc = s.encoding?.[axis];
+    if (enc?.type === 'quantitative' && enc?.scale?.type === 'log') {
+      logAxis = axis;
+    }
+  }
+  if (!logAxis) return s;
+
+  const logEnc = s.encoding[logAxis];
+  const field = logEnc.field;
+  if (!field || !s.data?.values) return s;
+
+  const values = s.data.values
+    .map((d: any) => d[field])
+    .filter((v: any) => typeof v === 'number' && v > 0);
+  if (values.length === 0) return s;
+
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  const lowerBound = minVal * 0.3;
+  const upperBound = maxVal * 3;
+
+  // Build human-readable labels
+  const labelledData = s.data.values.map((d: any) => {
+    const v = d[field];
+    let label: string;
+    if (typeof v !== 'number' || v <= 0) label = String(v);
+    else if (v >= 1e9) label = (v / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    else if (v >= 1e6) label = (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    else if (v >= 1e3) label = (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+    else label = String(v);
+    return { ...d, _barLogLabel: label };
+  });
+
+  // Compute clean power-of-10 grid values
+  const logLow = Math.floor(Math.log10(lowerBound));
+  const logHigh = Math.ceil(Math.log10(upperBound));
+  const gridValues: number[] = [];
+  for (let exp = logLow; exp <= logHigh; exp++) {
+    const v = Math.pow(10, exp);
+    if (v >= lowerBound && v <= upperBound) gridValues.push(v);
+  }
+
+  const fixedLogEnc = {
+    ...logEnc,
+    scale: { ...logEnc.scale, domain: [lowerBound, upperBound] },
+    axis: {
+      ...(logEnc.axis || {}),
+      values: gridValues,
+      gridDash: [2, 4],
+    },
+  };
+
+  const sharedEncoding = { ...s.encoding, [logAxis]: fixedLogEnc };
+  delete sharedEncoding.size;
+
+  // Label positioning: offset away from the tick mark
+  const labelOffset = logAxis === 'x'
+    ? { dy: -14 }
+    : { dx: 12, align: 'left' as const };
+
+  const result: any = {
+    ...s,
+    data: { values: labelledData },
+    mark: undefined,
+    encoding: undefined,
+    layer: [
+      {
+        mark: { type: 'tick', thickness: 6, size: 40 },
+        encoding: { ...sharedEncoding },
+      },
+      {
+        mark: { type: 'text', fontSize: 11, ...labelOffset },
+        encoding: {
+          ...sharedEncoding,
+          text: { field: '_barLogLabel', type: 'nominal' },
+          color: sharedEncoding.color
+            ? { ...sharedEncoding.color, legend: null }
+            : { value: '#999' },
+        },
+      },
+    ],
+  };
+  delete result.mark;
+
+  console.log(
+    `🔧 BAR-LOG-FIX: Converted bar+log to tick+text layers ` +
+    `(${logAxis}-axis, field: "${field}", range: ${minVal}–${maxVal})`
+  );
+
+  return result;
+};
+
+/**
+ * Whether a render error should be shown as a "waiting" placeholder rather
+ * than an error panel.  Suppresses errors while the block is still streaming
+ * or the JSON is visibly truncated, unless the user forced a render.  A fully
+ * formed object spec (schema, data somewhere, a view operator) is never
+ * suppressed: its error is real.
+ */
+export const shouldSuppressVegaLiteError = (spec: any, error: unknown): boolean => {
+  const isStreamingError = (error instanceof Error) && (
+    error.message.includes('Unterminated string') ||
+    error.message.includes('Unexpected end of JSON input') ||
+    error.message.includes('Unexpected token')
+  );
+  const isIncompleteDefinition = spec.definition && !isVegaLiteDefinitionComplete(spec.definition);
+  const specIsCompleteObject = spec.$schema && hasVegaLiteDataAnywhere(spec) &&
+    (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
+  return Boolean(
+    (!spec.forceRender && (
+      (spec.isStreaming && !spec.isMarkdownBlockClosed) ||
+      (spec.isStreaming && isIncompleteDefinition)
+    )) ||
+    (!spec.definition && !specIsCompleteObject) ||
+    (isStreamingError && !spec.forceRender)
+  );
+};
+
 export const vegaLitePlugin: D3RenderPlugin = {
   name: 'vega-lite-renderer',
   priority: 8, // Higher priority than basic chart but lower than mermaid/graphviz
+  pointerInteractive: true, // interval selections / brushes own the pointer
 
   // The spec handed to render() IS the Vega-Lite document. Its `width` /
   // `height` are PLOT-AREA properties (and `width` may be the string
@@ -1181,25 +1733,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         return preprocessVegaSpec(repeatExpanded);
       }
 
-      // Fix 0.05: Swap datum/field in primary/secondary encoding channels
-      // Vega-Lite requires the primary channel (x, y) to carry the field reference
-      // and the secondary channel (x2, y2) to hold the datum value.  LLMs frequently
-      // generate lollipop charts with the pattern x:{datum:0}, x2:{field:"val"} which
-      // crashes the Vega-Lite compiler ("Cannot destructure property 'aggregate' of 'i'").
-      const fixDatumFieldSwap = (encoding: any) => {
-        if (!encoding) return;
-        const pairs: [string, string][] = [['x', 'x2'], ['y', 'y2']];
-        for (const [primary, secondary] of pairs) {
-          const prim = encoding[primary];
-          const sec = encoding[secondary];
-          if (prim && sec && 'datum' in prim && 'field' in sec) {
-            console.log(`🔧 DATUM-SWAP-FIX: Swapping ${primary} (datum) with ${secondary} (field) to satisfy Vega-Lite channel requirements`);
-            encoding[primary] = sec;
-            encoding[secondary] = prim;
-          }
-        }
-      };
-
+      // Fix 0.05: datum/field channel swap (see fixDatumFieldSwap).
       // Apply to top-level encoding
       fixDatumFieldSwap(spec.encoding);
 
@@ -1500,57 +2034,8 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       }
 
-      // Fix 3.8: Detect manual log calculations with numeric domains and convert to proper log scale
-      // This handles specs that calculate log values but use them with inappropriate domains
-      if (spec.transform && spec.transform.some((t: any) =>
-        t.calculate && t.calculate.includes('log(') && t.as)) {
-
-        const logCalculation = spec.transform.find((t: any) =>
-          t.calculate && t.calculate.includes('log(') && t.as);
-        const logFieldName = logCalculation?.as;
-
-        if (logFieldName) {
-          console.log(`🔧 LOG-SCALE-FIX: Detected manual log calculation creating field "${logFieldName}"`);
-
-          // Check if y-axis uses this log field with a numeric domain
-          ['x', 'y'].forEach(axis => {
-            const axisSpec = spec.encoding?.[axis];
-            if (axisSpec?.field === logFieldName && axisSpec.type === 'quantitative') {
-              const domain = axisSpec.scale?.domain;
-
-              // If domain is small numbers (0-20), these are likely log₁₀ values
-              // meaning the actual data range is 10^domain[0] to 10^domain[1]
-              if (Array.isArray(domain) && domain.length === 2 &&
-                domain[0] < 20 && domain[1] < 20 && domain[1] > domain[0]) {
-
-                console.log(`🔧 LOG-SCALE-FIX: Domain ${JSON.stringify(domain)} looks like log₁₀ exponents`);
-                console.log(`🔧 LOG-SCALE-FIX: Represents actual range [${Math.pow(10, domain[0])}, ${Math.pow(10, domain[1])}]`);
-
-                // Find the original field being logged (parse from calculate expression)
-                const calcExpr = logCalculation.calculate;
-                const fieldMatch = calcExpr.match(/log\(datum\.(\w+)\)/);
-
-                if (fieldMatch) {
-                  const originalField = fieldMatch[1];
-                  console.log(`🔧 LOG-SCALE-FIX: Original field being logged: "${originalField}"`);
-
-                  // SOLUTION: Use the original field with proper log scale instead
-                  axisSpec.field = originalField;
-                  axisSpec.scale = axisSpec.scale || {};
-                  axisSpec.scale.type = 'log';
-                  axisSpec.scale.domain = [
-                    Math.pow(10, domain[0]),
-                    Math.pow(10, domain[1])
-                  ];
-
-                  console.log(`🔧 LOG-SCALE-FIX: Converted to use original field "${originalField}" with log scale`);
-                  console.log(`🔧 LOG-SCALE-FIX: New domain: ${JSON.stringify(axisSpec.scale.domain)}`);
-                }
-              }
-            }
-          });
-        }
-      }
+      // Fix 3.8: pre-logged field on a small domain -> real log scale (see convertManualLogAxes).
+      convertManualLogAxes(spec).forEach(msg => console.log(`🔧 LOG-SCALE-FIX: ${msg}`));
 
       // Fix 1: Remove problematic shape encodings entirely - this is the most common cause
       if (spec.encoding?.shape) {
@@ -2316,44 +2801,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       });
 
-      // Fix 3.7: Convert problematic log scales to symlog
-      const fixLogScales = (encoding: any, dataValues: any[]) => {
-        if (!encoding || !dataValues || dataValues.length === 0) return;
+      // Fix 3.7: log -> symlog where a value on the scale is <= 0 (see fixLogScales).
+      fixLogScales(spec).forEach(msg => console.log(`🔧 VEGA-PREPROCESS: ${msg}`));
 
-        ['x', 'y'].forEach(channel => {
-          const channelSpec = encoding[channel];
-          if (channelSpec?.field && channelSpec?.type === 'quantitative' && channelSpec?.scale?.type === 'log') {
-            const values = dataValues.map(d => d[channelSpec.field]).filter(v => typeof v === 'number' && !isNaN(v));
-            const hasZeroOrNegative = values.some(v => v <= 0);
-            const range = Math.max(...values) / Math.min(...values.filter(v => v > 0));
-
-            // Convert log to symlog if there are zero/negative values, or use linear if range is small
-            if (hasZeroOrNegative) {
-              channelSpec.scale.type = 'symlog';
-              console.log(`🔧 VEGA-PREPROCESS: Converted ${channel} log scale to symlog (has zero/negative values)`);
-            } else if (range < 100) {
-              delete channelSpec.scale.type;
-              console.log(`🔧 VEGA-PREPROCESS: Removed ${channel} log scale (range too small: ${range.toFixed(1)}x)`);
-            }
-          }
-        });
-      };
-
-      if (spec.data?.values) {
-        fixLogScales(spec.encoding, spec.data.values);
-      }
-      if (spec.hconcat) spec.hconcat.forEach((s: any) => {
-        const dataValues = s.data?.values || spec.data?.values;
-        if (dataValues) fixLogScales(s.encoding, dataValues);
-      });
-      if (spec.vconcat) spec.vconcat.forEach((s: any) => {
-        const dataValues = s.data?.values || spec.data?.values;
-        if (dataValues) fixLogScales(s.encoding, dataValues);
-      });
-      if (spec.layer) spec.layer.forEach((s: any) => {
-        const dataValues = s.data?.values || spec.data?.values;
-        if (dataValues) fixLogScales(s.encoding, dataValues);
-      });
+      // Fix 3.72: timeFormat/utcFormat over a field that is still a string
+      // (never encoded temporal) formats every row to "NaN" (see vegaDateExpr).
+      fixUnparsedDateFormatting(spec).forEach(msg => console.log(`🔧 VEGA-PREPROCESS: ${msg}`));
 
       // Fix 3.75: A bar/area on a log scale must not be auto-stacked.
       //
@@ -2622,49 +3075,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
       return spec;
     };
 
-    // Fix 8: Handle arc/pie charts with invalid color schemes (hex instead of scheme name)
-    const fixInvalidColorSchemeInArcs = (spec: any): any => {
-      // Fix invalid color scheme (hex color instead of scheme name).
-      // LLMs frequently put a hex color like "#ff6b6b" in the scheme field.
-      // Vega-Lite expects a named scheme (e.g. "viridis", "category10").
-      // This must run on top-level encoding AND on each layer's encoding,
-      // since layered specs (arc + text label) don't have spec.mark at the
-      // top level.
-      const fixHexSchemeInEncoding = (encoding: any, dataLength: number) => {
-        if (!encoding) return;
-        ['color', 'fill', 'stroke'].forEach(channel => {
-          const channelSpec = encoding[channel];
-          if (channelSpec?.scale?.scheme &&
-            typeof channelSpec.scale.scheme === 'string' &&
-            channelSpec.scale.scheme.startsWith('#')) {
-            console.log(`🔧 ARC-COLOR-FIX: Converting invalid hex scheme "${channelSpec.scale.scheme}" to color range in ${channel} channel`);
-            const hexColor = channelSpec.scale.scheme;
-            delete channelSpec.scale.scheme;
-            channelSpec.scale.range = generateColorPalette(hexColor, dataLength);
-          }
-        });
-      };
-
-      const dataLength = spec.data?.values?.length || 8;
-      // Top-level encoding
-      fixHexSchemeInEncoding(spec.encoding, dataLength);
-      // Layer encodings
-      if (spec.layer && Array.isArray(spec.layer)) {
-        spec.layer.forEach((layer: any) => {
-          fixHexSchemeInEncoding(layer.encoding, layer.data?.values?.length || dataLength);
-        });
-      }
-      // Concat sub-specs
-      if (spec.hconcat) {
-        spec.hconcat.forEach((s: any) => fixHexSchemeInEncoding(s.encoding, s.data?.values?.length || dataLength));
-      }
-      if (spec.vconcat) {
-        spec.vconcat.forEach((s: any) => fixHexSchemeInEncoding(s.encoding, s.data?.values?.length || dataLength));
-      }
-
-      return spec;
-    };
-
     // Fix 9: Handle arc/pie charts missing theta2 encoding
     const fixMissingTheta2InArcs = (spec: any): any => {
       if (!spec.mark || (spec.mark !== 'arc' && spec.mark.type !== 'arc')) {
@@ -2680,137 +3090,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
           console.log('🔧 ARC-THETA2-FIX: Adding theta2 encoding for non-stacked arc segments');
           spec.encoding.theta2 = { value: 0 };
         }
-      }
-
-      return spec;
-    };
-
-    // Helper function to generate a color palette from a base hex color
-    const generateColorPalette = (baseColor: string, count: number): string[] => {
-      // Simple color variations based on the base color
-      const variations = [
-        '#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffd93d',
-        '#ff9ff3', '#54a0ff', '#5f27cd', '#ff9f43', '#0abde3',
-        '#006ba6', '#f18701', '#d00000', '#8900f2', '#a8e6cf'
-      ];
-
-      // If we have enough variations, use them; otherwise cycle through
-      const palette: string[] = [];
-      for (let i = 0; i < count; i++) {
-        palette.push(variations[i % variations.length]);
-      }
-      return palette;
-    };
-
-    // Fix 10: Handle layered charts with mismatched y-axis scales
-    const fixLayeredChartsWithMismatchedScales = (spec: any): any => {
-      if (!spec.layer || !Array.isArray(spec.layer) || spec.layer.length < 2) {
-        return spec;
-      }
-
-      // Check layers for different y-axis fields and scales.
-      // Include top-level encoding since layers inherit from it when they
-      // don't define their own y-encoding.
-      const topLevelYField = spec.encoding?.y?.field;
-      const yFields = spec.layer.map((layer: any) =>
-        layer.encoding?.y?.field || topLevelYField
-      ).filter(Boolean);
-      const uniqueYFields: string[] = [...new Set(yFields)] as string[];
-
-      const hasLogScale = spec.layer.some((layer: any) => layer.encoding?.y?.scale?.type === 'log');
-      const hasLinearScale = spec.layer.some((layer: any) => !layer.encoding?.y?.scale?.type || layer.encoding?.y?.scale?.type === 'linear');
-
-      // Detect mismatched scales: log/linear mix OR different fields whose
-      // value ranges differ by more than 3×.  The range check catches specs
-      // like bars plotting "pop" (0–5000) layered with circles plotting
-      // "infra" (0–100) — an explicit domain on one layer constrains the
-      // shared axis and clips the other layer's marks completely.
-      const hasScaleTypeMismatch = hasLogScale && hasLinearScale;
-      const hasRangeMismatch = uniqueYFields.length > 1 && spec.data?.values && (() => {
-        const ranges = uniqueYFields.map((field: string) => {
-          const values = spec.data.values
-            .map((d: any) => d[field])
-            .filter((v: any) => typeof v === 'number' && !isNaN(v));
-          if (values.length === 0) return null;
-          return { field, min: Math.min(...values), max: Math.max(...values) };
-        }).filter(Boolean) as { field: string; min: number; max: number }[];
-
-        if (ranges.length < 2) return false;
-
-        for (let i = 0; i < ranges.length; i++) {
-          for (let j = i + 1; j < ranges.length; j++) {
-            const span1 = ranges[i].max - ranges[i].min || 1;
-            const span2 = ranges[j].max - ranges[j].min || 1;
-            const ratio = Math.max(span1 / span2, span2 / span1);
-            if (ratio > 3) {
-              console.log(`🔧 DUAL-AXIS-FIX: "${ranges[i].field}" (${ranges[i].min}–${ranges[i].max}) and "${ranges[j].field}" (${ranges[j].min}–${ranges[j].max}) differ by ${ratio.toFixed(1)}x`);
-              return true;
-            }
-          }
-        }
-        return false;
-      })();
-
-      if (yFields.length > 1 && (hasScaleTypeMismatch || hasRangeMismatch)) {
-        console.log('🔧 DUAL-AXIS-FIX: Detected layered chart with mismatched y-axis scales');
-
-        // CRITICAL: Remove problematic domains that cause scale conflicts
-        spec.layer.forEach((layer: any, index: number) => {
-          if (layer.encoding?.y?.scale?.domain) {
-            console.log(`🔧 DUAL-AXIS-FIX: Removing conflicting domain from layer ${index}`);
-            delete layer.encoding.y.scale.domain;
-          }
-        });
-
-        // Add resolve scales to use independent y-axes
-        spec.resolve = {
-          scale: {
-            y: 'independent'
-          }
-        };
-
-        // For nominal x-axis with log y-axis, ensure proper positioning
-        if (spec.layer.some(layer => layer.encoding?.x?.type === 'nominal' && layer.encoding?.y?.scale?.type === 'log')) {
-          console.log('🔧 DUAL-AXIS-FIX: Converting nominal x-axis to ordinal for better log scale compatibility');
-          spec.layer.forEach(layer => {
-            if (layer.encoding?.x?.type === 'nominal') {
-              layer.encoding.x.type = 'ordinal';
-            }
-          });
-        }
-
-        spec.resolve = {
-          scale: {
-            y: 'independent'
-          }
-        };
-
-        // Ensure each layer has proper axis configuration
-        spec.layer.forEach((layer, index) => {
-          if (layer.encoding?.y) {
-            if (!layer.encoding.y.axis) {
-              layer.encoding.y.axis = {};
-            }
-            // First layer gets left axis, subsequent layers get right axis
-            layer.encoding.y.axis.orient = index === 0 ? 'left' : 'right';
-            layer.encoding.y.axis.grid = index === 0; // Only show grid for first layer
-          }
-        });
-
-        spec.layer.forEach((layer: any, index: number) => {
-          if (layer.encoding?.y && index > 0) {
-            // Position subsequent y-axes on the right side
-            if (!layer.encoding.y.axis) {
-              layer.encoding.y.axis = {};
-            }
-            layer.encoding.y.axis.orient = 'right';
-
-            // Ensure the right axis is visible
-            layer.encoding.y.axis.grid = false; // Avoid grid conflicts
-          }
-        });
-
-        console.log('🔧 DUAL-AXIS-FIX: Added independent y-axis scaling');
       }
 
       return spec;
@@ -3112,6 +3391,18 @@ export const vegaLitePlugin: D3RenderPlugin = {
       RENDERER_ENVELOPE_KEYS.forEach(prop => delete parsedSpec[prop]);
     }
 
+    // Swap ziya://dataset/<id> references for inline rows BEFORE sanitizeSpec
+    // and stripExternalDataUrls. Without this the stripper deletes the url and
+    // the chart renders empty with no visible error. A failed fetch throws so
+    // the error card names the dataset instead of drawing a blank chart.
+    const _datasetRes = await resolveDatasetRefs(parsedSpec);
+    if (_datasetRes.failed.length > 0) {
+      throw new Error(
+        'Could not load dataset ' + _datasetRes.failed.join(', ') + ' ' +
+        '(not registered, expired, or the server is unreachable).',
+      );
+    }
+
     // Sanitize and apply all chart fixes in one place
     let fixedSpec = sanitizeSpec(parsedSpec);
     // D-252 (rider): mis-nested `mark.encoding` -> `spec.encoding`.
@@ -3181,110 +3472,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
       console.log(`🔧 AREA-LOG-FIX: Set log scale domain to [${lowerBound}, ${upperBound}] for area/line mark (field: "${field}")`);
 
       return s;
-    };
-
-    // Fix: Bar marks on log scale are fundamentally broken — bars imply a
-    // zero baseline but log(0) = -∞.  Adjusting the domain doesn't help
-    // because the bar length represents distance from a meaningless
-    // baseline.  Convert to tick + text layers: ticks show position on
-    // the log axis, text labels show the human-readable value.
-    const fixBarLogScaleBaseline = (s: any): any => {
-      const markType = typeof s.mark === 'string' ? s.mark : s.mark?.type;
-      if (markType !== 'bar') return s;
-
-      // Identify which axis is quantitative+log
-      let logAxis: 'x' | 'y' | null = null;
-      for (const axis of ['x', 'y'] as const) {
-        const enc = s.encoding?.[axis];
-        if (enc?.type === 'quantitative' && enc?.scale?.type === 'log') {
-          logAxis = axis;
-        }
-      }
-      if (!logAxis) return s;
-
-      const logEnc = s.encoding[logAxis];
-      const field = logEnc.field;
-      if (!field || !s.data?.values) return s;
-
-      const values = s.data.values
-        .map((d: any) => d[field])
-        .filter((v: any) => typeof v === 'number' && v > 0);
-      if (values.length === 0) return s;
-
-      const minVal = Math.min(...values);
-      const maxVal = Math.max(...values);
-      const lowerBound = minVal * 0.3;
-      const upperBound = maxVal * 3;
-
-      // Build human-readable labels
-      const labelledData = s.data.values.map((d: any) => {
-        const v = d[field];
-        let label: string;
-        if (typeof v !== 'number' || v <= 0) label = String(v);
-        else if (v >= 1e9) label = (v / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
-        else if (v >= 1e6) label = (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-        else if (v >= 1e3) label = (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
-        else label = String(v);
-        return { ...d, _barLogLabel: label };
-      });
-
-      // Compute clean power-of-10 grid values
-      const logLow = Math.floor(Math.log10(lowerBound));
-      const logHigh = Math.ceil(Math.log10(upperBound));
-      const gridValues: number[] = [];
-      for (let exp = logLow; exp <= logHigh; exp++) {
-        const v = Math.pow(10, exp);
-        if (v >= lowerBound && v <= upperBound) gridValues.push(v);
-      }
-
-      const fixedLogEnc = {
-        ...logEnc,
-        scale: { ...logEnc.scale, domain: [lowerBound, upperBound] },
-        axis: {
-          ...(logEnc.axis || {}),
-          values: gridValues,
-          gridDash: [2, 4],
-        },
-      };
-
-      const sharedEncoding = { ...s.encoding, [logAxis]: fixedLogEnc };
-      delete sharedEncoding.size;
-
-      // Label positioning: offset away from the tick mark
-      const labelOffset = logAxis === 'x'
-        ? { dy: -14 }
-        : { dx: 12, align: 'left' as const };
-
-      const result: any = {
-        ...s,
-        data: { values: labelledData },
-        mark: undefined,
-        encoding: undefined,
-        layer: [
-          {
-            mark: { type: 'tick', thickness: 6, size: 40 },
-            encoding: { ...sharedEncoding },
-          },
-          {
-            mark: { type: 'text', fontSize: 11, ...labelOffset },
-            encoding: {
-              ...sharedEncoding,
-              text: { field: '_barLogLabel', type: 'nominal' },
-              color: sharedEncoding.color
-                ? { ...sharedEncoding.color, legend: null }
-                : { value: '#999' },
-            },
-          },
-        ],
-      };
-      delete result.mark;
-
-      console.log(
-        `🔧 BAR-LOG-FIX: Converted bar+log to tick+text layers ` +
-        `(${logAxis}-axis, field: "${field}", range: ${minVal}–${maxVal})`
-      );
-
-      return result;
     };
 
     fixedSpec = fixAreaLogScaleDomain(fixedSpec);
@@ -3528,29 +3715,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
         console.log('🔧 VEGA-POST-PROCESS: Fixing layered chart scales and legends');
 
-        // Handle layers accessing fields from before fold transform
-        // Check if we have a fold transform at the top level
-        const hasFoldTransform = vegaSpec.transform && vegaSpec.transform.some((t: any) => t.fold);
-
-        if (hasFoldTransform && vegaSpec.data?.values) {
-          const originalData = vegaSpec.data.values;
-          const foldTransform = vegaSpec.transform.find((t: any) => t.fold);
-          const foldedFields = foldTransform?.fold || [];
-
-          // Check each layer for field references that aren't in the folded data
-          vegaSpec.layer.forEach((layer: any, index: number) => {
-            if (layer.encoding) {
-              Object.keys(layer.encoding).forEach(channel => {
-                const channelSpec = layer.encoding[channel];
-                if (channelSpec?.field && !foldedFields.includes(channelSpec.field) &&
-                  originalData.length > 0 && originalData[0].hasOwnProperty(channelSpec.field)) {
-                  // This layer needs access to the original data
-                  console.log(`🔧 FOLD-DATA-FIX: Layer ${index} needs original data for field "${channelSpec.field}"`);
-                  layer.data = { values: originalData };
-                }
-              });
-            }
-          });
+        // A layer that plots a folded field directly gets the pre-fold rows;
+        // one that uses a transform output keeps the parent data (see
+        // layersNeedingPreTransformData).
+        if (vegaSpec.data?.values) {
+          for (const index of layersNeedingPreTransformData(vegaSpec)) {
+            console.log(`🔧 FOLD-DATA-FIX: Layer ${index} plots a folded field directly; giving it the pre-fold rows`);
+            vegaSpec.layer[index].data = { values: vegaSpec.data.values };
+          }
         }
 
         vegaSpec.layer.forEach((layer: any, index: number) => {
@@ -5260,6 +5432,18 @@ export const vegaLitePlugin: D3RenderPlugin = {
         );
       }
 
+      // A top/bottom legend wider than its own hconcat cell widens that
+      // cell's whole grid column (Vega sizes columns by full cell bounds) and
+      // shifts every later panel right. Runs after the relocation above,
+      // which can itself move a legend to the bottom.
+      for (const fit of fitNarrowConcatCellLegends(vegaSpec)) {
+        console.log(
+          `🔧 VEGA-LEGEND: ${fit.channel} legend (~${fit.estimatedLegendPx}px) is wider than its ` +
+          `${fit.cellWidthPx}px hconcat cell ${fit.cellIndex}; ${fit.columns} column(s)` +
+          (fit.flushed ? ', row bounds flush' : '')
+        );
+      }
+
       // D-262: thin dense text-mark layers so labels don't overprint into
       // unreadable composites. Data/point marks are untouched — only the labels
       // are uniformly sampled down to a readable density. Theme-independent.
@@ -5280,6 +5464,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // bar+line combo collapsed the second series onto the first axis' domain.
       // Nested spec.resolve (faceted/repeated) is still stripped to avoid the
       // layout hang.
+      // D-263 runs first: a concat whose shared colour domain provably hides a
+      // sibling panel's marks gets `independent`, which sanitizeResolveScale
+      // keeps for composites.
+      resolveConcatScaleConflicts(vegaSpec);
       sanitizeResolveScale(vegaSpec);
 
       // Rewrite literal currency symbols (£, €, ¥, …) in format strings to the
@@ -5967,6 +6155,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                     align-items: center;
                     overflow: auto;
                     padding: 20px;
+                    position: relative;
                 }
                 
                 svg {
@@ -5999,8 +6188,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 
                 // Store the original Vega-Lite spec
                 const vegaSpec = ${JSON.stringify(vegaSpec, null, 2)};
+
+                // The inline chart as rendered in the chat. Shown at once and
+                // kept if vega-embed cannot be loaded from the CDN. "<" is
+                // escaped so chart text cannot close this script element.
+                const fallbackSvg = ${JSON.stringify(svgData).replace(/</g, '\\u003c')};
                 
-                ${getZoomScript()}
                 function zoomIn() { const s = document.querySelector('#svg-container svg'); if (s) { currentScale *= 1.2; s.style.transform = 'scale(' + currentScale + ')'; } }
                 function zoomOut() { const s = document.querySelector('#svg-container svg'); if (s) { currentScale /= 1.2; s.style.transform = 'scale(' + currentScale + ')'; } }
                 function resetZoom() { const s = document.querySelector('#svg-container svg'); if (s) { currentScale = 1; s.style.transform = 'scale(1)'; } }
@@ -6025,29 +6218,39 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 function reRenderVegaVisualization() {
                     const container = document.getElementById('svg-container');
                     if (!container) return;
-                    
-                    // Clear the container
-                    container.innerHTML = '';
-                    
-                    // Import vega-embed dynamically in the popup
+
+                    // Never leave the pane empty: start from the inline snapshot.
+                    if (!container.querySelector('svg')) container.innerHTML = fallbackSvg;
+
+                    // Render into a hidden overlay that is attached and sized
+                    // like the pane (width:'container' measures clientWidth), and
+                    // swap it in only once it has produced an SVG. Until then, and
+                    // on any failure, whatever chart is showing stays.
+                    const target = document.createElement('div');
+                    target.style.cssText = 'position:absolute;inset:0;visibility:hidden;';
+                    container.appendChild(target);
+
                     import('https://cdn.jsdelivr.net/npm/vega-embed@6').then(vegaEmbedModule => {
                         const vegaEmbed = vegaEmbedModule.default || vegaEmbedModule;
-                        
-                        // Re-render with new theme
-                        vegaEmbed(container, vegaSpec, {
+                        return vegaEmbed(target, vegaSpec, {
                             actions: false,
                             theme: isDarkMode ? 'dark' : 'excel',
                             renderer: 'svg',
                             scaleFactor: 1
-                        }).then(result => {
-                            // Make sure SVG is responsive
-                            const svg = container.querySelector('svg');
-                            if (svg) {
-                                svg.setAttribute('width', '100%');
-                                svg.setAttribute('height', '100%');
-                                svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                            }
                         });
+                    }).then(() => {
+                        const svg = target.querySelector('svg');
+                        if (!svg) throw new Error('vega-embed produced no SVG');
+                        svg.setAttribute('width', '100%');
+                        svg.setAttribute('height', '100%');
+                        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                        target.style.cssText = 'width:100%;height:100%;';
+                        Array.from(container.childNodes).forEach(n => {
+                            if (n !== target) container.removeChild(n);
+                        });
+                    }).catch(err => {
+                        console.error('Vega-Lite popup: live render failed; showing the inline chart', err);
+                        if (target.parentNode) target.parentNode.removeChild(target);
                     });
                 }
                 
@@ -6493,29 +6696,7 @@ ${svgData}`;
         forceRender: spec.forceRender
       });
 
-      // Check if this looks like a streaming/incomplete JSON error
-      const isStreamingError = (error instanceof Error) && (
-        error.message.includes('Unterminated string') ||
-        error.message.includes('Unexpected end of JSON input') ||
-        error.message.includes('Unexpected token')
-      );
-
-      // Separate check for incomplete definition (only relevant if we're actually streaming)
-      const isIncompleteDefinition = spec.definition && !isVegaLiteDefinitionComplete(spec.definition);
-
-      // During streaming or with incomplete JSON, don't show errors unless forced
-      // CRITICAL: Don't suppress errors when forceRender is true - user explicitly wants to see what's wrong
-      // Also don't suppress when the spec is a fully-formed object — the error is real.
-      const specIsCompleteObject = spec.$schema && hasVegaLiteDataAnywhere(spec) &&
-        (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
-      const shouldSuppressError = (
-        (!spec.forceRender && (
-          (spec.isStreaming && !spec.isMarkdownBlockClosed) ||
-          (spec.isStreaming && isIncompleteDefinition)
-        )) ||
-        (!spec.definition && !specIsCompleteObject) ||
-        (isStreamingError && !spec.forceRender)
-      );
+      const shouldSuppressError = shouldSuppressVegaLiteError(spec, error);
 
       if (shouldSuppressError) {
         console.debug('Suppressing Vega-Lite streaming error:', error instanceof Error ? error.message : String(error));

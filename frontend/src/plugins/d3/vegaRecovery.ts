@@ -19,6 +19,7 @@
  */
 
 import JSON5 from 'json5';
+import { withBraceCollapse } from '../../utils/d3SpecParser';
 
 // ─────────────────────────────────────────────────────────────────────────
 // D-252: tolerant parse
@@ -145,6 +146,10 @@ export function closeUnbalancedBrackets(s: string): string | null {
  */
 export function tolerantParseVegaSpec(raw: string): any {
   if (typeof raw !== 'string') return raw;
+  return withBraceCollapse(tolerantParseVegaSpecOnce, raw);
+}
+
+function tolerantParseVegaSpecOnce(raw: string): any {
   const normalized = normalizeSmartQuotes(stripSpecFences(raw));
   try {
     return JSON.parse(normalized);
@@ -1358,6 +1363,120 @@ export function sanitizeResolveScale(spec: any): any {
   }
   if (spec.spec && spec.spec.resolve && spec.spec.resolve.scale) {
     delete spec.spec.resolve;
+  }
+  return spec;
+}
+
+/**
+ * D-263: channels a concat resolves as SHARED by default. Positional channels
+ * (x, y, theta, radius, ...) are independent per panel already.
+ */
+const CONCAT_SHARED_CHANNELS = [
+  'color', 'fill', 'stroke', 'opacity', 'fillOpacity', 'strokeOpacity',
+  'strokeWidth', 'strokeDash', 'size', 'shape',
+];
+
+interface ConcatChannelUse {
+  panel: number;
+  channel: string;
+  field?: string;
+  type?: string;
+  domain?: unknown;
+  range?: unknown;
+  values?: any[];
+}
+
+/**
+ * D-263: give a concat's shared non-positional scale `independent` resolution
+ * when the spec itself PROVES that sharing it hides marks.
+ *
+ * A concat shares colour (and the other non-positional scales) across panels,
+ * so one panel's explicit `scale.domain` becomes every panel's domain. Sibling
+ * categories outside it get an undefined fill: the bars are laid out but drawn
+ * with no paint. Verified against the vega-lite compiler: the shared form emits
+ * one colour scale with panel 1's domain plus a "Conflicting scale property"
+ * warning; `resolve.scale.color = "independent"` emits one per panel.
+ *
+ * Fires only on proof, per channel:
+ *   - a categorical domain pinned in one panel, and an INLINE value in another
+ *     panel's field (own, layer, or inherited data) that the domain lacks; or
+ *   - two panels pinning different explicit ranges.
+ * A quantitative/temporal domain is a min/max, not a member list, and URL data
+ * proves nothing, so neither can fire. An author-supplied resolve for the
+ * channel always wins. Nested concats are resolved on their own. Mutates and
+ * returns `spec`; non-objects are returned unchanged.
+ */
+export function resolveConcatScaleConflicts(spec: any, inheritedValues?: any[]): any {
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return spec;
+  const scopeValues = Array.isArray(spec.data?.values) ? spec.data.values : inheritedValues;
+
+  // Faceted/repeated sub-spec: recurse with the inherited data.
+  if (spec.spec && typeof spec.spec === 'object') {
+    resolveConcatScaleConflicts(spec.spec, scopeValues);
+  }
+
+  const panels = ['vconcat', 'hconcat', 'concat']
+    .map((k) => spec[k])
+    .find((v) => Array.isArray(v)) as any[] | undefined;
+  if (!panels) return spec;
+
+  // Nested concats first, each with its own resolve.
+  for (const panel of panels) resolveConcatScaleConflicts(panel, scopeValues);
+  if (panels.length < 2) return spec;
+
+  const uses: ConcatChannelUse[] = [];
+  const collect = (node: any, panel: number, values: any[] | undefined): void => {
+    if (!node || typeof node !== 'object') return;
+    // A nested concat owns its own scales; do not merge its uses upward.
+    if (Array.isArray(node.vconcat) || Array.isArray(node.hconcat) || Array.isArray(node.concat)) return;
+    const own = Array.isArray(node.data?.values) ? node.data.values : values;
+    const enc = node.encoding;
+    if (enc && typeof enc === 'object') {
+      for (const channel of CONCAT_SHARED_CHANNELS) {
+        const def = enc[channel];
+        if (!def || typeof def !== 'object' || Array.isArray(def)) continue;
+        uses.push({
+          panel, channel,
+          field: typeof def.field === 'string' ? def.field : undefined,
+          type: typeof def.type === 'string' ? def.type : undefined,
+          domain: def.scale?.domain,
+          range: def.scale?.range,
+          values: own,
+        });
+      }
+    }
+    if (Array.isArray(node.layer)) node.layer.forEach((l: any) => collect(l, panel, own));
+  };
+  panels.forEach((p, i) => collect(p, i, scopeValues));
+
+  const isCategorical = (u: ConcatChannelUse): boolean =>
+    Array.isArray(u.domain) && u.type !== 'quantitative' && u.type !== 'temporal';
+
+  const conflicts = (channel: string): boolean => {
+    const mine = uses.filter((u) => u.channel === channel);
+    for (const a of mine) {
+      for (const b of mine) {
+        if (a.panel === b.panel) continue;
+        if (a.range !== undefined && b.range !== undefined
+            && JSON.stringify(a.range) !== JSON.stringify(b.range)) return true;
+        if (isCategorical(a) && b.field && Array.isArray(b.values)) {
+          const members = new Set((a.domain as unknown[]).map((d) => String(d)));
+          const alien = b.values.some((row: any) =>
+            row && typeof row === 'object' && row[b.field as string] != null
+            && !members.has(String(row[b.field as string])));
+          if (alien) return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (const channel of CONCAT_SHARED_CHANNELS) {
+    if (spec.resolve?.scale?.[channel] !== undefined) continue;
+    if (!conflicts(channel)) continue;
+    spec.resolve = spec.resolve && typeof spec.resolve === 'object' ? spec.resolve : {};
+    spec.resolve.scale = spec.resolve.scale && typeof spec.resolve.scale === 'object' ? spec.resolve.scale : {};
+    spec.resolve.scale[channel] = 'independent';
   }
   return spec;
 }

@@ -146,6 +146,20 @@ export function renderToolPart(part: ToolPart, contentSoFar: string): RenderedTo
     displayHeader = displayHeader.replace(/`/g, "'");
   }
 
+  // show_document: the body is the document the user asked to see.  It must
+  // not go through formatMCPOutput, which collapses and truncates at 10,000
+  // characters, nor through the JSON parse below (a JSON file would become
+  // an object).  The server already made it safe inside a four-backtick fence.
+  if (actualToolName === 'show_document' && typeof part.result === 'string'
+      && part.result.startsWith(DOCUMENT_CAPTION_PREFIX)) {
+    const header = isVerified ? `🔐 ${displayHeader}` : displayHeader;
+    const lead = !contentSoFar.endsWith('\n\n') ? '\n\n' : '\n';
+    return {
+      display: `${lead}${'`'.repeat(4)}tool:${toolName}|${header}|markdown\n${part.result}\n${'`'.repeat(4)}\n\n`,
+      toolName, displayHeader: header as string, isShellCommandTool,
+    };
+  }
+
   let displayContent: any = part.result;
 
   // Parse result if it's a JSON string to extract the actual content

@@ -363,6 +363,9 @@ class RenderDiagramTool(BaseMCPTool):
                     lines.append(f"  {w}")
                 desc += "\n" + "\n".join(lines)
 
+            from app.utils.chart_rewrites import format_rewrites
+            desc += format_rewrites(diagnostics.get("console_rewrites") or [])
+
             logger.info("🎨 render_diagram: success — %s, %.1f KB", fmt, size_kb)
 
             # Return structured content with image block.

@@ -299,6 +299,12 @@ def rewrite_assistant_text(text: str,
     for ordinal, b in enumerate(blocks):
         out.append(_defang(text[pos:b.start]))
         note = elisions.get(ordinal) if elisions else None
+        # show_document bodies are for the user only: the live tool result
+        # gave the model a summary, and replay must not hand it the text.
+        if note is None:
+            from app.utils.show_document import is_show_document, replay_note
+            if is_show_document(b.tool):
+                note = replay_note(b.header)
         out.append(render_envelope(b, note))
         pos = b.end
     out.append(_defang(text[pos:]))

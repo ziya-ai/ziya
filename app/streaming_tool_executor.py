@@ -592,6 +592,8 @@ class StreamingToolExecutor:
         actual = self._normalize_tool_name(tool_name)
         if actual == 'run_shell_command':
             return 'bash'
+        if actual == 'show_document':
+            return 'markdown'  # the body is markdown whatever the file type
         # For any tool that operates on a file path, derive from extension
         file_path = args.get('path') or args.get('file_path') or args.get('url') or ''
         if file_path:
@@ -617,6 +619,9 @@ class StreamingToolExecutor:
         elif actual_tool_name == 'file_list':
             path = args.get('path', '.')
             return f'file list: {path}'
+        elif actual_tool_name == 'show_document':
+            path = args.get('path', '')
+            return f'document: {path}' if path else 'document'
         else:
             return actual_tool_name.replace('_', ' ').title()
 

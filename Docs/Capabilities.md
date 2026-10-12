@@ -826,6 +826,8 @@ This is particularly useful for validating the rendering pipeline itself — sys
 
 The tool uses the same headless Chromium renderer as the export API, running through the full frontend D3Renderer pipeline with all plugins and post-render enhancers.
 
+Alongside the image, the text result lists the changes the fix-up passes made to the spec before rendering (for example `LOG-SCALE-FIX: Converted x log scale to symlog (has zero values)`), so the model can tell a deliberate repair from a bug in its spec instead of re-rendering blind. Renderer warnings and errors are listed too. A clean render has neither section.
+
 ### Headless Diagram Export (API)
 
 Diagrams can be rendered to PNG or SVG images server-side via the REST API, enabling integration with external services like Slack, CI pipelines, or documentation generators.

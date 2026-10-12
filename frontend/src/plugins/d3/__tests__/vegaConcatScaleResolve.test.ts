@@ -26,11 +26,11 @@ const originalSpec = () => ({
         {
             data: {
                 values: [
-                    { term: 'DBF beam switch', ms: 0.1, c: 'deterministic' },
-                    { term: 'MAC L2 handoff', ms: 0.4, c: 'deterministic' },
-                    { term: '|Delta d| typical', ms: 10, c: 'operating range' },
-                    { term: '|Delta d| worst', ms: 30, c: 'operating range' },
-                    { term: 'observed handover gap', ms: 100, c: 'blind-switch artifact' },
+                    { term: 'cache swap', ms: 0.1, c: 'deterministic' },
+                    { term: 'connection handoff', ms: 0.4, c: 'deterministic' },
+                    { term: 'clock skew typical', ms: 10, c: 'operating range' },
+                    { term: 'clock skew worst', ms: 30, c: 'operating range' },
+                    { term: 'observed failover gap', ms: 100, c: 'failover artifact' },
                 ],
             },
             mark: { type: 'bar' },
@@ -41,7 +41,7 @@ const originalSpec = () => ({
                     field: 'c',
                     type: 'nominal',
                     scale: {
-                        domain: ['deterministic', 'operating range', 'blind-switch artifact'],
+                        domain: ['deterministic', 'operating range', 'failover artifact'],
                         range: ['#2ca02c', '#1f77b4', '#d62728'],
                     },
                 },
@@ -258,6 +258,22 @@ describe('resolveConcatScaleConflicts + sanitizeResolveScale (D-263 x D-262)', (
         expect(colorOf(spec)).toBe('independent');
         sanitizeResolveScale(spec);
         expect(colorOf(spec)).toBe('independent');
+    });
+
+    test('vegaLitePlugin calls resolveConcatScaleConflicts before sanitizeResolveScale', () => {
+        // The pair above is only a fix if the render pipeline runs it. The
+        // first landing of this suite shipped without the source change, so
+        // pin the call (not just the import) and its order in the plugin.
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require('fs');
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const path = require('path');
+        const src: string = fs.readFileSync(path.join(__dirname, '..', 'vegaLitePlugin.ts'), 'utf-8');
+        const resolveCall = src.indexOf('resolveConcatScaleConflicts(vegaSpec)');
+        const sanitizeCall = src.indexOf('sanitizeResolveScale(vegaSpec)');
+        expect(resolveCall).toBeGreaterThan(-1);
+        expect(sanitizeCall).toBeGreaterThan(-1);
+        expect(resolveCall).toBeLessThan(sanitizeCall);
     });
 
     test('a nested faceted spec.resolve is still stripped after the new pass', () => {

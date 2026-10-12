@@ -177,7 +177,8 @@ def get_fileio_tools() -> List[Type[BaseMCPTool]]:
         from app.mcp.tools.fileio import (
             FileReadTool, FileWriteTool, FileListTool
         )
-        return [FileReadTool, FileWriteTool, FileListTool]
+        from app.mcp.tools.show_document import ShowDocumentTool
+        return [FileReadTool, FileWriteTool, FileListTool, ShowDocumentTool]
     except ImportError as e:
         logger.warning(f"Could not import fileio tools: {e}")
         return []
