@@ -1,5 +1,10 @@
 """
 Context API endpoints.
+
+Handlers here are plain ``def``, not ``async def``: they do synchronous
+storage I/O (project lookup, context files, chat rewrites on delete) and await
+nothing, so as coroutines that work ran on the event loop and stalled every
+other request.  ``tests/test_contexts_not_event_loop_blocking.py`` enforces this.
 """
 from fastapi import APIRouter, HTTPException
 from typing import List
@@ -26,19 +31,19 @@ def get_context_storage(project_id: str) -> ContextStorage:
     return storage
 
 @router.get("", response_model=List[Context])
-async def list_contexts(project_id: str):
+def list_contexts(project_id: str):
     """List all contexts for a project."""
     storage = get_context_storage(project_id)
     return storage.list()
 
 @router.post("", response_model=Context)
-async def create_context(project_id: str, data: ContextCreate):
+def create_context(project_id: str, data: ContextCreate):
     """Create a new context."""
     storage = get_context_storage(project_id)
     return storage.create(data)
 
 @router.get("/{context_id}", response_model=Context)
-async def get_context(project_id: str, context_id: str):
+def get_context(project_id: str, context_id: str):
     """Get a specific context."""
     storage = get_context_storage(project_id)
     context = storage.get(context_id)
@@ -48,7 +53,7 @@ async def get_context(project_id: str, context_id: str):
     return context
 
 @router.put("/{context_id}", response_model=Context)
-async def update_context(
+def update_context(
     project_id: str, 
     context_id: str, 
     data: ContextUpdate
@@ -64,7 +69,7 @@ async def update_context(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/{context_id}")
-async def delete_context(project_id: str, context_id: str):
+def delete_context(project_id: str, context_id: str):
     """Delete a context and remove from any chats using it."""
     storage = get_context_storage(project_id)
     
