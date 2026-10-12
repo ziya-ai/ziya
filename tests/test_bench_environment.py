@@ -79,22 +79,22 @@ def test_detail_for_a_category_lists_its_tools(env):
 def test_environment_route_toggles_reweights_and_warns_for_skills(env):
     from fastapi import HTTPException
     from app.api.bench import EnvironmentRequest, get_bench, put_environment
-    before = asyncio.run(get_bench(PID, None))
+    before = get_bench(PID, None)
     fileio_tokens = next(i["tokens"] for i in before["items"] if i["key"] == "builtin:fileio")
     assert fileio_tokens > 0
 
-    after = asyncio.run(put_environment(PID, EnvironmentRequest(category="fileio", enabled=False), None))
+    after = put_environment(PID, EnvironmentRequest(category="fileio", enabled=False), None)
     item = next(i for i in after["items"] if i["key"] == "builtin:fileio")
     assert item["health"]["enabled"] is False
     assert after["weight"]["environment"] == before["weight"]["environment"] - fileio_tokens
     assert "warning" not in after
 
-    warned = asyncio.run(put_environment(PID, EnvironmentRequest(category="skills", enabled=False), None))
+    warned = put_environment(PID, EnvironmentRequest(category="skills", enabled=False), None)
     assert "within-reach" in warned["warning"]
-    assert "warning" not in asyncio.run(put_environment(PID, EnvironmentRequest(category="skills", enabled=True), None))
+    assert "warning" not in put_environment(PID, EnvironmentRequest(category="skills", enabled=True), None)
 
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(put_environment(PID, EnvironmentRequest(category="nope", enabled=True), None))
+        put_environment(PID, EnvironmentRequest(category="nope", enabled=True), None)
     assert ei.value.status_code == 404
 
 
