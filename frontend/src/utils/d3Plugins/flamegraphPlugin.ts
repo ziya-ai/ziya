@@ -8,6 +8,7 @@
  * same split the packet, railroad and wavedrom plugins use.
  */
 import JSON5 from 'json5';
+import { withBraceCollapse } from '../d3SpecParser';
 
 /** A frame.  The library reads either the long or the terse key spelling. */
 export interface FlameNode {
@@ -184,8 +185,9 @@ export function parseFlamegraphInput(input: string | object): ParsedFlamegraph {
     }
     try {
         // JSON5 so the model's habitual unquoted keys / single quotes /
-        // trailing commas parse, consistent with the wavedrom path.
-        return { root: JSON5.parse(text), format: 'json' };
+        // trailing commas parse, consistent with the wavedrom path; retried
+        // once on f-string brace-escaped input.
+        return { root: withBraceCollapse((s) => JSON5.parse(s), text), format: 'json' };
     } catch {
         throw new Error(
             'flame graph: definition is not valid JSON, and does not look '
