@@ -211,6 +211,12 @@ class IterationSummary(BaseModel):
     # run_outcome._iteration_statuses, partialOutcome.progressCounts,
     # iterationClusters.analyzeFailures, and the tile's iterCounts.
     replayed: bool = False
+    # Which attempt at this iteration the record describes.  A gather
+    # contract with ``rerun_missing: 1`` re-runs a short iteration once and
+    # appends a second summary for the same index with attempt 2.  Readers
+    # take the highest attempt per (pass_key, index); a missing value is 1.
+    # See app/utils/iteration_attempts.py.
+    attempt: int = 1
     # Compact per-stage digest of the loop body for this iteration
     # ({index, label, status, tool_calls}; see self_improve.stage_digest).
     # Body blocks have no block_states entry of their own — the executor
