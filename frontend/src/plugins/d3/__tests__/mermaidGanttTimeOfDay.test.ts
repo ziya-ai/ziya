@@ -7,7 +7,7 @@
  *       dateFormat HH:mm:ss
  *       axisFormat %H:%M
  *       section Power
- *       FRED cuts gwfpga   :milestone, 04:34:00, 0s
+ *       watchdog cuts power :milestone, 04:34:00, 0s
  *       A/B current step-up :04:20:00, 04:24:00
  *
  * is ALREADY valid mermaid: dayjs parses "04:34:00" against HH:mm:ss
@@ -38,20 +38,20 @@ beforeAll(() => {
 const TIME_GANTT = `gantt
     dateFormat HH:mm:ss
     axisFormat %H:%M
-    title kuipersat00004 crash #1 (all times UTC)
-    section SVMM
-    PLOPS command 04-20-06          :milestone, 04:20:06, 0s
-    section COMINS
-    CM3 X0 reflash starts 04-20-08  :milestone, 04:20:08, 0s
+    title node00004 crash #1 (all times UTC)
+    section CTRL
+    reset command 04-20-06          :milestone, 04:20:06, 0s
+    section FIRMWARE
+    MCU reflash starts 04-20-08     :milestone, 04:20:08, 0s
     A/B current step-up             :04:20:00, 04:24:00
-    section MerMOD telemetry
+    section sensor telemetry
     full rate (~7.5k samples/s)     :done, 04:10:00, 04:21:50
     SILENT (wedged, 3.2A draw)      :crit, 04:21:50, 04:27:00
     brief flush burst               :active, 04:27:00, 04:27:30
     SILENT                          :crit, 04:27:30, 04:39:30
     boot no. 2 telemetry flood      :done, 04:39:30, 04:45:00
     section Power
-    FRED cuts gwfpga (CAN timeout)  :milestone, 04:34:00, 0s
+    watchdog cuts power (bus t/o)  :milestone, 04:34:00, 0s
     BOOT_FLAGS (boot 2)             :milestone, 04:40:15, 0s`;
 
 describe('time-of-day gantt (dateFormat HH:mm:ss) passes through unmangled', () => {
