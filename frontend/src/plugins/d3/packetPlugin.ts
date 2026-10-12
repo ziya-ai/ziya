@@ -19,6 +19,12 @@ import {
 import { getOptimalTextColor } from '../../utils/colorUtils';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
 import JSON5 from 'json5';
+import {
+  collapseUniformDoubleBraces,
+  withBraceCollapse,
+  stripDefinitionFence,
+  normalizeSmartQuotes,
+} from '../../utils/d3SpecParser';
 import { extractDefinition } from '../../utils/d3Plugins/specEnvelope';
 
 /**
@@ -29,13 +35,7 @@ import { extractDefinition } from '../../utils/d3Plugins/specEnvelope';
  * the fenced DSL (w4-05). Handles a matched fence, an unmatched leading/trailing
  * fence, and a bare language tag. Pure / DOM-free / testable.
  */
-export function stripPacketFence(raw: string): string {
-  let t = String(raw).trim();
-  const matched = /^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/.exec(t);
-  if (matched) return matched[1].trim();
-  t = t.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/```\s*$/, '');
-  return t.trim();
-}
+export const stripPacketFence = stripDefinitionFence;
 
 /**
  * Resolve the definition STRING to bridge/parse from an incoming spec (D-453).
@@ -151,11 +151,10 @@ export function coextensiveLabelVShifts(items: BracketLabelBox[], pad: number): 
  * (D-214 w4-12). json5 does NOT accept U+201C/U+201D/U+2018/U+2019, so this
  * must run before the json5 fallback. Pure / testable.
  */
-export function normalizePacketSmartQuotes(raw: string): string {
-  return String(raw)
-    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-    .replace(/[\u2018\u2019\u201A\u201B]/g, "'");
-}
+ export const normalizePacketSmartQuotes = normalizeSmartQuotes;
+
+/** Kept for existing callers and tests; the logic is shared in d3SpecParser. */
+export const collapsePacketDoubleBraces = collapseUniformDoubleBraces;
 
 /**
  * Lenient parse of a JSON-ish packet definition (D-214). Tries strict
@@ -169,6 +168,10 @@ export function normalizePacketSmartQuotes(raw: string): string {
  */
 export function lenientParsePacketJson(raw: string): any {
   if (typeof raw !== 'string') return undefined;
+  return withBraceCollapse(parsePacketJsonOnce, raw);
+}
+
+function parsePacketJsonOnce(raw: string): any {
   const cleaned = normalizePacketSmartQuotes(stripPacketFence(raw)).trim();
   if (!cleaned) return undefined;
   try { return JSON.parse(cleaned); } catch (_e) { /* fall through */ }
