@@ -15,6 +15,8 @@
  * cards, and rule headings; everything here is deterministic layout.
  */
 
+import { withBraceCollapse } from '../d3SpecParser';
+
 // ---------------------------------------------------------------------------
 // Box-model constants, verbatim from the reference implementation.  The unit
 // tests assert geometry derived from these; change both sides together or
@@ -498,11 +500,16 @@ function stripFence(text: string): string {
 
 /**
  * JSON.parse with tolerance for the common LLM slips: trailing commas,
- * line and block comments (outside strings), smart quotes, stray fences.
+ * line and block comments (outside strings), smart quotes, stray fences,
+ * and uniform template brace escaping (`{{` for `{`).
  * Returns undefined — never throws — when even the cleaned text will not
  * parse, so streaming callers can use it as an is-it-complete probe.
  */
 export function lenientJsonParse(text: string): any | undefined {
+    return withBraceCollapse(lenientJsonParseOnce, text);
+}
+
+function lenientJsonParseOnce(text: string): any | undefined {
     if (typeof text !== 'string') return undefined;
     const t = stripFence(text)
         .replace(/[\u201C\u201D]/g, '"')
