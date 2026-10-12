@@ -5,6 +5,11 @@ Provides launch, status, and cancel for TaskPlan delegate workflows.
 These routes are the HTTP layer over DelegateManager.
 
 Registered in server.py alongside existing API routers.
+
+Handlers that await nothing (the polled status/budget reads) are plain
+``def`` so Starlette runs them on its worker threadpool: as zero-await
+``async def`` their manager construction / plan rehydration from disk ran
+ON the event loop.  Guarded by tests/test_delegates_not_event_loop_blocking.py.
 """
 
 from fastapi import APIRouter, HTTPException
@@ -134,7 +139,7 @@ async def launch_delegates(
 @router.get(
     "/api/v1/projects/{project_id}/groups/{group_id}/delegate-status",
 )
-async def get_delegate_status(project_id: str, group_id: str):
+def get_delegate_status(project_id: str, group_id: str):
     """
     Get current status of all delegates in a TaskPlan.
 
@@ -197,7 +202,7 @@ async def cancel_delegates(project_id: str, group_id: str):
 @router.get(
     "/api/v1/projects/{project_id}/groups/{group_id}/swarm-budget",
 )
-async def get_swarm_budget(project_id: str, group_id: str):
+def get_swarm_budget(project_id: str, group_id: str):
     """Get SwarmBudget (token accounting) for a TaskPlan."""
     try:
         from ..agents.delegate_manager import get_delegate_manager
