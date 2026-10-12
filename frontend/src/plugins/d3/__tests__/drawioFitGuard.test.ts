@@ -57,7 +57,17 @@ describe('maxGraph fitCenter zero-size arithmetic (the underlying defect)', () =
     return (mod as any).FitPlugin;
   }
 
-  it('produces a NaN translate when the container has zero width', async () => {
+  // The view is usable only with a positive finite scale and a finite
+  // translate. Older maxGraph produced a NaN translate here; 0.23 guards
+  // a non-finite scale but, because the margin is subtracted from a zero
+  // client size, returns a NEGATIVE scale instead. Either way the view is
+  // poisoned, which is what safeFitCenter's zero-size check prevents and
+  // its `viewScale <= 0 || !Number.isFinite(...)` recovery catches.
+  const usable = (view: { scale: number; translate: { x: number; y: number } }) =>
+    Number.isFinite(view.scale) && view.scale > 0 &&
+    Number.isFinite(view.translate.x) && Number.isFinite(view.translate.y);
+
+  it('leaves an unusable view (NaN translate or non-positive scale) at zero width', async () => {
     const FitPlugin = await loadFitPlugin();
     const graph = makeGraph(0, 300);
     const plugin = new FitPlugin(graph as any);
@@ -65,17 +75,17 @@ describe('maxGraph fitCenter zero-size arithmetic (the underlying defect)', () =
     plugin.fitCenter({ margin: 20 });
 
     // This is the poisoned state that detonates on the next mouse event.
-    expect(Number.isFinite(graph.view.translate.x)).toBe(false);
+    expect(usable(graph.view)).toBe(false);
   });
 
-  it('produces a NaN translate when the container has zero height', async () => {
+  it('leaves an unusable view (NaN translate or non-positive scale) at zero height', async () => {
     const FitPlugin = await loadFitPlugin();
     const graph = makeGraph(400, 0);
     const plugin = new FitPlugin(graph as any);
 
     plugin.fitCenter({ margin: 20 });
 
-    expect(Number.isFinite(graph.view.translate.y)).toBe(false);
+    expect(usable(graph.view)).toBe(false);
   });
 
   it('is well-behaved on a normally-sized container (the guard is not over-broad)', async () => {
@@ -161,7 +171,13 @@ describe('drawioPlugin fitCenter call sites', () => {
 
   it('helper both guards zero size and recovers non-finite state', () => {
     const start = code.indexOf('function safeFitCenter');
-    const body = code.slice(start, start + 1600);
+    expect(start).toBeGreaterThan(-1);
+    // Scope to the function body (up to the next top-level declaration); a
+    // fixed 1600-char slice went stale when resolveFitViewport handling was
+    // added to the function.
+    const rest = code.slice(start + 1);
+    const next = rest.search(/\n(?:export\s+)?(?:async\s+)?(?:function|const|class)\s/);
+    const body = next === -1 ? rest : rest.slice(0, next);
     expect(body).toMatch(/clientWidth\s*===\s*0/);
     expect(body).toMatch(/clientHeight\s*===\s*0/);
     expect(body).toMatch(/Number\.isFinite/);
