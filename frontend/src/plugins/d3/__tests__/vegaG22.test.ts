@@ -145,7 +145,11 @@ describe('D-274 sanitizeVegaSchemes — unknown scheme dropped (the wired mechan
     // and 'ziyaDark' crashed the running view ("Unrecognized scheme name").
     const dropped = sanitizeVegaSchemes(spec);
     expect(dropped).toBe(1);
-    expect(spec.scales[0].range.scheme).toBeUndefined();
+    // Dropping the scheme empties `range`, and an empty range object is itself
+    // fatal to Vega, so sanitizeVegaSchemes removes the container too and the
+    // scale falls back to Vega's default scheme. The scale itself survives.
+    expect(spec.scales[0].range).toBeUndefined();
+    expect(spec.scales[0].name).toBe('color');
   });
 
   it('leaves a known scheme untouched (range.scheme AND scale.scheme forms)', () => {
@@ -155,7 +159,9 @@ describe('D-274 sanitizeVegaSchemes — unknown scheme dropped (the wired mechan
     // Also covers the Vega-Lite scale.scheme form.
     const specB: any = { encoding: { color: { scale: { scheme: 'nope-scheme' } } } };
     expect(sanitizeVegaSchemes(specB)).toBe(1);
-    expect(specB.encoding.color.scale.scheme).toBeUndefined();
+    // The emptied scale object is removed as well; the encoding survives.
+    expect(specB.encoding.color.scale).toBeUndefined();
+    expect(specB.encoding.color).toBeDefined();
   });
 });
 
@@ -170,9 +176,13 @@ describe('D-274 sanitizeVegaSchemes — unknown scheme dropped (the wired mechan
 const mockEmbedCalls: any[] = [];
 let mockLastErrorHandler: ((e: unknown) => void) | null = null;
 
+// A plain async function, not jest.fn: CRA's jest preset sets resetMocks, and
+// vegaPlugin imports vega-embed lazily, so this factory first runs inside the
+// first render test. A jest.fn implementation would then be wiped before every
+// later test and embed would resolve undefined.
 jest.mock('vega-embed', () => ({
   __esModule: true,
-  default: jest.fn(async (el: HTMLElement, spec: any) => {
+  default: async (el: HTMLElement, spec: any) => {
     mockEmbedCalls.push(spec);
     const doc = (globalThis as any).document;
     const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -187,7 +197,7 @@ jest.mock('vega-embed', () => ({
       },
     };
     return { view, spec, finalize: () => {} };
-  }),
+  },
 }));
 
 beforeAll(() => {
@@ -222,8 +232,11 @@ describe('D-274/D-276 render wiring (mocked embed)', () => {
       };
       await renderVega(spec, dark);
       const embedded = mockEmbedCalls[mockEmbedCalls.length - 1];
-      // The bespoke scheme must be gone before the runtime saw the spec.
-      expect(embedded.scales[0].range.scheme).toBeUndefined();
+      // The bespoke scheme must be gone before the runtime saw the spec. The
+      // emptied range is removed with it (see the unit case above); the scale
+      // itself is still handed to vega-embed.
+      expect(embedded.scales[0].name).toBe('c');
+      expect(embedded.scales[0].range?.scheme).toBeUndefined();
     }
   });
 
