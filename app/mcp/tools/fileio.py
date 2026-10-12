@@ -286,6 +286,11 @@ def _check_write_allowed(relative_path: str, project_root: str, file_exists: boo
     if WritePolicyManager.is_install_extension_path(relative_path, project_root):
         return ("Writes into the install extension directory are refused: "
                 "files there are auto-executed at startup (PenPal #169).")
+    # Same placement and reason: YOLO and task scope below return before
+    # the manager is consulted.
+    if WritePolicyManager.is_server_only_path(relative_path, project_root):
+        from app.config.write_policy import SERVER_ONLY_REASON
+        return f"'{relative_path}' {SERVER_ONLY_REASON}"
     # YOLO mode: opened up via `/shell yolo` — unrestricted writes in-process
     # (mirrors the shell server's YOLO_MODE env handling).
     if os.environ.get("ZIYA_YOLO_MODE", "").lower() in ("1", "true", "yes"):
@@ -471,6 +476,19 @@ def _record_auto_context(resolved, project_root, pre_content):
         return None
 
 
+def _apply_patch_preview(existing: str, patch: str, content: str, occurrence: Optional[int]) -> str:
+    """The text execute() would produce in patch mode, for the approval diff."""
+    if occurrence == 0:
+        return existing.replace(patch, content)
+    n = occurrence or 1
+    idx = -1
+    for _ in range(n):
+        idx = existing.find(patch, idx + 1)
+        if idx < 0:
+            return existing
+    return existing[:idx] + content + existing[idx + len(patch):]
+
+
 class FileWriteTool(BaseMCPTool):
     """Write or patch a file, gated by the project write policy."""
 
@@ -490,10 +508,59 @@ class FileWriteTool(BaseMCPTool):
         "or N (1-based) for a specific match.  Default errors on ambiguity.\n"
         "  - Create only: set 'create_only' to true to fail if the file "
         "already exists.\n\n"
-        "If a write is blocked, the error includes the list of approved "
-        "paths so you can adjust."
+        "A write outside the policy is shown to the user with a diff and "
+        "runs only if they approve it (for that call only).  If it is "
+        "refused, the error includes the list of approved paths so you can "
+        "adjust."
     )
     InputSchema = FileWriteInput
+    # The consent gate runs preflight() on every call; an out-of-policy
+    # target makes it ask (design/scope-consent.md).
+    scope_preflight = True
+
+    async def preflight(self, **kwargs) -> Optional[Dict[str, Any]]:
+        """What the approval panel shows for a write outside the write policy.
+
+        None when no approval is needed or possible: the write is allowed, it
+        hits the floor (install extensions, outside the project, ``.git``), or
+        execute() will reject it for another reason and say why.
+        """
+        kw = dict(kwargs)
+        project_root = _get_project_root(kw)
+        path_str = kw.get("path", "") or ""
+        try:
+            resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
+        except ValueError:
+            return None
+        from app.utils import write_grants
+        exists = resolved.exists()
+        reason, grantable = write_grants.classify(path_str, project_root, exists)
+        if not reason or not grantable:
+            return None
+        content = kw.get("content", "") or ""
+        existing = None
+        if exists:
+            try:
+                existing = resolved.read_text(encoding="utf-8")
+            except Exception:
+                existing = None
+        patch = kw.get("patch")
+        if patch is not None:
+            if existing is None or patch not in existing:
+                return None
+            new = _apply_patch_preview(existing, patch, content, kw.get("occurrence"))
+            mode = "patch"
+        else:
+            if kw.get("create_only") and exists:
+                return None
+            new = content
+            mode = "overwrite" if exists else "create"
+        return {
+            "op": "write", "path": path_str, "mode": mode, "exists": exists,
+            "bytes": len(new.encode("utf-8")),
+            "outside_policy": [{"path": path_str, "reason": reason}],
+            "diff": write_grants.write_preview(existing, new, path_str),
+        }
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         project_root = _get_project_root(kwargs)
@@ -514,8 +581,10 @@ class FileWriteTool(BaseMCPTool):
 
         exists_before = resolved.exists()
 
-        # Gate writes through the policy
-        rejection = _check_write_allowed(path_str, project_root, file_exists=exists_before)
+        # Gate writes through the policy, or a per-call grant the user
+        # approved for this path (app/utils/write_grants.py).
+        from app.utils import write_grants
+        rejection = write_grants.check(path_str, project_root, exists_before)
         if rejection:
             from app.utils.write_rejection_hint import augment_rejection
             return {"error": True, "message": augment_rejection(rejection)}

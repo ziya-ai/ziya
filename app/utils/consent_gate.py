@@ -44,7 +44,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set, Tuple
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Set, Tuple
 
 from .consent_ledger import (
     ConsentCancelled,
@@ -175,6 +175,11 @@ class GrantCache:
     def __init__(self) -> None:
         self._conversation: Set[Tuple[str, str, str]] = set()
         self._session: Set[Tuple[str, str]] = set()
+        # Approved out-of-policy paths (design/scope-consent.md C2), keyed
+        # per tool on the exact realpath: (conv, tool, root, path) and
+        # (tool, root, path).  Not per op: the paths are what was shown.
+        self._conversation_paths: Set[Tuple[str, str, str, str]] = set()
+        self._session_paths: Set[Tuple[str, str, str]] = set()
 
     def covers(self, tool: str, op: str, conversation_id: Optional[str]) -> bool:
         if (tool, op) in self._session:
@@ -187,12 +192,51 @@ class GrantCache:
         elif scope in (SCOPE_SESSION, SCOPE_ALWAYS):
             self._session.add((tool, op))
 
+    def remember_paths(self, scope: str, tool: str, conversation_id: Optional[str],
+                       root: Optional[str], paths: list) -> None:
+        """Remember approved paths for *scope*.  ``once`` remembers nothing;
+        floor paths are never remembered (``write_grants.grant_key``)."""
+        if scope not in (SCOPE_CONVERSATION, SCOPE_SESSION, SCOPE_ALWAYS):
+            return
+        from app.utils.write_grants import grant_key
+        for p in paths or ():
+            key = grant_key(p, root)
+            if key is None:
+                continue
+            if scope == SCOPE_CONVERSATION:
+                if conversation_id:
+                    self._conversation_paths.add((conversation_id, tool, *key))
+            else:
+                self._session_paths.add((tool, *key))
+
+    def covers_paths(self, tool: str, conversation_id: Optional[str],
+                     root: Optional[str], paths: list) -> bool:
+        """True only when EVERY path is remembered for this tool.  The floor
+        is re-checked here, so a path that became floor (e.g. now a symlink
+        out of the project) is not covered."""
+        if not paths:
+            return False
+        from app.utils.write_grants import grant_key
+        for p in paths:
+            key = grant_key(p, root)
+            if key is None:
+                return False
+            if (tool, *key) in self._session_paths:
+                continue
+            if conversation_id and (conversation_id, tool, *key) in self._conversation_paths:
+                continue
+            return False
+        return True
+
     def forget_conversation(self, conversation_id: str) -> None:
         self._conversation = {k for k in self._conversation if k[0] != conversation_id}
+        self._conversation_paths = {k for k in self._conversation_paths if k[0] != conversation_id}
 
     def reset(self) -> None:
         self._conversation.clear()
         self._session.clear()
+        self._conversation_paths.clear()
+        self._session_paths.clear()
 
 
 _grants = GrantCache()
@@ -272,10 +316,105 @@ def fails_closed(tool: Any, args: Dict[str, Any]) -> bool:
 
 # ── the gate ──────────────────────────────────────────────────────────────
 
+ANSWERED_BY_PREFLIGHT = "preflight"
+ANSWERED_BY_POLICY = "write policy"
+_DETAIL_CAP = 2000
+_ARG_DISPLAY_CAP = 4000
+
+
+def _wants_scope_preflight(inst: Any) -> bool:
+    """A tool whose writes can fall outside the write policy declares
+    ``scope_preflight = True`` so its preflight runs even when consent is off."""
+    try:
+        return getattr(inst, "scope_preflight", False) is True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_refusal(preflight: Any) -> bool:
+    # ``error: True`` is the tool's own refusal.  A preflight that RAISED
+    # comes back as ``{"error": "<text>"}`` and stays advisory.
+    return isinstance(preflight, dict) and preflight.get("error") is True
+
+
+def _outside_policy(preflight: Any) -> list:
+    if not isinstance(preflight, dict):
+        return []
+    from app.utils.write_grants import outside_entries
+    return outside_entries(preflight.get("outside_policy") or [])
+
+
+def _grant_root(project_root: Optional[str]) -> Optional[str]:
+    if project_root:
+        return project_root
+    try:
+        from app.context import get_project_root
+        return get_project_root()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+EDIT_MAX_CHARS = 20000
+
+
+def editable_args(tool_instance: Any, op: str) -> List[str]:
+    """Argument names the human may rewrite in the approval panel for this op.
+
+    A tool declares ``consent_editable_args = {op: (arg, ...)}``.  The value
+    the human approves then replaces the model's (git ``commit`` /
+    ``stash_push`` message).  Only string arguments that do not change WHAT
+    the call touches belong here: the preflight shown is not recomputed.
+    Never raises; anything malformed means nothing is editable.
+    """
+    try:
+        per_op = getattr(tool_instance, "consent_editable_args", None)
+        if not isinstance(per_op, dict):
+            return []
+        keys = per_op.get(op) or ()
+        return [k for k in keys if isinstance(k, str) and k]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def sanitize_edits(edits: Any, allowed: List[str]) -> Dict[str, str]:
+    """The subset of ``edits`` the gate will apply: allowed keys, string
+    values, within EDIT_MAX_CHARS.  Anything else is dropped (the API has
+    already refused it with a 422; this is the second line)."""
+    if not isinstance(edits, dict) or not allowed:
+        return {}
+    return {k: v for k, v in edits.items()
+            if k in allowed and isinstance(v, str) and len(v) <= EDIT_MAX_CHARS}
+
+
+def _display_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Args for the panel and the ledger file: long strings (file_write
+    content) are truncated.  Execution always uses the real args."""
+    out: Dict[str, Any] = {}
+    for k, v in (args or {}).items():
+        if isinstance(v, str) and len(v) > _ARG_DISPLAY_CAP:
+            v = v[:_ARG_DISPLAY_CAP] + f"… ({len(v) - _ARG_DISPLAY_CAP} more characters)"
+        out[k] = v
+    return out
+
+
+def _not_run_text(label: str, reason: str, detail: Any) -> str:
+    text = f"`{label}` was not run: {reason or 'the call cannot run'}."
+    if isinstance(detail, dict):
+        extra = {k: v for k, v in detail.items() if k not in ("error", "op", "message")}
+        if extra:
+            import json
+            blob = json.dumps(extra, default=str)
+            text += " Details: " + (blob if len(blob) <= _DETAIL_CAP else blob[:_DETAIL_CAP] + "…")
+    return text + " Fix the arguments and call again, or ask the user how to proceed."
+
+
 def refusal_text(tool_name: str, op: str, answer: Dict[str, Any]) -> str:
     who = (answer.get("answered_by") or "the user").strip() or "the user"
     reason = (answer.get("answer") or "").strip()
     label = f"{tool_name}" + (f" {op}" if op and op != "*" else "")
+    if who in (ANSWERED_BY_PREFLIGHT, ANSWERED_BY_POLICY):
+        # Nobody declined anything: the call could not run as asked.
+        return _not_run_text(label, reason, answer.get("detail"))
     text = f"Tool call refused: {who} declined to allow `{label}`."
     if reason:
         text += f" Reason: {reason}"
@@ -335,16 +474,51 @@ async def consent_gate(
         mode = declared_mode(inst, op)
         logger.warning(f"consent mode lookup failed for {tool_name}; using declared {mode!r}: {exc}")
 
-    if mode != MODE_ASK or _grants.covers(tool_name, op, conversation_id):
+    needs_ask = mode == MODE_ASK and not _grants.covers(tool_name, op, conversation_id)
+    preflight: Optional[Dict[str, Any]] = None
+    if needs_ask or _wants_scope_preflight(inst):
+        preflight = await _preflight(inst, args, project_root)
+
+    # Part B (design/scope-consent.md): a plan that already knows the call
+    # cannot succeed is returned to the model, not put in front of a human.
+    if _is_refusal(preflight):
+        answer = {"decision": "reject", "answered_by": ANSWERED_BY_PREFLIGHT,
+                  "answer": str(preflight.get("message") or "the call cannot run"),
+                  "scope": SCOPE_ONCE, "detail": preflight}
+        yield {"type": DECISION_EVENT, "approved": False, "answer": answer, "asked": False}
+        return
+
+    # A call that writes outside the write policy asks unless the human
+    # already approved EXACTLY these paths for this tool with a standing
+    # scope (conversation / session).  No consent mode, (tool, op) grant or
+    # autonomous project skips it, because approving the paths is the
+    # widening.  A remembered approval still yields only a per-call grant.
+    outside = _outside_policy(preflight)
+    if not outside and not needs_ask:
         yield {"type": DECISION_EVENT, "approved": True, "answer": None, "asked": False}
         return
+    if outside and not needs_ask:
+        root = _grant_root(project_root)
+        out_paths = [o["path"] for o in outside]
+        if _grants.covers_paths(tool_name, conversation_id, root, out_paths):
+            yield {"type": DECISION_EVENT, "approved": True, "answer": None, "asked": False,
+                   "write_grant": {"root": root, "paths": out_paths},
+                   "remembered_paths": True}
+            return
 
     if not conversation_id:
         # No conversation → nowhere for an answer to arrive (no relay, no
         # panel).  Refuse rather than hang: an ``ask``-mode tool with no human
         # reachable is by definition not approved.
-        answer = {"decision": "reject", "answer": "no interactive conversation to ask",
-                  "answered_by": "system", "scope": SCOPE_ONCE}
+        if outside:
+            answer = {"decision": "reject", "answered_by": ANSWERED_BY_POLICY, "scope": SCOPE_ONCE,
+                      "answer": ("these paths are outside the write policy and there is no "
+                                 "conversation to ask for approval: "
+                                 + ", ".join(o["path"] for o in outside[:20])),
+                      "detail": {"outside_policy": outside}}
+        else:
+            answer = {"decision": "reject", "answer": "no interactive conversation to ask",
+                      "answered_by": "system", "scope": SCOPE_ONCE}
         yield {"type": DECISION_EVENT, "approved": False, "answer": answer, "asked": False}
         return
 
@@ -353,10 +527,15 @@ async def consent_gate(
         "kind": "tool_call",
         "tool": tool_name,
         "op": op,
-        "args": args,
-        "preflight": await _preflight(inst, args, project_root),
+        "args": _display_args(args),
+        "preflight": preflight,
         "tool_id": tool_id,
     }
+    if outside:
+        payload["outside_policy"] = outside
+    editable = editable_args(inst, op)
+    if editable:
+        payload["editable"] = editable
     led = ledger()
     rec = led.open(request_id, payload, owner_id=conversation_id, ttl_ms=ttl_ms)
     hold_reason = _HOLD_PREFIX + request_id
@@ -400,7 +579,17 @@ async def consent_gate(
     scope = str(answer.get("scope") or SCOPE_ONCE)
     approved = decision == "approve"
     if approved:
+        # The standing scope covers the (tool, op), and for a conversation /
+        # session / always scope also the exact out-of-policy paths shown.
+        # The grant handed to the executor is still for THIS call only.
         _grants.remember(scope, tool_name, op, conversation_id)
+    write_grant = None
+    if approved and outside:
+        write_grant = {"root": _grant_root(project_root), "paths": [o["path"] for o in outside]}
+        _grants.remember_paths(scope, tool_name, conversation_id,
+                               write_grant["root"], write_grant["paths"])
+    # Edits apply to THIS call only; a standing grant never carries them.
+    arg_edits = sanitize_edits(answer.get("edits"), editable) if approved else {}
 
     yield {
         "type": "consent_answered",
@@ -414,6 +603,9 @@ async def consent_gate(
         # ``always`` is honoured as a session grant here; making it durable
         # is the signed widening in step 4.
         "always_pending_signature": bool(approved and scope == SCOPE_ALWAYS),
+        "write_grant_paths": list(write_grant["paths"]) if write_grant else [],
+        "edited_args": sorted(arg_edits),
         "at": time.time(),
     }
-    yield {"type": DECISION_EVENT, "approved": approved, "answer": answer, "asked": True}
+    yield {"type": DECISION_EVENT, "approved": approved, "answer": answer, "asked": True,
+           "write_grant": write_grant, "arg_edits": arg_edits or None}
