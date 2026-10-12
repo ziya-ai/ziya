@@ -1,5 +1,10 @@
 """
 File validation API endpoint.
+
+Handlers that await nothing are plain ``def`` so Starlette runs them on its
+worker threadpool: ``validate_files`` stats every requested path, and as a
+zero-await ``async def`` that disk I/O ran ON the event loop and stalled every
+other request.  Guarded by tests/test_file_validation_not_event_loop_blocking.py.
 """
 
 import os
@@ -21,7 +26,7 @@ class FileValidationResponse(BaseModel):
     missingFiles: List[str]
 
 @router.post("/api/files/validate", response_model=FileValidationResponse)
-async def validate_files(request: FileValidationRequest):
+def validate_files(request: FileValidationRequest):
     """Validate which files exist and return lists of existing/missing files."""
     
     existing_files = []
