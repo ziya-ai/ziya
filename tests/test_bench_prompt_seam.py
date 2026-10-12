@@ -298,9 +298,9 @@ def test_detail_route_returns_the_detail_and_404s_unknown_keys(env):
     import asyncio
     from fastapi import HTTPException
     from app.api.bench import get_detail
-    assert asyncio.run(get_detail(PID, f"skill:{PINNED}"))["name"] == PINNED
+    assert get_detail(PID, f"skill:{PINNED}")["name"] == PINNED
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(get_detail(PID, "skill:Nope"))
+        get_detail(PID, "skill:Nope")
     assert ei.value.status_code == 404
 
 
@@ -357,7 +357,7 @@ def test_tool_toggle_lands_in_permissions_and_shows_on_detail(env, monkeypatch):
     assert before.health["tool_count"] == 2 and before.health["enabled_count"] == 2
     assert before.tokens > 0 and before.health["withheld_tokens"] == 0
 
-    r = asyncio.run(put_tool(PID, ToolRequest(server="jira", tool="mcp_b", enabled=False), None))
+    r = put_tool(PID, ToolRequest(server="jira", tool="mcp_b", enabled=False), None)
     d = r["detail"]
     assert d["tool_permissions"] == {"mcp_a": True, "mcp_b": False}
     rows = {r["name"]: r for r in d["tool_details"]}
@@ -371,10 +371,10 @@ def test_tool_toggle_lands_in_permissions_and_shows_on_detail(env, monkeypatch):
     assert card["health"]["withheld_tokens"] == before.tokens - card["tokens"] > 0
     assert r["view"]["weight"]["always"] == card["tokens"]
 
-    r = asyncio.run(put_tool(PID, ToolRequest(server="jira", tool="mcp_b", enabled=True), None))
+    r = put_tool(PID, ToolRequest(server="jira", tool="mcp_b", enabled=True), None)
     assert r["detail"]["tool_permissions"]["mcp_b"] is True
     assert next(i for i in r["view"]["items"] if i["key"] == "mcp:jira")["tokens"] == before.tokens
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(put_tool(PID, ToolRequest(server="nope", tool="x", enabled=False), None))
+        put_tool(PID, ToolRequest(server="nope", tool="x", enabled=False), None)
     assert ei.value.status_code == 404
     assert "nope" not in store["servers"]                  # 404 before any write
