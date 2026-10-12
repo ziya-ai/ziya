@@ -72,6 +72,39 @@ def test_control_send_release_loop(spawned):
     assert out2["ok"] is False and out2["error"] == "no_lease"
 
 
+def test_pending_grant_steers_model_away_from_shadow_wait(home):
+    """Interactive session, nobody presses g: shadow_control's note and
+    shadow_send's lease_pending error must both name the terminal and tell
+    the model NOT to shadow_wait for a grant (the d2f846 wedge)."""
+    import threading
+    from app.shadow.pty_host import ShadowCore
+    from app.mcp.tools import shadow_tools
+    core = ShadowCore(["sh", "-c", "read x"], label="iv", control_ceiling="gated")
+    core.spawn()
+    t = threading.Thread(target=core.run, kwargs={"stdin_fd": None}, daemon=True)
+    t.start()
+    try:
+        time.sleep(0.4)
+        ctl, send, _ = _tools()
+        sid = core.entry.session_id
+        acq = _run(ctl.execute(session=sid, restriction="gated", conversation_id=CONV))
+        assert acq["ok"] and acq["pending_grant"] is True
+        assert acq["terminal"]["started_at"] == core.entry.started_at
+        assert "do NOT shadow_wait" in acq["note"] and sid in acq["note"]
+        out = _run(send.execute(session=sid, line="ls", conversation_id=CONV))
+        assert out["ok"] is False and out["error"] == "lease_pending"
+        assert core.entry.started_at in out["message"]
+        assert "do NOT shadow_wait" in out["next"] and "shadow_list" in out["next"]
+        lst = _run(shadow_tools.ShadowListTool().execute())
+        row = next(r for r in lst["sessions"] if r["session_id"] == sid)
+        assert row["lease"]["granted"] is False and "terminal" in row
+    finally:
+        core.terminate_child()
+        t.join(timeout=5)
+        for k in list(shadow_tools._LEASES):
+            shadow_tools._forget_lease(k)
+
+
 def test_send_without_control_is_refused(spawned):
     _, send, _ = _tools()
     out = _run(send.execute(session=spawned.entry.session_id, line="ls", conversation_id=CONV))
