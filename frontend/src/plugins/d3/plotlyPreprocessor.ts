@@ -1,4 +1,9 @@
 import JSON5 from 'json5';
+import {
+  stripDefinitionFence,
+  normalizeSmartQuotes,
+  withBraceCollapse,
+} from '../../utils/d3SpecParser';
 import { classifyColor, namedColorToHex, contrastRatio, ensureReadableFill, isDarkBackground } from './chartTheme';
 
 /**
@@ -45,22 +50,11 @@ type PlotlySpec = {
  * literals and retry json5. Pure/testable — no DOM.
  * ------------------------------------------------------------------------ */
 
-/** Strip a ```json … ``` (or bare ```) markdown fence, matched or unmatched. */
-export function stripPlotlyFence(raw: string): string {
-  let t = String(raw).trim();
-  const matched = /^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/.exec(t);
-  if (matched) return matched[1].trim();
-  t = t.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/```\s*$/, '');
-  return t.trim();
-}
+ /** Strip a markdown fence, matched or unmatched (shared in d3SpecParser). */
+ export const stripPlotlyFence = stripDefinitionFence;
 
-/** Normalise smart/curly quotes to ASCII so a copy-pasted payload parses.
- *  json5 does NOT accept U+201C/U+201D/U+2018/U+2019. */
-export function normalizePlotlySmartQuotes(raw: string): string {
-  return String(raw)
-    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-    .replace(/[\u2018\u2019\u201A\u201B]/g, "'");
-}
+ /** Fold smart/curly quotes to ASCII; json5 rejects U+201C.. (shared). */
+ export const normalizePlotlySmartQuotes = normalizeSmartQuotes;
 
 /**
  * Fold Python-repr literals (`None`/`True`/`False`/`nan`) to their JSON5
@@ -87,6 +81,10 @@ export function normalizePythonLiterals(raw: string): string {
 export function parsePlotlyDefinition(raw: any): any {
   if (raw && typeof raw === 'object') return raw; // already parsed
   if (typeof raw !== 'string') return undefined;
+  return withBraceCollapse(parsePlotlyDefinitionOnce, raw);
+}
+
+function parsePlotlyDefinitionOnce(raw: string): any {
   const cleaned = normalizePlotlySmartQuotes(stripPlotlyFence(raw)).trim();
   if (!cleaned) return undefined;
   const first = cleaned.indexOf('{');
