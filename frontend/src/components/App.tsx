@@ -32,6 +32,7 @@ import { TASK_CARD_OPEN_EVENT } from '../hooks/useTaskBindings';
 import { ScrollIndicator } from './ScrollIndicator';
 import { FeedbackRecoveryWatcher } from './FeedbackRecoveryWatcher';
 import { ChatTurnReattachWatcher } from './ChatTurnReattachWatcher';
+import HandoffDrawerHost from './HandoffDrawerHost';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 import { useHeaderAttention } from '../hooks/useHeaderAttention';
 import { attentionButtonStyle, attentionTooltip, mergeAttention } from '../utils/headerAttention';
@@ -437,9 +438,14 @@ export const App: React.FC = () => {
     const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
     const chatContainerContent = isTopToBottom ? (
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+            {/* Not a scroll container: `overflow: auto` here made THIS div
+                the nearest scrollport for every position:sticky descendant
+                (the TaskRail chips), so they stuck to a box that scrolls
+                away with the content instead of to .chat-container, the
+                element that actually scrolls.  `clip` keeps the horizontal
+                containment without creating a scrollport. */}
             <div style={{
-                flex: 1, overflow: 'auto', width: '100%',
-                maxWidth: '100%', overflowX: 'hidden'
+                flex: 1, width: '100%', maxWidth: '100%', overflowX: 'clip'
             }}>
                 <Suspense fallback={<div>Loading conversation...</div>}>
                     <Conversation key="conv" enableCodeApply={enableCodeApply} onOpenShellConfig={handleOpenShellConfig} />
@@ -583,6 +589,13 @@ export const App: React.FC = () => {
                                         style={attentionButtonStyle(mergeAttention(headerAttention.shell, headerAttention.mcp).level)}
                                         data-attention={mergeAttention(headerAttention.shell, headerAttention.mcp).level} />
                                 </Tooltip>
+                                {/* Shell Configuration keeps a direct toolbar button; folding it
+                                    into the Bench left it reachable only via the environment row. */}
+                                <Tooltip title={attentionTooltip('Shell Configuration', headerAttention.shell)}>
+                                    <Button icon={<SettingOutlined />} onClick={handleOpenShellConfig} data-testid="shell-config-button"
+                                        style={attentionButtonStyle(headerAttention.shell.level)}
+                                        data-attention={headerAttention.shell.level} />
+                                </Tooltip>
                                 <Tooltip title={attentionTooltip('Task Cards', headerAttention.taskCards)}>
                                     <Button icon={<AppstoreOutlined />} onClick={() => setShowTaskCards(true)}
                                         style={attentionButtonStyle(headerAttention.taskCards.level)}
@@ -634,10 +647,15 @@ export const App: React.FC = () => {
                         </div>
                     </div>
 
+                    {/* Always mounted: the token bar's "⇢ Hand off…" opens it via a
+                        document event, whichever sidebar tab is showing. */}
+                    <HandoffDrawerHost />
+
                     {currentConversationId && currentProject?.id && (
                         <>
                             <button className="cgp-toggle" onClick={() => setGraphPanelOpen(true)} title="Conversation graph (Ctrl+Shift+G)">🌳</button>
                             {graphPanelOpen && (
+                                <LazyChunkBoundary onDismiss={() => setGraphPanelOpen(false)}>
                                 <Suspense fallback={null}>
                                     <GraphPanel
                                         projectId={currentProject.id}
@@ -645,6 +663,7 @@ export const App: React.FC = () => {
                                         onClose={() => setGraphPanelOpen(false)}
                                     />
                                 </Suspense>
+                                </LazyChunkBoundary>
                             )}
                         </>
                     )}
@@ -657,9 +676,11 @@ export const App: React.FC = () => {
                     />
 
                     {astEnabled && (
+                        <LazyChunkBoundary onDismiss={() => setAstEnabled(false)}>
                         <Suspense fallback={null}>
                             <AstStatusIndicator />
                         </Suspense>
+                        </LazyChunkBoundary>
                     )}
 
                     <LazyChunkBoundary onDismiss={() => { setShowShellConfig(false); setShowMCPStatus(false); setShowMCPRegistry(false); }}>
@@ -721,11 +742,15 @@ export const App: React.FC = () => {
 
                     <div style={{
                         position: 'fixed',
-                        bottom: '2px',
-                        right: '4px',
+                        // Kept clear of the window's rounded corner, which
+                        // masks anything within its radius (~12px); the tail
+                        // of a longer version string (e.g. .post7) was cut off.
+                        bottom: '4px',
+                        right: '16px',
                         fontSize: '9px',
                         color: isDarkMode ? 'rgba(255,255,255,0.165)' : 'rgba(0,0,0,0.165)',
                         fontFamily: 'monospace',
+                        whiteSpace: 'nowrap',
                         zIndex: 1,
                         userSelect: 'none',
                         pointerEvents: 'none',
