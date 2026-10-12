@@ -34,7 +34,7 @@ function forEachCard(): TaskCard {
       body: [{ block_type: 'task', id: 'inner', name: 'Inner', body: [] }],
     },
     tags: [], is_template: false, source: 'user',
-    created_at: 0, updated_at: 0, run_count: 0,
+    created_at: 0, updated_at: 0, run_count: 0, version: 1,
   } as TaskCard;
 }
 
