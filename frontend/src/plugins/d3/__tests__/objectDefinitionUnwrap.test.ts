@@ -90,6 +90,15 @@ function freshContainer(): HTMLElement {
 
 beforeEach(() => {
     jest.clearAllMocks();
+    // CRA's jest preset sets resetMocks, which strips every jest.fn's
+    // implementation before each test.  The factory implementations above
+    // would then be gone: parseFlamegraphInput returned undefined (the
+    // "reading 'root'" failure) and the validators stopped returning STOP.
+    // Reinstate them so the spies keep forwarding to the real code.
+    const realFlame = jest.requireActual('../../../utils/d3Plugins/flamegraphPlugin');
+    flamegraphUtils.parseFlamegraphInput.mockImplementation(realFlame.parseFlamegraphInput);
+    flamegraphUtils.validateFlamegraphNode.mockImplementation(() => STOP);
+    wavedromUtils.validateWaveDromSpec.mockImplementation(() => STOP);
 });
 
 // ---------------------------------------------------------------------------
