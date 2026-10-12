@@ -6,7 +6,7 @@ privilege-bearing fields of a task's scope — ``shell_commands`` and writable
 ``paths`` — take effect at execution time ONLY if a signed approval record
 exists whose ``scope_hash`` matches the task's *current* scope.
 
-Design (dcohn's decision, task-authorization-design.md §4.1/§4.2): a SEPARATE
+Design (the owner's decision, task-authorization-design.md §4.1/§4.2): a SEPARATE
 store keyed by ``(task_id, scope_hash)``, NOT a signature embedded on the card.
 Task-definition files therefore stay plain and hand-editable, approvals are
 portable, the whole gate can be disabled by clearing this store, and it is the
