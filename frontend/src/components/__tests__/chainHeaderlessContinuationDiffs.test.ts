@@ -104,7 +104,7 @@ describe('chainHeaderlessContinuationDiffs', () => {
         const followOns = [
             '+- Follow-on rule one\n',
             '+### Step 0\n+\n+body\n',
-            '@@ Dimensions\n+  WARNING: pin the merlin dimension.\n',
+            '@@ Dimensions\n+  WARNING: pin the width dimension.\n',
             '+- Always discover the EXACT metric name.\n',
         ];
         const result = chainHeaderlessContinuationDiffs([headedBareUnified, ...followOns]);
@@ -120,7 +120,7 @@ describe('chainHeaderlessContinuationDiffs', () => {
         expect(head).toContain('+- Follow-on rule one');
         expect(head).toContain('+### Step 0');
         expect(head).toContain('@@ Dimensions');
-        expect(head).toContain('+  WARNING: pin the merlin dimension.');
+        expect(head).toContain('+  WARNING: pin the width dimension.');
         expect(head).toContain('+- Always discover the EXACT metric name.');
     });
 
