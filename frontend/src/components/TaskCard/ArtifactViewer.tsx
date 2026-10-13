@@ -20,6 +20,8 @@
 
 import React, { useState } from 'react';
 import { TaskMarkdown } from './TaskMarkdown';
+import { FindingCard } from './FindingCard';
+import { isFindingPart } from '../../utils/findingView';
 import type { ArtifactPart } from '../../types/task_card';
 import {
   groupArtifactParts, blobUrlForPart, isImagePart,
@@ -62,6 +64,9 @@ const PartBody: React.FC<PartProps> = ({ part, projectId, runId }) => {
   }
 
   if (part.part_type === 'data' && part.data) {
+    // A finding that passed its output contract reads as a finding; the
+    // card keeps the raw JSON one click away.
+    if (isFindingPart(part)) return <FindingCard part={part} />;
     return (
       <pre className="tc-art__data">{JSON.stringify(part.data, null, 2)}</pre>
     );
