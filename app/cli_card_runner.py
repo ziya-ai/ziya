@@ -448,25 +448,50 @@ async def run_card(root: str, card_ref: str, stream: bool = True,
         project_id=project_id,
         storage=None,  # no run persistence for a one-shot CLI run (v1)
         deck_scope=deck_scope, card_scope=card.scope,
+        # A terminal is not an approval panel: nothing here renders a
+        # consent prompt or answers one, so ``ask``-mode builtins (the git
+        # tool) are withheld from every task and the model uses shell git.
+        # Run cli-695c6e36c9f8 sat 4 h on an unanswerable ``git commit``.
+        headless=True,
     )
 
     print(_c("36", f"▶ Running card '{card.name}' ({card.root.block_type})") +
           _c("90", f"  [{run_id}]"))
 
+    # Environment check BEFORE the first model call: every skill, tool and
+    # MCP server the card names (requires block + every scope).  A batch
+    # host missing one is told now, not an hour in.  ``strict`` (CLI
+    # --strict, or requires.strict on the card) makes it a refusal.
+    from app.utils.task_card_preflight import run_preflight
+    pre = run_preflight(card, project_id=project_id, project_root=root, strict=strict)
+    if not pre.ok:
+        head = "✖ Missing requirements — refusing to run:" if pre.refuse else \
+               "⚠ Missing requirements — the card will run without them:"
+        print(_c("31" if pre.refuse else "33", head), file=sys.stderr)
+        for m in pre.messages():
+            print(_c("31" if pre.refuse else "33", f"    • {m}"), file=sys.stderr)
+        if pre.refuse:
+            print(_c("90", "  Configure the missing items on this host, or run "
+                           "without --strict to proceed anyway."), file=sys.stderr)
+            return 3
+
     # (B) Surface un-approved escalations BEFORE running, so the operator
     # knows the card is about to run at the floor rather than discovering it
     # afterward.  Reporting only — the executor independently enforces.
-    _warn_unauthorized_scopes(card.root, deck_scope=deck_scope, card_scope=card.scope)
+    _warn_unauthorized_scopes(card.root, deck_scope=deck_scope, card_scope=card.scope,
+                              card_id=card.id, project_id=project_id)
 
-    # (A) Live streaming: register a stdout sink with the same relay the GUI
-    # WebSocket uses.  task_executor already pushes events because ctx.run_id
-    # is set; the relay simply had no listener until now.  Skip on a non-TTY
-    # (piped output) where the clean end-of-run artifact reads better than
-    # interleaved deltas.
-    relay = None
+    # Relay listeners.  task_executor already pushes events because
+    # ctx.run_id is set; the relay simply had no listener until now.
+    #   - the iteration tally is always on: it is what lets the verdict
+    #     line say "partial" for a nested loop (see _IterationTally);
+    #   - (A) the live stdout sink only on a TTY -- piped output reads
+    #     better as the clean end-of-run artifact than interleaved deltas.
+    from app.agents import task_run_stream_relay as relay
+    tally = _IterationTally()
+    await relay.connect(run_id, tally)
     sink = None
     if stream and sys.stdout.isatty():
-        from app.agents import task_run_stream_relay as relay
         sink = _StdoutSink()
         await relay.connect(run_id, sink)
 

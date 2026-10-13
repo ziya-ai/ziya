@@ -395,3 +395,135 @@ class TestSiblingReferences:
         root = _pipeline('{{sibling("b-roster").outputs.roster.docs}}')
         root.body[1].body[0].instructions = '{{sibling("b-roster").summary}}'
         assert _validate(root).errors == []
+
+
+# ── required task under on_failure=stop without a contract ─────
+
+class TestRequiredUnderStopWithoutContract:
+    """A required Task under ``on_failure="stop"`` whose only verdict is
+    the model's self-assessment halts every later sibling on a single
+    'partial'.  Warn before launch; a contract or ``required: false``
+    silences it."""
+
+    STOP_MSG = "on_failure=stop has no output_contract"
+
+    @staticmethod
+    def _seq(child, **kw):
+        return Block(block_type="group", id="g", name="g",
+                     on_failure="stop", body=[child, Block(
+                         block_type="task", id="t2", name="later",
+                         instructions="runs after",
+                         output_contract=[{"name": "f", "schema": "ziya:finding"}])], **kw)
+
+    def test_warns_on_bare_required_task(self):
+        res = self._warnings(self._seq(_task()))
+        assert len(res) == 1 and res[0].block_id == "t1"
+        assert "required: false" in res[0].message
+
+    def test_contract_silences_it(self):
+        t = Block(block_type="task", id="t1", name="t", instructions="x",
+                  output_contract=[{"name": "f", "schema": "ziya:finding"}])
+        assert self._warnings(self._seq(t)) == []
+
+    def test_state_default_contract_silences_it(self):
+        root = Block(block_type="group", id="g", name="g", on_failure="stop", body=[
+            Block(block_type="state", id="s", name="s",
+                  output_contract_defaults=[{"name": "f", "schema": "ziya:finding"}]),
+            _task(),
+        ])
+        assert self._warnings(root) == []
+
+    def test_required_false_silences_it(self):
+        t = Block(block_type="task", id="t1", name="t", instructions="x", required=False)
+        assert self._warnings(self._seq(t)) == []
+
+    def test_continue_or_unset_policy_does_not_warn(self):
+        root = Block(block_type="group", id="g", name="g", body=[_task()])
+        assert self._warnings(root) == []
+        root.on_failure = "continue"
+        assert self._warnings(root) == []
+
+    def test_parallel_children_are_not_under_stop(self):
+        # _execute_parallel never reads on_failure, so its children are
+        # not halted by a sibling's failure even when the field is set.
+        root = Block(block_type="parallel", id="p", name="p", on_failure="stop",
+                     body=[_task()])
+        assert self._warnings(root) == []
+
+    def test_repeat_and_until_bodies_are_sequences(self):
+        for kind, extra in (("repeat", {"repeat_mode": "count", "repeat_count": 2}),
+                            ("until", {"until_max": 2})):
+            root = Block(block_type=kind, id="c", name="c", on_failure="stop",
+                         body=[_task()], **extra)
+            assert len(self._warnings(root)) == 1, kind
+
+    def _warnings(self, root):
+        return [w for w in _validate(root).warnings if self.STOP_MSG in w.message]
+
+
+# ── scope.cwd on any layer, confined to the project root ───────
+
+class TestCwdConfinedToProject:
+    """``scope.cwd`` may be set on ANY block (it flows down like
+    model_tier), as long as it stays inside the project root.  The
+    executor only discovers a bad cwd at run time and silently runs at
+    the root; the validator says so before launch."""
+
+    @staticmethod
+    def _with_cwd(kind, cwd, **extra):
+        from app.models.task_card import TaskScope
+        scope = TaskScope(cwd=cwd)
+        if kind == "task":
+            return Block(block_type="task", id="t1", name="t", instructions="x", scope=scope)
+        return Block(block_type=kind, id="c", name="c", scope=scope, body=[_task()], **extra)
+
+    def _cwd_findings(self, root, **kw):
+        res = _validate(root, **kw)
+        return ([e for e in res.errors if "scope.cwd" in e.message],
+                [w for w in res.warnings if "scope.cwd" in w.message])
+
+    def test_relative_cwd_inside_root_is_clean(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        errs, warns = self._cwd_findings(self._with_cwd("task", "sub"), project_root=str(tmp_path))
+        assert errs == [] and warns == []
+
+    def test_lexical_escape_is_an_error_without_a_project_root(self):
+        errs, _ = self._cwd_findings(self._with_cwd("task", "../elsewhere"))
+        assert len(errs) == 1 and "escapes" in errs[0].message
+        # "a/../b" stays inside; "a/../.." does not.
+        assert self._cwd_findings(self._with_cwd("task", "a/../b"))[0] == []
+        assert len(self._cwd_findings(self._with_cwd("task", "a/../.."))[0]) == 1
+
+    def test_absolute_path_outside_root_is_an_error(self, tmp_path):
+        other = tmp_path / "other"; other.mkdir()
+        root = tmp_path / "proj"; root.mkdir()
+        errs, _ = self._cwd_findings(self._with_cwd("task", str(other)), project_root=str(root))
+        assert len(errs) == 1 and "escapes" in errs[0].message
+
+    def test_absolute_path_inside_root_is_clean(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        errs, warns = self._cwd_findings(self._with_cwd("task", str(tmp_path / "sub")),
+                                         project_root=str(tmp_path))
+        assert errs == [] and warns == []
+
+    def test_missing_directory_is_a_warning_only_with_a_root(self, tmp_path):
+        errs, warns = self._cwd_findings(self._with_cwd("task", "not-yet"), project_root=str(tmp_path))
+        assert errs == [] and len(warns) == 1 and "not a directory" in warns[0].message
+        assert self._cwd_findings(self._with_cwd("task", "not-yet")) == ([], [])
+
+    @pytest.mark.parametrize("kind,extra", [
+        ("group", {}), ("parallel", {}),
+        ("repeat", {"repeat_mode": "count", "repeat_count": 1}),
+        ("until", {"until_max": 1}),
+    ])
+    def test_container_cwd_is_checked_too(self, kind, extra):
+        errs, _ = self._cwd_findings(self._with_cwd(kind, "../out", **extra))
+        assert len(errs) == 1 and errs[0].block_id == "c"
+
+    def test_container_cwd_reaches_the_leaf_through_merge_scopes(self):
+        # The seam the grammar relies on: a cwd set on a container is what
+        # the leaf runs in, unless the leaf sets its own.
+        from app.models.task_card import TaskScope, merge_scopes
+        assert merge_scopes(TaskScope(cwd="svc"), None).cwd == "svc"
+        assert merge_scopes(TaskScope(cwd="svc"), TaskScope(cwd="svc/api")).cwd == "svc/api"
+        assert merge_scopes(TaskScope(cwd="svc"), TaskScope(tools=["x"])).cwd == "svc"

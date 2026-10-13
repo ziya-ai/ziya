@@ -796,6 +796,31 @@ async def _launch_run_for_card(
                     },
                 )
 
+    # Environment preflight: skills, tools and MCP servers the card names
+    # (requires block + every scope).  Missing items are logged and, for a
+    # card with ``requires.strict``, refuse the launch with 412 so a batch
+    # caller sees the cause instead of a confident, wrong run.  Mirrors
+    # ``cli_card_runner.run_card`` / ``ziya task --strict``.
+    try:
+        from ..context import get_project_root_or_none as _get_root2
+        from ..utils.task_card_preflight import run_preflight
+        _pre = run_preflight(card, project_id=project_id, project_root=_get_root2())
+    except Exception as e:  # noqa: BLE001 — a preflight fault must never block a launch
+        logger.warning(f"📋 TASK_LAUNCH: preflight skipped: {e}")
+        _pre = None
+    if _pre is not None and not _pre.ok:
+        for _m in _pre.messages():
+            logger.warning(f"📋 TASK_LAUNCH: requirement missing: {_m}")
+        if _pre.refuse:
+            raise HTTPException(
+                status_code=412,
+                detail={
+                    "message": "Task card requires skills, tools or MCP servers that "
+                               "are not available; not launched (requires.strict).",
+                    "missing": _pre.messages(),
+                },
+            )
+
     # Deck-level (project-wide) permissions baseline — the outermost
     # scope layer, merged additively with the card's own scope and
     # every ancestor block's scope (see app.models.task_card.merge_scopes
