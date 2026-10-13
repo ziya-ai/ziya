@@ -340,7 +340,8 @@ def _iter_task_blocks(block, ancestors=()):
         yield from _iter_task_blocks(child, ancestors + (getattr(block, "scope", None),))
 
 
-def _warn_unauthorized_scopes(root_block, deck_scope=None, card_scope=None) -> None:
+def _warn_unauthorized_scopes(root_block, deck_scope=None, card_scope=None,
+                              card_id=None, project_id=None) -> None:
     """Notice (not enforcement) for task blocks whose escalating scope is
     not signed-authorized.  Those will run at the default floor — shell
     grants dropped, write flags stripped — exactly as the GUI does.
@@ -370,12 +371,27 @@ def _warn_unauthorized_scopes(root_block, deck_scope=None, card_scope=None) -> N
     print(_c("33", "⚠ Un-approved escalation — these task blocks will run at "
                    "the default floor (no extra shell/write grants):"))
     for blk in unauth:
-        print(_c("33", f"    • {blk.name or blk.id}"))
-    print(_c("90", "  Approve the card in the GUI deck (or via ziya-approve) "
-                   "to grant its full scope here."))
+        print(_c("33", f"    • {blk.name or blk.id}  (block {blk.id})"))
+    # Print the exact command.  A bare `ziya-approve` signs the SHELL-CONFIG
+    # escalation in mcp_config.json, which is a different thing entirely; an
+    # operator who follows a generic hint runs that, is asked to sign nine
+    # unrelated commands, and the card still runs at the floor (2026-10-11).
+    if card_id and project_id:
+        print(_c("90", "  To sign these blocks (one confirmation):"))
+        print(_c("90", f"    sudo ziya-approve --task {card_id} "
+                       f"--project {project_id} --all"))
+        print(_c("90", "  or one block at a time with --block <id>, or Approve "
+                       "in the GUI deck. Plain `ziya-approve` with no flags "
+                       "signs the shell-config escalation, not this card."))
+    else:
+        print(_c("90", "  Approve the card in the GUI deck, or sign it with "
+                       "`sudo ziya-approve --task <card id> --project "
+                       "<project id> --all` (plain `ziya-approve` signs the "
+                       "shell config, not a card)."))
 
 
-async def run_card(root: str, card_ref: str, stream: bool = True) -> int:
+async def run_card(root: str, card_ref: str, stream: bool = True,
+                   strict: Optional[bool] = None) -> int:
     """Resolve and execute a task card in-process.  Returns an exit code.
 
     Must be awaited inside ``_run_with_mcp`` so MCP servers are live for the
