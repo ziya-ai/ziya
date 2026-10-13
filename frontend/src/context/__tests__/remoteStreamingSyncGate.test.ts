@@ -110,9 +110,13 @@ describe('cross-tab handlers record remote provenance', () => {
     const h = effect();
     const ended = h.indexOf('const handleStreamingEnded = (msg: any) => {');
     expect(ended).toBeGreaterThan(-1);
-    const body = h.slice(ended, ended + 250);
-    const del = body.indexOf('remoteStreamingIdsRef.current.delete(msg.conversationId);');
-    const rm = body.indexOf('removeStreamingConversation(msg.conversationId);');
+    // Body includes an explanatory comment block; take enough to reach the
+    // release call.  The handler only acts on a stream this tab mirrors
+    // (streamingEndedEcho.test.ts covers that gate and the no-broadcast
+    // release); here we assert provenance is cleared before the removal.
+    const body = h.slice(ended, ended + 1200);
+    const del = body.indexOf('remoteStreamingIdsRef.current.delete(id);');
+    const rm = body.indexOf('removeStreamingConversation(id, { broadcast: false });');
     expect(del).toBeGreaterThan(-1);
     expect(rm).toBeGreaterThan(del);
   });
