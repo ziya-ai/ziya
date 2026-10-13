@@ -1424,6 +1424,12 @@ export interface DiffViewProps {
      * CURRENT turn, and so wrongly gate settled diffs in earlier turns.
      */
     isStreaming?: boolean;
+    /**
+     * Show the diff only: no Apply button and no hunk status bar.  For a
+     * change something else performs (a file_write awaiting approval in the
+     * consent panel), where "apply" would be a second, unapproved write.
+     */
+    readOnly?: boolean;
 }
 
 interface DiffControlsProps {
@@ -2014,7 +2020,7 @@ const detectLanguage = (filePath: string): string => {
     return languageMap[extension || ''] || 'plaintext';
 };
 
-const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers, elementId, fileIndex, isStreaming: isMessageStreaming = false }) => {
+const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers, elementId, fileIndex, isStreaming: isMessageStreaming = false, readOnly = false }) => {
     const [isLoading, setIsLoading] = useState(true);
     const { isDarkMode } = useTheme();
     const parsedFilesRef = useRef<any[]>([]);
@@ -2718,7 +2724,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 <div className="diff-header" style={{ padding: '8px 16px 12px' }}>
                     <div className="diff-header-content" style={{ display: 'flex', justifyContent: 'flex-end' }}>
                         <span className="hunk-status-bar">
-                            {file.hunks.map((hunk, hunkIndex) => {
+                            {!readOnly && file.hunks.map((hunk, hunkIndex) => {
                                 // Get the hunk status if available
                                 // Create a stable key for this hunk
                                 const hunkKey = `${fileIndex}-${hunkIndex}`;
@@ -2787,7 +2793,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         </span>
 
                         <div className="header-right">
-                            {!['rename'].includes(file.type) &&
+                            {!readOnly && !['rename'].includes(file.type) &&
                                 <ApplyChangesButton
                                     diff={diff}
                                     fileIndex={fileIndex}
@@ -3956,9 +3962,10 @@ interface DiffViewWrapperProps {
     forceRender?: boolean;
     index?: number;
     elementId?: string;
+    readOnly?: boolean;
 }
 
-const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, index, elementId, isStreaming: isMessageStreaming = false }: DiffViewWrapperProps) => {
+const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, index, elementId, isStreaming: isMessageStreaming = false, readOnly = false }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(window.diffShowLineNumbers || false);
     const { currentConversationId, isStreaming: isGlobalStreaming } = useStreamingContext();
@@ -4127,6 +4134,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
                             viewType={viewType}
                             initialDisplayMode={displayMode}
                             showLineNumbers={showLineNumbers}
+                            readOnly={readOnly}
                             fileIndex={fileIndex}
                             isStreaming={isMessageStreaming}
                             elementId={`${stableElementIdRef.current}-file-${fileIndex}`}
@@ -4185,12 +4193,27 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
                         isStreaming={isMessageStreaming}
                         elementId={stableElementIdRef.current!}
                         showLineNumbers={showLineNumbers}
+                        readOnly={readOnly}
                     />
                 )}
             </div>
         </div>
     );
 }, (prev, next) => !next.forceRender && prev.token.text === next.token.text && prev.enableCodeApply === next.enableCodeApply && prev.superseded === next.superseded);
+
+/**
+ * A diff with the chat's full treatment (Prism highlighting, add/remove
+ * colouring, unified/split and line-number controls) but nothing to apply.
+ * Used by the consent panel to show a file_write awaiting approval.
+ */
+export const ReadOnlyDiffView: React.FC<{ diff: string; elementId: string }> = ({ diff, elementId }) => (
+    <DiffViewWrapper
+        token={{ type: 'code', lang: 'diff', text: diff, raw: diff }}
+        elementId={elementId}
+        enableCodeApply={false}
+        readOnly
+    />
+);
 
 interface CodeBlockProps {
     token: TokenWithText;
