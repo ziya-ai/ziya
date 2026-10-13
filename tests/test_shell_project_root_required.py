@@ -252,6 +252,12 @@ class TestWriteGateAnchoring:
                 seen["root"] = project_root
                 return True
 
+            # The checker consults the server-only deny list before the
+            # allow-list.  Delegate to the real static check so the fake
+            # does not silently disable it.
+            from app.config.write_policy import WritePolicyManager
+            is_server_only_path = staticmethod(WritePolicyManager.is_server_only_path)
+
         checker = ShellWriteChecker(_RecordingPM())
         checker.set_project_root(root_a)
         try:
