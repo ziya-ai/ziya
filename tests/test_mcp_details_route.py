@@ -47,7 +47,7 @@ class TestDetailsReturnsDiagnostic:
         mgr = _manager(clients={"ghost": _stub_client()},
                        configs={"ghost": {}})
         with patch("app.routes.mcp_routes.get_mcp_manager", return_value=mgr):
-            result = await get_mcp_server_details("ghost")
+            result = get_mcp_server_details("ghost")
 
         assert result["preflight_failure"]["code"] == "command_not_on_path"
         assert result["startup_stage"] == "preflight"
@@ -60,7 +60,7 @@ class TestDetailsReturnsDiagnostic:
         healthy.startup_stage = "ready"
         mgr = _manager(clients={"ok": healthy}, configs={"ok": {}})
         with patch("app.routes.mcp_routes.get_mcp_manager", return_value=mgr):
-            result = await get_mcp_server_details("ok")
+            result = get_mcp_server_details("ok")
 
         assert result["preflight_failure"] is None
         assert result["startup_stage"] == "ready"
@@ -77,7 +77,7 @@ class TestDetailsReturnsDiagnostic:
         mgr = _manager(clients={}, configs={"ghost": {}})
         with patch("app.routes.mcp_routes.get_mcp_manager", return_value=mgr):
             with pytest.raises(HTTPException) as ei:
-                await get_mcp_server_details("ghost")
+                get_mcp_server_details("ghost")
         assert ei.value.status_code == 404
 
 
@@ -90,7 +90,7 @@ class TestDetailsStatusCodes:
         mgr = _manager(clients={}, configs={})
         with patch("app.routes.mcp_routes.get_mcp_manager", return_value=mgr):
             with pytest.raises(HTTPException) as ei:
-                await get_mcp_server_details("never-heard-of-it")
+                get_mcp_server_details("never-heard-of-it")
 
         assert ei.value.status_code == 404, (
             f"expected 404 for unknown server, got {ei.value.status_code} — "
@@ -103,7 +103,7 @@ class TestDetailsStatusCodes:
         mgr = _manager(initialized=False)
         with patch("app.routes.mcp_routes.get_mcp_manager", return_value=mgr):
             with pytest.raises(HTTPException) as ei:
-                await get_mcp_server_details("anything")
+                get_mcp_server_details("anything")
 
         assert ei.value.status_code == 404, (
             f"expected 404 when MCP is not initialized, got "
