@@ -28,6 +28,8 @@ try {
     ACTIVE = false;
 }
 
+// Module scope (see the export at the end): as a script, this top-level
+// `maybe` collided with spikeMarkedReal.test.tsx's under tsc.
 const maybe = ACTIVE ? it : it.skip;
 
 function stubRect(el: HTMLElement, height: number): void {
@@ -95,3 +97,5 @@ describe('keepHeadingsWithFollowingBlock', () => {
         expect(root.querySelector('[data-print-keep-with-next]')).toBeNull();
     });
 });
+
+export {};
