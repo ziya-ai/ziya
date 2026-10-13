@@ -254,6 +254,63 @@ def print_summary(index):
             print(f"      {p}")
 
 
+def triaged_paths(triage_dir, untracked=None, rejected=None):
+    """Paths that already carry a verdict in some ``batch-*.json``.
+
+    With ``untracked`` (the index's untracked list), an ``exclude`` verdict on
+    any other path -- a tracked modification -- does not count: tracked
+    modifications are always in scope, and the commit-plan builder defers
+    such a path as an invalid exclusion.  Counting it here left it with a
+    verdict nothing would act on, so it was never re-batched and stayed dirty
+    through every rerun (run cli-d1103758c5d8: 54 files).  Each such path is
+    appended to ``rejected`` when given, so the caller can say why it is
+    back.  ``untracked=None`` (an index without the list) skips the check."""
+    done = set()
+    bad = set()
+    allowed_exclude = set(untracked) if untracked is not None else None
+    if not os.path.isdir(triage_dir):
+        return done
+    for name in os.listdir(triage_dir):
+        if not (name.startswith("batch-") and name.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(triage_dir, name), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        verdicts = data.get("verdicts") if isinstance(data, dict) else data
+        for v in verdicts or []:
+            if (isinstance(v, dict) and v.get("path")
+                    and v.get("disposition") in ("assign", "new_entry", "exclude")):
+                if (v["disposition"] == "exclude" and allowed_exclude is not None
+                        and v["path"] not in allowed_exclude):
+                    bad.add(v["path"])
+                    continue
+                done.add(v["path"])
+    # A later valid verdict for the same path wins over a rejected one.
+    if rejected is not None:
+        rejected.extend(sorted(bad - done))
+    return done
+
+
+def build_batches(unclaimed, triaged, size=15):
+    """Batch every unclaimed path that has no verdict yet, exactly once.
+
+    Paths sort by directory so related files share a batch.  Each batch's
+    ``id`` is a hash of its paths, so a rerun names the file it writes after
+    what it holds rather than after its position, and cannot overwrite an
+    earlier run's verdicts for different paths."""
+    import hashlib
+    pending = sorted({p for p in unclaimed if p not in triaged},
+                     key=lambda p: (os.path.dirname(p), p))
+    batches = []
+    for i in range(0, len(pending), size):
+        paths = pending[i:i + size]
+        digest = hashlib.sha256("\n".join(paths).encode()).hexdigest()[:10]
+        batches.append({"id": digest, "paths": paths})
+    return batches
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -261,9 +318,39 @@ def main(argv=None):
     ix.add_argument("--root", help="repository root (default: git toplevel of cwd)")
     ix.add_argument("--ledger", help="merge the index into this JSON file under 'entry_index'")
     ix.add_argument("--json", action="store_true", help="print the index as JSON")
+    bt = sub.add_parser("batches",
+                        help="batch the unclaimed paths that have no triage verdict yet")
+    bt.add_argument("--root", help="repository root (default: git toplevel of cwd)")
+    bt.add_argument("--ledger", required=True, help="ledger holding entry_index")
+    bt.add_argument("--triage-dir", required=True)
+    bt.add_argument("--size", type=int, default=15)
     args = ap.parse_args(argv)
 
     root = repo_root(args.root)
+    if args.cmd == "batches":
+        absolute = lambda p: p if os.path.isabs(p) else os.path.join(root, p)
+        try:
+            with open(absolute(args.ledger), encoding="utf-8") as fh:
+                index = (json.load(fh) or {}).get("entry_index")
+        except (OSError, ValueError):
+            index = None
+        if not isinstance(index, dict):
+            print(f"PROBLEM: {args.ledger} has no entry_index; run index first")
+            return 1
+        unclaimed = list(index.get("unclaimed") or [])
+        rejected = []
+        triaged = triaged_paths(absolute(args.triage_dir),
+                                index.get("untracked"), rejected)
+        batches = build_batches(unclaimed, triaged, max(1, args.size))
+        json.dump({"batches": batches,
+                   "pending": sum(len(b["paths"]) for b in batches),
+                   "triaged": len([p for p in unclaimed if p in triaged]),
+                   # Re-batched because their earlier verdict excluded a
+                   # tracked modification, which is never a valid verdict.
+                   "rejected_excludes": [p for p in rejected if p in set(unclaimed)]},
+                  sys.stdout, indent=1)
+        print()
+        return 0
     index = build_index(root)
     if args.ledger:
         merge_into_ledger(args.ledger if os.path.isabs(args.ledger)
