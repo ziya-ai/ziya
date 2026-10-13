@@ -849,6 +849,13 @@ def _inplace_targets(prog: str, tok: List[str]) -> List[str]:
     while i < len(tok):
         t = tok[i]
         i += 1
+        # BSD/macOS sed: ``-i ''`` gives the (empty) backup suffix as a
+        # separate argument.  Read as an operand it shifted the real script
+        # into the file list and blocked allowed writes.  GNU sed given an
+        # empty script is a no-op, so skipping it cannot hide a write.
+        if prog == "sed" and t == "-i" and i < len(tok) and tok[i] == "":
+            i += 1
+            continue
         if t == "--":
             operands.extend(tok[i:])
             break
