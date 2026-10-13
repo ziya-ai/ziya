@@ -325,6 +325,11 @@ def build_session_context_section(
     out.append(f'<CurrentDateTime value="{now.strftime("%Y-%m-%d %H:%M:%S").strip()}" />')
     if conv_start_iso:
         out.append(f'<ConversationStartTime value="{conv_start_iso}" />')
+    try:
+        from app.utils.user_locale import locale_prompt_lines
+        out.extend(locale_prompt_lines())
+    except Exception:  # noqa: BLE001 — this block never raises
+        pass
 
     base_policy = _safe_get_effective_policy(project_root)
     sections: List[List[str]] = [
