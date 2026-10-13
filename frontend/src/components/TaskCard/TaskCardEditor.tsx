@@ -7,6 +7,7 @@
  */
 
 import React from 'react';
+import { ScheduleCardContext } from './ScheduleHistory';
 import type { TaskCard, Block, BlockType, TaskScope } from '../../types/task_card';
 import { BlockEditor } from './BlockEditor';
 import { BlockOutline } from './BlockOutline';
@@ -367,6 +368,7 @@ export const TaskCardEditor: React.FC<Props> = ({
               // The provider still wraps the whole root: a container
               // block's own children drag within the pane exactly as they
               // did in the tree layout, and the move applies to the root.
+              <ScheduleCardContext.Provider value={{ projectId, cardId: previewMode ? undefined : card.id }}>
               <TaskCardDragProvider root={card.root} onRootChange={setRoot}>
                 <BlockEditor
                   // Remount on selection change so an editor's internal
@@ -382,6 +384,7 @@ export const TaskCardEditor: React.FC<Props> = ({
                   }}
                 />
               </TaskCardDragProvider>
+              </ScheduleCardContext.Provider>
             ) : (
               <div className="tc-outline-pane__empty">
                 No blocks yet — add one from the outline.
@@ -391,9 +394,11 @@ export const TaskCardEditor: React.FC<Props> = ({
         </div>
       ) : (
         <div className="tc-card-canvas">
+          <ScheduleCardContext.Provider value={{ projectId, cardId: previewMode ? undefined : card.id }}>
           <TaskCardDragProvider root={card.root} onRootChange={setRoot}>
             <BlockEditor block={card.root} onChange={setRoot} isRoot />
           </TaskCardDragProvider>
+          </ScheduleCardContext.Provider>
         </div>
       )}
     </div>

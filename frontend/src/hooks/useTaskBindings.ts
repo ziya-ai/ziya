@@ -27,6 +27,11 @@ export const TASK_BINDING_EVENT = 'task-binding-created';
 // can't reach App's deck state directly.
 export const TASK_CARD_OPEN_EVENT = 'task-card-open';
 
+// Dispatched by the deck after a card is saved (detail.cardId).  The deck
+// is a modal over the chat, so a tile showing that card would otherwise
+// keep its pre-edit copy until it remounts.
+export const TASK_CARD_SAVED_EVENT = 'task-card-saved';
+
 export function useTaskBindings(chatId: string | undefined) {
   const { currentProject } = useProject();
   const projectId = currentProject?.id ?? '';
