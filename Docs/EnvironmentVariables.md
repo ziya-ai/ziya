@@ -155,6 +155,7 @@ registered in `env_registry.py`.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
+| `ZIYA_MEMORY_HARVEST_RUNS` | bool | `true` | When `0`/`false`, finished Task Card runs are not mined for memories. Per card, the tag `no-memory` does the same. Harvested facts are probationary, count all runs of one card as a single source, and never fast-track; see `app/agents/run_memory_harvest.py`. |
 | `ZIYA_MEMORY_TRIAGE_DISABLED` | bool | `false` | When set truthy (e.g. `1`), bypass the model-based admission **triage** call and fall back to the legacy user-only regex salience gate. Use this to disable triage if it misbehaves — extraction then admits a conversation only when the regex finds a salience hit in a USER turn, exactly as before triage existed. |
 | `ZIYA_MEMORY_TRIAGE_MODEL` | str | — | Per-run override for the admission-triage model (mirrors `ZIYA_MEMORY_EXTRACTION_MODEL`). When **unset**, triage reuses the `memory_extraction` service category so it inherits that category's Haiku-tier model rather than the endpoint lite default. When set, the service resolver routes the `memory_triage` category to this model id. |
 | `ZIYA_MEMORY_EXTRACTION_MODEL` | str | — | Per-run override for the extraction model (`memory_extraction` service category). Used by the eval harness to A/B model tiers against recorded verdicts. |

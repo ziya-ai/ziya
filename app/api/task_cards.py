@@ -1109,6 +1109,14 @@ async def _launch_run_for_card(
             final_status = _terminal("failed" if artifact.failed else "done")
             run_storage.update_status(run_id, final_status)
             await _emit_run(final_status)
+            # Feed what the run established into probationary memory
+            # (app/agents/run_memory_harvest.py).  Fire-and-forget; the
+            # harvest itself skips anything other than done / partial.
+            from ..agents.run_memory_harvest import schedule_harvest
+            schedule_harvest(
+                run_id=run_id, card=card, artifact=artifact, status=final_status,
+                project_path=getattr(project, "path", None) or project_root,
+            )
             logger.info(f"✅ Task run complete: {run_id[:8]}")
         except BlockExecutionCancelled:
             # A user-stopped run that got partway carries the same
