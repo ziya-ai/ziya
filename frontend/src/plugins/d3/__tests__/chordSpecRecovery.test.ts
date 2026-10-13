@@ -17,59 +17,30 @@
  *    `sanitizeChordMatrix` (minified `CM`) coerces the matrix into a square,
  *    finite, non-negative grid before layout.
  *
- * WHY THIS TEST READS THE BUNDLE: the shipped fix is a hot-patch applied to
- * the compiled chunk that the server actually serves (the source .ts change
- * ships as a separate diff for the next real build). To guard the SHIPPED
- * behavior — and to detect drift if a rebuild regenerates the bundle without
- * the patch — this test locates the served chord chunk, extracts the REAL
- * `RC` and `CM` helper bytes, executes them, and asserts their behavior. It
- * deliberately does NOT re-implement the logic locally (the pre-existing
- * chordPlugin.test.ts does, and therefore cannot detect drift). If the bundle
- * is rebuilt from the (diffed) source the same exported helpers survive and
- * this test continues to guard them.
+ * HISTORY: this suite first ran against minified helpers (`RC`, `CM`) pulled
+ * out of the served bundle in templates/static/js, because the fix was
+ * hot-patched into the compiled chunk while the source change "shipped as a
+ * separate diff". That diff only half landed: resolveChordSpec reached the
+ * source, but the square-padding sanitizer did not, so the next build would
+ * have dropped the ragged-matrix fix. Minified names also change on every
+ * build, which broke the suite outright. It now tests the source exports and
+ * checks that the render path calls the sanitizer.
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { resolveChordSpec, sanitizeChordMatrix } from '../chordPlugin';
 
-/** Locate the compiled chord chunk (19750.*.chunk.js) in a served static dir. */
-function findChordBundle(): string {
-  const candidates = [
-    path.resolve(__dirname, '../../../../../templates/static/js'),
-    path.resolve(__dirname, '../../../../templates/static/js'),
-    path.resolve(process.cwd(), '../templates/static/js'),
-    path.resolve(process.cwd(), 'templates/static/js'),
-  ];
-  for (const dir of candidates) {
-    try {
-      const hit = fs
-        .readdirSync(dir)
-        .find((f) => /^19750\..*\.chunk\.js$/.test(f));
-      if (hit) {
-        const full = path.join(dir, hit);
-        if (fs.readFileSync(full, 'utf8').includes('chord-renderer')) return full;
-      }
-    } catch {
-      /* dir missing — try next */
-    }
-  }
-  throw new Error('chord bundle (19750.*.chunk.js) not found in any served static dir');
-}
+const RC = resolveChordSpec;
+const CM = sanitizeChordMatrix;
 
-/** Extract a named `const <name>=function(...){...};` helper from bundle source. */
-function extractHelper(src: string, name: string): (...a: any[]) => any {
-  const marker = `const ${name}=function(`;
-  const start = src.indexOf(marker);
-  if (start === -1) throw new Error(`helper ${name} not found in bundle`);
-  const end = src.indexOf('};', start) + 2;
-  const code = src.slice(start, end).replace(`const ${name}=`, 'globalThis.__x=');
-  // eslint-disable-next-line no-eval
-  (0, eval)(code);
-  return (globalThis as any).__x;
-}
-
-const bundle = fs.readFileSync(findChordBundle(), 'utf8');
-const RC = extractHelper(bundle, 'RC'); // resolveChordSpec
-const CM = extractHelper(bundle, 'CM'); // sanitizeChordMatrix
+describe('chordPlugin render path uses sanitizeChordMatrix (seam)', () => {
+  it('the matrix branch of render calls sanitizeChordMatrix', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'chordPlugin.ts'), 'utf-8');
+    expect(src).toContain('matrix = sanitizeChordMatrix(spec.matrix)');
+    // No second, non-padding sanitizer left for render to call instead.
+    expect(src).not.toMatch(/\bfunction sanitizeMatrix\(/);
+  });
+});
 
 describe('resolveChordSpec (RC) — structured-input recovery from definition string', () => {
   it('recovers a matrix from a JSON definition string (render_diagram shape)', () => {
