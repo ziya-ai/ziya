@@ -12,6 +12,7 @@
  */
 
 import { isPushMintedId, messageFingerprint } from './messageFingerprint';
+import { mergeTitle } from './conversationTitle';
 
 /** Server chat summary as returned by syncApi.listChats(projectId, false). */
 export interface ServerChatSummary {
@@ -512,7 +513,7 @@ export function mergeServerChat(
             action: 'set',
             record: {
                 ...local,
-                title: sc.title || local.title,
+                title: mergeTitle(sc.title, local.title),
                 projectId: sc.projectId || local.projectId || ctx.projectId,
                 // Absent-vs-null is load-bearing here (mirror of
                 // conversationToServerChat).  The server summary always

@@ -38,6 +38,20 @@ export function deriveTitleFromContent(content: string, maxLength: number): stri
 }
 
 /**
+ * Title to keep when a record from elsewhere (server summary, hydrated body)
+ * is merged over a local one.  A real incoming title wins; a placeholder
+ * never replaces a real local title.  Server records are often created or
+ * re-stamped by backend writers (tool auto-vivify, bead/handoff/context
+ * writes) before the client's derived title has landed, so "newer" does not
+ * mean "has the title".
+ */
+export function mergeTitle(incoming: string | undefined, local: string | undefined): string | undefined {
+    if (incoming && !PLACEHOLDER_TITLES.has(incoming)) return incoming;
+    if (local && !PLACEHOLDER_TITLES.has(local)) return local;
+    return incoming || local;
+}
+
+/**
  * True when a task-card launch into `conversation` should seed the
  * conversation's title from the card's name: the title is still a
  * placeholder and no human dialog exists yet.  A conversation whose first

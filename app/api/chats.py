@@ -47,6 +47,7 @@ from ..utils.chat_message_ops import (
     MessageOpError, TOMBSTONE_FIELD, chat_record_lock, merge_messages,
     rewind as _op_rewind, delete_message as _op_delete, patch_message as _op_patch,
 )
+from ..utils.chat_title import merge_title
 
 logger = get_mode_aware_logger(__name__)
 router = APIRouter(tags=["chats"])
@@ -521,6 +522,14 @@ def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                             and merged.get('lineageKind') is None
                             and existing_extra.get('lineageKind') is not None):
                         merged['lineageKind'] = existing_extra['lineageKind']
+                    # A placeholder never replaces a real title on disk.
+                    # Backend writers (context-tool auto-vivify, bead and
+                    # handoff writes) re-stamp records with a fresh _version,
+                    # so a browser copy can be "newer" while still holding
+                    # "New Conversation"; taking it wholesale lost the title
+                    # for good.  A real incoming title (a rename) still wins.
+                    merged['title'] = merge_title(
+                        merged.get('title'), existing_extra.get('title'))
                     # Map frontend's folderId to server's groupId FIRST.  The
                     # frontend's authoritative field is folderId; groupId is
                     # absent from its payload.  This must run before the
