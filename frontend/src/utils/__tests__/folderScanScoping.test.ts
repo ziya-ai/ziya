@@ -27,8 +27,8 @@ import {
 } from '../folderUtil';
 
 describe('scanEventTargetsProject', () => {
-    const A = '/Users/dcohn/workspace/KuiperEAR-switch-mgr';
-    const B = '/Users/dcohn/workspace/ziya-0.4.0.1';
+    const A = '/Users/alice/workspace/other-project';
+    const B = '/Users/alice/workspace/ziya-0.4.0.1';
 
     it('accepts an event for this window\'s own project', () => {
         expect(scanEventTargetsProject(A, A)).toBe(true);
