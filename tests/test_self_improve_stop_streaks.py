@@ -130,7 +130,7 @@ class TestApiSeam:
         ledger = si.LessonLedger(tmp_path)
         for i in range(3):
             ledger.record(_rec("stop", block="b-5cc1081c", ts=i, run=f"r{i}"))
-        body = _run(api.get_card_lessons("p1", "c1", limit=200))
+        body = api.get_card_lessons("p1", "c1", limit=200)
         assert body["count"] == 3
         assert body["stop_streaks"]["b-5cc1081c"]["count"] == 3
         assert body["stop_streaks"]["b-5cc1081c"]["run_ids"] == ["r0", "r1", "r2"]
@@ -149,5 +149,5 @@ class TestApiSeam:
         monkeypatch.setattr(api, "_get_storage", lambda pid: _Store())
         monkeypatch.setattr(api, "get_project_dir", lambda pid: tmp_path)
         si.LessonLedger(tmp_path).record(_rec("accept"))
-        body = _run(api.get_card_lessons("p1", "c1", limit=200))
+        body = api.get_card_lessons("p1", "c1", limit=200)
         assert body["stop_streaks"] == {}
