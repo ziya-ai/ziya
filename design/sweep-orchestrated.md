@@ -266,8 +266,35 @@ judgement, so the agent's output shrinks to the judgement itself:
 | `scripts/release_hunks.py` | `dump <file>` | numbered hunk listing for a contended file |
 | | `split --file F --attrib J --out DIR` | turns a `{hunk index: entry_id}` mapping into `DIR/<entry_id>/<flattened>.patch` and validates each with `git apply --cached --check`; refuses an unmapped or nonexistent hunk |
 | | `merge --file F --entries a,b --reason R --out DIR` | records the merge escape at `DIR/_merges/<flattened>.json`; refuses a generic reason |
+| | `reconcile --ledger L --attrib-dir A --out DIR [--quarantine Q]` | lists the contended files still needing attribution: done means a merge naming current entries, or an attribution covering every current hunk with current entry_ids whose patches all pass `--check`; moves every artifact not backing a done file under `Q` |
+| `scripts/release_plan.py` | `batches --ledger L --triage-dir T [--size N]` | batches every unclaimed path with no triage verdict yet, each exactly once; a batch's `id` is a hash of its paths and names its verdict file, so a rerun triages only what is missing and cannot overwrite earlier verdicts |
 
-P2a runs `index` and sanity-checks the result rather than re-deriving it; P2b
+
+New files and uncited hunks: an untracked file's attribution maps it to one
+entry and `split` writes no patch (it ships whole); a hunk no entry
+describes goes to `new:<slug>` with a drafted entry in
+`<attrib dir>/<flattened>.drafts.json`, which P4a turns into a group.
+P4a carries an output contract requiring `status: "ready"`, `gate.passed`
+and a non-empty roster, so a refused plan fails the block and stops the run
+there instead of reaching P5 (run cli-81921cb9b5eb: the gate refused, P4a
+reported done anyway, P4b ran an empty roster, and P5 committed 13 entries
+on its own before its loop ran out). P5 now refuses to commit without a
+ready plan.
+
+The index is a shared resource across the serial commit loop, so a stage that
+dies between staging and committing poisons every later iteration (run
+cli-462ad587602c: 16 leftover staged paths, 160 refusals). P0 unstages
+anything staged at the start of a run and re-queues those files for
+attribution (a staged hunk is invisible to `git diff`, so their earlier
+attribution was built on a partial diff); the commit loop and residue sweep
+clear a dirty index rather than failing and leave it empty on every exit. The
+grant for this is the anchored `re:^git restore --staged -- \S.*$`, the only
+`restore` form admitted, because it changes the index and nothing else.
+
+P2a runs `index`, then `reconcile`, and fans out only the pending list, so a
+sweep interrupted mid-P2b (run cli-4da9fec1b70e died with EMFILE after 83 of
+130 files) reruns only the rest, and patches from an earlier run cannot reach
+the commit plan. P2a sanity-checks the index rather than re-deriving it; P2b
 runs `dump`, writes the mapping to `.ziya/sweep/attrib/`, and runs `split`.
 Neither script names a version, a file or an entry, and neither touches the
 index or the working tree — `--check` is validate-only.
