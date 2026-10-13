@@ -209,6 +209,17 @@ class ShellWriteChecker:
                             return False, f"(in command substitution) {reason}"
         finally:
             _CWD_STATE.reset(token)
+        # The shell expands ``$(...)``/backticks inside an UNQUOTED heredoc
+        # body, and the body was stripped from ``scan_command`` above, so
+        # those commands have not been seen yet.  Judged from the project
+        # root rather than the heredoc's segment cwd: the conservative
+        # direction (a relative target can only be refused, never admitted,
+        # by that simplification).
+        for body in _heredoc_body_commands(command):
+            if body.strip():
+                ok, reason = self._check(body, split_fn, subst_fn, None)
+                if not ok:
+                    return False, f"(in heredoc substitution) {reason}"
         return True, ""
 
     def _always_blocked(self, cmd: str) -> Tuple[bool, str]:
@@ -654,13 +665,104 @@ class ShellWriteChecker:
 # so they bypassed the sh -c route and their body lines were either rejected by
 # the validator or passed as literal argv by the manual orchestrator.
 _HEREDOC_OPENER_RE = re.compile(
-    r"""<<-?\s*(?:'([^']+)'|"([^"]+)"|(\S+))[^\n]*\n""",
+    r"""<<(-?)\s*(?:'([^']+)'|"([^"]+)"|(\S+))[^\n]*\n""",
     re.MULTILINE,
 )
 
 
 def _has_heredoc(command: str) -> bool:
     return bool(_HEREDOC_OPENER_RE.search(command))
+
+
+def _heredoc_spans(command: str) -> List[Tuple[int, int, str, bool]]:
+    """Locate every terminated heredoc body in *command*.
+
+    Returns ``(body_start, body_end, body, quoted)`` per heredoc, in order,
+    where ``body_end`` is just past the terminator line and ``quoted`` is
+    True when the delimiter was quoted (``<<'EOF'`` / ``<<"EOF"``), which
+    is what decides whether the shell expands the body.  Each search for the
+    next opener resumes after the previous terminator, so an opener-looking
+    token inside a body is not mistaken for a second heredoc.
+
+    With the ``<<-`` form the shell strips leading TABS from every body
+    line, including the terminator, so ``\\tEOF`` ends the body.  The
+    terminator pattern used to demand the delimiter at column 0, so a
+    tab-indented terminator went unrecognised and the stripper ran on to a
+    later bare ``EOF``: everything between -- which the shell executes --
+    was classified as body and skipped by both gates.
+    """
+    spans: List[Tuple[int, int, str, bool]] = []
+    pos = 0
+    while True:
+        m = _HEREDOC_OPENER_RE.search(command, pos)
+        if not m:
+            return spans
+        dash, sq, dq, bare = m.groups()
+        delim = sq or dq or bare
+        lead = r'\t*' if dash else ''
+        end_match = re.compile(
+            r'^' + lead + re.escape(delim) + r'[ \t]*$', re.MULTILINE,
+        ).search(command, m.end())
+        if not end_match:
+            return spans  # unterminated — the remainder is left intact
+        spans.append((m.end(), end_match.end(), command[m.end():end_match.start()],
+                      bool(sq or dq)))
+        pos = end_match.end()
+
+
+def _heredoc_body_commands(command: str) -> List[str]:
+    """Command substitutions the shell would RUN from *command*'s heredoc bodies.
+
+    A body is stdin data, so both gates strip it before validating -- but
+    that is only true in full for a QUOTED delimiter.  With a bare one the
+    shell performs ``$(...)`` and backtick substitution inside the body,
+    so ``cat <<EOF\\n$(cmd)\\nEOF`` runs ``cmd``; stripping the body hid it
+    from the allowlist and the write gate alike.  This returns those
+    substitution bodies so the caller can validate each as a command.
+
+    Heredoc quoting rules differ from a command line: quote characters in
+    the body are literal (they never suppress a substitution), only a
+    backslash escapes ``$``, backtick and backslash.  Inside the ``$(...)``
+    itself normal shell parsing resumes, so quotes there do protect ``)``.
+    An unterminated substitution is returned up to the end of the body: the
+    shell would refuse it, and refusing here is the conservative reading.
+    """
+    found: List[str] = []
+    for _s, _e, body, quoted in _heredoc_spans(command):
+        if quoted:
+            continue
+        i, n = 0, len(body)
+        while i < n:
+            ch = body[i]
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == '`':
+                j = i + 1
+                while j < n and body[j] != '`':
+                    j += 2 if body[j] == '\\' else 1
+                found.append(body[i + 1:j])
+                i = j + 1
+                continue
+            if ch == '$' and body.startswith('$(', i):
+                depth, j, in_sq, in_dq = 1, i + 2, False, False
+                while j < n and depth:
+                    c = body[j]
+                    if c == '\\' and not in_sq:
+                        j += 2
+                        continue
+                    if c == "'" and not in_dq:
+                        in_sq = not in_sq
+                    elif c == '"' and not in_sq:
+                        in_dq = not in_dq
+                    elif not (in_sq or in_dq):
+                        depth += (c == '(') - (c == ')')
+                    j += 1
+                found.append(body[i + 2:j - 1 if not depth else j])
+                i = j
+                continue
+            i += 1
+    return found
 
 
 def _split_unquoted_lines(text: str) -> List[str]:
@@ -706,29 +808,11 @@ def _strip_heredoc_bodies(command: str) -> str:
               cmd << "DELIM" ... DELIM
               cmd <<- DELIM ... DELIM   (dash variant)
     """
-    # Re-scan the mutated ``result`` each iteration rather than iterating
-    # ``finditer(command)`` offsets.  finditer yields positions into the
-    # ORIGINAL command, but each splice shrinks ``result`` — so from the
-    # second heredoc onward ``m.end()`` is a stale offset into the wrong
-    # string and that body is left unstripped (its body + closing delimiter
-    # then reach the allowlist validator as bogus command lines, e.g. a bare
-    # ``EOF`` that gets rejected as a disallowed command).  A running cursor
-    # over ``result`` keeps open/close offsets consistent so every heredoc
-    # body is removed.
+    # Spans are computed on the original string and spliced out from the
+    # end, so no offset goes stale as the text shrinks (multi-heredoc fix).
     result = command
-    search_from = 0
-    while True:
-        m = _HEREDOC_OPENER_RE.search(result, search_from)
-        if not m:
-            break
-        delim = m.group(1) or m.group(2) or m.group(3)
-        body_start = m.end()
-        end_pattern = re.compile(r'^' + re.escape(delim) + r'\s*$', re.MULTILINE)
-        end_match = end_pattern.search(result, body_start)
-        if not end_match:
-            break  # unterminated heredoc — leave the remainder intact
-        result = result[:body_start] + result[end_match.end():]
-        search_from = body_start
+    for body_start, body_end, _body, _quoted in reversed(_heredoc_spans(command)):
+        result = result[:body_start] + result[body_end:]
     return result
 
 
