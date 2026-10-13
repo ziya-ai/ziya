@@ -552,7 +552,34 @@ def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                     )
                     results["updated"] += 1
                 else:
-                    results["skipped"] += 1
+                    # The push is older than the record, usually because a
+                    # backend writer (handoff_write, bead tools, context
+                    # auto-vivify) re-stamped _version after the browser's
+                    # last pull.  Its metadata is stale, but it can still
+                    # carry messages the server never received -- typically
+                    # the assistant reply that only streamed to the browser.
+                    # Skipping it left the client re-pushing and losing that
+                    # reply every sync cycle while each pull removed it from
+                    # screen.  merge_messages never removes or rewrites a
+                    # server message and honours tombstones, so take only its
+                    # additions; matched messages keep the on-disk copy.
+                    existing_msgs = storage.strip_empty_assistant_messages(
+                        list(raw.get('messages') or []))
+                    incoming_msgs = storage.strip_empty_assistant_messages(
+                        chat_data.model_dump().get('messages', []))
+                    merged_msgs, _ = merge_messages(existing_msgs, incoming_msgs, raw)
+                    on_disk = {m.get('id'): m for m in existing_msgs if m.get('id')}
+                    merged_msgs = [on_disk.get(m.get('id'), m) if m.get('id') else m
+                                   for m in merged_msgs]
+                    if len(merged_msgs) > len(existing_msgs):
+                        updated_raw = dict(raw)
+                        updated_raw['messages'] = merged_msgs
+                        updated_raw['_version'] = max(int(existing_ver) + 1,
+                                                      int(time.time() * 1000))
+                        storage._write_json(storage._chat_file(chat_data.id), updated_raw)
+                        results["updated"] += 1
+                    else:
+                        results["skipped"] += 1
             else:
                 # Create new — apply the same folderId → groupId mapping the
                 # update branch uses.  Without this, the first push of a chat

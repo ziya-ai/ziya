@@ -17,6 +17,7 @@ import { importWithRetry } from '../utils/lazyWithRetry';
 // `message`).  One import statement, to satisfy no-duplicate-imports.
 import { message, message as uiMessage } from 'antd';
 import { recoverShellMessages, isKnownCompleteShell, partitionHeldMessages, composerTextFromHeld } from '../utils/shellRecovery';
+import { loadHeldMessages, saveHeldMessages, clearHeldMessages, heldMessagesKey } from '../utils/heldMessageStore';
 import { dispatchComposerInject } from '../utils/composerInject';
 import { useTheme } from './ThemeContext';
 import { useConfig } from './ConfigContext';
@@ -1188,7 +1189,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 );
                 // Queue this message so it isn't lost during the async recovery.
                 const queue = pendingShellMessages.current;
-                const pending = queue.get(conversationId) ?? [];
+                // An earlier session may have left held messages in
+                // localStorage; seed from them when memory has none.
+                const pending = queue.get(conversationId) ?? loadHeldMessages<Message>(conversationId);
                 queue.set(conversationId, [...pending, message]);
 
                 // One recovery per conversation at a time.
@@ -1230,6 +1233,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const { returnToComposer, keepQueued } = partitionHeldMessages(held);
                             if (keepQueued.length > 0) queue.set(conversationId, keepQueued);
                             else queue.delete(conversationId);
+                            // Persist what stays queued: the queue is
+                            // in-memory only, so a reload used to discard a
+                            // held assistant turn that exists nowhere else.
+                            saveHeldMessages(conversationId, keepQueued);
                             const returnedText = composerTextFromHeld(returnToComposer);
                             if (returnedText) {
                                 dispatchComposerInject(conversationId, returnedText,
@@ -1246,7 +1253,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // back, say where it went rather than "not saved".
                             const where = returnedText
                                 ? 'Your message was not sent and has been put back in the composer.'
-                                : 'This message was not saved.';
+                                : 'The reply could not be added to this conversation; it is kept in this browser '
+                                  + `(localStorage "${heldMessagesKey(conversationId)}") so a reload does not lose it.`;
                             uiMessage.error(outcome.reason === 'gone'
                                 ? `This conversation's full history is no longer on the server. ${where} ${returnedText ? 'Copy it into' : 'Start'} a new conversation.`
                                 : `Could not load the full conversation history. ${where} ${returnedText ? 'Try sending again.' : 'Reopen the conversation and try again.'}`);
@@ -1254,6 +1262,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         }
                         const toApply = queue.get(conversationId) ?? [];
                         queue.delete(conversationId);
+                        clearHeldMessages(conversationId);
                         setConversations(prev => prev.map(c => {
                             if (c.id !== conversationId) return c;
                             const base = outcome.action === 'adopt' ? outcome.messages : c.messages;
@@ -3862,23 +3871,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                     setConversations(prev => prev.map(c => {
                                         const full = byId.get(c.id);
                                         if (!full) return c;
-                                        // Don't overwrite if a newer in-memory version exists
-                                        // (user is actively editing while hydration lands).
-                                        if ((c._version || 0) > ((full as any)._version || 0)) return c;
-                                        const fullDisplayMode = (full as any).displayMode;
-                                        const displayMode = fullDisplayMode === 'raw' || fullDisplayMode === 'pretty' ? fullDisplayMode : c.displayMode;
-                                        return {
-                                            ...c,
-                                            ...full,
-                                            displayMode,
-                                            _isShell: false,
-                                            _fullMessageCount: undefined,
-                                            projectId: (full as any).projectId || projectId,
-                                            folderId: (full as any).groupId || (full as any).folderId || c.folderId || null,
-                                            delegateMeta: (full as any).delegateMeta || c.delegateMeta || null,
-                                            isActive: (full as any).isActive !== false,
-                                            _version: (full as any)._version || Date.now(),
-                                        };
+                                        // Version check, metadata adoption and the
+                                        // message-shrink guard live in
+                                        // syncMerge.applyHydratedChat (unit-tested).
+                                        const next = syncMerge.applyHydratedChat(c, full, projectId);
+                                        if (next !== c && next.messages === c.messages
+                                            && next.messages !== (full as any).messages) {
+                                            console.warn(`📡 SYNC_GUARD: hydration kept ${c.messages?.length ?? 0} local messages for ${c.id.substring(0, 8)} over the server's ${(full as any).messages?.length ?? 0} (no tombstones explain the shrink)`);
+                                        }
+                                        return next;
                                     }));
                                 });
                                 // Mark each returned chat as fetched.
