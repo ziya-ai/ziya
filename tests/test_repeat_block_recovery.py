@@ -37,7 +37,7 @@ _BLOCK_RESULT = (
     f"different approach or check if the previous results contain what you need."
 )
 _RECOVERY_MARKER = "blocked as a repeated-call loop"
-_CMD = 'find /Users/dcohn/workplace/ziya -maxdepth 1 -iname "CHANGELOG*"'
+_CMD = 'find /Users/alice/workplace/ziya -maxdepth 1 -iname "CHANGELOG*"'
 _CMD_JSON = json.dumps({"command": _CMD})  # properly escaped wire JSON
 
 
