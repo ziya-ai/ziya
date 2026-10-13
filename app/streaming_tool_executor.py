@@ -978,6 +978,68 @@ class StreamingToolExecutor:
             return ('spend_empty_retry', 'empty_completion_retry', None)
         return ('end', 'no_activity', None)
 
+    # An iteration that streams at least this much prose and then calls a
+    # tool has very likely produced the answer already; see
+    # _should_note_already_shown.
+    ALREADY_SHOWN_MIN_CHARS = 1500
+
+    @staticmethod
+    def _should_note_already_shown(assistant_text: str, tools_executed: bool) -> bool:
+        """True when this iteration's tool_result turn should carry a note
+        that the text preceding the tool calls is already on screen.
+
+        Claude treats text before a tool call as a working note and the
+        message after the last tool_result as the real answer.  When a
+        finished reply is followed by a bookkeeping call (handoff_write,
+        memory_propose, bead_*, a file_write of what was just explained),
+        the next iteration rewrites the whole answer and the user sees it
+        twice (observed: 10.5k chars, handoff_write, then 10.4k chars
+        reworded).  Keyed on the amount of prose, not the tool name: the
+        shape is the same whatever tool follows the answer."""
+        return (bool(tools_executed)
+                and len((assistant_text or "").strip())
+                >= StreamingToolExecutor.ALREADY_SHOWN_MIN_CHARS)
+
+    @staticmethod
+    def _already_shown_note(n_chars: int) -> str:
+        return (
+            f"[System: The {n_chars:,} characters you wrote before these tool "
+            "calls are already displayed to the user as your reply. Do not "
+            "repeat, restate or re-summarize them. If the results above change "
+            "something, add only that; if they need no comment, end the turn "
+            "with at most one short sentence. Continue working only if the "
+            "task is genuinely unfinished.]"
+        )
+
+    @staticmethod
+    def _oversized_output_note(max_output_tokens) -> str:
+        """Corrective note for an output-cap hit that delivered nothing."""
+        _limit = (f"the output limit of {max_output_tokens} tokens"
+                  if max_output_tokens else "the output token limit")
+        return (
+            f"[System: Your previous response reached {_limit} before any "
+            "text or complete tool call was delivered, so nothing from it was "
+            "received. This usually means a single tool call's arguments, or "
+            "one code block, were too large to fit. Do not resend the same "
+            "oversized call. Split the work into several smaller tool calls "
+            "or write large content in pieces, then continue.]"
+        )
+
+    @staticmethod
+    def _append_to_last_user_turn(conversation, text) -> None:
+        """Attach text to the trailing user turn rather than adding a second
+        consecutive user message, which some models answer with another
+        empty completion (see the empty-after-tools nudge)."""
+        last = conversation[-1] if conversation else None
+        if not last or last.get('role') != 'user':
+            conversation.append({'role': 'user', 'content': text})
+            return
+        content = last.get('content')
+        if isinstance(content, list):
+            content.append({'type': 'text', 'text': text})
+        else:
+            last['content'] = f"{content}\n\n{text}" if content else text
+
     # Patterns indicating the model is narrating tool execution in prose
     # rather than using the tool_use API. Checked OUTSIDE code fences only.
     _FABRICATION_PATTERNS = [
@@ -4607,6 +4669,16 @@ Please retry the tool call with valid JSON. Ensure:
                             conversation.append(sub_msg)
                     else:
                         conversation.append(tool_msg)
+                    # A long reply followed by tool calls: tell the model the
+                    # reply is on screen so the next iteration does not
+                    # rewrite it (see _should_note_already_shown).
+                    if self._should_note_already_shown(assistant_text, tools_executed_this_iteration):
+                        _shown = len(assistant_text.strip())
+                        logger.info(
+                            f"📣 ALREADY_SHOWN_NOTE: {_shown} chars of reply preceded "
+                            f"{len(tool_results)} tool call(s) in iteration {iteration}")
+                        self._append_to_last_user_turn(
+                            conversation, self._already_shown_note(_shown))
 
                     # Cross-iteration repeat-block recovery (auto-recover). A
                     # single blocked call cannot end the loop — the model just
