@@ -2436,18 +2436,55 @@ export function initMermaidEnhancer(): void {
 
       let result = definition;
 
+      // Every inline-label rewrite below emits a QUOTED pipe label.  This
+      // pass runs at priority 300, after both passes that quote bare pipe
+      // labels (arrow-label-cleaner 360, link-label-sanitizer 350), so a
+      // bare "|text|" produced here is never quoted by anything later.
+      // Verified against mermaid 11.17.2: `A -->|say "hi"| B` is a parse
+      // error, `A -->|"say #quot;hi#quot;"| B` is not.  A label the author
+      // already quoted inline is unwrapped first so it is not double-wrapped.
+      const pipeLabel = (label: string): string => {
+        let text = label.trim();
+        if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+          text = text.slice(1, -1);
+        }
+        return `|"${text.replace(/"/g, '#quot;')}"|`;
+      };
+
       // Fix inconsistent arrow syntax with labels: "B -- Yes --> C" should be "B -->|Yes| C"
-      result = result.replace(/(\w+)\s+--\s+([^-\n]+?)\s+-->\s+(\w+)/g, '$1 -->|$2| $3');
+      // The label class admits "-": it used to be [^-\n], which left a
+      // hyphenated label ("-- PG-table miss -->") in the inline form, where
+      // a "." in the same text trips the lexer exactly as on dotted edges
+      // (below).  The literal "-->" terminator still bounds the lazy match,
+      // so a label containing " -- " stays whole.
+      result = result.replace(/(\w+)\s+--\s+([^\n]+?)\s+-->\s+(\w+)/g,
+        (_m, from, label, to) => `${from} -->${pipeLabel(label)} ${to}`);
 
       // Fix pipe syntax - convert A |label| B to A -->|label| B (ONLY when pipes are adjacent to node IDs)
       // CRITICAL: Must have no spaces between node ID and pipe to avoid false matches
-      result = result.replace(/(\w+)\|([^|\n]+)\|(\w+)/g, '$1 -->|$2| $3');
+      result = result.replace(/(\w+)\|([^|\n]+)\|(\w+)/g,
+        (_m, from, label, to) => `${from} -->${pipeLabel(label)} ${to}`);
 
       // Remove semicolons from flowchart lines (they're not needed in Mermaid)
       result = result.replace(/;(\s*$)/gm, '$1');
 
       // Fix standalone connections with labels: "-- Label -->" should be "-->|Label|"
-      result = result.replace(/--\s+([^-\n]+?)\s+-->/g, '-->|$1|');
+      result = result.replace(/--\s+([^\n]+?)\s+-->/g,
+        (_m, label) => `-->${pipeLabel(label)}`);
+
+      // Inline labels on dotted and thick edges: "-. text .->" and
+      // "== text ==>".  Mermaid ends the inline label at the first ".->"
+      // (or "==>"), and its lexer reads a literal "." inside the text as
+      // the start of that terminator -- "-. PG-table miss<br/>+38.5k drops
+      // .->" failed with a lexical error at the "." in "38.5k" while the
+      // dot-free sibling edge rendered.  Pipe syntax has no such
+      // ambiguity, so rewrite to "-.->|"text"|" / "==>|"text"|", quoted
+      // because the label may hold any character.  The terminator is kept
+      // as written so "-. x .-" (no arrowhead) stays "-.-".
+      result = result.replace(/-\.\s+([^\n]+?)\s+\.(-+(?:>|x|o)?)/g,
+        (_m, label, tail) => `-.${tail}${pipeLabel(label)}`);
+      result = result.replace(/==\s+([^\n]+?)\s+(==+(?:>|x|o)?)/g,
+        (_m, label, tail) => `${tail}${pipeLabel(label)}`);
 
       console.log('🔍 PIPE-SYNTAX-FIX: Processing complete');
 
