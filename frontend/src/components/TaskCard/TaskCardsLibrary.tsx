@@ -481,7 +481,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     try {
       await taskCardApi.update(projectId, draft.id, {
         name: draft.name, description: draft.description,
-        root: draft.root, tags: draft.tags,
+        root: draft.root, scope: draft.scope, tags: draft.tags,
       });
       window.dispatchEvent(new CustomEvent(TASK_CARD_SAVED_EVENT, {
         detail: { cardId: draft.id },
@@ -503,7 +503,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     try {
       const updated = await taskCardApi.update(projectId, draft.id, {
         name: draft.name, description: draft.description,
-        root: draft.root, tags: draft.tags, draft: false,
+        root: draft.root, scope: draft.scope, tags: draft.tags, draft: false,
       });
       setDraft(updated);
       window.dispatchEvent(new CustomEvent(TASK_CARD_SAVED_EVENT, {
@@ -635,7 +635,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     if (!draft) return;
     await taskCardApi.update(projectId, draft.id, {
       name: draft.name, description: draft.description,
-      root: draft.root, tags: draft.tags,
+      root: draft.root, scope: draft.scope, tags: draft.tags,
     });
     const resp = await createBinding(projectId, targetChatId, {
       card_id: draft.id,
