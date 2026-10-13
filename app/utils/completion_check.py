@@ -114,6 +114,13 @@ def is_failure(assessment: Optional[Dict[str, str]]) -> bool:
     can't distinguish "model lied about success" from "model honestly
     failed to format the tag" — that's surfaced separately as a
     missing-assessment warning rather than a hard fail.
+
+    This is the verdict's reading in isolation.  task_executor applies one
+    override on top: a ``partial`` verdict on a task whose REQUIRED output
+    contract is fully satisfied is recorded ok with the verdict kept as a
+    warning, because a present-and-valid contract tests "abandoned
+    mid-run" more directly than the self-report does.  ``false`` is never
+    overridden.
     """
     if not assessment:
         return False
