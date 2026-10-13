@@ -131,10 +131,23 @@ endpoint was not on the API models page when this was written, so the id in
 `gemini-pro-latest` (the `gemini-latest` alias) is a floating pointer and
 is intentionally unpriced; use the concrete model if cost matters.
 
+OpenAI direct (platform.openai.com/docs/pricing, read 2026‑10‑01): the
+GPT‑6 line (Astra / 6.1 Sol / Sol / Luna), GPT‑5.6 Sol / Terra / Luna and
+GPT‑5.4 / 5.5 (incl. Pro and Mini) are priced. Prompts over 272K input
+tokens bill the whole request at 2× input and cache rates and 1.5× output;
+Batch and Flex are 0.5× and Fast mode (the renamed Priority tier) 2×. The
+GPT‑6 cards also bill cache *writes* at 1.25× input (`cache_write_5m`). The
+Pro cards publish no cached-input rate, so a cached Pro call shows as
+partial. `gpt-5.6-sol` is promotional pricing through at least 2026‑11‑21.
+z.ai GLM‑4.7 through 5.3 (incl. Flash / FlashX) and Meta Muse Spark 1.1–1.3
+(Standard $1.25 / $4.25 / cached $0.15; Contributor $0.10 / $0.20 / $0.002)
+are priced from the vendors' pages read the same day.
+
 **Deliberately unpriced** (no confident public figure at the time the table
-was written — add them to `pricing.json`): GPT‑5.4 / 5.5;
-GLM‑4.7 / 5.2; DeepSeek v3.x; Kimi K2.x / K3; MiniMax M2.1; Qwen3‑Next; Nova 2;
-Meta Muse Spark. Nova cache-read rates are also omitted, so Nova totals show
+was written — add them to `pricing.json`): GPT‑5.6 / GPT‑6 *on Bedrock*
+(AWS bills these itself and its pricing page is not machine-readable);
+DeepSeek v3.x; Kimi K2.x / K3; MiniMax M2.x; Qwen3‑Next; Nova 2; Grok;
+Mistral / Devstral; Nemotron; Gemma. Nova cache-read rates are also omitted, so Nova totals show
 as partial when caching is in play. Bedrock `flex` factors are listed only
 where the provider publishes one (OpenAI); a Bedrock row billed at Flex for
 a model with no factor is unknown, not standard.
