@@ -22,7 +22,7 @@ import {
     setKnownShellCwd,
 } from '../mcpFormatter';
 
-const CWD = '/Users/dcohn/workspace/proj';
+const CWD = '/Users/alice/workspace/proj';
 const WINDOW_KEY = '__ZIYA_CURRENT_PROJECT_PATH__';
 
 function setWindowCwd(value: string | undefined): void {
