@@ -13,6 +13,8 @@ import { escapeSequenceMessageSemicolons } from './mermaidSequenceSemicolons';
 import { withUnzoomedMeasureHost } from '../../utils/uiScale';
 import { flattenNestedClassGenerics } from './mermaidClassGenerics';
 import { escapeClassDiagramLabelSemicolons } from './mermaidClassSemicolons';
+import { collapseClassDiagramDoubleBraces, collapseErDiagramDoubleBraces } from './mermaidClassDoubleBraces';
+import { escapeGanttTaskNameColons } from './mermaidGanttTaskColons';
 
 // Types for preprocessors and error handlers
 interface Preprocessor {
@@ -1517,6 +1519,32 @@ export function initMermaidEnhancer(): void {
       name: 'class-diagram-label-semicolon-escape',
       priority: 740,
       diagramTypes: ['classdiagram'],
+    }
+  );
+
+  // Collapse brace-escaped class bodies (`class Foo {{ ... }}`) that models
+  // carry over from f-string / template habits. Mermaid accepts only a
+  // single `{`/`}` and otherwise fails with "got 'OPEN_IN_STRUCT'". Runs
+  // before the dot-fix (700) so every later class pass sees normal syntax.
+  registerPreprocessor(
+    (definition: string, _diagramType: string): string =>
+      collapseClassDiagramDoubleBraces(definition),
+    {
+      name: 'class-diagram-double-brace-collapse',
+      priority: 750,
+      diagramTypes: ['classdiagram'],
+    }
+  );
+
+  // Same brace-escaping habit in erDiagrams: `ENTITY {{` / `}}` / `||--o{{`.
+  // Runs ahead of the ER relationship (520) and attribute-value (530) fixes.
+  registerPreprocessor(
+    (definition: string, _diagramType: string): string =>
+      collapseErDiagramDoubleBraces(definition),
+    {
+      name: 'er-diagram-double-brace-collapse',
+      priority: 750,
+      diagramTypes: ['erdiagram'],
     }
   );
 
