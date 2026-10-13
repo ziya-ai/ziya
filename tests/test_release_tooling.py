@@ -228,9 +228,16 @@ def test_split_refuses_a_nonexistent_hunk_index(repo):
     assert r.returncode == 1 and "do not exist ['7']" in r.stdout
 
 
-def test_split_refuses_an_untracked_file(repo):
+def test_split_ships_an_untracked_file_whole_or_refuses_splitting_it(repo):
+    # An untracked file has no hunks: mapped to one entry it ships whole with
+    # no patch; mapped to two it is refused (it cannot be split).
     attrib = repo / "attrib.json"
     attrib.write_text(json.dumps({"0": "x"}))
+    r = run([str(HUNKS), "split", "--file", "src/new_helper.py",
+             "--attrib", str(attrib), "--out", "p"], cwd=repo, check=False)
+    assert r.returncode == 0 and "whole file" in r.stdout
+    assert not (repo / "p").exists() or not any((repo / "p").rglob("*.patch"))
+    attrib.write_text(json.dumps({"0": "x", "1": "y"}))
     r = run([str(HUNKS), "split", "--file", "src/new_helper.py",
              "--attrib", str(attrib), "--out", "p"], cwd=repo, check=False)
     assert r.returncode == 1 and "untracked" in r.stdout
