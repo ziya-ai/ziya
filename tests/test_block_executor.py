@@ -61,7 +61,7 @@ def _stub_executor(responses):
     """Returns an async function that returns responses in sequence."""
     it = iter(responses)
 
-    async def _stub(block, project_root=None, project_id=None, run_id=None):
+    async def _stub(block, project_root=None, project_id=None, run_id=None, **_kw):
         try:
             return next(it)
         except StopIteration:
@@ -240,7 +240,7 @@ class TestSoftCancel:
 
         call_count = {"n": 0}
 
-        async def stub(b, project_root=None, project_id=None, run_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
             call_count["n"] += 1
             if call_count["n"] == 2:
                 # Trip cancel after second iteration
@@ -269,7 +269,7 @@ class TestPassRetentionCap:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
 
-        async def stub(b, project_root=None, project_id=None, run_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
             return _mk_artifact("pass")
 
         with patch("app.agents.block_executor.execute_task_block", stub):
@@ -294,7 +294,7 @@ class TestPassRetentionCap:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
 
-        async def stub(b, project_root=None, project_id=None, run_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
             return _mk_artifact("oops", failed=True)
 
         with patch("app.agents.block_executor.execute_task_block", stub):
@@ -318,7 +318,7 @@ class TestSignatureHashing:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
 
-        async def stub(b, project_root=None, project_id=None, run_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
             return _mk_artifact(
                 "TypeError: section.rows is undefined\npacketPlugin.ts:82",
                 failed=True,
@@ -396,17 +396,18 @@ class TestIterationContext:
         ctx = ExecutionContext(run_id=run.id, storage=storage)
         seen_iter_ctx = []
 
-        async def iter_ctx_capture(b, project_root=None, project_id=None, run_id=None):
+        async def iter_ctx_capture(b, project_root=None, project_id=None, run_id=None, **_kw):
             seen_iter_ctx.append(get_task_iteration_context())
             return _mk_artifact("ok")
 
         with patch("app.agents.block_executor.execute_task_block", iter_ctx_capture):
             await execute_block(block, ctx)
 
+        # ``path`` lists every enclosing iteration, outermost first
+        # (design/typed-findings.md, iteration_path); one loop -> one pair.
         assert seen_iter_ctx == [
-            {"block_id": "repeat-1", "index": 0},
-            {"block_id": "repeat-1", "index": 1},
-            {"block_id": "repeat-1", "index": 2},
+            {"block_id": "repeat-1", "index": i, "path": [["repeat-1", i]]}
+            for i in range(3)
         ]
         # Cleared after the block finishes
         assert get_task_iteration_context() is None
@@ -422,7 +423,7 @@ class TestIterationContext:
         ctx = ExecutionContext(run_id=run.id, storage=storage)
         seen_iter_ctx = []
 
-        async def iter_ctx_capture_fail(b, project_root=None, project_id=None, run_id=None):
+        async def iter_ctx_capture_fail(b, project_root=None, project_id=None, run_id=None, **_kw):
             seen_iter_ctx.append(get_task_iteration_context())
             # Fail every iteration so until runs to repeat_max
             return _mk_artifact("nope", failed=True)
@@ -491,7 +492,7 @@ class TestUntilExitConditions:
         ctx = ExecutionContext(run_id=until_run.id, storage=storage)
         call_count = [0]
 
-        async def stub(b, project_root=None, project_id=None, run_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
             call_count[0] += 1
             return _mk_artifact_with_assessment(
                 "found nothing to fix", "true", "vacuously satisfied",
@@ -523,7 +524,7 @@ class TestUntilExitConditions:
         ctx = ExecutionContext(run_id=until_run.id, storage=storage)
         call_count = [0]
 
-        async def stub(b, project_root=None, project_id=None, run_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
             call_count[0] += 1
             return _mk_artifact_with_assessment(
                 f"attempt {call_count[0]}", "false", "still trying",
@@ -553,7 +554,7 @@ class TestUntilExitConditions:
         ctx = ExecutionContext(run_id=until_run.id, storage=storage)
         call_count = [0]
 
-        async def stub(b, project_root=None, project_id=None, run_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
             call_count[0] += 1
             return _mk_artifact_with_assessment(
                 "same finding every time", "unknown", "",
@@ -582,7 +583,7 @@ class TestUntilExitConditions:
         call_count = [0]
         # Different summary each iter; convergence should never fire,
         # loop runs to until_max.
-        async def stub(b, project_root=None, project_id=None, run_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
             call_count[0] += 1
             return _mk_artifact_with_assessment(
                 f"unique attempt {call_count[0]}", "unknown", "",
@@ -616,7 +617,7 @@ class TestUntilExitConditions:
             evaluator_calls[0] += 1
             return False
 
-        async def stub(b, project_root=None, project_id=None, run_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
             return _mk_artifact_with_assessment("done", "true", "")
 
         with patch("app.agents.block_executor.execute_task_block", stub):
@@ -657,7 +658,7 @@ class TestScopeHierarchy:
         )
         seen = []
 
-        async def capture(b, project_root=None, project_id=None, run_id=None):
+        async def capture(b, project_root=None, project_id=None, run_id=None, **_kw):
             seen.append(b.scope)
             return _mk_artifact("ok")
 
@@ -678,7 +679,7 @@ class TestScopeHierarchy:
         ctx = ExecutionContext(run_id="r")
         seen = []
 
-        async def capture(b, project_root=None, project_id=None, run_id=None):
+        async def capture(b, project_root=None, project_id=None, run_id=None, **_kw):
             seen.append(b.scope)
             return _mk_artifact("ok")
 
@@ -707,7 +708,7 @@ class TestScopeHierarchy:
         )
         seen = []
 
-        async def capture(b, project_root=None, project_id=None, run_id=None):
+        async def capture(b, project_root=None, project_id=None, run_id=None, **_kw):
             seen.append(b.scope)
             return _mk_artifact("ok")
 
@@ -730,7 +731,7 @@ class TestScopeHierarchy:
         ctx = ExecutionContext(run_id="r")
         seen = []
 
-        async def capture(b, project_root=None, project_id=None, run_id=None):
+        async def capture(b, project_root=None, project_id=None, run_id=None, **_kw):
             seen.append(b.scope)
             return _mk_artifact("ok")
 
@@ -759,7 +760,7 @@ class TestScopeHierarchy:
         ctx = ExecutionContext(run_id="r")
         seen = {}
 
-        async def capture(b, project_root=None, project_id=None, run_id=None):
+        async def capture(b, project_root=None, project_id=None, run_id=None, **_kw):
             seen[b.id] = b.scope
             return _mk_artifact("ok")
 
