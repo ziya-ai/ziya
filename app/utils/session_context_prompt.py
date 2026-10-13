@@ -280,6 +280,34 @@ def _format_shell_section(task_scope: Optional[Any]) -> List[str]:
     return lines
 
 
+def _format_jobs_section() -> List[str]:
+    """One paragraph steering long commands to the managed job runner.
+
+    Emitted only when the ``jobs`` builtin category is enabled, so a
+    deployment that turned it off is not told about a tool it lacks.
+    Chat and task prompts alike: the scan that motivated the runner
+    (design/job-runner.md) burned five turns on ``nohup``/``&``/``pkill``
+    refusals before anyone looked for a supported way to background.
+    """
+    try:
+        from app.mcp.builtin_tools import is_builtin_category_enabled
+        if not is_builtin_category_enabled("jobs"):
+            return []
+    except Exception:  # noqa: BLE001 — this block never raises
+        return []
+    return [
+        "### Long-running commands",
+        "  - Shell calls are capped (300 s by default). For anything longer "
+        "use `job_start` (same allowlist and write policy; no ceiling below "
+        "6 h) and `job_wait`; stop with `job_kill`. Declare `outputs` so "
+        "their directories exist before the command runs and their hashes "
+        "are recorded on exit.",
+        "  - Do not background with `&`, `nohup`, `setsid` or `disown`: they "
+        "are refused in both tools. The job runner is the only sanctioned "
+        "way to background a command.",
+    ]
+
+
 def build_session_context_section(
     project_root: Optional[str] = None,
     task_scope: Optional[Any] = None,
@@ -338,6 +366,7 @@ def build_session_context_section(
         _format_tools_section(task_scope),
         _format_skills_section(task_scope),
         _format_shell_section(task_scope),
+        _format_jobs_section(),
     ]
     for sec in sections:
         if sec:

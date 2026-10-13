@@ -4745,6 +4745,160 @@ def _print_auth_error(message: str = None):
 # Argument parsing
 # ============================================================================
 
+def cmd_ledger(args):
+    """Handle: ziya ledger observe|claim|query|verify (design/evidence-ledger.md)."""
+    from app.utils import ziya_ledger_client as lc
+
+    def _json_or_text(s):
+        if s is None:
+            return None
+        try:
+            return json.loads(s)
+        except ValueError:
+            return s
+
+    def _fail(msg):
+        print(f"\033[31m{msg}\033[0m", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        if args.ledger_cmd == 'observe':
+            sql = args.sql
+            if args.sql_file:
+                with open(args.sql_file, encoding='utf-8') as f:
+                    sql = f.read()
+            argv = [a for a in (args.argv or []) if a != '--'] or None
+            kw = dict(query_text=sql, path=args.path, argv=argv, connector=args.connector,
+                      result_path=args.result, dataset_id=args.dataset,
+                      volatile=args.volatile, as_of=args.as_of)
+            if args.inline is not None:
+                kw['inline'], kw['has_inline'] = _json_or_text(args.inline), True
+            out = lc.observe(args.source, **kw)
+            print(json.dumps(out) if args.json else out['id'])
+        elif args.ledger_cmd == 'claim':
+            inputs = None
+            if args.inputs:
+                named = [i.partition('=') for i in args.inputs]
+                inputs = ({n: c for n, sep, c in named} if all(sep for _, sep, _ in named)
+                          else [n if not sep else c for n, sep, c in named])
+            pop = None
+            if args.population or args.n is not None:
+                pop = {k: v for k, v in (('description', args.population), ('n', args.n))
+                       if v is not None}
+            tol = {}
+            for t in args.tolerance:
+                k, sep, v = t.partition('=')
+                if not sep or k not in ('abs', 'rel'):
+                    _fail(f"--tolerance expects abs=X or rel=X, got {t!r}")
+                tol[k] = float(v)
+            der = {k: v for k, v in (('column', args.column), ('expression', args.expression))
+                   if v is not None}
+            out = lc.claim(args.key, _json_or_text(args.value), namespace=args.namespace,
+                           unit=args.unit, fmt=args.fmt, from_obs=args.from_obs or None,
+                           inputs=inputs, population=pop,
+                           distribution=_json_or_text(args.distribution),
+                           derivation=der or None, tolerance=tol or None)
+            print(json.dumps(out) if args.json else f"{out['id']}@v{out['version']}")
+        elif args.ledger_cmd == 'query':
+            if not args.ref and not args.prefix and not args.namespace:
+                _fail("ziya ledger query needs a ref or --prefix")
+            print(json.dumps(lc.query(args.ref, prefix=args.prefix, namespace=args.namespace,
+                                      history=args.history), indent=1))
+        elif args.ledger_cmd == 'verify':
+            if not args.refs and not args.prefix:
+                _fail("ziya ledger verify needs claim ids or --prefix")
+            out = lc.verify(args.refs or None, prefix=args.prefix, method=args.method)
+            print(json.dumps(out, indent=1))
+            if out.get('counts', {}).get('drifted') or out.get('counts', {}).get('refuted'):
+                sys.exit(1)
+        else:
+            _fail("ziya ledger: one of observe, claim, query, verify")
+    except lc.LedgerUnavailable as e:
+        _fail(str(e))
+
+
+def cmd_jobs(args):
+    """Handle: ziya jobs [--root R] list | tail ID [-n N] | kill ID | gc [--days D] [--dry-run]"""
+    import json as _json
+    import shutil as _shutil
+    import time as _time
+    from app.jobs.manager import JobError, JobManager, _jobs_root
+    root = os.path.realpath(args.jobs_root or os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd())
+    mgr = JobManager()
+    mgr.scan(root)
+    cmd = args.jobs_cmd or 'list'
+    if cmd == 'list':
+        rows = sorted(mgr.list(root), key=lambda s: s.get("started_at") or 0)
+        if not rows:
+            print(f"no managed jobs under {root}")
+            return
+        print(f"{'JOB':<18} {'STATE':<8} {'EXIT':<5} {'RUNTIME':>9}  LABEL")
+        for s in rows:
+            rt = s.get("runtime_s") if s["state"] == "running" else s.get("duration_s")
+            rt_s = f"{rt:.0f}s" if isinstance(rt, (int, float)) else "-"
+            ex = s.get("exit_code")
+            print(f"{s['job_id']:<18} {s['state']:<8} {('-' if ex is None else ex):<5} {rt_s:>9}  {s.get('label') or ''}")
+        return
+    if cmd == 'tail':
+        try:
+            page = mgr.read(args.job_id, from_seq=1, max_records=100000, project_root=root)
+        except JobError as e:
+            print(f"\033[31m{e}\033[0m", file=sys.stderr)
+            sys.exit(1)
+        for rec in page["records"][-max(1, args.n):]:
+            t = rec.get("t")
+            if t == "output":
+                sys.stdout.write(rec.get("text") or "")
+            elif t == "cmd":
+                print(f"$ {rec.get('text', '')}")
+            elif t == "exit":
+                print(f"→ exit {rec.get('code')} [{rec.get('reason')}] after {rec.get('duration_s')}s")
+        sys.stdout.flush()
+        return
+    if cmd == 'kill':
+        try:
+            final = mgr.kill(args.job_id, project_root=root, reason="cli_kill")
+        except JobError as e:
+            print(f"\033[31m{e}\033[0m", file=sys.stderr)
+            sys.exit(1)
+        print(f"{args.job_id}: {final['state']}" + (f" (exit {final.get('exit_code')})" if final.get('exit_code') is not None else "")
+              + ("" if final.get("killed") else " -- was not running"))
+        return
+    if cmd == 'gc':
+        # A job directory is removable when it is older than --days, not
+        # running, and no ledger observation cites its id.  The ledger is
+        # read, never written; a cited job stays however old it is.
+        cutoff = _time.time() - args.days * 86400
+        cited = set()
+        try:
+            from app.utils.evidence.store import ledger_for
+            led = ledger_for(root)
+            for rec in led.read("observation"):
+                jid = ((rec.get("result") or {}).get("inline") or {}).get("job_id")
+                if jid:
+                    cited.add(jid)
+        except Exception as e:  # noqa: BLE001
+            # Fail closed: "unreadable" is not "uncited".  gc deletes, so an
+            # empty citation set here would remove exactly the jobs the
+            # ledger protects.
+            print(f"\033[31mgc refused: cannot read the evidence ledger ({e})\033[0m", file=sys.stderr)
+            sys.exit(1)
+        removed = kept = 0
+        for s in mgr.list(root):
+            d = _jobs_root(root) / s["job_id"]
+            old = (s.get("started_at") or _time.time()) < cutoff
+            if s["state"] == "running" or not old or s["job_id"] in cited:
+                kept += 1
+                continue
+            print(("would remove " if args.dry_run else "removing ") + str(d))
+            if not args.dry_run:
+                _shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+        print(f"{'would remove' if args.dry_run else 'removed'} {removed}, kept {kept} "
+              f"(running, newer than {args.days}d, or cited by the ledger)")
+        return
+
+
 def cmd_shadow(args):
     """Handle: ziya shadow [--label L] [--allow-exec] [--allow-control] [--meta k=v] [cmd...]"""
     if args.list_sessions:
@@ -4869,6 +5023,74 @@ Examples:
     shadow_parser.add_argument('--list', '-l', action='store_true', dest='list_sessions',
                                help='List live shadow sessions and exit')
     shadow_parser.set_defaults(func=cmd_shadow)
+
+    # ziya jobs: inspect, tail, kill and garbage-collect managed jobs
+    # (design/job-runner.md, step 10).  Reads the job directories directly,
+    # so it works with no server running -- which is when a job that
+    # outlived its server most needs looking at.  No model, no common parent.
+    jobs_parser = subparsers.add_parser(
+        'jobs', help='List, tail, kill or gc managed background jobs')
+    jobs_parser.add_argument('--root', dest='jobs_root',
+                             help='Project root (default: $ZIYA_USER_CODEBASE_DIR or cwd)')
+    jobs_sub = jobs_parser.add_subparsers(dest='jobs_cmd')
+    jobs_sub.add_parser('list', help='Every job under the project with its state')
+    jt = jobs_sub.add_parser('tail', help='Last N journal records of a job')
+    jt.add_argument('job_id')
+    jt.add_argument('-n', type=int, default=40, help='Records to show (default 40)')
+    jk = jobs_sub.add_parser('kill', help='TERM the job\'s process group, KILL after 10 s')
+    jk.add_argument('job_id')
+    jg = jobs_sub.add_parser('gc', help='Remove job directories older than --days that no ledger citation references')
+    jg.add_argument('--days', type=int, default=30)
+    jg.add_argument('--dry-run', action='store_true')
+    jobs_parser.set_defaults(func=cmd_jobs)
+
+    # ziya ledger: record evidence from a shell script run by the shell MCP
+    # server (design/evidence-ledger.md, step 5).  No model, so no common
+    # parent.  Talks to the running server with the scope token in the env.
+    ledger_parser = subparsers.add_parser(
+        'ledger', help='Record / query / verify evidence-ledger entries from a script')
+    ledger_sub = ledger_parser.add_subparsers(dest='ledger_cmd')
+    obs_p = ledger_sub.add_parser('observe', help='Record an observation; prints its id')
+    obs_p.add_argument('--source', required=True,
+                       choices=['sql', 'file', 'command', 'tool', 'computed'])
+    obs_p.add_argument('--sql', help='Query text')
+    obs_p.add_argument('--sql-file', help='File holding the query text')
+    obs_p.add_argument('--path', help='Path the observation is about')
+    obs_p.add_argument('--argv', nargs=argparse.REMAINDER, help='Command run (after --)')
+    obs_p.add_argument('--connector', help='Data source name')
+    obs_p.add_argument('--result', help='Result file; the server hashes it (attested)')
+    obs_p.add_argument('--dataset', help='Result dataset id (ds_...)')
+    obs_p.add_argument('--inline', help='Inline result (JSON or text; not attested)')
+    obs_p.add_argument('--volatile', action='store_true', help='Live source; rerun may differ')
+    obs_p.add_argument('--as-of', dest='as_of', help='When the source was read')
+    obs_p.add_argument('--json', action='store_true', help='Print the whole record as JSON')
+    cl_p = ledger_sub.add_parser('claim', help='Record a claim version')
+    cl_p.add_argument('key', help='namespace.key (or key with --namespace)')
+    cl_p.add_argument('value', help='The value (JSON: number, string, true/false)')
+    cl_p.add_argument('--namespace')
+    cl_p.add_argument('--unit')
+    cl_p.add_argument('--format', dest='fmt', help='Default Python format spec, e.g. .2%%')
+    cl_p.add_argument('--from', dest='from_obs', action='append', default=[],
+                      metavar='OBS_ID', help='Observation id (repeatable)')
+    cl_p.add_argument('--input', dest='inputs', action='append', default=[],
+                      metavar='[NAME=]CLAIM', help='Input claim, optionally named for --expression')
+    cl_p.add_argument('--population', help='Description; add n with --n')
+    cl_p.add_argument('--n', type=int, help='Population size')
+    cl_p.add_argument('--column', help='Column the value was derived from')
+    cl_p.add_argument('--derivation', dest='expression', help='Expression, e.g. "sum(cut)/sum(paths)"')
+    cl_p.add_argument('--distribution', help='JSON {n, mean, median, p10, p90, sd, min, max}')
+    cl_p.add_argument('--tolerance', action='append', default=[], metavar='abs=X|rel=X')
+    cl_p.add_argument('--json', action='store_true')
+    q_p = ledger_sub.add_parser('query', help='Look up a claim, claim.field or namespace')
+    q_p.add_argument('ref', nargs='?')
+    q_p.add_argument('--prefix')
+    q_p.add_argument('--namespace')
+    q_p.add_argument('--history', action='store_true')
+    v_p = ledger_sub.add_parser('verify', help='Re-check claims and record verdicts')
+    v_p.add_argument('refs', nargs='*')
+    v_p.add_argument('--prefix')
+    v_p.add_argument('--method', default='rehash', choices=['rehash', 'computed'])
+    ledger_parser.set_defaults(func=cmd_ledger)
 
     return parser
     

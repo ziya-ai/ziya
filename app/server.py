@@ -64,6 +64,7 @@ from app.utils.conversation_exporter import export_conversation_for_paste
 
 # Session management API routers
 from app.api import projects, contexts, skills, chats, tokens, task_cards, task_runs, task_bindings
+from app.api import drag_helper as drag_helper_api
 from app.api import bench as bench_api
 from app.api import delegates as delegates_api
 from app.api import memory as memory_api
@@ -72,6 +73,7 @@ from app.api import handoff as handoff_api
 from app.api import backlog as backlog_api
 from app.api import commands as commands_api
 from app.api import consent as consent_api
+from app.api import ledger as ledger_api
 from app.utils.paths import get_ziya_home
 from app.utils.logging_utils import logger as app_logger
 
@@ -725,6 +727,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Task scheduler failed to start (non-fatal): {e}")
 
+    # Managed jobs (design/job-runner.md): re-attach jobs that outlived the
+    # previous server.  The wrapper is independent of this process, so a
+    # job directory with no status.json and a live wrapper pid (start time
+    # matching) is still ``running``; one whose wrapper is gone is ``lost``.
+    # Only the launch project is known here; other projects are scanned on
+    # first use by JobManager._ensure_scanned.
+    try:
+        from app.jobs.manager import get_job_manager
+        _root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        _n = get_job_manager().scan(_root)
+        if _n:
+            logger.info(f"🧵 re-attached {_n} managed job record(s) under {_root}")
+    except Exception as e:  # noqa: BLE001 -- never block startup
+        logger.debug(f"Managed job re-attach skipped: {e}")
+
     # Task-run zombie reconciliation.  A TaskRun is launched as a
     # fire-and-forget asyncio task; if the server is restarted (or
     # crashes) mid-flight, the on-disk status stays "running" forever
@@ -794,6 +811,16 @@ async def lifespan(app: FastAPI):
         except (ImportError, AttributeError, RuntimeError) as e:
             logger.warning(f"Could not register deferred plugin routes: {e}")
 
+    # macOS native drag helper: lets a diagram/table dragged out of the chat
+    # drop into Slack desktop as a file.  No-op unless on macOS with pyobjc
+    # installed (ziya-install-extras --drag); ZIYA_NATIVE_DRAG=0 disables.
+    try:
+        from app.utils.drag_pasteboard_helper import get_supervisor as _drag_sup
+        if not _drag_sup().start():
+            logger.debug("native drag helper not available on this platform/install")
+    except Exception as e:  # noqa: BLE001 — never block startup on a convenience
+        logger.warning(f"native drag helper not started: {e}")
+
     logger.info("=" * 80)
     logger.info("📋 Background tasks running:")
     if ziya_env("ZIYA_ENABLE_MCP"):
@@ -817,6 +844,12 @@ async def lifespan(app: FastAPI):
 
     # Shutdown - cleanup
     logger.info("🛑 Shutting down gracefully...")
+
+    try:
+        from app.utils.drag_pasteboard_helper import get_supervisor as _drag_sup
+        _drag_sup().stop()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"native drag helper stop: {e}")
 
     # Persist delegate orchestration state so plans survive restart
     try:
@@ -1701,9 +1734,11 @@ app.include_router(beads_api.router)
 app.include_router(handoff_api.router)
 app.include_router(backlog_api.router)
 app.include_router(consent_api.router)
+app.include_router(ledger_api.router)
 app.include_router(task_cards.router)
 app.include_router(task_runs.router)
 app.include_router(task_bindings.router)
+app.include_router(drag_helper_api.router)
 app.include_router(commands_api.router)
 app_logger.info("Session management API routes loaded")
 
@@ -1715,6 +1750,10 @@ app.include_router(graph_router)
 # Headless diagram rendering (requires optional Playwright dependency)
 from app.routes.diagram_routes import router as diagram_router
 app.include_router(diagram_router)
+
+# Dataset rows for ziya://dataset/<id> chart data (design/dataset-store.md)
+from app.routes.dataset_routes import router as dataset_router
+app.include_router(dataset_router)
 
 # Model configuration routes
 from app.routes.model_routes import router as model_router

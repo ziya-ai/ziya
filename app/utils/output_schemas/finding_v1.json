@@ -1,0 +1,145 @@
+{
+  "$id": "ziya:finding/v1",
+  "title": "finding",
+  "description": "A research finding.",
+  "type": "object",
+  "properties": {
+    "id": {"type": "string", "minLength": 1, "description": "stable id across stages, e.g. F-RETRY-FLUSH"},
+    "title": {"type": "string", "minLength": 1, "description": "one-line title"},
+    "verdict": {
+      "enum": ["candidate", "confirmed", "weakened", "known", "refuted", "reproduced_unexplained"],
+      "description": "where the finding stands"
+    },
+    "known_issue": {
+      "type": "object",
+      "description": "the existing issue this finding matches (required when verdict is known)",
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "description": "issue id"},
+        "status": {"enum": ["open", "mitigated", "closed"], "description": "issue status"}
+      },
+      "required": ["id", "status"]
+    },
+    "signal": {"type": "string", "description": "what was observed"},
+    "why_hidden": {"type": "string", "description": "why existing monitoring did not show it"},
+    "mechanism": {
+      "type": "object",
+      "description": "the proposed cause",
+      "properties": {
+        "summary": {"type": "string", "description": "the mechanism in words"},
+        "confidence": {"type": "integer", "minimum": 1, "maximum": 5, "description": "1 (guess) to 5 (proven)"},
+        "code_refs": {
+          "type": "array",
+          "description": "code that implements the mechanism",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {"type": "string", "description": "file path"},
+              "lines": {"type": "string", "description": "line range, e.g. 120-148"},
+              "commit": {"type": "string", "description": "commit the lines refer to"}
+            },
+            "required": ["path"]
+          }
+        }
+      }
+    },
+    "impact": {
+      "type": "object",
+      "description": "how much it costs, per unit and in total",
+      "properties": {
+        "population": {
+          "type": "object",
+          "description": "who is exposed",
+          "properties": {
+            "description": {"type": "string", "description": "the population in words"},
+            "n_total": {"$ref": "ziya:number/v1", "description": "size of the population"},
+            "n_affected": {"$ref": "ziya:number/v1", "description": "members actually affected"},
+            "definition": {"type": "string", "description": "how a member counts as affected"}
+          }
+        },
+        "per_unit": {"$ref": "ziya:distribution/v1", "description": "cost per affected unit"},
+        "per_incident": {
+          "allOf": [{"$ref": "ziya:distribution/v1"}],
+          "description": "cost per incident",
+          "properties": {
+            "incident_definition": {"type": "string", "description": "what one incident is"}
+          }
+        },
+        "incidents_per_unit_day": {"$ref": "ziya:distribution/v1", "description": "incidents per unit per day"},
+        "fleet_total": {
+          "type": "object",
+          "description": "total cost across the population",
+          "properties": {
+            "low": {"$ref": "ziya:number/v1", "description": "low estimate"},
+            "mid": {"$ref": "ziya:number/v1", "description": "central estimate"},
+            "high": {"$ref": "ziya:number/v1", "description": "high estimate"},
+            "unit": {"type": "string", "description": "unit of the total"}
+          },
+          "required": ["mid"],
+          "x-ziya-checks": [{"ordered": ["low", "mid", "high"]}]
+        },
+        "reconciliation": {
+          "type": "object",
+          "description": "the per-unit sum checked against the fleet total",
+          "properties": {
+            "per_unit_sum": {"$ref": "ziya:number/v1", "description": "sum of the per-unit values"},
+            "fleet_mid": {"$ref": "ziya:number/v1", "description": "the fleet total's central estimate"},
+            "tolerance": {"type": "number", "minimum": 0, "description": "allowed relative difference, e.g. 0.05"}
+          },
+          "required": ["per_unit_sum", "fleet_mid", "tolerance"]
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "description": "ledger claims the finding rests on",
+      "items": {
+        "type": "object",
+        "properties": {
+          "claim": {"type": "string", "minLength": 1, "description": "ledger claim id"},
+          "role": {"enum": ["primary", "witness", "control"], "description": "how the claim supports the finding"}
+        },
+        "required": ["claim", "role"]
+      }
+    },
+    "cross_validation": {
+      "type": "array",
+      "description": "independent checks of the finding",
+      "items": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "enum": ["split_half", "previous_day", "third_day", "natural_control",
+                     "independent_witness", "outlier_leave_out", "code_reading"],
+            "description": "how it was checked"
+          },
+          "outcome": {"enum": ["agrees", "disagrees", "not_testable"], "description": "what the check found"},
+          "claim": {"type": "string", "description": "ledger claim holding the check's number, if any"},
+          "detail": {"type": "string", "description": "the check in words"}
+        },
+        "required": ["method", "outcome"]
+      }
+    },
+    "scores": {
+      "type": "object",
+      "description": "ranking scores",
+      "properties": {
+        "obscurity": {"type": "integer", "minimum": 1, "maximum": 5, "description": "1 (obvious) to 5 (deeply hidden)"},
+        "correlation": {"type": "integer", "minimum": 1, "maximum": 5, "description": "strength of the signal-to-impact link"},
+        "confidence": {"type": "integer", "minimum": 1, "maximum": 5, "description": "confidence in the mechanism"},
+        "score": {"type": "number", "description": "combined score"}
+      }
+    },
+    "falsifiers": {"type": "array", "items": {"type": "string"}, "description": "observations that would refute the finding"},
+    "next_steps": {"type": "array", "items": {"type": "string"}, "description": "what to do next"},
+    "owner": {"type": "string", "description": "who owns the follow-up"},
+    "touches": {"type": "array", "items": {"type": "string"}, "description": "ids of other findings this one overlaps"}
+  },
+  "required": ["id", "title", "verdict"],
+  "if": {"properties": {"verdict": {"const": "known"}}, "required": ["verdict"]},
+  "then": {"required": ["known_issue"]},
+  "x-ziya-checks": [
+    {"reconciles": {"a": "/impact/reconciliation/per_unit_sum", "b": "/impact/reconciliation/fleet_mid",
+                    "tol_rel": "/impact/reconciliation/tolerance"}},
+    {"subset": {"part": "/impact/population/n_affected", "of": "/impact/population/n_total"}}
+  ]
+}

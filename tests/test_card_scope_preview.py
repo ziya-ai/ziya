@@ -83,7 +83,7 @@ def _preview(spec, project_id="proj1", deck_scope=None):
             return _Project()
 
     with patch.object(tc, "ProjectStorage", _ProjectStorage):
-        return asyncio.run(tc.preview_card_scope(project_id, spec))
+        return tc.preview_card_scope(project_id, spec)
 
 
 def test_preview_reports_escalating_leaf_only(keyed_store):
@@ -220,7 +220,7 @@ def _saved_status(card, project_id="proj1", deck_scope=None):
 
     with patch.object(tc, "_get_storage", lambda _pid: _Storage()), \
          patch.object(tc, "ProjectStorage", _ProjectStorage):
-        return asyncio.run(tc.get_card_scope_status(project_id, card.id))
+        return tc.get_card_scope_status(project_id, card.id)
 
 
 def test_preview_and_saved_status_agree_on_escalation(keyed_store, tmp_path, monkeypatch):

@@ -363,7 +363,7 @@ async def execute_task_block(
     # Lazy import — these modules have heavy deps
     from ..streaming_tool_executor import StreamingToolExecutor
     from ..agents.models import ModelManager
-    from langchain_core.messages import SystemMessage, HumanMessage
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
     # Best-effort relay emitter.  No-op when run_id is unset (e.g. in
     # unit tests or direct calls outside a run).
@@ -680,6 +680,21 @@ async def execute_task_block(
     except Exception as e:
         logger.warning(f"📋 TASK_EXEC: fan-out ownership notice failed (non-fatal): {e}")
 
+    # Output contract (design/typed-findings.md): bind the task's declared
+    # outputs to the run's pinned schemas and tell the model what they
+    # are.  The section is generated from the schema, so the instruction
+    # and the emit-time check cannot disagree.
+    from app.utils.output_contracts import (
+        ContractError, contracts_for_block, correction_message,
+        ledger_claim_lookup, missing_required, required_outputs_section,
+    )
+    try:
+        contracts = contracts_for_block(block, project_root=project_root)
+    except ContractError as e:
+        raise TaskExecutorError(f"Task {block.name!r} output contract: {e}") from None
+    if contracts:
+        system_parts.append(required_outputs_section(contracts))
+
     messages = [
         SystemMessage(content="\n\n".join(system_parts)),
         HumanMessage(content=block.instructions),
@@ -856,6 +871,14 @@ async def execute_task_block(
     usage_attr_token = set_usage_attribution(
         {"source": "task", "run_id": run_id, "block_id": block.id}
     )
+    # Evidence ledger (design/evidence-ledger.md, Task Card integration):
+    # claims recorded by this task go to the CARD's project ledger even
+    # when scope.cwd made a subdirectory the tools' workspace, and the
+    # artifact lists them below.  The same usage attribution above
+    # stamps run/block ids on their provenance.
+    from app.context import set_ledger_root, reset_ledger_root
+    ledger_root_token = set_ledger_root(project_root)
+    ledger_since = time.time()
     # Per-task shell command grants (Slice B).  Stored on the scope as
     # a list of strings; bare strings are literal first-token grants,
     # ``re:`` prefix turns the rest into a regex against the full
@@ -898,7 +921,7 @@ async def execute_task_block(
     # blobs persist under the run's artifacts dir when the run is
     # known (encryption-aware — see app/utils/task_artifacts.py).
     from app.utils.task_artifacts import (
-        start_artifact_collection, finish_artifact_collection,
+        start_artifact_collection, finish_artifact_collection, collected_parts,
     )
     _artifacts_dir = None
     if project_id and run_id:
@@ -909,8 +932,14 @@ async def execute_task_block(
             )
         except Exception as e:  # noqa: BLE001 — blob persistence is optional
             logger.warning(f"📋 TASK_EXEC: artifacts dir resolution failed: {e}")
+    from app.context import get_evidence_namespace
     artifact_token = start_artifact_collection(
         block_id=block.id, artifacts_dir=_artifacts_dir, run_id=run_id,
+        # A contracted part is validated before it is recorded; claim
+        # references in it resolve against the card's project ledger.
+        contracts=contracts,
+        claim_lookup=(ledger_claim_lookup(project_root, get_evidence_namespace())
+                      if contracts else None),
     )
     emitted_outputs: List[dict] = []
     if writable_grant:
@@ -968,229 +997,331 @@ async def execute_task_block(
     # (network error, cancellation, etc.) — without it the writable /
     # readable grants would leak past task boundaries on any
     # non-``error``-chunk failure path.
-    try:
-        async for chunk in executor.stream_with_tools(
-            messages, tools=tools, project_root=effective_root,
+    def _stream(msgs):
+        return executor.stream_with_tools(
+            msgs, tools=tools, project_root=effective_root,
             # The list actually enforced.  ``tools`` above is retained only
             # for the tests/callers that inspect what was resolved; the
             # executor narrows its own tool set from these names.
             tool_allowlist=(sorted(scope_tools) if scope_tools else None),
+            tool_denylist=(tool_denylist or None),
+            # The executor re-derives the denial after ITS project-mode step,
+            # so an enableable ``ask`` tool cannot be added back after the
+            # names above were computed.
+            unattended=_unattended,
             # Without a conversation_id, app.context.set_conversation_id()
             # is never called for Task Card runs, so model-driven context
             # tools (context_add_file/context_remove_file/context_list_files)
             # fail with "no conversation_id is set in the current request
             # context". run_id is unique per run and stable for its duration.
             conversation_id=run_id,
-        ):
-            ctype = chunk.get("type")
-            if ctype == "text":
-                content = chunk.get("content", "")
-                if content:
-                    collected_text.append(content)
-                    _text_since_last_tool = True
+        )
+
+    async def _stream_with_contract_correction():
+        """The model stream, plus at most ONE correction turn.
+
+        When the first stream ends normally with a required contracted
+        output never recorded, the model's response and a user turn
+        naming what is missing (generated from the schema) are appended
+        and the stream runs once more under the same scope.  Exactly one:
+        the measured omissions are one-off, and a model that omits the
+        same output twice will not comply on a third try.  An error chunk
+        on the first stream raises in the consumer, so no correction
+        follows a failed stream.
+        """
+        # aclosing: this loop BREAKS on stream_end, abandoning the executor's
+        # generator at a yield.  Its finally (which cancels the feedback
+        # monitor) would otherwise run only when the asyncgen GC hook got to
+        # it -- the 46 leaked monitors in run cli-695c6e36c9f8.
+        async with aclosing(_stream(messages)) as _first:
+            async for c in _first:
+                if c.get("type") == "stream_end":
+                    break
+                yield c
+        missing = missing_required(contracts, collected_parts()) if contracts else []
+        if not missing:
+            return
+        names = ", ".join(c.name for c in missing)
+        decisions.append(f"output_contract: correction turn requested for {names}")
+        logger.info(f"📋 TASK_EXEC: {block.name!r} correction turn for {names}")
+        await _emit({
+            "type": "task_progress", "run_id": run_id, "block_id": delta_block_id,
+            "index": delta_index, "note": f"required output missing: {names}; asking once",
+            "ts": time.time(),
+        })
+        # An empty assistant turn is dropped by the provider sanitizer,
+        # which would leave two user turns in a row.
+        messages.append(AIMessage(content="".join(collected_text).strip()
+                                  or "[no text response]"))
+        messages.append(HumanMessage(content=correction_message(missing)))
+        if collected_text and not collected_text[-1].endswith("\n"):
+            collected_text.append("\n\n")
+        async for c in _stream(messages):
+            yield c
+
+    try:
+        # Same reason as the inner aclosing: the loop below breaks on
+        # stream_end, so close the generator chain on the way out.
+        async with aclosing(_stream_with_contract_correction()) as _chunks:
+            async for chunk in _chunks:
+                ctype = chunk.get("type")
+                if ctype == "text":
+                    content = chunk.get("content", "")
+                    if content:
+                        collected_text.append(content)
+                        _text_since_last_tool = True
+                        await _emit({
+                            "type": "task_text_delta",
+                            "run_id": run_id,
+                            "block_id": delta_block_id,
+                            "index": delta_index,
+                            "content": content,
+                            # Server clock, matching every other timestamped
+                            # event (task_tool_call, task_progress, run
+                            # last_activity_at).  Without this the client fell
+                            # back to its own clock, and any skew between the
+                            # two machines corrupted the "Ns ago" age label
+                            # and the note-source preference that compares
+                            # against run.last_activity_at.
+                            "ts": time.time(),
+                        })
+                        _heartbeat()
+                        if _progress_scanner is not None:
+                            for _pnote in _progress_scanner.feed(content):
+                                await _emit({
+                                    "type": "task_progress",
+                                    "run_id": run_id,
+                                    "block_id": delta_block_id,
+                                    "index": delta_index,
+                                    "note": _pnote,
+                                    "source": "model",
+                                    "ts": time.time(),
+                                })
+                                _heartbeat(_pnote, source="model")
+                elif ctype == "tool_display":
+                    tool_call_count += 1
+                    # Close the open text run at the tool boundary.
+                    #
+                    # Text is only appended for ``ctype == "text"`` chunks, so a
+                    # tool call leaves a GAP in ``collected_text``: the prose
+                    # before the call and the prose after it become adjacent list
+                    # entries and ``"".join`` welds them into one line --
+                    # "...in parallel.The broken render confirms...".  The tell
+                    # that this is a seam and not a lost newline is that a
+                    # following "## Heading" renders as literal text: a heading
+                    # only parses at line start, so no newline was ever present.
+                    #
+                    # Fixing it here rather than in the frontend repairs BOTH
+                    # consumers -- the live inspector and ``full_text``, which
+                    # feeds the persisted ``Artifact.summary`` below.
+                    #
+                    # Deliberately NOT emitted as a ``task_text_delta``: the CLI
+                    # sink already calls ``_break_text()`` on ``task_tool_call``,
+                    # so a whitespace delta would add two blank lines there.  The
+                    # frontend reconstructs the same seam from ``task_tool_call``,
+                    # which the relay's delta-collapsing already breaks on.
+                    if collected_text and not collected_text[-1].endswith("\n"):
+                        collected_text.append("\n\n")
+                    # Same boundary, second purpose: a tool call re-opens the
+                    # question of whether the model ever closed its response.
+                    # Reset AFTER the seam append so the gap logic is unchanged.
+                    _text_since_last_tool = False
+                    _result = chunk.get("result", "")
+                    _tool_name = chunk.get("tool_name") or "tool"
+                    _args = chunk.get("args")
+                    _arg_hint = ""
+                    if isinstance(_args, dict):
+                        _arg_hint = str(
+                            _args.get("command") or _args.get("path")
+                            or _args.get("query") or ""
+                        )[:120]
+                    _note = (f"ran {_tool_name}: {_arg_hint}" if _arg_hint
+                             else f"ran {_tool_name}")
                     await _emit({
-                        "type": "task_text_delta",
+                        "type": "task_tool_call",
                         "run_id": run_id,
                         "block_id": delta_block_id,
                         "index": delta_index,
-                        "content": content,
-                        # Server clock, matching every other timestamped
-                        # event (task_tool_call, task_progress, run
-                        # last_activity_at).  Without this the client fell
-                        # back to its own clock, and any skew between the
-                        # two machines corrupted the "Ns ago" age label
-                        # and the note-source preference that compares
-                        # against run.last_activity_at.
+                        "tool_name": chunk.get("tool_name"),
+                        "tool_id": chunk.get("tool_id"),
+                        "result_preview": (_result or "")[:500] if isinstance(_result, str) else "",
                         "ts": time.time(),
                     })
-                    _heartbeat()
-                    if _progress_scanner is not None:
-                        for _pnote in _progress_scanner.feed(content):
+                    await _emit({
+                        "type": "task_progress",
+                        "run_id": run_id,
+                        "block_id": delta_block_id,
+                        "index": delta_index,
+                        "note": _note,
+                        "ts": time.time(),
+                    })
+                    _heartbeat(_note)
+                    # Consecutive-failure detection.  ``_result`` is the
+                    # model-facing text produced by _process_result, so failed
+                    # calls carry a recognizable prefix regardless of the
+                    # underlying tool (policy block, non-zero exit, refusal,
+                    # verification failure, generic error).
+                    _is_failure = is_failure_result(_result)
+                    if _is_failure and _consecutive_fail_limit > 0:
+                        _consecutive_tool_failures += 1
+                        if _consecutive_tool_failures >= _consecutive_fail_limit:
+                            _abort_note = (
+                                f"aborting: {_consecutive_tool_failures} consecutive "
+                                f"tool failures (last: {_tool_name}). The task is not "
+                                f"making progress — likely a blocked command or a "
+                                f"missing permission grant."
+                            )
                             await _emit({
                                 "type": "task_progress",
                                 "run_id": run_id,
                                 "block_id": delta_block_id,
                                 "index": delta_index,
-                                "note": _pnote,
-                                "source": "model",
+                                "note": _abort_note,
+                                "level": "error",
                                 "ts": time.time(),
                             })
-                            _heartbeat(_pnote, source="model")
-            elif ctype == "tool_display":
-                tool_call_count += 1
-                # Close the open text run at the tool boundary.
-                #
-                # Text is only appended for ``ctype == "text"`` chunks, so a
-                # tool call leaves a GAP in ``collected_text``: the prose
-                # before the call and the prose after it become adjacent list
-                # entries and ``"".join`` welds them into one line --
-                # "...in parallel.The broken render confirms...".  The tell
-                # that this is a seam and not a lost newline is that a
-                # following "## Heading" renders as literal text: a heading
-                # only parses at line start, so no newline was ever present.
-                #
-                # Fixing it here rather than in the frontend repairs BOTH
-                # consumers -- the live inspector and ``full_text``, which
-                # feeds the persisted ``Artifact.summary`` below.
-                #
-                # Deliberately NOT emitted as a ``task_text_delta``: the CLI
-                # sink already calls ``_break_text()`` on ``task_tool_call``,
-                # so a whitespace delta would add two blank lines there.  The
-                # frontend reconstructs the same seam from ``task_tool_call``,
-                # which the relay's delta-collapsing already breaks on.
-                if collected_text and not collected_text[-1].endswith("\n"):
-                    collected_text.append("\n\n")
-                # Same boundary, second purpose: a tool call re-opens the
-                # question of whether the model ever closed its response.
-                # Reset AFTER the seam append so the gap logic is unchanged.
-                _text_since_last_tool = False
-                _result = chunk.get("result", "")
-                _tool_name = chunk.get("tool_name") or "tool"
-                _args = chunk.get("args")
-                _arg_hint = ""
-                if isinstance(_args, dict):
-                    _arg_hint = str(
-                        _args.get("command") or _args.get("path")
-                        or _args.get("query") or ""
-                    )[:120]
-                _note = (f"ran {_tool_name}: {_arg_hint}" if _arg_hint
-                         else f"ran {_tool_name}")
-                await _emit({
-                    "type": "task_tool_call",
-                    "run_id": run_id,
-                    "block_id": delta_block_id,
-                    "index": delta_index,
-                    "tool_name": chunk.get("tool_name"),
-                    "tool_id": chunk.get("tool_id"),
-                    "result_preview": (_result or "")[:500] if isinstance(_result, str) else "",
-                    "ts": time.time(),
-                })
-                await _emit({
-                    "type": "task_progress",
-                    "run_id": run_id,
-                    "block_id": delta_block_id,
-                    "index": delta_index,
-                    "note": _note,
-                    "ts": time.time(),
-                })
-                _heartbeat(_note)
-                # Consecutive-failure detection.  ``_result`` is the
-                # model-facing text produced by _process_result, so failed
-                # calls carry a recognizable prefix regardless of the
-                # underlying tool (policy block, non-zero exit, refusal,
-                # verification failure, generic error).
-                _is_failure = is_failure_result(_result)
-                if _is_failure and _consecutive_fail_limit > 0:
-                    _consecutive_tool_failures += 1
-                    if _consecutive_tool_failures >= _consecutive_fail_limit:
-                        _abort_note = (
-                            f"aborting: {_consecutive_tool_failures} consecutive "
-                            f"tool failures (last: {_tool_name}). The task is not "
-                            f"making progress — likely a blocked command or a "
-                            f"missing permission grant."
-                        )
+                            logger.warning(
+                                f"📋 TASK_EXEC: {block.name!r} aborting after "
+                                f"{_consecutive_tool_failures} consecutive tool failures"
+                            )
+                            raise TaskExecutorError(
+                                f"Task aborted after {_consecutive_tool_failures} "
+                                f"consecutive tool failures without progress. "
+                                f"Last tool: {_tool_name}."
+                            )
+                    else:
+                        _consecutive_tool_failures = 0
+                elif ctype in ("consent_opened", "consent_answered"):
+                    # A tool parked on the consent ledger waiting for a human.
+                    # Forwarded as a task event so every sink can SAY the run is
+                    # waiting and on what: the CLI sink used to drop this chunk,
+                    # so a headless run blocked on ``git commit`` read as a freeze
+                    # (cli-695c6e36c9f8, four hours).  A headless run should no
+                    # longer reach here (ask-mode builtins are withheld above);
+                    # if it does, this line is the diagnostic.
+                    _payload = chunk.get("payload") or {}
+                    _hold_evt = {
+                        "type": "task_hold",
+                        "run_id": run_id,
+                        "block_id": delta_block_id,
+                        "index": delta_index,
+                        "state": "opened" if ctype == "consent_opened" else "answered",
+                        "request_id": chunk.get("request_id"),
+                        "tool": _payload.get("tool") or chunk.get("tool"),
+                        "op": _payload.get("op") or chunk.get("op"),
+                        "answer": chunk.get("answer"),
+                        "ts": time.time(),
+                    }
+                    await _emit(_hold_evt)
+                    if ctype == "consent_opened":
+                        _note = (f"waiting for approval: {_hold_evt['tool']} "
+                                 f"{_hold_evt['op'] or ''}").strip()
                         await _emit({
-                            "type": "task_progress",
-                            "run_id": run_id,
-                            "block_id": delta_block_id,
-                            "index": delta_index,
-                            "note": _abort_note,
-                            "level": "error",
-                            "ts": time.time(),
+                            "type": "task_progress", "run_id": run_id,
+                            "block_id": delta_block_id, "index": delta_index,
+                            "note": _note, "ts": time.time(),
                         })
-                        logger.warning(
-                            f"📋 TASK_EXEC: {block.name!r} aborting after "
-                            f"{_consecutive_tool_failures} consecutive tool failures"
+                        _heartbeat(_note)
+                elif ctype == "stream_end":
+                    break
+                elif ctype == "error":
+                    # The kind lives in ``error_type``/``error``; ``type`` is
+                    # a flat "error".  Reading it here is what makes an
+                    # infrastructure fault distinguishable from a failure of
+                    # the work — see INFRA_ERROR_KINDS.
+                    _err_kind = str(
+                        chunk.get("error_type") or chunk.get("error") or ""
+                    )
+                    # ``or``-chained, NOT ``.get(key, default)``: the default
+                    # only fires when the key is ABSENT, so a chunk carrying
+                    # ``content: ""`` (present but empty) passed straight
+                    # through and produced the observed
+                    # ``"Task execution failed: "`` — a colon with nothing
+                    # after it, recorded as a run's entire error field.  A user
+                    # arriving at that run learns only that something failed.
+                    #
+                    # The fallbacks mirror the infra branch below, because a
+                    # chunk's message is not reliably in one field: the
+                    # streaming layer uses ``content``, while
+                    # _classify_and_handle_error's paths carry it in ``detail``
+                    # or ``retry_message``.  Reading only ``content`` discards
+                    # the message whenever a producer chose a different key.
+                    _err_msg = (
+                        chunk.get("content") or chunk.get("detail")
+                        or chunk.get("retry_message") or chunk.get("error")
+                        or "unknown"
+                    )
+                    logger.warning(
+                        f"📋 TASK_EXEC: {block.name!r} received error chunk: "
+                        f"{_err_msg} (kind={_err_kind or 'unclassified'})"
+                    )
+                    await _emit({
+                        "type": "task_finished",
+                        "run_id": run_id,
+                        "block_id": block.id,
+                        "ok": False,
+                        "error": _err_msg,
+                        "ts": time.time(),
+                    })
+                    if _err_kind in INFRA_ERROR_KINDS:
+                        raise TaskInfraError(
+                            f"Task execution failed ({_err_kind}): {_err_msg}",
+                            infra_kind=_err_kind,
+                            block_id=block.id or "",
                         )
-                        raise TaskExecutorError(
-                            f"Task aborted after {_consecutive_tool_failures} "
-                            f"consecutive tool failures without progress. "
-                            f"Last tool: {_tool_name}."
-                        )
-                else:
-                    _consecutive_tool_failures = 0
-            elif ctype == "stream_end":
-                break
-            elif ctype == "error":
-                # The kind lives in ``error_type``/``error``; ``type`` is
-                # a flat "error".  Reading it here is what makes an
-                # infrastructure fault distinguishable from a failure of
-                # the work — see INFRA_ERROR_KINDS.
-                _err_kind = str(
-                    chunk.get("error_type") or chunk.get("error") or ""
-                )
-                # ``or``-chained, NOT ``.get(key, default)``: the default
-                # only fires when the key is ABSENT, so a chunk carrying
-                # ``content: ""`` (present but empty) passed straight
-                # through and produced the observed
-                # ``"Task execution failed: "`` — a colon with nothing
-                # after it, recorded as a run's entire error field.  A user
-                # arriving at that run learns only that something failed.
-                #
-                # The fallbacks mirror the infra branch below, because a
-                # chunk's message is not reliably in one field: the
-                # streaming layer uses ``content``, while
-                # _classify_and_handle_error's paths carry it in ``detail``
-                # or ``retry_message``.  Reading only ``content`` discards
-                # the message whenever a producer chose a different key.
-                _err_msg = (
-                    chunk.get("content") or chunk.get("detail")
-                    or chunk.get("retry_message") or chunk.get("error")
-                    or "unknown"
-                )
-                logger.warning(
-                    f"📋 TASK_EXEC: {block.name!r} received error chunk: "
-                    f"{_err_msg} (kind={_err_kind or 'unclassified'})"
-                )
-                await _emit({
-                    "type": "task_finished",
-                    "run_id": run_id,
-                    "block_id": block.id,
-                    "ok": False,
-                    "error": _err_msg,
-                    "ts": time.time(),
-                })
-                if _err_kind in INFRA_ERROR_KINDS:
+                    raise TaskExecutorError(
+                        f"Task execution failed: {_err_msg}"
+                    )
+                elif ctype in INFRA_ERROR_KINDS:
+                    # Terminal error chunks from _classify_and_handle_error's
+                    # non-retryable path (retries exhausted, or a non-retryable
+                    # class such as auth). These do not use ctype 'error', so
+                    # without this branch they matched nothing, the loop exited
+                    # normally, and the block was recorded as succeeding with
+                    # silently truncated output. Their message lives in
+                    # 'detail'/'retry_message' rather than 'content'.
+                    _detail = (
+                        chunk.get("detail")
+                        or chunk.get("retry_message")
+                        or chunk.get("error")
+                        or ctype
+                    )
+                    logger.warning(
+                        f"📋 TASK_EXEC: {block.name!r} terminal {ctype}: {_detail}"
+                    )
+                    await _emit({
+                        "type": "task_finished",
+                        "run_id": run_id,
+                        "block_id": block.id,
+                        "ok": False,
+                        "error": _detail,
+                        "ts": time.time(),
+                    })
                     raise TaskInfraError(
-                        f"Task execution failed ({_err_kind}): {_err_msg}",
-                        infra_kind=_err_kind,
+                        f"Task execution failed ({ctype}): {_detail}",
+                        infra_kind=ctype,
                         block_id=block.id or "",
                     )
-                raise TaskExecutorError(
-                    f"Task execution failed: {_err_msg}"
-                )
-            elif ctype in INFRA_ERROR_KINDS:
-                # Terminal error chunks from _classify_and_handle_error's
-                # non-retryable path (retries exhausted, or a non-retryable
-                # class such as auth). These do not use ctype 'error', so
-                # without this branch they matched nothing, the loop exited
-                # normally, and the block was recorded as succeeding with
-                # silently truncated output. Their message lives in
-                # 'detail'/'retry_message' rather than 'content'.
-                _detail = (
-                    chunk.get("detail")
-                    or chunk.get("retry_message")
-                    or chunk.get("error")
-                    or ctype
-                )
-                logger.warning(
-                    f"📋 TASK_EXEC: {block.name!r} terminal {ctype}: {_detail}"
-                )
-                await _emit({
-                    "type": "task_finished",
-                    "run_id": run_id,
-                    "block_id": block.id,
-                    "ok": False,
-                    "error": _detail,
-                    "ts": time.time(),
-                })
-                raise TaskInfraError(
-                    f"Task execution failed ({ctype}): {_detail}",
-                    infra_kind=ctype,
-                    block_id=block.id or "",
-                )
     finally:
+        # Managed jobs this block started (design/job-runner.md, Ownership):
+        # killed when the block finishes, unless started with detach="run"
+        # (those carry no block_id and are killed at run end).  A held run
+        # (TaskInfraError in flight) keeps them: the resumed task can wait on
+        # them.  The ledger root is still set here, so the exit observation
+        # lands in the card's project ledger.
+        import asyncio as _asyncio
+        import sys as _sys
+        if not isinstance(_sys.exc_info()[1], TaskInfraError):
+            try:
+                from app.jobs.manager import get_job_manager
+                await _asyncio.to_thread(
+                    get_job_manager().kill_owned,
+                    {"run_id": run_id, "block_id": block.id}, "block_end",
+                )
+            except Exception as _je:  # noqa: BLE001 -- cleanup must not mask the block's result
+                logger.warning(f"job cleanup at block end failed: {_je}")
         reset_usage_attribution(usage_attr_token)
+        reset_ledger_root(ledger_root_token)
         reset_task_writable_paths(scope_token)
         reset_task_readable_paths(read_token)
         reset_task_shell_commands(shell_token)

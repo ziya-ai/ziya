@@ -237,6 +237,55 @@ keep the screen-media path unchanged.
 Requires Playwright (`pip install playwright && playwright install
 chromium`); the endpoint returns HTTP 501 when it is absent.
 
+## Citing numbers from the evidence ledger
+
+A document can cite numbers recorded in the project's evidence ledger
+(`ledger_record`; see `design/evidence-ledger.md`) instead of carrying them
+as typed literals. Declare the namespace and policy in the front-matter and
+write citations in the body:
+
+```markdown
+---
+title: Latency audit, March 2026
+evidence:
+  namespace: audit-2026-03
+  policy: warn        # strict | warn (default) | off
+---
+The error rate on retried requests was {{claim:s1.error_rate|fmt=.2%}}.
+The median affected host loses {{claim:s1.per_unit.distribution.median|fmt=,.0f|unit}} per day.
+```
+
+- `KEY` is a claim id relative to the namespace, optionally followed by a
+  field (`.distribution.median`, `.population.n`) and pinned to a version
+  with `@v2`. `fmt=` is a Python format spec (default: the claim's own
+  format); `unit` appends the claim's unit, `unit=X` a literal.
+- Export substitutes the claim's current value and appends an **Evidence**
+  appendix: claim, rendered value, status, population, source (query, file
+  and hash), and as-of time. Each substituted claim is recorded in
+  `.ziya/ledger/citations.jsonl`.
+- Policy: under `warn`, an unknown id renders as `⟦missing: id⟧` and a
+  drifted or refuted claim renders with a ⚠ and is listed in the appendix.
+  Under `strict`, either case fails the export with HTTP 400 whose body
+  lists every offending id (`evidence_problems`). A claim never re-checked
+  exports under both policies, marked "unverified". `off` substitutes
+  values and does nothing else; a document with no `evidence:` block is
+  untouched.
+- The response header `X-Ziya-Evidence` carries the report as JSON: citation
+  count, missing and flagged ids, and a count (with samples) of numeric
+  literals in prose and tables that are not citations. That lint never
+  blocks an export; it is a hint that a number was typed by hand.
+- Citations inside code fences are left as written, and task-card templating
+  never touches them (`{{claim:…}}` is not a template placeholder).
+
+Claims can be recorded by the model (`ledger_record`) or from a script run
+through Ziya's shell tool. Such a script finds `ZIYA_LEDGER_URL` and a
+short-lived `ZIYA_LEDGER_SCOPE` token in its environment and can use
+`ziya ledger observe … ` / `ziya ledger claim …` (or import
+`app/utils/ziya_ledger_client.py`, which needs only the standard library).
+The token names the project and the conversation, run and block the command
+came from, so the record's provenance is never typed by hand; outside such a
+shell the command explains that the variables are missing.
+
 ## The `document_authoring` skill
 
 A built-in model-discoverable skill teaches the model the IR contract and

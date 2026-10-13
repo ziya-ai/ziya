@@ -3,7 +3,7 @@ import json
 import types
 import typing
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class BaseMCPTool(ABC):
@@ -24,6 +24,17 @@ class BaseMCPTool(ABC):
     async def execute(self, **kwargs) -> Any:
         """Execute the tool."""
         pass
+
+    def exec_timeout_for(self, args: Dict[str, Any]) -> Optional[float]:
+        """Seconds this call legitimately needs, judged from its own arguments.
+
+        ``None`` (default) leaves the executor's outer guard alone.  A tool
+        whose argument asks for a long operation (``shadow_wait.timeout_ms``)
+        returns it here and the executor lifts its guard to cover it, the
+        way a task card's shell-timeout grant does.  It can raise the guard,
+        never lower it.
+        """
+        return None
 
 
 def _annotation_accepts_str(annotation: Any) -> bool:

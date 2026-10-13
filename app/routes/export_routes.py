@@ -2,6 +2,12 @@
 Export configuration endpoints.
 
 Allows plugins to extend available export targets.
+
+Handlers that await nothing (``get_export_targets``) are plain ``def`` so
+Starlette runs them on its worker threadpool instead of ON the event loop,
+where their plugin/provider calls would stall every other request.  The
+export handlers genuinely await renderers and stay ``async``.  Guarded by
+tests/test_export_routes_not_event_loop_blocking.py.
 """
 
 from fastapi import APIRouter
@@ -14,7 +20,7 @@ from pydantic import BaseModel, Field, ConfigDict
 router = APIRouter(prefix="/api/export", tags=["export"])
 
 @router.get("/targets")
-async def get_export_targets() -> Dict[str, Any]:
+def get_export_targets() -> Dict[str, Any]:
     """
     Get available export targets.
     
@@ -498,7 +504,13 @@ async def export_document(request: DocumentExportRequest):
     except FileNotFoundError as exc:
         return JSONResponse(status_code=404, content={"error": str(exc), "success": False})
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc), "success": False})
+        content: Dict[str, Any] = {"error": str(exc), "success": False}
+        # A strict evidence policy refusing drifted / refuted / unknown claims
+        # (design/evidence-ledger.md): list the ids so one round-trip fixes all.
+        problems = getattr(exc, "problems", None)
+        if problems:
+            content["evidence_problems"] = [{"claim": c, "reason": r} for c, r in problems]
+        return JSONResponse(status_code=400, content=content)
     except ImportError as exc:
         logger.error("Document PDF export requires Playwright: %s", exc)
         return JSONResponse(status_code=501, content={"error": str(exc), "success": False})
@@ -518,12 +530,14 @@ async def export_document(request: DocumentExportRequest):
         "Document PDF export succeeded: %d bytes, %d section(s)",
         meta.get("size", len(pdf_bytes)), meta.get("section_count", 0),
     )
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_title}.pdf"',
-            "Content-Length": str(len(pdf_bytes)),
-            "X-Ziya-Section-Count": str(meta.get("section_count", 0)),
-        },
-    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_title}.pdf"',
+        "Content-Length": str(len(pdf_bytes)),
+        "X-Ziya-Section-Count": str(meta.get("section_count", 0)),
+    }
+    if meta.get("evidence"):
+        # Citation report (counts, missing / flagged ids, uncited-number lint)
+        # for a binary response: ASCII JSON in a header.
+        import json as _json
+        headers["X-Ziya-Evidence"] = _json.dumps(meta["evidence"], ensure_ascii=True)[:7000]
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)

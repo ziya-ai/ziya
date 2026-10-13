@@ -14,6 +14,7 @@ import time
 import signal
 import shlex
 from typing import Dict, Any, Optional
+from contextvars import ContextVar
 
 # Shell keywords that begin compound constructs requiring a shell interpreter
 # '{' begins a brace group ({ cmd; }); it is only ever a standalone first
@@ -55,6 +56,22 @@ _ENV_ASSIGN_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=')
 META_PATTERN_KEYS = frozenset({'piped_commands', 'find_exec'})
 
 
+# Evidence-ledger scope for the current request (design/evidence-ledger.md,
+# Write paths).  The parent attaches ``_ledger_scope`` = {url, token} to a
+# shell call; the request handler parks it here and _clean_child_env adds
+# ZIYA_LEDGER_URL / ZIYA_LEDGER_SCOPE to every child it spawns.  A
+# ContextVar, as the task scope is, so concurrent requests never see each
+# other's token (each request runs as its own task; to_thread copies it).
+_LEDGER_SCOPE: ContextVar[Optional[dict]] = ContextVar('shell_ledger_scope', default=None)
+
+
+def _ledger_env() -> dict:
+    scope = _LEDGER_SCOPE.get()
+    if not isinstance(scope, dict) or not scope.get('url') or not scope.get('token'):
+        return {}
+    return {'ZIYA_LEDGER_URL': str(scope['url']), 'ZIYA_LEDGER_SCOPE': str(scope['token'])}
+
+
 def _clean_child_env(extra: dict | None = None) -> dict:
     """Return a copy of os.environ safe to hand to child processes.
 
@@ -71,6 +88,7 @@ def _clean_child_env(extra: dict | None = None) -> dict:
     ``VAR=value`` prefixes / pipeline-local vars) is applied last.
     """
     env = {k: v for k, v in os.environ.items() if not k.startswith('Malloc')}
+    env.update(_ledger_env())
     if extra:
         env.update(extra)
     return env
@@ -545,13 +563,24 @@ from app.config.scope_canonical import (
 # (is_command_allowed) now both consult the same opener definition.
 from app.mcp_servers.write_policy import (
     ShellWriteChecker, _strip_heredoc_bodies, _has_heredoc,
+    _heredoc_body_commands,
 )
 
 
 class ShellServer:
     """MCP server that provides shell command execution tools."""
     
-    def __init__(self):
+    def __init__(self, env: Optional[dict] = None):
+        # ``env`` is the environment whose privilege state this instance
+        # adjudicates.  The MCP subprocess passes nothing and reads its own
+        # os.environ, as before.  The job runner (app/jobs/policy.py)
+        # constructs an in-process instance over the exact env the manager
+        # would give the shell subprocess, so a job gets the same verdict —
+        # same allowlist, same grants, same gate — as the shell tool.  It is
+        # consulted only for the escalation gate and the privilege reads
+        # below; non-privilege knobs (timeouts, output caps) stay on the
+        # process environment.
+        _env = os.environ if env is None else env
         self.request_id = 0
 
         # ── Concurrent request dispatch ───────────────────────────────────
@@ -583,8 +612,8 @@ class ShellServer:
         # signature and passes through unchanged — keeping the shell-config /
         # write-policy GUIs live for everyday edits.  All later reads in this
         # __init__ use self._scope_env, never os.environ directly.
-        if is_env_scope_authorized(os.environ):
-            self._scope_env = dict(os.environ)
+        if is_env_scope_authorized(_env):
+            self._scope_env = dict(_env)
             self._scope_clamp_notice = None
         else:
             print(
@@ -592,7 +621,7 @@ class ShellServer:
                 "falling back to default policy floor",
                 file=sys.stderr,
             )
-            self._scope_env = strip_escalations(os.environ)
+            self._scope_env = strip_escalations(_env)
             # Capture WHY for the humans downstream. The clamp itself is the
             # right security behavior, but a one-line stderr warning is
             # invisible from the chat/tool surface — a user who has just
@@ -600,9 +629,9 @@ class ShellServer:
             # no hint that their config was silently discarded (2026-08-22
             # ffmpeg incident). The notice is appended to policy-block
             # messages below so the failure explains itself where it is felt.
-            _sig = bool(os.environ.get(SIG_ENV_KEY))
-            _grant = bool(os.environ.get(SESSION_GRANT_ENV_KEY))
-            _nonce = bool(os.environ.get(SESSION_NONCE_ENV_KEY))
+            _sig = bool(_env.get(SIG_ENV_KEY))
+            _grant = bool(_env.get(SESSION_GRANT_ENV_KEY))
+            _nonce = bool(_env.get(SESSION_NONCE_ENV_KEY))
             if _grant and not _nonce:
                 _why = ("a session grant was supplied without a session nonce; "
                         "the spawning server is likely running stale code that "
@@ -2256,6 +2285,10 @@ class ShellServer:
                 # resolves its relative paths against. Popped for the same
                 # reason as _task_scope -- it is not a shell argument.
                 project_root = arguments.pop("_project_root", None) if isinstance(arguments, dict) else None
+                # Ledger scope for child processes (see _LEDGER_SCOPE); popped
+                # so it is never a shell argument either.  Set on this request's
+                # context only; the task ends with the request.
+                _LEDGER_SCOPE.set(arguments.pop("_ledger_scope", None) if isinstance(arguments, dict) else None)
                 command = arguments.get("command")
                 # Handle timeout parameter - convert string to number if needed
                 _default_timeout, _ceiling = self._timeout_bounds(task_scope)
@@ -2388,12 +2421,17 @@ class ShellServer:
                     
                 except subprocess.TimeoutExpired:
                     # Always return timeout error instead of suppressing it
+                    # and point at the supported way to run something long:
+                    # the managed job runner (design/job-runner.md), not a
+                    # backgrounding operator, which stays refused.
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,
                         "error": {
                             "code": -32603,
-                            "message": f"Command timed out after {timeout} seconds"
+                            "message": (f"Command timed out after {timeout} seconds; for long "
+                                        f"commands use job_start (then job_wait), which has no "
+                                        f"such ceiling and runs under the same policy")
                         }
                     }
                 except Exception as e:
