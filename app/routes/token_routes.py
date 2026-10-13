@@ -181,29 +181,23 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
     try:
         from app.utils.directory_util import get_accurate_token_count
 
-        # Check if we have pre-calculated accurate counts
-        from app.utils.directory_util import _accurate_token_cache
-        if _accurate_token_cache:
-            logger.info(f"API request for accurate tokens: {len(request.file_paths)} files requested")
-            results = {}
-            for file_path in request.file_paths:
-                if file_path in _accurate_token_cache:
-                    results[file_path] = {
-                        "accurate_count": _accurate_token_cache[file_path],
-                        "timestamp": int(time.time())
-                    }
-            if results:
-                cached_count = sum(1 for path in request.file_paths if path in _accurate_token_cache)
-                calculated_count = len(results) - cached_count
-                logger.info(f"Returning {len(results)} token counts: {cached_count} from cache (accurate), {calculated_count} calculated on-demand")
-                return {"results": results, "debug_info": {"source": "precalculated_cache"}}
-
         from app.context import get_project_root
         user_codebase_dir = get_project_root()
         logger.debug(f"Accurate token count requested for {len(request.file_paths)} files")
         if not user_codebase_dir:
             raise ValueError("ZIYA_USER_CODEBASE_DIR not set")
-        
+
+        # Background-calculated counts for THIS project only.  Files the
+        # cache lacks are computed below rather than dropped: returning the
+        # cache hits alone left the rest of the batch with no answer.
+        from app.utils.directory_util import get_cached_accurate_counts
+        precalc = get_cached_accurate_counts(user_codebase_dir)
+        cached_results: Dict[str, Any] = {
+            p: {"accurate_count": precalc[p], "timestamp": int(time.time())}
+            for p in request.file_paths if p in precalc
+        }
+        to_compute = [p for p in request.file_paths if p not in cached_results]
+
         from app.utils.file_utils import resolve_external_path, ExternalPathNotAllowed
 
         def _compute_counts() -> Dict[str, Any]:
@@ -214,7 +208,7 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
             # froze every other request (config modals, conversation sync)
             # until the whole batch finished.
             results: Dict[str, Any] = {}
-            for file_path in request.file_paths:
+            for file_path in to_compute:
                 try:
                     full_path = resolve_external_path(file_path, user_codebase_dir)
                 except ExternalPathNotAllowed as e:
@@ -238,8 +232,10 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
                     results[file_path] = {"accurate_count": 0, "error": "File not found"}
             return results
 
-        results = await asyncio.to_thread(_compute_counts)
-        return {"results": results, "debug_info": {"files_processed": len(results)}}
+        computed = await asyncio.to_thread(_compute_counts) if to_compute else {}
+        results = {**cached_results, **computed}
+        return {"results": results, "debug_info": {
+            "files_processed": len(results), "from_cache": len(cached_results)}}
     except Exception as e:
         logger.error(f"Error getting accurate token counts: {str(e)}")
         return {"error": str(e), "results": {}}
