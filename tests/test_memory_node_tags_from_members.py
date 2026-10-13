@@ -23,19 +23,19 @@ def _no_embeddings(monkeypatch):
 
 
 def test_member_node_tags_rules():
-    assert member_node_tags([["kuiper", "tti"], ["kuiper", "oisl"], ["kuiper"]]) == ["kuiper"]
+    assert member_node_tags([["projb", "timing"], ["projb", "links"], ["projb"]]) == ["projb"]
     # nothing shared by half -> derive_tags fallback (tags on >=2 members)
     assert member_node_tags([["a", "x"], ["a", "y"], ["b", "z"], ["b", "w"], ["c"]], 0.5) == ["a", "b"]
     assert member_node_tags([]) is None and member_node_tags([[], []]) is None
 
 
 def _fat_root(storage):
-    sub = ["tti"] * 5 + ["sched"] * 5 + ["oisl"] * 4          # each < 50% of 14
-    ms = [Memory(content=f"kuiper fact {i}", tags=["kuiper", sub[i]]) for i in range(14)]
+    sub = ["timing"] * 5 + ["sched"] * 5 + ["links"] * 4          # each < 50% of 14
+    ms = [Memory(content=f"projb fact {i}", tags=["projb", sub[i]]) for i in range(14)]
     for m in ms:
         storage.save(m)
     storage.save_mindmap_node(MindMapNode(
-        id="root", handle="Kuiper", tags=["kuiper"] + [f"acc{i}" for i in range(500)],
+        id="root", handle="Topic B", tags=["projb"] + [f"acc{i}" for i in range(500)],
         memory_refs=[m.id for m in ms]))
     return ms
 
@@ -53,7 +53,7 @@ def test_flag_on_drops_accreted_tags_and_unblocks_division(tmp_path, monkeypatch
     st = MemoryStorage(memory_dir=tmp_path / "m")
     _fat_root(st)
     assert st.repair_mindmap()["retagged"] == 1
-    assert st.get_mindmap_node("root").tags == ["kuiper"]      # 14/14; tti/sched/oisl all < 0.5
+    assert st.get_mindmap_node("root").tags == ["projb"]      # 14/14; timing/sched/links all < 0.5
     assert st.repair_mindmap()["retagged"] == 0                # idempotent
-    # the 5-member 'tti' cluster is no longer masked by an accreted tag
-    assert maybe_divide_node(st, "root") == ["root-tti"]
+    # the 5-member 'timing' cluster is no longer masked by an accreted tag
+    assert maybe_divide_node(st, "root") == ["root-timing"]

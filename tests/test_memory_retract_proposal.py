@@ -74,7 +74,7 @@ def _active_contents():
 
 @pytest.mark.asyncio
 async def test_propose_stamps_conversation_id():
-    pid = await _propose("Kuiper GGMA merlin count is 4 per gateway.", CONV_A)
+    pid = await _propose("The billing cluster shard count is 4 per region.", CONV_A)
     proposal = get_proposals_store().get(pid)
     assert proposal is not None, f"{pid} not found in probationary store"
     assert proposal["conversation_id"] == CONV_A

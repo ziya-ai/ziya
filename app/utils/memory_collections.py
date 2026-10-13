@@ -33,7 +33,7 @@ MIN_PAIR_WEIGHT = 2
 # A project is evidence in a node only when it holds at least this share
 # of the node's members.  Without it, single strays in several different
 # nodes add up to MIN_PAIR_WEIGHT and fuse unrelated projects (seen on
-# the live store: one stray Kuiper memory in each of two Ziya nodes).
+# the live store: one stray memory from a second project in each of two Ziya nodes).
 EVIDENCE_MIN_SHARE = 0.25
 # Catch-all roots that exist only for stragglers.  Never a destination for
 # rebalance or split: pulling a memory out of a real topic node into the
@@ -154,8 +154,8 @@ def plan_collection_splits(nodes: Dict[str, dict],
             # Only a flood leaves: a group that outnumbers the owner's own
             # members on this node.  A minority stays, because collection
             # inference can miss a small repo of the same topic (on the
-            # live store np-switchd and qos never co-locate with
-            # switch-mgr in a small node), and splitting it out would
+            # live store two small sibling repos never co-located with
+            # their topic's main repo in a small node), and splitting it out would
             # strand real topic knowledge in a machine-named root.
             if len(groups[k]) >= min_group and len(groups[k]) > own:
                 plans.append((nid, k, groups[k]))

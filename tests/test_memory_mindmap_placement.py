@@ -132,7 +132,7 @@ class TestProvenanceGate:
         assert storage.place_memory_in_mindmap(m) == "empty"
 
     def test_minority_share_below_threshold_is_incompatible(self, storage):
-        """13% share (like the 2 Kuiper memories on a 15-member Ziya node)
+        """13% share (like the 2 minority-project memories on a 15-member Ziya node)
         does not make a node compatible; 20% is the floor."""
         refs = [_mem(storage, f"x{i}", ["t"], X).id for i in range(7)]
         refs += [_mem(storage, "y0", ["t"], Y).id]           # 1/8 = 12.5%
