@@ -1,7 +1,7 @@
 """
 Ordering-aware Bedrock data-retention mode comparison.
 
-Background (live-verified 2026-09-02, profile kuiper-ziya):
+Background (live-verified 2026-09-02, profile team-dev):
 
   * AWS documents the retention modes as an ORDERED scale, least to most
     permissive: ``none < default < aws_review < provider_data_share``, and a
