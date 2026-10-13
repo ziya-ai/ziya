@@ -1108,6 +1108,21 @@ def _extract_write_target_paths(command: str) -> Tuple[List[str], bool]:
 # be known statically.
 _CD_DYNAMIC_CHARS = frozenset("$`*?[")
 
+_ASSIGN_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+
+
+def _is_plain_assignment(seg: str, tokens: List[str]) -> bool:
+    """A bare ``NAME=value`` segment that runs nothing.
+
+    Substitutions are excluded: ``X=$(rmdir D)`` runs a command, and that
+    command could remove the directory a later ``cd`` is assumed to reach.
+    The executor leaves ``$?`` untouched across a bare assignment, so it
+    does not change whether a following ``&&`` segment runs.
+    """
+    if '$(' in seg or '`' in seg or '<(' in seg or '>(' in seg:
+        return False
+    return bool(tokens) and all(_ASSIGN_RE.match(t) for t in tokens)
+
 
 def _apply_cd(cands: Optional[frozenset], args: List[str]) -> Optional[frozenset]:
     """Map candidate cwds through ``cd <args>``; ``None`` when unpredictable."""
@@ -1155,8 +1170,17 @@ def _simulate_cwds(segments: List[Tuple[str, str]], project_root: str,
       (``do cd x``, ``{ cd x``, ``(cd x``) makes the cwd unknown for the
       rest of the command.
 
-    A relative write target is then judged under every candidate, so the
-    outcome can only be stricter than a single-directory guess, never looser.
+    * A ``cd`` whose success is CERTAIN replaces the candidates outright,
+      so a later ``;`` segment does not union in the old directory.  The
+      executor's ``cd`` succeeds iff ``os.path.isdir(target)``, and
+      validation runs immediately before execution, so success is certain
+      when the target is literal, already exists, and the ``cd`` is
+      reached only through earlier certain ``cd``s and substitution-free
+      bare assignments (no ``||``, no pipe).  Anything else earlier could
+      remove the directory first (``rm -rf D; cd D; cp a b``), so it
+      forfeits the shortcut for the rest of the command.
+
+    A relative write target is then judged under every candidate.
     """
     if start is not None:
         initial: Optional[frozenset] = start.cands
@@ -1170,6 +1194,9 @@ def _simulate_cwds(segments: List[Tuple[str, str]], project_root: str,
     group_union = initial   # every state visited in the current ``;``-group
     all_and = True          # no ``||`` seen yet in this group
     pipe_base = initial     # cwd at the head of the current pipeline
+    # True while every segment so far is a certain cd or a plain
+    # assignment: nothing that could have removed a directory has run.
+    certain_prefix = True
     out: List[_CwdState] = []
     n = len(segments)
     for i, (op, seg) in enumerate(segments):
@@ -1191,19 +1218,32 @@ def _simulate_cwds(segments: List[Tuple[str, str]], project_root: str,
             pipe_base = cands
         out.append(_CwdState(cands, note))
 
+        reached = certain_prefix and op in ("", ";", "&&")
         tokens = _strip_redirections(_tokenize(seg))
         if not tokens:
+            certain_prefix = False
             continue
         if tokens[0] == 'cd':
             in_pipeline = op == "|" or (
                 i + 1 < n and (segments[i + 1][0] or "") == "|"
             )
             if in_pipeline:
+                certain_prefix = False
                 continue
-            cands = _apply_cd(cands, tokens[1:])
+            new = _apply_cd(cands, tokens[1:])
+            if reached and new and all(os.path.isdir(c) for c in new):
+                # Certain success: the old directory is unreachable from
+                # here on, even across ``;``.
+                cands = group_union = new
+                continue
+            certain_prefix = False
+            cands = new
         elif any(t.lstrip('({') == 'cd' for t in tokens):
+            certain_prefix = False
             cands = None
         else:
+            if not (reached and _is_plain_assignment(seg, tokens)):
+                certain_prefix = False
             continue
         if cands is None:
             group_union = None

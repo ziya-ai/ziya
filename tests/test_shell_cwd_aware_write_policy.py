@@ -62,6 +62,23 @@ def checker(project_root):
         c.clear_project_root()
 
 
+MISSING = "/tmp/ziya-cwdtest-does-not-exist-7f3a"
+
+
+@pytest.fixture
+def tmp_dir():
+    import shutil
+    import tempfile
+    d = tempfile.mkdtemp(prefix="ziya-cwdtest-", dir="/tmp")
+    # mkdtemp may return the /private-resolved form on macOS; keep the
+    # /tmp spelling the user would type, which is what is under test.
+    d = os.path.join("/tmp", os.path.basename(d))
+    try:
+        yield d
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def _segments(split, cmd):
     return [(op or "", seg) for op, seg in split(cmd)]
 
@@ -89,17 +106,36 @@ class TestSimulateCwds:
         assert _cands(st, 1) == frozenset({os.path.join(project_root, ".ziya")})
 
     def test_semicolon_unions_pre_and_post(self, split, project_root):
+        # Only when the cd may FAIL: a missing directory leaves the old cwd.
+        st = wp._simulate_cwds(_segments(split, f"cd {MISSING}; cp a b"), project_root)
+        assert _cands(st, 1) == frozenset({project_root, MISSING})
+
+    def test_semicolon_after_certain_cd_is_the_new_dir_only(self, split, project_root):
         st = wp._simulate_cwds(_segments(split, "cd /tmp; cp a b"), project_root)
-        assert _cands(st, 1) == frozenset({project_root, "/tmp"})
+        assert _cands(st, 1) == frozenset({"/tmp"})
+
+    def test_assignment_keeps_certainty_substitution_does_not(self, split, project_root):
+        st = wp._simulate_cwds(_segments(split, "cd /tmp && S=x; cd /tmp; cp a b"), project_root)
+        assert _cands(st, 3) == frozenset({"/tmp"})
+        st = wp._simulate_cwds(
+            _segments(split, f"S=$(true); cd /tmp; cp a b"), project_root)
+        assert _cands(st, 2) == frozenset({project_root, "/tmp"})
 
     def test_or_before_cd_unions(self, split, project_root):
         st = wp._simulate_cwds(_segments(split, "false || cd /tmp && cp a b"), project_root)
         assert _cands(st, 2) == frozenset({project_root, "/tmp"})
 
     def test_or_after_cd_unions(self, split, project_root):
+        # A cd that may fail: the || branch may run in either directory.
+        st = wp._simulate_cwds(_segments(split, f"cd {MISSING} && cp a b || cp c d"), project_root)
+        assert _cands(st, 1) == frozenset({MISSING})
+        assert _cands(st, 2) == frozenset({project_root, MISSING})
+
+    def test_or_after_certain_cd_stays_in_new_dir(self, split, project_root):
+        # cd into an existing dir succeeds, so the executor runs the || branch
+        # there too (effective_cwd is not reset when cp a b fails).
         st = wp._simulate_cwds(_segments(split, "cd /tmp && cp a b || cp c d"), project_root)
-        assert _cands(st, 1) == frozenset({"/tmp"})
-        assert _cands(st, 2) == frozenset({project_root, "/tmp"})
+        assert _cands(st, 2) == frozenset({"/tmp"})
 
     def test_cd_in_pipeline_has_no_effect(self, split, project_root):
         # A pipelined cd runs in a subshell; both execution routes agree
@@ -193,13 +229,34 @@ class TestCheckVerdicts:
         assert not ok
 
     def test_semicolon_union_denies(self, checker, split):
-        ok, reason = checker.check("cd /tmp; cp a b", split)
+        ok, reason = checker.check(f"cd {MISSING}; cp a b", split)
         assert not ok
         assert "may resolve to any of" in reason
 
     def test_newline_is_sequential(self, checker, split):
-        ok, _ = checker.check("cd /tmp\ncp a b", split)
+        ok, _ = checker.check(f"cd {MISSING}\ncp a b", split)
         assert not ok
+
+    def test_reported_semicolon_redirection_into_existing_tmp_dir(self, checker, split, tmp_dir):
+        # The refused command: cd into an existing /tmp dir, assignment, then
+        # ``;`` and a stderr redirection to a relative file.
+        cmd = (f"cd {tmp_dir} && S=~/.ziya/skills/x/scripts; "
+               f"python3 $S/graf_q.py \"$(cat q3.sql)\" --csv q3.csv >/dev/null 2>q3.err; "
+               f"tail -3 q3.err")
+        ok, reason = checker.check(cmd, split)
+        assert ok, reason
+        assert checker.check(f"cd {tmp_dir}\necho hi > out.txt", split) == (True, "")
+
+    @pytest.mark.parametrize("prefix", [
+        "rm -rf {d}; ", "rmdir {d}; ", "X=$(rmdir {d}); ", "false && ",
+        "true || ", "echo x | ",
+    ])
+    def test_cd_after_possible_removal_still_unions(self, checker, split, tmp_dir, prefix):
+        # Anything before the cd that could remove the directory (or skip the
+        # cd) forfeits certainty, so the relative write may hit the project.
+        cmd = prefix.format(d=tmp_dir) + f"cd {tmp_dir}; cp /tmp/x y"
+        ok, _ = checker.check(cmd, split)
+        assert not ok, cmd
 
     def test_or_chain_union_denies(self, checker, split):
         ok, _ = checker.check("false || cd /tmp && cp a b", split)
@@ -282,6 +339,18 @@ class TestExecutorParity:
         server._execute_pipeline(cmd, timeout=10, cwd=str(tmp_path))
         created = {str(p) for p in tmp_path.rglob("*") if p.is_file()} - {str(p) for p in before}
         assert created == {predicted}, (cmd, created, predicted)
+
+    def test_semicolon_after_existing_dir_parity(self, tmp_path, server, split):
+        # The shortcut's premise: an existing literal target means the
+        # executor's cd succeeds, so the ``;`` segment writes there only.
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        cmd = f"cd {sub} && V=1; echo hi > semi.txt"
+        states = wp._simulate_cwds(_segments(split, cmd), str(tmp_path))
+        predicted = {os.path.join(c, "semi.txt") for c in states[2].cands}
+        assert predicted == {str(sub / "semi.txt")}
+        server._execute_pipeline(cmd, timeout=10, cwd=str(tmp_path))
+        assert {str(p) for p in tmp_path.rglob("semi.txt")} == predicted
 
     def test_cd_in_pipeline_parity(self, tmp_path, server, split):
         src = tmp_path / "src.txt"
