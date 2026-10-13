@@ -49,7 +49,7 @@ async def test_propose_with_scope_raises_no_serialization_warning():
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # any warning during execute → raise
         result = await tool.execute(
-            content="Scope fix: GGMA has 4 merlins per gateway.",
+            content="Scope fix: each region has 4 shards per cluster.",
             layer="domain_context",
             conversation_id="conv-scope",
             _workspace_path=_WORKSPACE,

@@ -319,8 +319,7 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 from app.utils.memory_pause import guarded as _pause_guarded
 
 
-@_pause_guarded("feedback")
-async def apply_feedback(
+def _apply_feedback_sync(
     conversation_id: Optional[str],
     response_text: str,
     use_threshold: Optional[float] = None,
@@ -383,7 +382,7 @@ async def apply_feedback(
                 logger.debug(f"Feedback: window embed failed: {e}")
         return vecs
 
-    window_vecs: List[np.ndarray] = await asyncio.to_thread(_embed_windows)
+    window_vecs: List[np.ndarray] = _embed_windows()
     if not window_vecs:
         _bump_loaded_only(loaded)
         clear_conversation(conversation_id)
@@ -427,6 +426,23 @@ async def apply_feedback(
             f"{proposal_signals} probationary entries received use signals"
         )
     return {"loaded": len(loaded), "used": len(used_ids), "errors": 0}
+
+
+@_pause_guarded("feedback")
+async def apply_feedback(
+    conversation_id: Optional[str],
+    response_text: str,
+    use_threshold: Optional[float] = None,
+) -> Dict[str, int]:
+    """Score loaded memories against the assistant's response and update
+    lifecycle counters (see ``_apply_feedback_sync``).
+
+    Runs on a worker thread: the response embed is a Bedrock call and the
+    counter writes rewrite the memory store, all blocking.
+    tests/test_memory_embed_not_event_loop_blocking.py enforces this.
+    """
+    return await asyncio.to_thread(
+        _apply_feedback_sync, conversation_id, response_text, use_threshold)
 
 
 def _score_open_proposals(window_vecs: List[np.ndarray],
@@ -483,19 +499,20 @@ def _apply_updates(loaded: Set[str], used_ids: Set[str]) -> None:
         mark_labile(used_ids, _LABILE_USED_MS)
     try:
         from app.storage.memory import get_memory_storage
-        store = get_memory_storage()
-        mutated = []
-        for mid in loaded:
-            mem = store.get(mid)
-            if not mem:
-                continue
-            mem.retrieval_loaded_count = (mem.retrieval_loaded_count or 0) + 1
-            mem.last_retrieved_at = int(time.time() * 1000)
-            if mid in used_ids:
-                mem.retrieval_used_count = (mem.retrieval_used_count or 0) + 1
-                mem.importance = min(1.0, (mem.importance or 0.5) + _USE_IMPORTANCE_DELTA)
-            mutated.append(mem)
-        # One batched write instead of N full-file rewrites.
-        store.save_many(mutated)
+        now_ms = int(time.time() * 1000)
+
+        def _bump(rec, used):
+            rec["retrieval_loaded_count"] = (rec.get("retrieval_loaded_count") or 0) + 1
+            rec["last_retrieved_at"] = now_ms
+            if used:
+                rec["retrieval_used_count"] = (rec.get("retrieval_used_count") or 0) + 1
+                rec["importance"] = min(1.0, (rec.get("importance") or 0.5)
+                                        + _USE_IMPORTANCE_DELTA)
+
+        # One batched write, patched onto the stored records: save_many of
+        # copies loaded here could resurrect a memory deleted meanwhile, and
+        # (feedback now runs on a worker thread) drop a concurrent bump.
+        get_memory_storage().patch_many({
+            mid: (lambda rec, u=(mid in used_ids): _bump(rec, u)) for mid in loaded})
     except Exception as e:
         logger.warning(f"Feedback: failed to persist counter updates: {e}")

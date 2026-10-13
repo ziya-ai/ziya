@@ -283,9 +283,16 @@ async def test_staleness_flips_to_contested_with_contradiction():
 
     assert "m_old" in contested
     assert target.status == "contested"
-    # save() must have been called for the contested memory
-    saved_ids = [m.id for m in store._saved]
-    assert "m_old" in saved_ids
+    # The flip is persisted as a field patch on the stored record (not a
+    # save of the copy loaded before the LLM await), and the patch really
+    # sets the status.
+    patched = {}
+    for call in store.patch_many.call_args_list:
+        patched.update(call.args[0])
+    assert "m_old" in patched
+    rec = {"id": "m_old", "status": "active"}
+    patched["m_old"](rec)
+    assert rec["status"] == "contested"
 
 
 @pytest.mark.asyncio

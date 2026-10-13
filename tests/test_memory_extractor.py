@@ -139,7 +139,7 @@ class TestStripArtifacts:
         """zsh prompt format `user@host path %` is stripped when pasted inline."""
         text = (
             "lets take care of these first:\n"
-            "dcohn@bcd07462ae88 frontend % npx npm-check\n"
+            "alice@host01 frontend % npx npm-check\n"
             "Need to install the following packages:\n"
             "see https://example.com for context"
         )
@@ -179,7 +179,7 @@ class TestStripArtifacts:
         and pasted shell output on the same line, producing references
         from the URLs in npm-check's output.
         """
-        text = ("lets take care of these first: dcohn@bcd07462ae88 frontend % "
+        text = ("lets take care of these first: alice@host01 frontend % "
                 "npx npm-check\nNeed to install...")
         result = _strip_artifacts(text)
         assert "npx npm-check" not in result

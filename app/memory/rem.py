@@ -30,11 +30,16 @@ Inspired by:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.utils.logging_utils import logger
+
+
+def _mark_contested(rec: Dict[str, Any]) -> None:
+    rec["status"] = "contested"
 
 # -- Maturity gate ---------------------------------------------------
 
@@ -246,7 +251,8 @@ async def synthesize_node(node, store) -> Optional[str]:
             "rem_rationale": rationale[:500],
         })
         activity = _next_activity_count()
-        ps.add(proposal, activity_count=activity)
+        # add() embeds the proposal (a blocking Bedrock round trip).
+        await asyncio.to_thread(ps.add, proposal, activity_count=activity)
         logger.info(
             f"🌙 REM SYNTHESIS for {node.id} ({len(memories)} sources): "
             f"{synthesis[:80]}... | rationale: {rationale[:120]}"
@@ -357,7 +363,9 @@ async def detect_staleness(node, store) -> List[str]:
             )
             continue
         target.status = "contested"
-        store.save(target)
+        # target was loaded before the LLM await; patch the stored record
+        # rather than write that copy back.
+        await asyncio.to_thread(store.patch_many, {target.id: _mark_contested})
         contested_ids.append(mid)
         logger.info(
             f"🌙 REM CONTESTED {mid} (in node {node.id}) — superseded by "

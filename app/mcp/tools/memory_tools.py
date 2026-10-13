@@ -10,6 +10,7 @@ The model sees these alongside other tools and uses them when
 conversation context triggers associative recall or when the user
 teaches it something worth retaining.
 """
+import asyncio
 import time
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +28,27 @@ _LAST_DECAY_SWEEP: float = 0.0
 
 class _SkipDecay(Exception):
     """Internal control-flow signal to skip the throttled decay sweep."""
+
+
+def _archive_record(rec: Dict[str, Any]) -> None:
+    rec["status"] = "archived"
+
+
+class _OffLoopMemoryBase(BaseMCPTool):
+    """Runs a memory tool's body on a worker thread.
+
+    Every memory tool reads (most also rewrite) the memory store on disk, and
+    memory_search / memory_save / memory_propose embed through Bedrock.  No
+    body awaits anything, so as ``async def execute`` each ran entirely on
+    the event loop.  Subclasses implement ``_execute_sync``.
+    tests/test_memory_embed_not_event_loop_blocking.py enforces this.
+    """
+
+    def _execute_sync(self, **kwargs) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        return await asyncio.to_thread(self._execute_sync, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +69,7 @@ class MemorySearchInput(BaseModel):
     limit: int = Field(10, description="Max results to return.")
 
 
-class MemorySearchTool(BaseMCPTool):
+class MemorySearchTool(_OffLoopMemoryBase):
     """Search the user's persistent memory store."""
 
     name: str = "memory_search"
@@ -60,7 +82,7 @@ class MemorySearchTool(BaseMCPTool):
     )
     InputSchema = MemorySearchInput
 
-    async def execute(self, **kwargs) -> Dict[str, Any]:
+    def _execute_sync(self, **kwargs) -> Dict[str, Any]:
         query = kwargs.get("query", "")
         tags = kwargs.get("tags")
         layer = kwargs.get("layer")
@@ -129,7 +151,7 @@ class MemorySearchTool(BaseMCPTool):
                                 f"importance={mem.importance:.2f}, "
                                 f"last_accessed={mem.last_accessed}): {mem.content[:60]}")
             if _to_archive:
-                store.save_many(_to_archive)
+                store.patch_many({m.id: _archive_record for m in _to_archive})
         except _SkipDecay:
             pass
         except Exception as e:
@@ -207,12 +229,14 @@ class MemorySearchTool(BaseMCPTool):
 
         # Touch last_accessed on retrieved memories
         today = time.strftime("%Y-%m-%d")
-        for mem in results:
-            mem.last_accessed = today
+
+        def _touch(rec):
+            rec["last_accessed"] = today
             # Maturity boost: repeated retrieval increases importance (caps at 1.0)
-            mem.importance = min(1.0, mem.importance + 0.05)
-        # Single batched write instead of one full-file rewrite per result.
-        store.save_many(results)
+            rec["importance"] = min(1.0, (rec.get("importance") or 0.5) + 0.05)
+        # One batched patch of the stored records, not save_many of the copies
+        # loaded above: that could resurrect a memory deleted in between.
+        store.patch_many({mem.id: _touch for mem in results})
 
         # Record retrieval-load for the feedback loop.  Use signal happens
         # later when the assistant's response gets scored against these.
@@ -257,7 +281,7 @@ class MemorySaveInput(BaseModel):
     )
 
 
-class MemorySaveTool(BaseMCPTool):
+class MemorySaveTool(_OffLoopMemoryBase):
     """Save a memory directly to the user's persistent store."""
 
     name: str = "memory_save"
@@ -271,7 +295,7 @@ class MemorySaveTool(BaseMCPTool):
     )
     InputSchema = MemorySaveInput
 
-    async def execute(self, **kwargs) -> Dict[str, Any]:
+    def _execute_sync(self, **kwargs) -> Dict[str, Any]:
         content = kwargs.get("content", "").strip()
         if not content:
             return {"error": True, "message": "Memory content is required."}
@@ -340,7 +364,7 @@ class MemoryProposeInput(BaseModel):
     layer: str = Field("domain_context", description="Suggested layer.")
 
 
-class MemoryProposeTool(BaseMCPTool):
+class MemoryProposeTool(_OffLoopMemoryBase):
     """Propose a memory for later user approval."""
 
     name: str = "memory_propose"
@@ -354,7 +378,7 @@ class MemoryProposeTool(BaseMCPTool):
     )
     InputSchema = MemoryProposeInput
 
-    async def execute(self, **kwargs) -> Dict[str, Any]:
+    def _execute_sync(self, **kwargs) -> Dict[str, Any]:
         content = kwargs.get("content", "").strip()
         if not content:
             return {"error": True, "message": "Proposal content is required."}
@@ -438,7 +462,7 @@ class MemoryContextInput(BaseModel):
     )
 
 
-class MemoryContextTool(BaseMCPTool):
+class MemoryContextTool(_OffLoopMemoryBase):
     """Browse the mind-map tree — handles and children for a node."""
 
     name: str = "memory_context"
@@ -451,7 +475,7 @@ class MemoryContextTool(BaseMCPTool):
     )
     InputSchema = MemoryContextInput
 
-    async def execute(self, **kwargs) -> Dict[str, Any]:
+    def _execute_sync(self, **kwargs) -> Dict[str, Any]:
         node_id = kwargs.get("node_id")
         _conversation_id = kwargs.pop("conversation_id", None)
 
@@ -511,7 +535,7 @@ class MemoryExpandInput(BaseModel):
     )
 
 
-class MemoryExpandTool(BaseMCPTool):
+class MemoryExpandTool(_OffLoopMemoryBase):
     """Load all memories under a mind-map node and its descendants."""
 
     name: str = "memory_expand"
@@ -523,7 +547,7 @@ class MemoryExpandTool(BaseMCPTool):
     )
     InputSchema = MemoryExpandInput
 
-    async def execute(self, **kwargs) -> Dict[str, Any]:
+    def _execute_sync(self, **kwargs) -> Dict[str, Any]:
         node_id = kwargs.get("node_id", "")
         _conversation_id = kwargs.pop("conversation_id", None)
         if not node_id:
@@ -570,7 +594,7 @@ class MemoryRetractProposalInput(BaseModel):
     )
 
 
-class MemoryRetractProposalTool(BaseMCPTool):
+class MemoryRetractProposalTool(_OffLoopMemoryBase):
     """Retract a memory proposal the agent created this session.
 
     Deliberately narrow.  The proposal queue is the human-ownership gate
@@ -600,7 +624,7 @@ class MemoryRetractProposalTool(BaseMCPTool):
     )
     InputSchema = MemoryRetractProposalInput
 
-    async def execute(self, **kwargs) -> Dict[str, Any]:
+    def _execute_sync(self, **kwargs) -> Dict[str, Any]:
         proposal_id = (kwargs.get("proposal_id") or "").strip()
         _conversation_id = kwargs.pop("conversation_id", None)
         if not proposal_id:

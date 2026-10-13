@@ -1692,7 +1692,10 @@ async def run_post_conversation_extraction(
                     proposal.scope.project_paths = [project_path or _ref_project_label]
                 proposal.domain_clock = _domain_clock
                 try:
-                    proposals_store.add(proposal, activity_count=activity_counter)
+                    # add() embeds the proposal (a blocking Bedrock round
+                    # trip); keep it off the event loop.
+                    await asyncio.to_thread(
+                        proposals_store.add, proposal, activity_count=activity_counter)
                     references_proposed += 1
                 except Exception as add_err:
                     logger.warning(f"ProposalsStore.add (reference) failed: {add_err}")
@@ -1806,11 +1809,15 @@ async def run_post_conversation_extraction(
 
     dedup_corroborated_ids: List[str] = []
     dedup_proposal_corroborated_ids: List[str] = []
+    dedup_corroborated_ids: List[str] = []
+    dedup_proposal_corroborated_ids: List[str] = []
     dedup_proposal_matches: List[Dict[str, Any]] = []
-    unique = deduplicate(candidates, existing,
-                         corroboration_sink=dedup_corroborated_ids,
-                         proposal_corroboration_sink=dedup_proposal_corroborated_ids,
-                         proposal_match_sink=dedup_proposal_matches)
+    # deduplicate embeds every candidate (one Bedrock round trip each).
+    unique = await asyncio.to_thread(
+        deduplicate, candidates, existing,
+        corroboration_sink=dedup_corroborated_ids,
+        proposal_corroboration_sink=dedup_proposal_corroborated_ids,
+        proposal_match_sink=dedup_proposal_matches)
     if not unique:
         return {"extracted": len(candidates), "saved": 0, "proposed": 0,
                 "all_duplicates": True, "references": references_proposed}
@@ -1846,7 +1853,8 @@ async def run_post_conversation_extraction(
         for match in dedup_proposal_matches:
             pid = match.get("proposal_id")
             matched_candidate = match.get("candidate")
-            stored = proposals_store.get(pid) if pid else None
+            # ProposalsStore calls read/rewrite the event log; off the loop.
+            stored = await asyncio.to_thread(proposals_store.get, pid) if pid else None
             if not stored:
                 # Vanished between passes — drop as a duplicate, as before.
                 superseded_candidates.append(matched_candidate)
@@ -1858,8 +1866,8 @@ async def run_post_conversation_extraction(
                 relation = "AGREES"
             if relation == "CONTRADICTS":
                 try:
-                    proposals_store.record_signal(
-                        pid, "contradicted",
+                    await asyncio.to_thread(
+                        proposals_store.record_signal, pid, "contradicted",
                         value={"conversation_id": conversation_id})
                 except Exception as sig_err:
                     logger.debug(f"Contradiction signal write failed (non-fatal): {sig_err}")
@@ -1887,7 +1895,8 @@ async def run_post_conversation_extraction(
             active = store.get(mid)
             if active:
                 active.corroborations = (active.corroborations or 0) + 1
-                store.save(active)
+                # save() re-embeds the memory; keep it off the event loop.
+                await asyncio.to_thread(store.save, active)
                 corroborated += 1
 
         # Apply corroborations against proposals the embedding dedup detected.
@@ -1897,7 +1906,8 @@ async def run_post_conversation_extraction(
                 continue
             already_prop_corroborated.add(pid)
             try:
-                proposals_store.corroborate_by_id(pid, conversation_id=conversation_id)
+                await asyncio.to_thread(proposals_store.corroborate_by_id,
+                                        pid, conversation_id=conversation_id)
             except Exception as prop_corr_err:
                 logger.debug(f"Proposal corroboration write failed (non-fatal): {prop_corr_err}")
 
@@ -1951,13 +1961,9 @@ async def run_post_conversation_extraction(
                             # Preserve importance — don't reset a memory the user has
                             # repeatedly retrieved just because the content was updated
                             # (importance only goes up, never down on UPDATE)
-                            store.save(target_mem)
-                            # Re-embed with new content so semantic search stays accurate
-                            try:
-                                from app.services.embedding_service import embed_and_cache
-                                await asyncio.to_thread(embed_and_cache, target_id, content)
-                            except Exception:
-                                pass
+                            # save() re-embeds because the content changed; a
+                            # separate embed_and_cache here was a second call.
+                            await asyncio.to_thread(store.save, target_mem)
                             saved += 1
                             logger.info(f"🧠 UPDATE: Replaced {target_id} with: {content[:60]}")
                             continue
@@ -1976,7 +1982,7 @@ async def run_post_conversation_extraction(
                         active = store.get(top_id)
                         if active:
                             active.corroborations = (active.corroborations or 0) + 1
-                            store.save(active)
+                            await asyncio.to_thread(store.save, active)
                             corroboration_recorded = True
                             corroborated += 1
 
@@ -2004,7 +2010,8 @@ async def run_post_conversation_extraction(
                 proposal.scope.project_paths = [project_path or _project_label]
             proposal.domain_clock = _domain_clock
             try:
-                proposals_store.add(proposal, activity_count=activity_counter)
+                await asyncio.to_thread(
+                    proposals_store.add, proposal, activity_count=activity_counter)
                 proposed += 1
             except Exception as add_err:
                 logger.warning(f"ProposalsStore.add failed: {add_err}")

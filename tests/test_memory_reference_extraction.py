@@ -256,7 +256,7 @@ class TestReferenceCandidates:
         msgs = [{
             "role": "user",
             "content": (
-                "look at this output: dcohn@host frontend % "
+                "look at this output: alice@host frontend % "
                 "npx npm-check\n"
                 "Need to install the following packages:\n"
                 "@maxgraph/core   https://github.com/maxGraph/maxGraph\n"
@@ -277,7 +277,7 @@ class TestReferenceCandidates:
             "role": "user",
             "content": (
                 "see https://docs.example.com for our policy. then "
-                "dcohn@host frontend % run-this\n"
+                "alice@host frontend % run-this\n"
                 "Output line 1\n"
                 "Output line 2"
             ),

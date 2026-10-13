@@ -3,6 +3,13 @@ Memory API endpoints — CRUD for the structured memory system.
 
 Provides REST endpoints for the frontend to manage memories:
 browse, search, edit, delete, and handle proposals.
+
+Handlers that await nothing are plain ``def``: every one reads or writes the
+on-disk memory store, and a zero-await ``async def`` would run that I/O ON the
+event loop, stalling every request.  Starlette runs ``def`` handlers on its
+threadpool.  Only organize (asyncio.Lock + create_task) and the embedding
+backfill (awaits) stay async.  Guarded by
+tests/test_memory_not_event_loop_blocking.py.
 """
 import asyncio
 import time
@@ -44,7 +51,7 @@ class MemoryUpdateRequest(BaseModel):
 # -- Endpoints ---------------------------------------------------------------
 
 @router.get("/api/v1/memory")
-async def get_memory_status():
+def get_memory_status():
     """Overview: counts by layer and status, pending proposal count."""
     from app.storage.memory import get_memory_storage
     from app.storage.proposals import get_proposals_store
@@ -57,7 +64,7 @@ async def get_memory_status():
 
 
 @router.get("/api/v1/memory/search")
-async def search_memories(
+def search_memories(
     q: str = Query("", description="Search query"),
     layer: Optional[str] = Query(None),
     tags: Optional[str] = Query(None, description="Comma-separated tags"),
@@ -77,7 +84,7 @@ async def search_memories(
 
 
 @router.get("/api/v1/memory/all")
-async def list_all_memories():
+def list_all_memories():
     """Return every active memory (for the memory browser UI)."""
     from app.storage.memory import get_memory_storage
     store = get_memory_storage()
@@ -87,7 +94,7 @@ async def list_all_memories():
 
 
 @router.post("/api/v1/memory")
-async def save_memory(data: MemorySaveRequest):
+def save_memory(data: MemorySaveRequest):
     """Save a new memory directly."""
     from app.storage.memory import get_memory_storage
     from app.models.memory import Memory
@@ -103,7 +110,7 @@ async def save_memory(data: MemorySaveRequest):
 
 
 @router.put("/api/v1/memory/{memory_id}")
-async def update_memory(memory_id: str, data: MemoryUpdateRequest):
+def update_memory(memory_id: str, data: MemoryUpdateRequest):
     """Edit an existing memory."""
     from app.storage.memory import get_memory_storage
     store = get_memory_storage()
@@ -129,7 +136,7 @@ async def update_memory(memory_id: str, data: MemoryUpdateRequest):
 
 
 @router.delete("/api/v1/memory/{memory_id}")
-async def delete_memory(memory_id: str):
+def delete_memory(memory_id: str):
     """Delete a memory."""
     from app.storage.memory import get_memory_storage
     store = get_memory_storage()
@@ -146,7 +153,7 @@ async def delete_memory(memory_id: str):
 # intervention.  Nothing here is required: an untouched queue resolves itself.
 
 @router.get("/api/v1/memory/proposals")
-async def list_proposals():
+def list_proposals():
     """List probationary proposals with their promotion progress."""
     from app.storage.proposals import get_proposals_store
     from app.memory.lifecycle import (
@@ -180,7 +187,7 @@ async def list_proposals():
 
 
 @router.post("/api/v1/memory/proposals/{proposal_id}/approve")
-async def approve_proposal(proposal_id: str):
+def approve_proposal(proposal_id: str):
     """Manually promote a proposal ahead of its automatic schedule.
 
     Reuses the lifecycle promotion path so a hand-approved entry is
@@ -202,7 +209,7 @@ async def approve_proposal(proposal_id: str):
 
 
 @router.post("/api/v1/memory/proposals/approve-all")
-async def approve_all_proposals():
+def approve_all_proposals():
     """Promote every open proposal now, bypassing the earn-it bar."""
     from app.storage.proposals import get_proposals_store
     from app.memory.lifecycle import _promote_proposal
@@ -215,7 +222,7 @@ async def approve_all_proposals():
 
 
 @router.delete("/api/v1/memory/proposals/{proposal_id}")
-async def dismiss_proposal(proposal_id: str):
+def dismiss_proposal(proposal_id: str):
     """Archive a proposal now instead of waiting for it to expire."""
     from app.storage.proposals import get_proposals_store
     store = get_proposals_store()
@@ -227,7 +234,7 @@ async def dismiss_proposal(proposal_id: str):
 # -- Review (Phase 2) -------------------------------------------------------
 
 @router.get("/api/v1/memory/pause")
-async def get_memory_pause():
+def get_memory_pause():
     """Whether memory is paused after an infrastructure outage, and why."""
     from app.utils import memory_pause
     rec = memory_pause.status()
@@ -235,7 +242,7 @@ async def get_memory_pause():
 
 
 @router.post("/api/v1/memory/resume")
-async def resume_memory():
+def resume_memory():
     """Human-in-the-loop continuation: clear the pause written when a memory
     pass hit an outage (expired credentials, network).  The next turn
     extracts normally; the lifecycle job's next tick catches up."""
@@ -245,7 +252,7 @@ async def resume_memory():
 
 
 @router.get("/api/v1/memory/review")
-async def get_review():
+def get_review():
     """Surface stale memories, oversized nodes, and orphan memories for cleanup."""
     from app.storage.memory import get_memory_storage
     from app.memory import get_review_summary
@@ -254,7 +261,7 @@ async def get_review():
 
 
 @router.get("/api/v1/memory/feedback/stats")
-async def get_feedback_stats():
+def get_feedback_stats():
     """Best-cosine distribution of the retrieval 'used' signal vs. its threshold.
 
     Use this to calibrate ZIYA_MEMORY_USE_THRESHOLD: a p90 far below the
@@ -265,7 +272,7 @@ async def get_feedback_stats():
 
 
 @router.post("/api/v1/memory/maintenance")
-async def run_maintenance():
+def run_maintenance():
     """Trigger a full maintenance pass: mind-map repair (including the
     provenance/score rebalance), then cell division + cross-links for all
     nodes."""
@@ -319,13 +326,13 @@ async def organize_memories():
 
 
 @router.get("/api/v1/memory/organize/status")
-async def organize_status():
+def organize_status():
     """Poll for organize task completion."""
     return _organize_task_status
 
 
 @router.get("/api/v1/memory/organize/history")
-async def organize_history():
+def organize_history():
     """Bounded log of past organize runs (newest-first).
 
     Drives the Memory Browser's Recent Activity tab.
@@ -339,11 +346,12 @@ async def backfill_embeddings():
     """Trigger embedding backfill for all memories missing vectors."""
     from app.storage.memory import get_memory_storage
     from app.services.embedding_service import get_embedding_cache, backfill_embeddings as do_backfill, get_embedding_provider, NoopProvider
-    provider = get_embedding_provider()
+    # First call probes Bedrock; the store read decrypts the whole file.
+    provider = await asyncio.to_thread(get_embedding_provider)
     if isinstance(provider, NoopProvider):
         return {"status": "disabled", "message": "Embedding provider not configured"}
     store = get_memory_storage()
-    memories = store.list_memories(status="active")
+    memories = await asyncio.to_thread(store.list_memories, status="active")
     cache = get_embedding_cache()
     all_ids = [m.id for m in memories]
     missing = cache.missing_ids(all_ids)
@@ -355,7 +363,7 @@ async def backfill_embeddings():
 
 
 @router.get("/api/v1/memory/embeddings/status")
-async def embedding_status():
+def embedding_status():
     """Check embedding coverage."""
     from app.storage.memory import get_memory_storage
     from app.services.embedding_service import get_embedding_cache, get_embedding_provider, NoopProvider
@@ -388,7 +396,7 @@ class MindMapNodeRequest(BaseModel):
 
 
 @router.get("/api/v1/memory/mindmap")
-async def get_mindmap():
+def get_mindmap():
     """Return the full mind-map tree."""
     from app.storage.memory import get_memory_storage
     store = get_memory_storage()
@@ -397,7 +405,7 @@ async def get_mindmap():
 
 
 @router.get("/api/v1/memory/mindmap/{node_id}")
-async def get_mindmap_node(node_id: str):
+def get_mindmap_node(node_id: str):
     """Return a single mind-map node with children context."""
     from app.storage.memory import get_memory_storage
     store = get_memory_storage()
@@ -408,7 +416,7 @@ async def get_mindmap_node(node_id: str):
 
 
 @router.post("/api/v1/memory/mindmap")
-async def create_mindmap_node(data: MindMapNodeRequest):
+def create_mindmap_node(data: MindMapNodeRequest):
     """Create or update a mind-map node."""
     from app.storage.memory import get_memory_storage
     store = get_memory_storage()
@@ -418,7 +426,7 @@ async def create_mindmap_node(data: MindMapNodeRequest):
 
 
 @router.delete("/api/v1/memory/mindmap/{node_id}")
-async def delete_mindmap_node(node_id: str):
+def delete_mindmap_node(node_id: str):
     """Delete a mind-map node (children are reparented)."""
     from app.storage.memory import get_memory_storage
     store = get_memory_storage()
@@ -428,7 +436,7 @@ async def delete_mindmap_node(node_id: str):
 
 
 @router.post("/api/v1/memory/mindmap/{node_id}/expand")
-async def expand_mindmap_node(node_id: str):
+def expand_mindmap_node(node_id: str):
     """Return all memories under a node and its descendants."""
     from app.storage.memory import get_memory_storage
     store = get_memory_storage()

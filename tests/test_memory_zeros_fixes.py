@@ -230,7 +230,7 @@ class TestListAndGetRestored:
 
     def test_list_filter_by_tags(self, store):
         store.save(Memory(content="tagged", tags=["obp", "ram"]))
-        store.save(Memory(content="other", tags=["fred"]))
+        store.save(Memory(content="other", tags=["misc"]))
         hits = store.list_memories(tags=["obp"])
         assert [m.content for m in hits] == ["tagged"]
 
@@ -358,11 +358,12 @@ class TestSearchToolDecayThrottle:
             st.save(Memory(content=f"obp fact number {i}", tags=["obp"]))
         tool = MemorySearchTool()
         with patch("app.storage.memory.get_memory_storage", return_value=st), \
-             patch.object(st, "save_many", wraps=st.save_many) as spy:
+             patch.object(st, "patch_many", wraps=st.patch_many) as spy:
             await tool.execute(query="obp", conversation_id="c1")
-        # The result-touch loop should funnel through one save_many call
-        # (decay sweep with no archivals does not call save_many).
+        # The result-touch loop should funnel through one batched patch
+        # (decay sweep with no archivals does not write).
         assert spy.call_count == 1
+        assert all(st.get(m.id).last_accessed for m in st.list_memories())
 
     @pytest.mark.asyncio
     async def test_importance_bumped_on_retrieval(self, tmp_path):
@@ -530,7 +531,7 @@ class TestApplyFeedbackNonBlocking:
             st.save(m)
             ids.append(m.id)
         with patch("app.storage.memory.get_memory_storage", return_value=st), \
-             patch.object(st, "save_many", wraps=st.save_many) as spy:
+             patch.object(st, "patch_many", wraps=st.patch_many) as spy:
             fb._apply_updates(set(ids), used_ids=set())
         assert spy.call_count == 1
         for mid in ids:
@@ -642,7 +643,7 @@ class TestApiAllIncludesContested:
         st.save(Memory(content="contested fact", status="contested"))
         st.save(Memory(content="archived fact", status="archived"))
         with patch("app.storage.memory.get_memory_storage", return_value=st):
-            result = await list_all_memories()
+            result = list_all_memories()  # plain def since the event-loop sweep
         statuses = {m["status"] for m in result}
         contents = {m["content"] for m in result}
         assert "active" in statuses

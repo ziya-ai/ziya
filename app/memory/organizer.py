@@ -16,6 +16,7 @@ Called from:
   - run_post_save_maintenance (auto-trigger when orphan count exceeds threshold)
 """
 
+import asyncio
 import json
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -444,8 +445,9 @@ async def cleanup_corpus(store) -> Dict[str, Any]:
                             list(keep_mem.tags) + [t for t in absorb_mem.tags
                                                    if t not in keep_mem.tags]))
                         keep_mem.tags = merged_tags[:MERGE_MAX_TAGS]
-                        store.save(keep_mem)
-                        _archive_memory(store, absorb_id, f"cleanup_merged_into:{keep_id}")
+                        await asyncio.to_thread(store.save, keep_mem)
+                        await asyncio.to_thread(_archive_memory, store, absorb_id,
+                                                f"cleanup_merged_into:{keep_id}")
                         total_merged += 1
                         logger.info(
                             f"🧹 MERGE: {absorb_id} → {keep_id}: {merged_content[:60]}"
@@ -464,7 +466,8 @@ async def cleanup_corpus(store) -> Dict[str, Any]:
                     continue
                 budget -= 1
                 reason = result.get("reasons", {}).get(mem_id, "flagged by cleanup")
-                if _archive_memory(store, mem_id, f"cleanup: {reason}"):
+                if await asyncio.to_thread(_archive_memory, store, mem_id,
+                                           f"cleanup: {reason}"):
                     total_removed += 1
                     all_reasons[mem_id] = reason
                     logger.info(f"🧹 REMOVE: {mem_id} — {reason}")
@@ -473,14 +476,13 @@ async def cleanup_corpus(store) -> Dict[str, Any]:
             # reviewed.  A failed call (below) stamps nothing, so those
             # memories are reviewed on a later run.
             stamp = int(time.time() * 1000)
-            kept = []
-            for m in batch:
-                cur = store.get(m["id"])
-                if cur and cur.status == "active":
-                    setattr(cur, CLEANUP_REVIEW_FIELD, stamp)
-                    kept.append(cur)
-            if kept:
-                store.save_many(kept)
+
+            def _stamp(rec, _s=stamp):
+                if rec.get("status", "active") == "active":
+                    rec[CLEANUP_REVIEW_FIELD] = _s
+            # Patched on the stored records: no stale copy written back.
+            await asyncio.to_thread(store.patch_many,
+                                    {m["id"]: _stamp for m in batch})
 
         except json.JSONDecodeError as e:
             logger.warning(f"Cleanup batch JSON parse failed: {e}")
@@ -552,8 +554,14 @@ async def bootstrap_mindmap(store) -> Dict[str, Any]:
             batch, existing_domain_info or None, batch_target=batch_hint)
         for domain in domains:
             saw_domains = True
-            c, u, p = _place_domain(store, domain, existing_nodes,
-                                    existing_node_map)
+            # Off the loop: _place_domain rewrites, encrypts and fsyncs the
+            # memories file.  Inline it parked the event loop for the whole
+            # write (stall watchdog, 2026-10-09, under the scheduler's
+            # memory_organize job) and nothing was served meanwhile.
+            # existing_nodes / existing_node_map are mutated by the worker
+            # thread; nothing else touches them until it returns.
+            c, u, p = await asyncio.to_thread(
+                _place_domain, store, domain, existing_nodes, existing_node_map)
             nodes_created += c
             nodes_updated += u
             memories_placed += p
@@ -624,13 +632,45 @@ def _place_domain(store, domain, existing_nodes, existing_node_map):
         created = 1
         target_id = node_id
 
+    # One file rewrite for the domain, not one per memory: store.save()
+    # serializes + encrypts + writes the ENTIRE store each call, so placing
+    # N memories cost N full rewrites (quadratic; 2,512 memories on one
+    # install).  save_many batches them into a single write.
+    to_save = []
     for mid in memory_ids:
         mem = store.get(mid)
         if mem:
             mem.scope.domain_node = target_id
-            store.save(mem)
+            to_save.append(mem)
             placed += 1
+    if to_save:
+        store.save_many(to_save)
     return (created, updated, placed)
+
+
+def _apply_relations(store, relations: List[Dict[str, Any]]) -> int:
+    """Record ``relations`` on their source memories with ONE store write.
+
+    Synchronous; run via ``asyncio.to_thread``.  The previous inline loop
+    called ``store.save`` once per relation -- a full-file rewrite + encrypt
+    each -- on the event loop; the stall watchdog caught the loop there
+    (2026-10-09) and the memory filelock then timed out under the churn.
+    """
+    changed: Dict[str, Any] = {}
+    count = 0
+    for rel in relations:
+        source_mem = changed.get(rel["source"]) or store.get(rel["source"])
+        if not source_mem:
+            continue
+        rt = rel["type"]
+        targets = source_mem.relations.setdefault(rt, [])
+        if rel["target"] not in targets:
+            targets.append(rel["target"])
+            changed[source_mem.id] = source_mem
+            count += 1
+    if changed:
+        store.save_many(list(changed.values()))
+    return count
 
 
 async def extract_all_relations(store) -> Dict[str, Any]:
@@ -652,16 +692,7 @@ async def extract_all_relations(store) -> Dict[str, Any]:
         for i in range(0, len(mem_dicts), RELATION_BATCH_SIZE):
             batch = mem_dicts[i:i + RELATION_BATCH_SIZE]
             relations = await extract_relations(batch)
-            for rel in relations:
-                source_mem = store.get(rel["source"])
-                if source_mem:
-                    rt = rel["type"]
-                    if rt not in source_mem.relations:
-                        source_mem.relations[rt] = []
-                    if rel["target"] not in source_mem.relations[rt]:
-                        source_mem.relations[rt].append(rel["target"])
-                        store.save(source_mem)
-                        total_relations += 1
+            total_relations += await asyncio.to_thread(_apply_relations, store, relations)
 
     logger.info(f"🔗 Relation extraction: {total_relations} relations stored")
     return {"status": "success", "relations_found": total_relations}
@@ -699,9 +730,12 @@ async def reorganize(store=None) -> Dict[str, Any]:
 
     # Phase 1.5: Consolidation — deterministic, no LLM calls.  Enforces the
     # §3 invariants (depth <= 2, occupancy >= 2, bounded root count, single
-    # parent, zero empties) that bootstrap alone cannot guarantee.
+    # parent, zero empties) that bootstrap alone cannot guarantee.  Off the
+    # loop, like every synchronous store-writing phase below: this coroutine
+    # runs on the server's event loop (scheduler system job), and each
+    # inline phase parked it for its whole duration (stall watchdog, 2026-10-09).
     try:
-        results["consolidate"] = consolidate_mindmap(store)
+        results["consolidate"] = await asyncio.to_thread(consolidate_mindmap, store)
     except Exception as e:
         logger.error(f"Consolidation failed: {e}")
         results["consolidate"] = {"status": "error", "error": str(e)}
@@ -725,33 +759,47 @@ async def reorganize(store=None) -> Dict[str, Any]:
         discover_cross_links, discover_cross_links_by_embedding, maybe_divide_node,
         stamp_interference_scores,
     )
-    try:
+
+    def _cross_links_sync() -> List[Any]:
         # PenPal #53: load the node list once and share a branch-id cache across
         # the whole pass so each discover_cross_links call is O(candidates), not
         # O(n) disk reads — turning the loop from O(n^2) I/O into O(n).
         _nodes = store.list_mindmap_nodes()
         _branch_cache: Dict[str, Any] = {}
+        out: List[Any] = []
         for node in _nodes:
-            results["cross_links"].extend(
-                discover_cross_links(store, node.id, node_list=_nodes,
-                                     branch_cache=_branch_cache))
+            out.extend(discover_cross_links(store, node.id, node_list=_nodes,
+                                            branch_cache=_branch_cache))
+        return out
+
+    def _embedding_cross_links_sync() -> List[Any]:
+        # Option C: embedding-centroid cross-links — catches semantically related
+        # domains that share no literal tags.  Shared centroid cache makes this
+        # O(N) centroid computations instead of O(N^2) across the node loop.
+        _centroids: Dict[str, Any] = {}
+        out: List[Any] = []
+        for node in store.list_mindmap_nodes():
+            out.extend(discover_cross_links_by_embedding(store, node.id, _centroids))
+        return out
+
+    def _divisions_sync() -> List[Any]:
+        out: List[Any] = []
+        for node in store.list_mindmap_nodes():
+            out.extend(maybe_divide_node(store, node.id))
+        return out
+
+    try:
+        results["cross_links"].extend(await asyncio.to_thread(_cross_links_sync))
     except Exception as e:
         logger.error(f"Cross-link discovery failed: {e}")
 
-    # Option C: embedding-centroid cross-links — catches semantically related
-    # domains that share no literal tags.  Shared centroid cache makes this
-    # O(N) centroid computations instead of O(N^2) across the node loop.
     try:
-        _centroids: Dict[str, Any] = {}
-        for node in store.list_mindmap_nodes():
-            results["cross_links"].extend(
-                discover_cross_links_by_embedding(store, node.id, _centroids))
+        results["cross_links"].extend(await asyncio.to_thread(_embedding_cross_links_sync))
     except Exception as e:
         logger.error(f"Embedding cross-link discovery failed: {e}")
 
     try:
-        for node in store.list_mindmap_nodes():
-            results["divisions"].extend(maybe_divide_node(store, node.id))
+        results["divisions"].extend(await asyncio.to_thread(_divisions_sync))
     except Exception as e:
         logger.error(f"Cell division failed: {e}")
 
@@ -759,7 +807,7 @@ async def reorganize(store=None) -> Dict[str, Any]:
     # the opportunistic-decay gate can age out redundant memories on the
     # accelerated window.  Embedding-native; no-ops when embeddings disabled.
     try:
-        results["interference"] = stamp_interference_scores(store)
+        results["interference"] = await asyncio.to_thread(stamp_interference_scores, store)
     except Exception as e:
         logger.error(f"Interference scoring failed: {e}")
         results["interference"] = {"status": "error", "error": str(e)}
