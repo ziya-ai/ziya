@@ -207,14 +207,14 @@ describe('mergeServerChat — flag propagation', () => {
     it('server-only shell carries the summary flags', () => {
         const d = mergeServerChat(
             sc({ flags: ['priority'], flagColor: 'red' }),
-            undefined, undefined, mergeCtx());
+            undefined, mergeCtx());
         expect(d.action).toBe('set');
         expect((d as any).record.flags).toEqual(['priority']);
         expect((d as any).record.flagColor).toBe('red');
     });
 
     it('server-only shell with no flags defaults to empty/null', () => {
-        const d = mergeServerChat(sc(), undefined, undefined, mergeCtx());
+        const d = mergeServerChat(sc(), undefined, mergeCtx());
         expect((d as any).record.flags).toEqual([]);
         expect((d as any).record.flagColor).toBeNull();
     });
@@ -223,7 +223,7 @@ describe('mergeServerChat — flag propagation', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, flags: ['blocked'], flagColor: 'blue' }),
             local({ _version: NOW - 5_000, flags: [], flagColor: null }),
-            undefined, mergeCtx());
+            mergeCtx());
         expect((d as any).record.flags).toEqual(['blocked']);
         expect((d as any).record.flagColor).toBe('blue');
     });
@@ -235,7 +235,7 @@ describe('mergeServerChat — flag propagation', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, flags: [], flagColor: null }),
             local({ _version: NOW - 5_000, flags: ['priority'], flagColor: 'red' }),
-            undefined, mergeCtx());
+            mergeCtx());
         expect((d as any).record.flags).toEqual([]);
         expect((d as any).record.flagColor).toBeNull();
     });
@@ -247,43 +247,19 @@ describe('mergeServerChat — flag propagation', () => {
         const d = mergeServerChat(
             sc({ _version: NOW - 10_000, flags: ['blocked'] }),
             local({ _version: NOW, flags: ['priority'] }),
-            undefined, mergeCtx());
+            mergeCtx());
         expect(d.action).toBe('keep-local');
     });
 });
 
 describe('mergeServerChat — server-only (no local copy)', () => {
-    it('adopts the full-fetched record with normalized fields', () => {
-        const full = {
-            id: 'conv-1', title: 'Hello', messages: [{}, {}],
-            groupId: 'g1', lastActiveAt: NOW - 5_000, _version: NOW - 5_000,
-        };
-        const d = mergeServerChat(sc(), undefined, full, mergeCtx());
-        expect(d.action).toBe('set');
-        if (d.action !== 'set') return;
-        expect(d.record._isShell).toBe(false);
-        expect(d.record.projectId).toBe('proj-1');
-        expect(d.record.folderId).toBe('g1');
-        expect(d.record.lastAccessedAt).toBe(NOW - 5_000);
-        expect(d.record._version).toBe(NOW - 5_000);
-        expect(d.record.isActive).toBe(true);
-    });
-
-    it('falls back to sc folder fields when full record has none', () => {
-        const full = { id: 'conv-1', title: 'Hello', messages: [{}] };
-        const d = mergeServerChat(sc({ folderId: 'f9' }), undefined, full, mergeCtx());
-        expect(d.action).toBe('set');
-        if (d.action !== 'set') return;
-        expect(d.record.folderId).toBe('f9');
-        expect(d.record._version).toBe(NOW); // ctx.now fallback
-    });
 
     it('creates a shell placeholder when full fetch was deferred', () => {
         const server = sc({
             messageCount: 12, _version: NOW - 1_000,
             branchedFrom: 'parent-conversation', branchedAtMessageIndex: 7, branchedFromLabel: 'Investigate latency',
         });
-        const d = mergeServerChat(server, undefined, undefined, mergeCtx());
+        const d = mergeServerChat(server, undefined, mergeCtx());
         expect(d.action).toBe('set');
         if (d.action !== 'set') return;
         expect(d.record._isShell).toBe(true);
@@ -301,16 +277,16 @@ describe('mergeServerChat — server-only (no local copy)', () => {
     });
 
     it('drops empty "New Conversation" shells (GC re-import guard)', () => {
-        const server = sc({ title: 'New Conversation', lastActiveAt: NOW - STALE_AGE - 1 });
-        const d = mergeServerChat(server, undefined, undefined, mergeCtx());
+        const server = sc({ title: 'New Conversation', messageCount: 0, lastActiveAt: NOW - STALE_AGE - 1 });
+        const d = mergeServerChat(server, undefined, mergeCtx());
         expect(d.action).toBe('skip-empty-shell');
         if (d.action !== 'skip-empty-shell') return;
         expect(d.staleDeleteEligible).toBe(true);
     });
 
     it('empty shell not stale enough → skipped but not delete-eligible', () => {
-        const server = sc({ title: 'New Conversation', lastActiveAt: NOW - 1_000 });
-        const d = mergeServerChat(server, undefined, undefined, mergeCtx());
+        const server = sc({ title: 'New Conversation', messageCount: 0, lastActiveAt: NOW - 1_000 });
+        const d = mergeServerChat(server, undefined, mergeCtx());
         expect(d.action).toBe('skip-empty-shell');
         if (d.action !== 'skip-empty-shell') return;
         expect(d.staleDeleteEligible).toBe(false);
@@ -319,26 +295,39 @@ describe('mergeServerChat — server-only (no local copy)', () => {
     it('cross-project empty shell → skipped but never delete-eligible', () => {
         const server = sc({
             title: 'New Conversation',
+            messageCount: 0,
             projectId: 'proj-OTHER',
             lastActiveAt: NOW - STALE_AGE - 1,
         });
-        const d = mergeServerChat(server, undefined, undefined, mergeCtx());
+        const d = mergeServerChat(server, undefined, mergeCtx());
         expect(d.action).toBe('skip-empty-shell');
         if (d.action !== 'skip-empty-shell') return;
         expect(d.staleDeleteEligible).toBe(false);
     });
 
-    it('does NOT drop an empty shell that is the active conversation', () => {
-        // Dropping it would strand currentConversationId → orphan routing.
-        const server = sc({ title: 'New Conversation' });
-        const d = mergeServerChat(server, undefined, undefined, mergeCtx({ isActiveConv: true }));
-        expect(d.action).toBe('keep-local');
+    // Regression: `full` was always undefined at the call site, so emptiness
+    // reduced to the title and a stale server-only chat still titled
+    // "New Conversation" was DELETED from the server whatever it held.
+    it('"New Conversation" WITH messages is not an empty shell and is never delete-eligible', () => {
+        const server = sc({ title: 'New Conversation', messageCount: 4, lastActiveAt: NOW - STALE_AGE - 1 });
+        const d = mergeServerChat(server, undefined, mergeCtx());
+        expect(d.action).toBe('set');
+        if (d.action !== 'set') return;
+        expect(d.record._isShell).toBe(true);
+        expect(d.record._fullMessageCount).toBe(4);
     });
 
-    it('"New Conversation" WITH messages is not treated as an empty shell', () => {
-        const full = { id: 'conv-1', title: 'New Conversation', messages: [{}, {}] };
-        const d = mergeServerChat(sc({ title: 'New Conversation' }), undefined, full, mergeCtx());
-        expect(d.action).toBe('set');
+    it('unknown messageCount is not treated as empty (never deleted on a guess)', () => {
+        const server = sc({ title: 'New Conversation', lastActiveAt: NOW - STALE_AGE - 1 });
+        delete (server as any).messageCount;
+        expect(mergeServerChat(server, undefined, mergeCtx()).action).toBe('set');
+    });
+
+    it('does NOT drop an empty shell that is the active conversation', () => {
+        // Dropping it would strand currentConversationId → orphan routing.
+        const server = sc({ title: 'New Conversation', messageCount: 0 });
+        const d = mergeServerChat(server, undefined, mergeCtx({ isActiveConv: true }));
+        expect(d.action).toBe('keep-local');
     });
 });
 
@@ -347,7 +336,6 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             sc({ _version: NOW - 60_000, title: 'OLD TITLE' }),
             local({ _version: NOW - 30_000, title: 'Renamed' }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('keep-local');
@@ -356,7 +344,6 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, title: 'Server Title', isGlobal: true }),
             local({ _version: NOW - 30_000, title: 'Old Title', _isShell: true, _fullMessageCount: 5 }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -372,7 +359,6 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             sc({ _version: NOW }),
             local({ _version: NOW - 30_000, _isShell: true, messages: [] }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -384,7 +370,6 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, title: '' }),
             local({ _version: NOW - 30_000, title: 'Keep Me', _isShell: true, _fullMessageCount: 5 }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -402,7 +387,6 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, groupId: null }),
             local({ _version: NOW - 30_000, folderId: 'old-global-folder', _isShell: true, _fullMessageCount: 5 }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -414,7 +398,6 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, groupId: 'new-folder' }),
             local({ _version: NOW - 30_000, folderId: 'old-folder', _isShell: true, _fullMessageCount: 5 }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -432,7 +415,6 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             summary,
             local({ _version: NOW - 30_000, folderId: 'keep-folder' }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -450,7 +432,6 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, title: 'Renamed', messageCount: 84 }),
             local({ _version: NOW - 30_000, _isShell: true, _fullMessageCount: 8 }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -466,73 +447,11 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             summary,
             local({ _version: NOW - 30_000, _isShell: true, _fullMessageCount: 8 }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
         if (d.action !== 'set') return;
         expect(d.record._version).toBe(NOW);
-    });
-
-    it('adopts full record when server newer and counts agree', () => {
-        const full = {
-            id: 'conv-1', title: 'Server Title',
-            messages: [{}, {}, {}, {}, {}], _version: NOW,
-        };
-        const d = mergeServerChat(
-            sc({ _version: NOW }),
-            local({ _version: NOW - 30_000 }),
-            full,
-            mergeCtx()
-        );
-        expect(d.action).toBe('set');
-        if (d.action !== 'set') return;
-        expect(d.record.messages).toHaveLength(5);
-        expect(d.record._isShell).toBe(false);
-    });
-
-    it('count guard: keeps local messages when server body is shorter (partial-sync protection)', () => {
-        const localMsgs = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
-        const full = { id: 'conv-1', title: 'Server Title', messages: [{}], _version: NOW };
-        const d = mergeServerChat(
-            sc({ _version: NOW }),
-            local({ _version: NOW - 30_000, messages: localMsgs }),
-            full,
-            mergeCtx()
-        );
-        expect(d.action).toBe('set');
-        if (d.action !== 'set') return;
-        expect(d.record.messages).toBe(localMsgs);
-        // Metadata still comes from server
-        expect(d.record.title).toBe('Server Title');
-    });
-
-    it('count guard does not fire for tiny conversations (localCount <= 2)', () => {
-        const full = { id: 'conv-1', messages: [{}], _version: NOW };
-        const d = mergeServerChat(
-            sc({ _version: NOW }),
-            local({ _version: NOW - 30_000, messages: [{}, {}] }),
-            full,
-            mergeCtx()
-        );
-        expect(d.action).toBe('set');
-        if (d.action !== 'set') return;
-        expect(d.record.messages).toHaveLength(1); // server body adopted
-    });
-
-    it('count guard does not mutate the shared full-fetch object', () => {
-        // The inline implementation mutated full.messages in place; the
-        // extraction copies first.  Lock that in.
-        const localMsgs = [{}, {}, {}, {}];
-        const serverMsgs = [{}];
-        const full = { id: 'conv-1', messages: serverMsgs, _version: NOW };
-        mergeServerChat(
-            sc({ _version: NOW }),
-            local({ _version: NOW - 30_000, messages: localMsgs }),
-            full,
-            mergeCtx()
-        );
-        expect(full.messages).toBe(serverMsgs);
     });
 
     it('rename-revert regression: pushed rename survives an equal-version sync', () => {
@@ -544,7 +463,6 @@ describe('mergeServerChat — local copy exists', () => {
         const d = mergeServerChat(
             sc({ _version: renameTime, title: 'My Fork Name' }),
             local({ _version: renameTime, title: 'My Fork Name' }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('keep-local');
@@ -554,44 +472,18 @@ describe('mergeServerChat — local copy exists', () => {
 // ── Open-work counts carried through every set branch ──────────────
 // The sidebar's bead / work-item indicators read openBeadCount /
 // openWorkItemCount off the merged record.  These are SUMMARY-only
-// synthetic fields: a full-fetched Chat (getChat) does NOT carry them, so
-// every `set` branch must source them from `sc` (the summary), never rely
-// on the `...full` spread.  Branch 4 (summary-overlay) was the gap found
+// synthetic fields, so every `set` branch must source them from `sc` (the
+// summary).  Branch 4 (summary-overlay) was the gap found
 // in review — it spread `...local` and dropped the counts; a bead write
 // bumps _version onto exactly that branch, so a stale count would show.
 describe('mergeServerChat — open-work count propagation', () => {
-    it('branch 1 (server-only + full): counts come from summary, not full', () => {
-        // full has NO openBeadCount (Chat model lacks it); sc carries it.
-        const full = { id: 'conv-1', messages: [{}, {}], _version: NOW };
-        const d = mergeServerChat(
-            sc({ openBeadCount: 3, openWorkItemCount: 0 }),
-            undefined,
-            full,
-            mergeCtx()
-        );
-        expect(d.action).toBe('set');
-        expect((d as any).record.openBeadCount).toBe(3);
-        expect((d as any).record.openWorkItemCount).toBe(0);
-    });
 
     it('branch 2 (server-only shell, no full): counts come from summary', () => {
-        const d = mergeServerChat(sc({ title: 'Real chat', messageCount: 5, openBeadCount: 2, openWorkItemCount: 1 }), undefined, undefined, mergeCtx());
+        const d = mergeServerChat(sc({ title: 'Real chat', messageCount: 5, openBeadCount: 2, openWorkItemCount: 1 }), undefined, mergeCtx());
         expect(d.action).toBe('set');
         expect((d as any).record._isShell).toBe(true);
         expect((d as any).record.openBeadCount).toBe(2);
         expect((d as any).record.openWorkItemCount).toBe(1);
-    });
-
-    it('branch 3 (server-newer + full): counts come from summary', () => {
-        const full = { id: 'conv-1', messages: [{}, {}, {}, {}, {}], _version: NOW };
-        const d = mergeServerChat(
-            sc({ _version: NOW, openBeadCount: 4 }),
-            local({ _version: NOW - 30_000 }),
-            full,
-            mergeCtx()
-        );
-        expect(d.action).toBe('set');
-        expect((d as any).record.openBeadCount).toBe(4);
     });
 
     it('branch 4 (summary-overlay, server-newer no full): counts overlaid from summary', () => {
@@ -600,7 +492,6 @@ describe('mergeServerChat — open-work count propagation', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, openBeadCount: 5 }),
             local({ _version: NOW - 30_000, _isShell: true, messages: [], openBeadCount: 1 }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -613,7 +504,6 @@ describe('mergeServerChat — open-work count propagation', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, openBeadCount: undefined }),
             local({ _version: NOW - 30_000, _isShell: true, messages: [], openBeadCount: 2 }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -621,7 +511,7 @@ describe('mergeServerChat — open-work count propagation', () => {
     });
 
     it('counts default to 0 when neither summary nor local provide them', () => {
-        const d = mergeServerChat(sc({ messageCount: 5, openBeadCount: undefined, openWorkItemCount: undefined }), undefined, undefined, mergeCtx());
+        const d = mergeServerChat(sc({ messageCount: 5, openBeadCount: undefined, openWorkItemCount: undefined }), undefined, mergeCtx());
         expect((d as any).record.openBeadCount).toBe(0);
         expect((d as any).record.openWorkItemCount).toBe(0);
     });
@@ -636,7 +526,6 @@ describe('mergeServerChat — open-work count propagation', () => {
         const d = mergeServerChat(
             sc({ _version: NOW - 30_000, openBeadCount: 2 }),
             local({ _version: NOW - 30_000, openBeadCount: 0 }),  // tie → keep-local path
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -647,7 +536,6 @@ describe('mergeServerChat — open-work count propagation', () => {
         const d = mergeServerChat(
             sc({ _version: NOW - 60_000, openBeadCount: 3, openWorkItemCount: 0 }),
             local({ _version: NOW, openBeadCount: 0 }),  // local newer → keep-local path
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -662,7 +550,6 @@ describe('mergeServerChat — open-work count propagation', () => {
         const d = mergeServerChat(
             sc({ _version: NOW - 30_000, title: 'Stale Server', openBeadCount: 2 }),
             localRec,
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
@@ -676,7 +563,6 @@ describe('mergeServerChat — open-work count propagation', () => {
         const d = mergeServerChat(
             sc({ _version: NOW - 30_000, openBeadCount: 2, openWorkItemCount: 0 }),
             local({ _version: NOW - 30_000, openBeadCount: 2, openWorkItemCount: 0 }),
-            undefined,
             mergeCtx()
         );
         expect(d.action).toBe('keep-local');
