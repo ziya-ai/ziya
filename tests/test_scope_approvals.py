@@ -57,7 +57,7 @@ def env(tmp_path, root_key, monkeypatch):
     return {"pub": str(pub_path), "store": store}
 
 
-def _write_signed_record(task_id, scope, signing_key, *, approved_by="dcohn"):
+def _write_signed_record(task_id, scope, signing_key, *, approved_by="alice"):
     """Mint + persist a signed approval record (what `sudo ziya-approve` does)."""
     h = sc.task_scope_hash(scope)
     approved_at = int(time.time())

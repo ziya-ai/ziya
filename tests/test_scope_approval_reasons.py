@@ -38,7 +38,7 @@ def env(tmp_path, root_key, monkeypatch):
     return {"pub": str(pub_path), "store": store}
 
 
-def _sign(task_id, scope, signing_key, *, approved_by="dcohn", expires_at=None):
+def _sign(task_id, scope, signing_key, *, approved_by="alice", expires_at=None):
     h = sc.task_scope_hash(scope)
     approved_at = int(time.time())
     sig = sc.sign_approval_record(task_id, h, approved_by, approved_at,
@@ -169,9 +169,9 @@ def test_cli_task_authorized_bool_unaffected(env, root_key):
     allow = {"commands": ["curl"]}
     h = sc.cli_task_hash(allow)
     approved_at = int(time.time())
-    sig = sc.sign_approval_record("cli:t#name", h, "dcohn", approved_at, root_key)
+    sig = sc.sign_approval_record("cli:t#name", h, "alice", approved_at, root_key)
     sa.save_record({
-        "task_id": "cli:t#name", "scope_hash": h, "approved_by": "dcohn",
+        "task_id": "cli:t#name", "scope_hash": h, "approved_by": "alice",
         "approved_at": approved_at, "signature": sig,
     })
     assert sa.is_cli_task_authorized("cli:t#name", allow) is True
