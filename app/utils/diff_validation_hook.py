@@ -134,20 +134,40 @@ class DiffValidationHook:
         pattern = r'(`{3,})diff\n([\s\S]*?)\n\1(?:\n|$)'
         found: List[Dict[str, Any]] = []
         for match in re.finditer(pattern, content):
-            diff_content = match.group(2)
-            file_path = extract_target_file_from_diff(diff_content)
-            diff_key = f"{file_path}:{len(diff_content)}"
-            if diff_key in self.validated_diffs:
-                continue
-            found.append({
-                "diff_content": diff_content,
-                "start_pos": match.start(),
-                "end_pos": match.end(),
-                "file_path": file_path,
-                "diff_key": diff_key,
-                "body_hash": diff_body_hash(diff_content),
-            })
+            fence_body = match.group(2)
+            # The frontend marks a rejected FENCE by this hash, so every
+            # per-file part below carries the hash of the fence it came from.
+            fence_hash = diff_body_hash(fence_body)
+            # One entry per file in the fence.  Validating the fence as one
+            # unit took the first file's path for all of it, so later files
+            # were never checked, and a second file sharing the first one's
+            # basename (app/config/write_policy.py and
+            # app/mcp_servers/write_policy.py) was merged into its hunks by
+            # the pipeline's basename fallback and rejected wholesale, while
+            # the frontend, which applies per file, applied every hunk.
+            for diff_content in self._split_by_file(fence_body):
+                file_path = extract_target_file_from_diff(diff_content)
+                diff_key = f"{fence_hash}:{file_path}:{len(diff_content)}"
+                if diff_key in self.validated_diffs:
+                    continue
+                found.append({
+                    "diff_content": diff_content,
+                    "start_pos": match.start(),
+                    "end_pos": match.end(),
+                    "file_path": file_path,
+                    "diff_key": diff_key,
+                    "body_hash": fence_hash,
+                })
         return found
+
+    @staticmethod
+    def _split_by_file(body: str) -> List[str]:
+        """Per-file sections of a fence body; the body itself for one file."""
+        starts = [m.start() for m in re.finditer(r'(?m)^diff --git ', body)]
+        if len(starts) < 2:
+            return [body]
+        parts = [body[s:e] for s, e in zip(starts, starts[1:] + [len(body)])]
+        return [p.rstrip("\n") for p in parts if p.strip()]
 
     def detect_completed_diff(self, content: str) -> Optional[Dict[str, Any]]:
         """Last unvalidated fence only. validate_and_enhance() checks them all."""
