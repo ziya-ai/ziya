@@ -212,6 +212,52 @@ class TaskCardListTool(BaseMCPTool):
 class TaskCardReadInput(BaseModel):
     """Input schema for task_card_read."""
     card_id: str = Field(..., description="The id of the task card to read (from task_card_list).")
+    block_id: Optional[str] = Field(
+        None,
+        description=("Return only this block's subtree instead of the "
+                     "whole card.  Use outline=true first to find ids."),
+    )
+    outline: bool = Field(
+        False,
+        description=("Return the tree's skeleton only: id, block_type, "
+                     "name, non-empty scope fields and a short preview of "
+                     "the instructions per block.  Use on a large card to "
+                     "find the block id to read or edit."),
+    )
+
+
+_PREVIEW_CHARS = 120
+
+
+def _find_block(node: Dict[str, Any], block_id: str) -> Optional[Dict[str, Any]]:
+    if node.get("id") == block_id:
+        return node
+    for child in node.get("body") or []:
+        if isinstance(child, dict):
+            hit = _find_block(child, block_id)
+            if hit is not None:
+                return hit
+    return None
+
+
+def _outline(node: Dict[str, Any]) -> Dict[str, Any]:
+    """Skeleton of a block tree: identity, non-empty scope, text preview."""
+    out: Dict[str, Any] = {
+        "id": node.get("id"),
+        "block_type": node.get("block_type"),
+        "name": node.get("name") or "",
+    }
+    scope = {k: v for k, v in (node.get("scope") or {}).items() if v}
+    if scope:
+        out["scope"] = scope
+    text = node.get("instructions") or node.get("state_context") or ""
+    if text:
+        out["preview"] = text[:_PREVIEW_CHARS]
+    children = [_outline(c) for c in node.get("body") or []
+                if isinstance(c, dict)]
+    if children:
+        out["children"] = children
+    return out
 
 
 class TaskCardReadTool(BaseMCPTool):
@@ -222,7 +268,9 @@ class TaskCardReadTool(BaseMCPTool):
         "Read a Task Card's full definition (the block tree: task/repeat/"
         "until/parallel/state/group blocks, instructions, counts, "
         "conditions) as JSON.  Use task_card_list first to find the "
-        "card_id.  This is the definition, not a run's results."
+        "card_id.  On a large card, pass outline=true to list block ids "
+        "and block_id to read one block's subtree.  This is the "
+        "definition, not a run's results."
     )
     InputSchema = TaskCardReadInput
 
@@ -243,9 +291,30 @@ class TaskCardReadTool(BaseMCPTool):
             return {"error": True,
                     "message": f"No task card with id '{card_id}' in this project."}
 
+        dumped = card.model_dump()
+        block_id = (kwargs.get("block_id") or "").strip()
+        node = dumped.get("root") or {}
+        if block_id:
+            node = _find_block(node, block_id)
+            if node is None:
+                return {"error": True, "message": (
+                    f"No block with id '{block_id}' in card '{card.name}'.  "
+                    f"Call with outline=true to list block ids.")}
+        if kwargs.get("outline"):
+            return {
+                "success": True, "card_id": card_id, "name": card.name,
+                "outline": _outline(node),
+                "message": f"Outline of task card '{card.name}' ({card_id[:8]}).",
+            }
+        if block_id:
+            return {
+                "success": True, "card_id": card_id, "name": card.name,
+                "block": node,
+                "message": f"Block '{block_id}' of task card '{card.name}'.",
+            }
         return {
             "success": True,
-            "card": card.model_dump(),
+            "card": dumped,
             "message": f"Task card '{card.name}' ({card_id[:8]}).",
         }
 
