@@ -648,6 +648,30 @@ def find_scope_chain(root: Block, target_id: str) -> Optional[List[Optional[Task
 
 # ── Task Card (top-level saveable unit) ────────────────────
 
+class CardRequirements(BaseModel):
+    """What a card needs present to run as authored.
+
+    Distinct from ``TaskScope``: scope *grants* (tools a task may call,
+    skills to activate), requirements *assert* that the environment the
+    card was written against is the one it is running in.  Checked by
+    ``app.utils.task_card_preflight`` before the first model call, so a
+    batch run on a host missing an MCP server or a skill is told so up
+    front rather than failing an hour in with a vague tool error.  The
+    skills and tools named in any scope of the card are checked as well;
+    this block exists for what scopes cannot express (an MCP server) and
+    for making a dependency explicit at the card's top level.
+    """
+    model_config = {"extra": "forbid"}
+
+    skills: List[str] = []
+    mcp_servers: List[str] = []
+    tools: List[str] = []
+    # Refuse to run when anything is missing, instead of warning.  A
+    # batch card that silently runs without its search server produces
+    # confident, wrong output; refusing is the repeatable behaviour.
+    strict: bool = False
+
+
 class TaskCard(BaseModel):
     """A saveable, re-runnable task card.  The root is a Block."""
     model_config = {"extra": "allow"}
@@ -661,6 +685,8 @@ class TaskCard(BaseModel):
     # block's ancestor chain; see ``merge_scopes`` and
     # app/agents/block_executor.py).  ``None`` grants nothing extra.
     scope: Optional[TaskScope] = None
+    # Environment the card needs (skills, MCP servers, tools); see above.
+    requires: Optional[CardRequirements] = None
     tags: List[str] = []
     is_template: bool = False
     # Unlisted card.  It exists only so its blocks have persisted ids that a
@@ -692,6 +718,9 @@ class TaskCardCreate(BaseModel):
     description: str = ""
     root: Block
     scope: Optional[TaskScope] = None
+    # Environment requirements (see TaskCard.requires).  Carried so a
+    # card imported from another deck keeps its preflight declaration.
+    requires: Optional[CardRequirements] = None
     tags: List[str] = []
     is_template: bool = False
     # Create unlisted: lets the proposal panel mint signable block ids
