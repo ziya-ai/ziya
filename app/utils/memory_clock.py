@@ -4,8 +4,8 @@ The original clock was one global counter, advanced on every extraction
 run, i.e. on every streamed response in any project.  Measured on the live
 store (2026-09-24..26): ~44 ticks per active day, 85% of them from Ziya
 projects, so ARCHIVAL_AGE_THRESHOLD=7 was about four hours of *any* work.
-A Kuiper proposal made on a Ziya-heavy day decayed before a Kuiper
-conversation ever had a chance to confirm it.
+A proposal from a second project, made on a Ziya-heavy day, decayed before a
+conversation in that project ever had a chance to confirm it.
 
 Here a proposal ages only with work in its own domain:
 
@@ -49,8 +49,8 @@ def _path(path: Optional[Path] = None) -> Path:
         return Path(path)
     if _default_path is not None:
         return _default_path
-    from app.utils.paths import get_ziya_home
-    return get_ziya_home() / "memory" / CLOCK_FILE
+    from app.utils.paths import get_memory_dir
+    return get_memory_dir() / CLOCK_FILE
 
 
 def _empty() -> Dict[str, Any]:
@@ -109,6 +109,12 @@ def tick_session(conversation_id: Optional[str], project_path: Optional[str],
     now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     today = _day(now_ms)
     p = _path(path)
+    from app.utils.paths import memory_writes_allowed
+    if not memory_writes_allowed():
+        # Reference-set run: report the clock as it stands, count nothing.
+        out = snapshot(load(p), now_ms=now_ms)
+        out["session_key"] = None
+        return out
     with _locked(p):
         s = load(p)
         key = f"{conversation_id or project_path or '-'}|{today}"

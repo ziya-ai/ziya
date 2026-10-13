@@ -3,13 +3,13 @@ Per-domain aging for probationary proposals (app/utils/memory_clock.py).
 
 The global activity counter advanced on every streamed response in every
 project: ~44 ticks per active day on the live store, 85% of them Ziya, so
-ARCHIVAL_AGE_THRESHOLD=7 was about four hours of any work and Kuiper
-proposals decayed on Ziya days before a Kuiper conversation could confirm
-them.
+ARCHIVAL_AGE_THRESHOLD=7 was about four hours of any work and a second
+project's proposals decayed on Ziya days before a conversation in that
+project could confirm them.
 
-The anchor test drives the real run_lifecycle_pass: a Kuiper proposal must
+The anchor test drives the real run_lifecycle_pass: a project-B proposal must
 survive 50 Ziya sessions (it is archived as "decayed" on the global-counter
-code) and decay after 7 Kuiper sessions (positive control that aging still
+code) and decay after 7 project-B sessions (positive control that aging still
 happens).
 """
 import json
@@ -20,7 +20,7 @@ import pytest
 import app.utils.memory_clock as mc
 from app.memory.lifecycle import ARCHIVAL_AGE_THRESHOLD, FAST_TRACK_MIN_AGE
 
-K, Z, ZN = "/w/KuiperEAR-switch-mgr", "/w/ziya", "/w/ZiyaInternal"
+K, Z, ZN = "/w/projb-core", "/w/ziya", "/w/ZiyaInternal"
 DAY = 86400_000
 T0 = 1_790_000_000_000
 
@@ -105,7 +105,7 @@ async def _sweep(tmp_path, proposals, global_counter):
 
 
 @pytest.mark.asyncio
-async def test_kuiper_proposal_survives_other_domain_work(tmp_path):
+async def test_other_project_proposal_survives_other_domain_work(tmp_path):
     from app.models.memory import MemoryProposal, MemoryScope
     from app.storage.proposals import ProposalsStore
     proposals = ProposalsStore(memory_dir=tmp_path / "props")
@@ -138,7 +138,7 @@ def test_api_would_promote_uses_domain_counter(tmp_path):
     from app.storage.memory import MemoryStorage
     from app.storage.proposals import ProposalsStore
     proposals = ProposalsStore(memory_dir=tmp_path / "props")
-    p = MemoryProposal(content="Gen2 GA caps each merlin at 10 spots in 500 MHz mode.",
+    p = MemoryProposal(content="Gen2 GA caps each shard at 10 tenants in high-throughput mode.",
                        layer="decision", scope=MemoryScope(project_paths=[K]),
                        quality=0.9)
     p.domain_clock = mc.snapshot()
