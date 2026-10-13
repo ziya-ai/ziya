@@ -110,11 +110,11 @@ def test_decorate_js_is_constant_and_options_carry_document_text():
 
 def test_document_footer_names_the_document_not_the_tool():
     f = build_document_footer_template(
-        title="Queue <Depth>", author="dcohn", date="September 19, 2026",
+        title="Queue <Depth>", author="alice", date="September 19, 2026",
         version="0.9", model="fable", provider="bedrock",
     )
     # Document line, escaped, in the order title · author · date.
-    assert "Queue &lt;Depth&gt; · dcohn · September 19, 2026" in f
+    assert "Queue &lt;Depth&gt; · alice · September 19, 2026" in f
     # Tool credit demoted to the second line; the transcript tagline is gone.
     assert "Ziya v0.9 · fable (Bedrock)" in f
     assert "orchestration harness" not in f
@@ -213,7 +213,7 @@ _DOC_HTML = f"""
 <div id="print-render-root"><div id="print-render-content">
   <header class="print-doc-titleblock">
     <h1>Title</h1>
-    <div class="print-doc-author">dcohn</div>
+    <div class="print-doc-author">alice</div>
     <div class="print-doc-date">9/19/2026</div>
   </header>
   <div class="print-doc-section"><div>
@@ -277,7 +277,7 @@ _DECORATE_STATE_JS = r"""
 def test_decorate_pass_numbers_captions_flows_and_reconciles_title():
     js, opts = build_document_decorate_js(
         numbering={"sections": True}, title="Title", subtitle="A subtitle",
-        author="dcohn", date="September 19, 2026", layout="titlepage",
+        author="alice", date="September 19, 2026", layout="titlepage",
         page_height_px=994,
     )
 
@@ -783,7 +783,7 @@ def test_clipped_mark_does_not_grow_viewbox():
 def _table_html(ncols=5, colgroup=""):
     labels = ["A. Host NIC ring buffer (per-queue descriptors, 4,096 entries)",
               "B. Switch egress buffer (shared across all ports, dynamic threshold)",
-              "C. TXPA shared FPGA pool (64 MiB per Merlin, shared by 1,024 queues)",
+              "C. Transmit shared FPGA pool (64 MiB per card, shared by 1,024 queues)",
               "D. Shaper token bucket (per-flow burst allowance, refilled at line rate)",
               "E. Receiver socket buffer (autotuned, bounded by rmem_max)"]
     col2 = ["Descriptor exhaustion under bursts from many flows at once",
