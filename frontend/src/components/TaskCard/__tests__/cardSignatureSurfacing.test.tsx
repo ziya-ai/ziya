@@ -14,7 +14,7 @@
  */
 
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 
 jest.mock('uuid', () => ({ v4: () => 'test-uuid' }));
 
@@ -124,9 +124,11 @@ describe('out-of-band signing refresh', () => {
     };
     render(<Probe />);
     await screen.findByText('unsigned');
-    window.dispatchEvent(new CustomEvent(CARD_SCOPE_REFRESH_EVENT, {
-      detail: { cardId: 'card-1' },
-    }));
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CARD_SCOPE_REFRESH_EVENT, {
+        detail: { cardId: 'card-1' },
+      }));
+    });
     await screen.findByText('clean');
     expect(mockScopeStatus).toHaveBeenCalledTimes(2);
   });
@@ -141,10 +143,12 @@ describe('out-of-band signing refresh', () => {
     };
     render(<Probe />);
     await screen.findByText('unsigned');
-    window.dispatchEvent(new CustomEvent(CARD_SCOPE_REFRESH_EVENT, {
-      detail: { cardId: 'other-card' },
-    }));
-    await new Promise(r => setTimeout(r, 20));
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CARD_SCOPE_REFRESH_EVENT, {
+        detail: { cardId: 'other-card' },
+      }));
+    });
+    await act(() => new Promise(r => setTimeout(r, 20)));
     expect(mockScopeStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -158,7 +162,9 @@ describe('out-of-band signing refresh', () => {
     };
     render(<Probe />);
     await screen.findByText('unsigned');
-    window.dispatchEvent(new CustomEvent(CARD_SCOPE_REFRESH_EVENT, { detail: {} }));
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CARD_SCOPE_REFRESH_EVENT, { detail: {} }));
+    });
     await waitFor(() => expect(mockScopeStatus).toHaveBeenCalledTimes(2));
   });
 });
