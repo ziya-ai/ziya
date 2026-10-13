@@ -180,13 +180,58 @@ class _DeltaFilter:
         return out
 
 
-def _render_artifact(artifact) -> None:
-    """Render a completed Artifact to the terminal."""
+class _IterationTally:
+    """Relay listener that counts loop iterations by outcome.
+
+    Registered for every CLI run, TTY or not, independently of the
+    stdout sink.  ``iteration_completed`` is emitted for every loop
+    iteration at any depth, which is the one record of a nested loop's
+    per-iteration outcomes the CLI has: the run keeps no block_states
+    (``storage=None``), and a container artifact's ``stages`` shows a
+    nested loop as a single entry.
+    """
+
+    def __init__(self) -> None:
+        self.passed = 0
+        self.failed = 0
+
+    async def send_json(self, event: dict) -> None:
+        if event.get("type") != "iteration_completed":
+            return
+        status = event.get("status")
+        if status == "passed":
+            self.passed += 1
+        elif status == "failed":
+            self.failed += 1
+
+
+def _render_artifact(artifact, tally: Optional[_IterationTally] = None) -> None:
+    """Render a completed Artifact to the terminal.
+
+    The verdict line has three forms, matching the GUI's done / partial
+    / failed: a failed artifact with both passed and unfinished work
+    (stages, or iterations seen on the event stream) is ``partial`` --
+    amber, not red -- so a 90-of-100 loop reads as what it is.
+    """
+    from app.utils.run_outcome import classify_artifact_outcome, stage_tally
     print()
-    if artifact.failed:
-        print(_c("31", "✗ Task card failed"))
-    else:
+    outcome = classify_artifact_outcome(
+        artifact,
+        passed_iterations=tally.passed if tally else 0,
+        failed_iterations=tally.failed if tally else 0,
+    )
+    if outcome == "done":
         print(_c("32", "✓ Task card complete"))
+    elif outcome == "partial":
+        print(_c("33", "◐ Task card partially complete"))
+        stages = stage_tally(artifact.stages)
+        if stages["total"]:
+            print(_c("33", f"  {stages['passed']} of {stages['total']} stages passed"))
+        if tally and (tally.passed or tally.failed):
+            print(_c("33", f"  {tally.passed} of {tally.passed + tally.failed} "
+                           f"iterations passed"))
+    else:
+        print(_c("31", "✗ Task card failed"))
 
     if artifact.summary:
         summary = _strip_meta_tags(artifact.summary)
