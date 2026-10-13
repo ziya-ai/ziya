@@ -337,6 +337,18 @@ class TestDroppedStream:
         v = _call(decide, last_stop_reason='refusal', empty_completion_retry_used=0)
         assert v[:2] == ('end', 'refusal')
 
+    @pytest.mark.parametrize("prev_is_tool_result", [False, True])
+    def test_drop_after_visible_text_is_never_reissued(self, decide, prev_is_tool_result):
+        # The drop branch sits on the no-text path only.  Text that already
+        # streamed is on the user's screen; a re-issue would stream a second
+        # full response after it.  Whatever the text-present ladder decides,
+        # it must not be the drop retry.
+        v = _call(decide, assistant_text="Here is half an answ",
+                  last_stop_reason=None, prev_is_tool_result=prev_is_tool_result,
+                  empty_completion_retry_used=0)
+        assert v[1] != 'dropped_stream_retry'
+        assert v[0] != 'spend_empty_retry'
+
 
 class TestEmptyCompletionRetry:
     """Branch (h) — empty after a normal user message."""

@@ -937,11 +937,39 @@ class StreamingToolExecutor:
         if last_stop_reason == 'refusal':
             return ('end', 'refusal', None)
 
-        # Option A: gate the empty-after-tools nudge on stop_reason. A clean
-        # end_turn/stop/None means the model signaled "done" — nudge at most
-        # ONCE then respect it; only a genuine cutoff (max_tokens/length)
-        # keeps the up-to-3 recovery budget. Mirrors the live ladder.
+        # Output budget exhausted with nothing delivered. The model DID
+        # generate (output_tokens at the cap) but produced no text and no
+        # complete tool call -- typically one tool_use whose arguments were
+        # cut mid-JSON, or reasoning that consumed the whole budget. A bare
+        # re-issue is deterministic at the same cap (observed: two identical
+        # 4096-token empty completions, then a silent end), and the
+        # empty-after-tools nudge tells the model the wrong thing. Correct
+        # once; if it recurs without progress, end with a reason the caller
+        # surfaces. Gated on output_tokens so a genuinely empty completion
+        # that merely reports max_tokens keeps the existing retry ladder.
         _is_cutoff = last_stop_reason in ('max_tokens', 'length')
+        _hit_cap = output_tokens > 0 and (
+            not max_output_tokens or output_tokens >= 0.9 * max_output_tokens)
+        if _is_cutoff and _hit_cap:
+            if oversized_output_used < 1:
+                return ('correct_oversized_output', 'oversized_output', None)
+            return ('end', 'oversized_output', None)
+
+        # stop_reason None is a transport drop, not a model decision:
+        # last_stop_reason is reset per iteration and set only from a
+        # StreamEnd, and every provider's StreamEnd carries a concrete reason.
+        # Re-issue the identical request rather than nudging (the model said
+        # nothing to nudge against) or ending. Shares the two-attempt
+        # empty-completion budget, so a provider that drops every request
+        # falls through to the regular ladder below.
+        if last_stop_reason is None and empty_completion_retry_used < 2:
+            return ('spend_empty_retry', 'dropped_stream_retry', None)
+
+        # Option A: gate the empty-after-tools nudge on stop_reason. A clean
+        # end_turn/stop (or a drop whose retry budget is spent) means the
+        # model signaled "done" — nudge at most ONCE then respect it; only a
+        # genuine cutoff (max_tokens/length) keeps the up-to-3 recovery
+        # budget. Mirrors the live ladder.
         _empty_cap = 3 if _is_cutoff else 1
         if prev_is_tool_result and textonly_grace_used < _empty_cap:
             return ('nudge', 'empty_after_tools_retry',
@@ -5088,11 +5116,27 @@ Please retry the tool call with valid JSON. Ensure:
                             # message — a bare retry re-issues the identical
                             # request without creating two consecutive user turns.
                             empty_completion_retry_used += 1
+                            _what = ("Stream closed with no terminal event"
+                                     if _reason == 'dropped_stream_retry'
+                                     else "Model returned nothing after a normal user message")
                             logger.info(
-                                f"🔄 EMPTY_COMPLETION_RETRY: Model returned nothing after a normal "
-                                f"user message (iteration={iteration}, "
+                                f"🔄 EMPTY_COMPLETION_RETRY ({_reason}): {_what} "
+                                f"(iteration={iteration}, "
                                 f"retry={empty_completion_retry_used}/2, "
                                 f"stop_reason={last_stop_reason!r}). Re-issuing request."
+                            )
+                            continue
+                        if _verdict == 'correct_oversized_output':
+                            oversized_output_used += 1
+                            logger.warning(
+                                f"✂️ OVERSIZED_OUTPUT: output cap hit with nothing delivered "
+                                f"(iteration={iteration}, out_tok={iteration_usage.output_tokens}, "
+                                f"max_tokens={provider_config.max_output_tokens}, "
+                                f"stop_reason={last_stop_reason!r}). Asking the model to split the work."
+                            )
+                            self._append_to_last_user_turn(
+                                conversation,
+                                self._oversized_output_note(provider_config.max_output_tokens),
                             )
                             continue
                         if _reason == 'refusal':

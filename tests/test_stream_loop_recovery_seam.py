@@ -290,6 +290,27 @@ class TestDroppedStreamRetry:
         assert "All done." in _final_text(events)
 
     @pytest.mark.asyncio
+    async def test_drop_after_partial_text_is_not_reissued(self):
+        """tool → partial text then DROP → must end, not re-issue.
+
+        The partial text is already on screen; a re-issue would stream a
+        whole second response after it.  Paired with the test above: the
+        same DROPPED shape IS re-issued when no text arrived.
+        """
+        partial = [TextDelta(content="Here is half an answ")]   # no StreamEnd
+        provider, events = await _run([
+            _tool_call("t1"),
+            partial,
+            FINAL,              # must NOT be reached
+        ])
+        assert len(provider.calls) == 2, (
+            f"{len(provider.calls)} model calls — a drop after visible text "
+            f"was re-issued")
+        text = _final_text(events)
+        assert text.count("Here is half an answ") == 1
+        assert "All done." not in text
+
+    @pytest.mark.asyncio
     async def test_persistent_drops_are_bounded(self):
         """A provider that never sends StreamEnd cannot loop forever."""
         provider, events = await _run([
