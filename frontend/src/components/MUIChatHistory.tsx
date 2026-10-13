@@ -13,6 +13,7 @@ import { useProject } from '../context/ProjectContext';
 import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import { db } from '../utils/db';
+import { buildSearchPattern, buildSearchSplitPattern } from '../utils/searchPattern';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal, globalMenuItemState } from '../utils/folderUtil';import { v4 as uuidv4 } from 'uuid';
 import { dispatchHandoffOpen } from '../utils/handoffOpen';
 import { handoffSegmentOrdinals } from '../utils/lineage';
@@ -3808,12 +3809,16 @@ const MUIChatHistory = () => {
 
   const highlightSnippet = useCallback((text: string, query: string) => {
     if (!query || !text) return <>{text}</>;
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
+    // Same whitespace-tolerant pattern the search itself used, so a hit
+    // returned for "⏱️ STALL" against "⏱️  STALL" is actually marked.
+    const splitter = buildSearchSplitPattern(query);
+    if (!splitter) return <>{text}</>;
+    const parts = text.split(splitter);
+    const matcher = buildSearchPattern(query, { global: false })!;
     return (
       <>
         {parts.map((part, i) =>
-          part.toLowerCase() === query.toLowerCase()
+          (i % 2 === 1 && matcher.test(part))
             ? <mark key={i} style={{
                 backgroundColor: isDarkMode ? '#b8860b' : '#fff176',
                 color: isDarkMode ? '#fff' : '#000',
