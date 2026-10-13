@@ -2,6 +2,13 @@
 Token counting and cache statistics routes.
 
 Extracted from server.py during Phase 3b refactoring.
+
+Handlers that await nothing (count_tokens, get_cache_stats,
+test_cache_functionality) are plain ``def`` so Starlette runs them on its
+worker threadpool: as ``async def`` their tiktoken/rewrite work ran ON the
+event loop and stalled every other request.  Only handlers that offload via
+``await asyncio.to_thread`` stay ``async``.
+``tests/test_token_routes_not_event_loop_blocking.py`` enforces this.
 """
 import os
 import time
@@ -93,7 +100,7 @@ def _estimate_image_tokens(img: TokenCountImage) -> int:
     return max(1, int(1500 * megapixels))
 
 @router.post('/api/token-count')
-async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
+def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
     try:
         # Use estimate_token_count which tries calibrator first, then tiktoken, then fallback
         # This gives us calibrated estimates when available, with graceful degradation
@@ -308,7 +315,7 @@ async def context_estimate(request: ContextEstimateRequest) -> Dict[str, Any]:
     return await asyncio.to_thread(_run)
 
 @router.get('/api/cache-stats')
-async def get_cache_stats():
+def get_cache_stats():
     """Get context caching statistics and effectiveness metrics."""
     try:
         from app.utils.context_cache import get_context_cache_manager
@@ -336,7 +343,7 @@ async def get_cache_stats():
         return {"cache_enabled": False, "error": str(e)}
 
 @router.get('/api/cache-test')
-async def test_cache_functionality():
+def test_cache_functionality():
     """Test if context caching is properly configured and working."""
     try:
         from app.utils.context_cache import get_context_cache_manager

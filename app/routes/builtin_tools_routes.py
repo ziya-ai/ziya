@@ -1,5 +1,11 @@
 """
 API routes for managing builtin MCP tools.
+
+Every handler here awaits nothing, so each is plain ``def``: Starlette runs
+it on its worker threadpool instead of inline on the event loop (status
+instantiates every tool class and probes dependency imports, which parked
+the loop under startup load).  Guarded by
+tests/test_builtin_tools_routes_not_event_loop_blocking.py.
 """
 
 import os
@@ -26,7 +32,7 @@ class BuiltinToolToggleRequest(BaseModel):
 
 
 @router.get("/status")
-async def get_builtin_tools_status():
+def get_builtin_tools_status():
     """Get status of all builtin tool categories."""
     try:
         categories = {}
@@ -66,7 +72,7 @@ async def get_builtin_tools_status():
 
 
 @router.post("/toggle")
-async def toggle_builtin_tool_category(request: BuiltinToolToggleRequest):
+def toggle_builtin_tool_category(request: BuiltinToolToggleRequest):
     """Enable or disable a builtin tool category."""
     try:
         if request.category not in BUILTIN_TOOL_CATEGORIES:
@@ -108,7 +114,7 @@ async def toggle_builtin_tool_category(request: BuiltinToolToggleRequest):
 
 
 @router.get("/dependencies/{category}")
-async def check_category_dependencies(category: str):
+def check_category_dependencies(category: str):
     """Check if dependencies for a builtin tool category are satisfied."""
     try:
         if category not in BUILTIN_TOOL_CATEGORIES:

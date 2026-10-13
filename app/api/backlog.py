@@ -1,6 +1,11 @@
 """
 Bead backlog API -- browse parked/abandoned beads across a project, and the
 restricted parked<->abandoned status transition (design/bead-backlog-browser.md).
+
+Handlers here are plain ``def``, not ``async def``: they do synchronous
+storage I/O (backlog aggregation across chats, bead-tree read/write) and
+await nothing, so as ``async def`` that work would run on the event loop.
+``tests/test_backlog_not_event_loop_blocking.py`` enforces this.
 """
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -28,7 +33,7 @@ def _parse_statuses(status: str):
 
 
 @router.get("/api/v1/projects/{project_id}/backlog")
-async def get_backlog(project_id: str, request: Request, status: str = "parked"):
+def get_backlog(project_id: str, request: Request, status: str = "parked"):
     from app.storage.backlog import get_backlog as aggregate_backlog
 
     statuses = _parse_statuses(status)
@@ -36,7 +41,7 @@ async def get_backlog(project_id: str, request: Request, status: str = "parked")
 
 
 @router.post("/api/v1/projects/{project_id}/chats/{chat_id}/beads/{bead_id}/status")
-async def set_bead_status(
+def set_bead_status(
     project_id: str,
     chat_id: str,
     bead_id: str,
