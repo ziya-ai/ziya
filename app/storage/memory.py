@@ -93,13 +93,31 @@ def _rmw_locked(file_attr):
     return deco
 
 
+def _refresh_embedding(memory_id: str, content: str, unchanged: bool) -> None:
+    """Embed ``content`` under ``memory_id`` unless the cached vector is current.
+
+    A save that changes only counters or status (importance, last_accessed,
+    corroborations) leaves the vector valid, and every embed is a synchronous
+    Bedrock round trip.  memory_search used to re-embed each result it
+    returned just to persist an importance bump.
+    """
+    from app.services.embedding_service import embed_and_cache, get_embedding_cache
+    if unchanged:
+        try:
+            if get_embedding_cache().get(memory_id) is not None:
+                return
+        except Exception:
+            pass  # a failed cache probe must not skip the embed
+    embed_and_cache(memory_id, content)
+
+
 class MemoryStorage:
     """File-based memory store under ~/.ziya/memory/."""
 
     def __init__(self, memory_dir: Optional[Path] = None):
         if memory_dir is None:
-            from app.utils.paths import get_ziya_home
-            memory_dir = get_ziya_home() / "memory"
+            from app.utils.paths import get_memory_dir
+            memory_dir = get_memory_dir()
         self._dir = Path(memory_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         # In-memory cache to avoid re-reading/decrypting on every search.
@@ -144,6 +162,12 @@ class MemoryStorage:
             return None
 
     def _write_json(self, filepath: Path, data: Any) -> None:
+        from app.utils.paths import memory_writes_allowed
+        if not memory_writes_allowed():
+            # Reference-set run (ZIYA_MEMORY_READONLY): the store is read,
+            # never changed.  Callers see success; nothing reaches disk.
+            logger.debug(f"memory store is read-only; skipped write to {filepath.name}")
+            return
         filepath.parent.mkdir(parents=True, exist_ok=True)
         plaintext = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
         temp = filepath.with_suffix(".tmp")
@@ -231,7 +255,9 @@ class MemoryStorage:
             None,
         )
         dump = memory.model_dump()
+        old_content = None
         if existing_idx is not None:
+            old_content = memories[existing_idx].get("content")
             memories[existing_idx] = dump
         else:
             memories.append(dump)
@@ -257,10 +283,10 @@ class MemoryStorage:
         self._save_memories(memories)
         logger.info(f"💾 Memory saved: {memory.id} [{memory.layer}] {memory.content[:60]}")
 
-        # Embed asynchronously — non-blocking, best-effort
+        # Embed best-effort; skipped when only counters/status changed.
         try:
-            from app.services.embedding_service import embed_and_cache
-            embed_and_cache(memory.id, memory.content)
+            _refresh_embedding(memory.id, memory.content,
+                               unchanged=(old_content == memory.content))
         except Exception as e:
             logger.debug(f"Embedding on save failed (non-fatal): {e}")
 
@@ -279,10 +305,13 @@ class MemoryStorage:
             return
         store = self._load_memories()
         by_id = {m.get("id"): i for i, m in enumerate(store)}
+        unchanged = set()
         for memory in memories:
             dump = memory.model_dump()
             idx = by_id.get(memory.id)
             if idx is not None:
+                if store[idx].get("content") == memory.content:
+                    unchanged.add(memory.id)
                 store[idx] = dump
             else:
                 by_id[memory.id] = len(store)
@@ -290,13 +319,45 @@ class MemoryStorage:
         self._save_memories(store)
         logger.debug(f"💾 Batch-saved {len(memories)} memories in one write")
 
-        # Refresh embeddings best-effort (non-fatal, per-memory).
+        # Refresh embeddings best-effort; unchanged content keeps its vector.
         try:
-            from app.services.embedding_service import embed_and_cache
             for memory in memories:
-                embed_and_cache(memory.id, memory.content)
+                _refresh_embedding(memory.id, memory.content,
+                                   unchanged=memory.id in unchanged)
         except Exception as e:
             logger.debug(f"Batch embedding refresh failed (non-fatal): {e}")
+
+    @_rmw_locked('_memories_file')
+    def patch_many(self, patches: Dict[str, Any]) -> int:
+        """Apply ``patches[id](record)`` to each stored record, in place, under
+        the file lock.  Returns how many records were patched.
+
+        For counter and status updates.  Unlike ``save_many`` it never writes
+        a caller's stale copy: the patch runs on the record as stored now, so
+        a memory deleted or edited since the caller loaded it is neither
+        resurrected nor reverted, and increments from concurrent callers
+        (threads or other processes) are not lost.  Unknown ids are skipped.
+        Never embeds; a patch must not change ``content``.
+        """
+        if not patches:
+            return 0
+        store = self._load_memories()
+        n = 0
+        try:
+            for rec in store:
+                fn = patches.get(rec.get("id"))
+                if fn is not None:
+                    fn(rec)
+                    n += 1
+        except Exception:
+            # The records are the read cache; drop a half-applied batch
+            # that was never written.
+            self._memories_cache = None
+            self._memories_cache_mtime = 0
+            raise
+        if n:
+            self._save_memories(store)
+        return n
 
     @_rmw_locked('_memories_file')
     def delete(self, memory_id: str) -> bool:
