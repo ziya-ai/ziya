@@ -69,6 +69,12 @@ import {
 import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffParts, findRejectedDiffIndices, isDiffRejectedMarkerBlock } from '../utils/diffUtils';
 import { formatMCPOutput, parsePythonLiteral } from '../utils/mcpFormatter';
 import { MemoryCard } from './MemoryCard';
+import { digestToolResult } from '../utils/toolDigest';
+import { DigestPreview, ToolResultViewer, chooseBody } from './ToolDigestView';
+import { TerminalPane } from './TerminalPane';
+import { buildTerminalPaneModel, isTerminalTool } from '../utils/terminalPane';
+import { looksLikeBlockedCommand, blockedCommandMessage, looksLikeMcpError } from '../utils/blockedCommand';
+import { useShadowPresence, markShadowUsed } from '../utils/shadowPresence';
 import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
@@ -941,6 +947,22 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
     // Aggressive cleaning corrupts diffs, code blocks, and template literals
     const cleanContent = formattedContent.trim();
 
+    // Shape digest (utils/toolDigest.ts): headline, chips and facts derived
+    // from the payload rather than its first 200 bytes.  Diffs, memory cards,
+    // hierarchical search results and the exempt tools keep their own bodies.
+    const digestEligible = !hierarchicalResults && !renderAsDiff
+        && (formattedOutput as any).renderAs !== 'memory'
+        && !['error', 'search_results', 'html_content'].includes(formattedOutput.type)
+        && !DIGEST_EXEMPT_TOOLS.has(actualToolName);
+    const digest = useMemo(
+        () => (digestEligible ? digestToolResult(actualToolName, content) : null),
+        [digestEligible, actualToolName, content]);
+    // Even an exempt tool gets a digest-shaped preview (first line + a few
+    // more) when collapsed; it is computed from the formatted text.
+    const previewDigest = useMemo(
+        () => digest ?? digestToolResult('', cleanContent),
+        [digest, cleanContent]);
+
     // Prism syntax highlighting: run on the *formatted* content (cleanContent),
     // not the raw tool output, so that file_read results get highlighted
     // after the formatter extracts the actual file text from the wrapper dict.
@@ -1125,6 +1147,59 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
         );
     }
 
+    // The expanded raw body; also the Raw tab of the digest viewer.
+    const rawBody = renderAsDiff ? (
+        <ToolDiffPreview diff={cleanContent} isDarkMode={isDarkMode} />
+    ) : hasSyntaxHighlighting && isShellHighlightLoaded && highlightedShellOutput ? (
+        <pre style={{
+            margin: 0,
+            padding: '16px',
+            color: colors.contentText,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            overflow: 'auto'
+        }}>
+            <code className={`language-${contentLanguage === 'sh' ? 'bash' : contentLanguage}`} dangerouslySetInnerHTML={{ __html: highlightedShellOutput }} />
+        </pre>
+    ) : shouldRenderAsMarkdown ? (
+        <div style={{
+            padding: '16px',
+            color: colors.contentText,
+            overflow: 'auto',
+            fontSize: '14px',
+            lineHeight: '1.3'
+        }}
+            dangerouslySetInnerHTML={{ __html: renderedHtml }}
+        />
+    ) : (
+        containsAnsi(cleanContent) ? (
+            <pre style={{
+                margin: 0,
+                padding: '16px',
+                color: colors.contentText,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                overflow: 'auto'
+            }}>
+                <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent, isDarkMode ? 'dark' : 'light') }} />
+            </pre>
+        ) : (
+            <pre style={{
+                margin: 0,
+                padding: '16px',
+                color: colors.contentText,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                overflow: 'auto'
+            }}>
+                {cleanContent}
+            </pre>
+        )
+    );
+    const bodyMode = chooseBody(digest, !!shouldShowCollapsed);
+    // Header-right: size and type from the digest, else the formatter's summary.
+    const byline = digest?.byline ?? summary;
+
     return (
         <div style={{
             backgroundColor: colors.bg,
@@ -1161,7 +1236,7 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
                                 e.stopPropagation();
                                 setIsExpanded(!isExpanded);
                             }}>
-                                {isExpanded ? '▼ Collapse' : '▶ Expand'} {summary && `(${summary})`}
+                                {isExpanded ? '▼ Collapse' : '▶ Expand'} {byline && `(${byline})`}
                             </div>
                         )}
                     </div>
@@ -1169,108 +1244,15 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
             </div>
 
             {shouldShowCollapsed && !isExpanded ? (
-                (() => {
-                    const firstLine = cleanContent.split('\n')[0];
-                    const truncatedFirstLine = firstLine.length > 200 ? firstLine.substring(0, 200) + '...' : firstLine;
-                    // Parse markdown for the preview line
-                    const previewHtml = shouldRenderAsMarkdown ? marked.parseInline(truncatedFirstLine) : truncatedFirstLine;
-
-                    return (
-                        <div
-                            style={{
-                                padding: '16px',
-                                color: colors.contentText,
-                                fontSize: '14px',
-                                cursor: 'pointer'
-                            }}
-                            onClick={() => setIsExpanded(true)}
-                        >
-                            {cleanContent ? (
-                                <div>
-                                    {shouldRenderAsMarkdown ? (
-                                        <div style={{
-                                            margin: 0,
-                                            padding: 0,
-                                            whiteSpace: 'pre-wrap',
-                                            wordBreak: 'break-word'
-                                        }} dangerouslySetInnerHTML={{ __html: typeof previewHtml === 'string' ? previewHtml : '' }} />
-                                    ) : (
-                                        <pre style={{
-                                            margin: 0,
-                                            padding: 0,
-                                            whiteSpace: 'pre-wrap',
-                                            wordBreak: 'break-word',
-                                            fontFamily: 'monospace'
-                                        }}>
-                                            {truncatedFirstLine}
-                                        </pre>
-                                    )}
-                                    <div style={{
-                                        marginTop: '8px',
-                                        fontStyle: 'italic',
-                                        textAlign: 'center',
-                                        opacity: 0.7
-                                    }}>
-                                        {summary}{firstLine.length > 200 ? ' (preview truncated)' : ''} - Click to expand
-                                    </div>
-                                </div>
-                            ) : (
-                                <div style={{ fontStyle: 'italic', textAlign: 'center' }}>
-                                    {summary} - Click to expand
-                                </div>
-                            )}
-                        </div>
-                    );
-                })()
+                <div style={{ color: colors.contentText }}>
+                    <DigestPreview digest={previewDigest} isDarkMode={isDarkMode} onExpand={() => setIsExpanded(true)} />
+                </div>
+            ) : bodyMode === 'viewer' && digest ? (
+                <div style={{ color: colors.contentText }}>
+                    <ToolResultViewer digest={digest} isDarkMode={isDarkMode} raw={rawBody} />
+                </div>
             ) : (
-                renderAsDiff ? (
-                    <ToolDiffPreview diff={cleanContent} isDarkMode={isDarkMode} />
-                ) : hasSyntaxHighlighting && isShellHighlightLoaded && highlightedShellOutput ? (
-                    <pre style={{
-                        margin: 0,
-                        padding: '16px',
-                        color: colors.contentText,
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        overflow: 'auto'
-                    }}>
-                        <code className={`language-${contentLanguage === 'sh' ? 'bash' : contentLanguage}`} dangerouslySetInnerHTML={{ __html: highlightedShellOutput }} />
-                    </pre>
-                ) : shouldRenderAsMarkdown ? (
-                    <div style={{
-                        padding: '16px',
-                        color: colors.contentText,
-                        overflow: 'auto',
-                        fontSize: '14px',
-                        lineHeight: '1.3'
-                    }}
-                        dangerouslySetInnerHTML={{ __html: renderedHtml }}
-                    />
-                ) : (
-                    containsAnsi(cleanContent) ? (
-                        <pre style={{
-                            margin: 0,
-                            padding: '16px',
-                            color: colors.contentText,
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                            overflow: 'auto'
-                        }}>
-                            <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent, isDarkMode ? 'dark' : 'light') }} />
-                        </pre>
-                    ) : (
-                        <pre style={{
-                            margin: 0,
-                            padding: '16px',
-                            color: colors.contentText,
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                            overflow: 'auto'
-                        }}>
-                            {cleanContent}
-                        </pre>
-                    )
-                )
+                rawBody
             )}
         </div>
     );
