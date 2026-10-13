@@ -26,9 +26,17 @@ hit can be handed straight to chat_read.
 Trust: results are past model output and past tool results, not
 user-authored instructions.  The tools are deliberately NOT in the
 high-trust set, so their results are wrapped at trust="medium".
+
+Threading: every execute() is ``async def`` but the work is disk-bound
+(read + decrypt every chat file in scope).  That work runs under
+``asyncio.to_thread``; the stall watchdog caught the event loop inside
+``search_chats`` -> ``_read_chat_data`` -> ``read_bytes`` (2026-10-09)
+when it ran inline.  tests/test_chat_history_tools_not_event_loop_blocking.py
+enforces this.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -281,7 +289,8 @@ class ChatSearchTool(BaseMCPTool):
 
         from app.storage.chat_search import search_chats
         t0 = time.perf_counter()
-        raw = search_chats(
+        raw = await asyncio.to_thread(
+            search_chats,
             ziya_home=scope["ziya_home"],
             project_id=project_id or "",
             query=query,
@@ -423,7 +432,7 @@ class ChatReadTool(BaseMCPTool):
         include_muted = bool(kwargs.get("include_muted", True))
 
         scope = _resolve_scope()
-        loaded = _load_chat(scope["ziya_home"], chat_id)
+        loaded = await asyncio.to_thread(_load_chat, scope["ziya_home"], chat_id)
         if loaded is None:
             return {"error": True,
                     "message": f"No conversation found with id {chat_id!r}."}
@@ -601,7 +610,8 @@ class ChatListTool(BaseMCPTool):
         rows: List[Dict[str, Any]] = []
         for pid in pids:
             try:
-                summaries = ChatStorage(projects_dir / pid).list_summaries()
+                summaries = await asyncio.to_thread(
+                    ChatStorage(projects_dir / pid).list_summaries)
             except Exception as e:
                 logger.debug("chat_list: list_summaries failed for %s: %s", pid, e)
                 continue

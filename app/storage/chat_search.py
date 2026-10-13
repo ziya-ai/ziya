@@ -22,6 +22,7 @@ Read-only: this module never mutates or deletes files.  Inactive chats
 
 import math
 import json
+import re
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -90,31 +91,44 @@ def _to_searchable_text(content) -> str:
     return ""
 
 
-def _build_match(content_str: str, search_term: str, term_len: int,
+def compile_query(query: str, case_sensitive: bool = False) -> "re.Pattern[str]":
+    """Turn a search string into the pattern the scan matches with.
+
+    Each whitespace run in the query matches any whitespace run in the text,
+    so ``⏱️ STALL`` finds a log line written ``⏱️  STALL`` (two spaces, as the
+    stall warning is formatted) and a phrase typed on one line finds the same
+    words wrapped across a newline.  Everything else is literal: no wildcards,
+    no word stemming.  The frontend fallback (frontend/src/utils/searchPattern.ts)
+    builds the identical pattern so local and server results agree.
+    """
+    tokens = query.split()
+    if not tokens:
+        return re.compile(r"(?!x)x")  # matches nothing
+    body = r"\s+".join(re.escape(t) for t in tokens)
+    return re.compile(body, 0 if case_sensitive else re.IGNORECASE)
+
+
+def _build_match(content_str: str, pattern: "re.Pattern[str]",
                  index: int, role: str, timestamp: int,
-                 max_snippet_length: int, case_sensitive: bool) -> Optional[dict]:
+                 max_snippet_length: int) -> Optional[dict]:
     """Build one MessageMatch dict, or None if the term isn't present.
 
     Snippet/highlight construction mirrors the original client logic so the
-    rendered result matches what users saw with the old local search.
+    rendered result matches what users saw with the old local search.  Each
+    highlight carries its own length because a whitespace-tolerant match can
+    span more characters than the query itself.
     """
-    haystack = content_str if case_sensitive else content_str.lower()
-    if search_term not in haystack:
-        return None
-
-    occurrences = []
-    pos = 0
-    while pos < len(haystack):
-        found = haystack.find(search_term, pos)
-        if found == -1:
-            break
-        occurrences.append({"start": found, "length": term_len})
-        pos = found + term_len
+    occurrences = [
+        {"start": m.start(), "length": m.end() - m.start()}
+        for m in pattern.finditer(content_str)
+        if m.end() > m.start()
+    ]
 
     if not occurrences:
         return None
 
     first = occurrences[0]["start"]
+    term_len = occurrences[0]["length"]
     snippet_start = max(0, first - 50)
     snippet_end = min(len(content_str), first + term_len + 100)
     snippet = content_str[snippet_start:snippet_end]
@@ -153,16 +167,14 @@ def _read_chat_data(chat_file: Path) -> Optional[dict]:
         return None
 
 
-def _search_one_chat(data: dict, project_id: str, search_term: str,
-                     case_sensitive: bool, max_snippet_length: int) -> Optional[dict]:
+def _search_one_chat(data: dict, project_id: str, pattern: "re.Pattern[str]",
+                     max_snippet_length: int) -> Optional[dict]:
     """Search a single chat dict; return a SearchResult dict or None."""
     if data.get("isActive") is False:
         return None
 
-    term_len = len(search_term)
     title = data.get("title") if isinstance(data.get("title"), str) else ""
-    title_hay = title if case_sensitive else title.lower()
-    title_matches = search_term in title_hay
+    title_matches = pattern.search(title) is not None
 
     matches: List[dict] = []
     messages = data.get("messages") or []
@@ -181,9 +193,8 @@ def _search_one_chat(data: dict, project_id: str, search_term: str,
             ts = (raw_ts or data.get("lastActiveAt")
                   or data.get("lastAccessedAt") or 0)
             match = _build_match(
-                content_str, search_term, term_len, index,
-                msg.get("role") or "assistant", ts,
-                max_snippet_length, case_sensitive,
+                content_str, pattern, index,
+                msg.get("role") or "assistant", ts, max_snippet_length,
             )
             if match:
                 matches.append(match)
@@ -251,7 +262,7 @@ def search_chats(ziya_home: Path, project_id: str, query: str,
     id_filter = set(conversation_ids) if conversation_ids else None
 
     t0 = time.perf_counter()
-    search_term = query if case_sensitive else query.lower()
+    pattern = compile_query(query, case_sensitive)
     projects_dir = ziya_home / "projects"
     if not projects_dir.exists():
         return []
@@ -277,7 +288,7 @@ def search_chats(ziya_home: Path, project_id: str, query: str,
                 continue
             n_files += 1
             result = _search_one_chat(
-                data, proj_dir.name, search_term, case_sensitive, max_snippet_length
+                data, proj_dir.name, pattern, max_snippet_length
             )
             if result:
                 seen_ids.add(chat_id)
