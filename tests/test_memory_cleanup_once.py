@@ -5,7 +5,7 @@ It used to re-judge the entire corpus on every organize run.  The
 memory_organize system job fires about every 6h whenever any orphan exists
 (217 runs on the live store by 2026-09-26), so each memory faced the LLM
 judge ~4x a day indefinitely; even a small false-positive rate compounded
-into the loss of most Kuiper knowledge (172 -> 48 memories, 09-22 -> 09-26).
+into the loss of most of one project's knowledge (172 -> 48 memories, 09-22 -> 09-26).
 
 Pinned here:
   - a memory the judge kept is never sent to the judge again
