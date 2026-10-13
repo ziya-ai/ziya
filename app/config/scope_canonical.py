@@ -17,8 +17,13 @@ Security model (docs/ASR/task-authorization-design.md section 4.0):
     private key (/etc/ziya/approve_ed25519). Verification uses the
     world-readable public key (/etc/ziya/approve_ed25519.pub) -- the agent
     reading the public key is harmless.
-  - Absent / invalid signature, or a delta that does not match the signed one
-    -> escalations are dropped and policy falls back to the floor.
+  - Absent / invalid signature, or a delta that is not covered by the signed
+    one -> escalations are dropped and policy falls back to the floor.
+  - A plain signature covers exactly its delta.  A *bundled* signature
+    (``v2.<signed delta>.<signature>``, see rebind_signature) covers any
+    subset of the delta root signed, so removing one signed privilege keeps
+    the rest live.  It is a repackaged root signature, never a new one, and
+    can authorize nothing root did not sign.
   - An EMPTY delta (config at or within the floor -- including narrowing) needs
     NO signature and is applied live. Only privilege *increments* require
     approval. This is what keeps the shell-config / write-policy GUIs live for
@@ -139,8 +144,9 @@ def _floor() -> Dict[str, set]:
 
     The floor MUST be plugin-independent. The three parties to the signature
     gate compute it in different process contexts: the signer (ziya_approve)
-    and the shell_server enforcer do not initialize plugins, while the web
-    server (status API) does. Using the plugin-merged config here made the
+    does not initialize plugins, the shell_server enforcer registers only
+    the shell-config providers, and the web server (status API) runs the
+    full init. Using the plugin-merged config here made the
     status API compute a different delta than the bytes that were actually
     signed, producing a false "unsigned escalation" banner even though the
     enforcer accepted the signature. Use the base config so all three agree.
@@ -254,20 +260,9 @@ def _load_ephemeral_public_key(pubkey_b64: Optional[str]):
     return Ed25519PublicKey.from_public_bytes(raw)
 
 
-def verify_delta_signature(
-    delta: Dict[str, Any],
-    sig_b64: Optional[str],
-    public_key_path: Optional[str] = None,
-) -> bool:
-    """True iff `sig_b64` is a valid root signature over `delta`.
-
-    Empty delta -> True (nothing to authorize). Missing key/sig, or any
-    verification failure -> False (fail closed).
-    """
-    if not delta:
-        return True
-    if not sig_b64:
-        return False
+def _verify_exact(delta: Dict[str, Any], sig_b64: str,
+                  public_key_path: Optional[str] = None) -> bool:
+    """True iff `sig_b64` is a valid root signature over exactly `delta`."""
     from cryptography.exceptions import InvalidSignature
 
     key = _load_public_key(public_key_path)
@@ -284,6 +279,133 @@ def verify_delta_signature(
         return False
     except Exception:
         return False
+
+
+# ── Narrowed (bundled) signatures ────────────────────────────────────────────
+# Removing part of a signed escalation (dropping one signed command) leaves a
+# delta that is a strict subset of what root approved: less privilege, yet a
+# plain signature no longer verifies because it is over the exact delta.  A
+# bundled signature carries the signed delta beside the signature:
+#
+#     v2.<base64 canonical(signed_delta)>.<base64 signature>
+#
+# and authorizes any delta that is a subset of the signed one.  It is only
+# ever made by repackaging a signature that already verifies
+# (rebind_signature); nothing new is signed, and a forged bundle fails because
+# the signature must still verify over the bundled delta with the root key.
+# ziya-approve keeps writing plain signatures over the exact delta.  The base64
+# alphabet has no '.', so a plain signature can never look like a bundle.
+_BUNDLE_PREFIX = "v2."
+
+
+def _is_wellformed_delta(d: Any) -> bool:
+    """A non-empty delta of the shape compute_delta produces."""
+    if not isinstance(d, dict) or not d:
+        return False
+    for k, v in d.items():
+        if k == "YOLO_MODE":
+            if v is not True:
+                return False
+        elif k in _LIST_FIELDS:
+            if not isinstance(v, list) or not v or not all(isinstance(x, str) for x in v):
+                return False
+        else:
+            return False
+    return True
+
+
+def delta_is_subset(delta: Dict[str, Any], signed: Dict[str, Any]) -> bool:
+    """True iff every privilege in `delta` is also in `signed`."""
+    for k, v in delta.items():
+        if k == "YOLO_MODE":
+            if v and signed.get("YOLO_MODE") is not True:
+                return False
+        elif not set(v or []) <= set(signed.get(k) or []):
+            return False
+    return True
+
+
+def bundle_signature(signed_delta: Dict[str, Any], sig_b64: str) -> str:
+    """Package a signature with the delta it was made over."""
+    enc = base64.b64encode(canonical(signed_delta)).decode("ascii")
+    return f"{_BUNDLE_PREFIX}{enc}.{sig_b64}"
+
+
+def _unbundle_signature(value: Any):
+    """``(signed_delta, sig_b64)`` for a well-formed bundle, else None."""
+    if not isinstance(value, str) or not value.startswith(_BUNDLE_PREFIX):
+        return None
+    try:
+        enc, raw = value[len(_BUNDLE_PREFIX):].split(".", 1)
+        signed = json.loads(base64.b64decode(enc, validate=True))
+    except Exception:
+        return None
+    if not raw or not _is_wellformed_delta(signed):
+        return None
+    return signed, raw
+
+
+def verify_delta_signature(
+    delta: Dict[str, Any],
+    sig_b64: Optional[str],
+    public_key_path: Optional[str] = None,
+) -> bool:
+    """True iff `sig_b64` authorizes `delta`.
+
+    A plain signature must be a valid root signature over exactly `delta`; a
+    bundled one must be a valid root signature over its bundled delta, of
+    which `delta` is a subset.  Empty delta -> True (nothing to authorize).
+    Missing key/sig, a malformed bundle, or any verification failure -> False
+    (fail closed).
+    """
+    if not delta:
+        return True
+    if not sig_b64:
+        return False
+    if sig_b64.startswith(_BUNDLE_PREFIX):
+        bundled = _unbundle_signature(sig_b64)
+        if bundled is None:
+            return False
+        signed, raw = bundled
+        return delta_is_subset(delta, signed) and _verify_exact(signed, raw, public_key_path)
+    return _verify_exact(delta, sig_b64, public_key_path)
+
+
+def rebind_signature(sig_value: Optional[str], prior_delta: Dict[str, Any],
+                     new_delta: Dict[str, Any],
+                     public_key_path: Optional[str] = None) -> Optional[str]:
+    """The signature value that authorizes `new_delta`, derived from
+    `sig_value` (which accompanied an env whose delta was `prior_delta`), or
+    None when there is none.
+
+    - empty `new_delta`: None (nothing to authorize; a stale signature goes).
+    - `new_delta == prior_delta`: `sig_value` unchanged, not re-verified, so
+      an edit that leaves the escalation alone never changes signature state.
+    - `new_delta` equal to what the signature verifiably covers: the plain
+      signature; a strict subset of it: a bundled signature.
+    - anything else (wider or different delta, invalid signature): None.
+
+    Never signs anything and never raises.
+    """
+    if not new_delta or not sig_value:
+        return None
+    if new_delta == prior_delta:
+        return sig_value
+    try:
+        if sig_value.startswith(_BUNDLE_PREFIX):
+            bundled = _unbundle_signature(sig_value)
+            if bundled is None:
+                return None
+            signed, raw = bundled
+        else:
+            signed, raw = prior_delta, sig_value
+        if not signed or not delta_is_subset(new_delta, signed):
+            return None
+        if not _verify_exact(signed, raw, public_key_path):
+            return None
+        return raw if new_delta == signed else bundle_signature(signed, raw)
+    except Exception:
+        return None
 
 
 # ── CLI-task (tasks.yaml) escalation hashing ──────────────────────────────────

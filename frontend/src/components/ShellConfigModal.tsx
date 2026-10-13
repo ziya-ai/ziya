@@ -604,8 +604,9 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                     This configuration requests commands/paths beyond the
                                     default safe set, but they are <b>not signed</b>, so the
                                     shell server is ignoring them and running at the default
-                                    floor. Editing a privileged field voids any prior
-                                    approval until you re-sign.
+                                    floor. Adding a command or path beyond the default set
+                                    voids the prior approval until you re-sign; removing
+                                    one, or editing within the default set, keeps it.
                                 </div>
                                 {Object.entries(config.signatureStatus?.pendingDelta ?? {}).map(([field, vals]) => (
                                     <div key={field} style={{ fontFamily: 'monospace', fontSize: 12 }}>

@@ -52,12 +52,15 @@ def _carry_file_signature(new_env: dict, file_env: dict) -> dict:
     """Copy the on-disk ZIYA_SCOPE_SIG into *new_env* when it still applies.
 
     A signature covers an escalation delta, not a raw field list. If the env
-    being spawned has the same delta as the signed file (a reorder, or an edit
-    to a non-privileged field like the timeout), the file's signature is valid
-    for it and dropping it would clamp the subprocess to the floor for no
-    reason — while the modal, which reads the file, kept saying "authorized".
-    A changed delta gets no signature: the subprocess then fails closed with
-    an accurate "no signature accompanied the escalated values" notice.
+    being spawned has the same delta as the signed file (a reorder, a
+    floor-only edit, or an edit to a non-privileged field like the timeout),
+    the file's signature is valid for it as-is; if its delta is a subset of
+    what the signature covers (an escalation was removed), it gets a bundled
+    signature (scope_canonical.rebind_signature). Dropping it in either case
+    would clamp the subprocess to the floor for no reason — while the modal,
+    which reads the file, kept saying "authorized". A widened delta gets no
+    signature: the subprocess then fails closed with an accurate "no
+    signature accompanied the escalated values" notice.
     The subprocess re-verifies either way; this never widens anything.
     """
     out = dict(new_env)
@@ -67,13 +70,15 @@ def _carry_file_signature(new_env: dict, file_env: dict) -> dict:
         return out
     try:
         from app.config import scope_canonical as sc
-        new_delta = sc.compute_delta(sc.parse_env_scope(out))
-        file_delta = sc.compute_delta(sc.parse_env_scope(file_env))
+        carried = sc.rebind_signature(
+            sig,
+            sc.compute_delta(sc.parse_env_scope(file_env)),
+            sc.compute_delta(sc.parse_env_scope(out)))
     except Exception as e:  # noqa: BLE001 — conservative: no sig on error
         logger.warning(f"signature carry-forward check failed: {e}")
         return out
-    if new_delta and new_delta == file_delta:
-        out["ZIYA_SCOPE_SIG"] = sig
+    if carried:
+        out["ZIYA_SCOPE_SIG"] = carried
     return out
 
 
@@ -1091,22 +1096,15 @@ async def update_shell_config(config: ShellConfig):
                 if "env" not in mcp_config["mcpServers"]["shell"]:
                     mcp_config["mcpServers"]["shell"]["env"] = {}
 
-                # Snapshot the privilege-bearing fields as they currently exist on
-                # disk, BEFORE we overwrite them, so we can tell whether this save
-                # actually changes a gated field (see signature-voiding below).
-                # Iterate sc._LIST_FIELDS -- the single source of truth for which
-                # env keys are escalation-bearing -- so this cannot drift from the
-                # canonical layer that the signer and verifier use.
+                # Snapshot the escalation DELTA on disk before overwriting, so we
+                # can tell whether this save changes what the signature covers
+                # (see signature-voiding below).  The signature is over the delta
+                # beyond the floor, not over the raw field values: a floor-only
+                # edit (e.g. ticking a floor git operation) leaves it valid.
+                # Same comparison _carry_file_signature makes for the spawn env.
                 from app.config import scope_canonical as sc
-                _old_env = mcp_config["mcpServers"]["shell"]["env"]
-                _PRIV_ATTRS = {
-                    "ALLOW_COMMANDS": config.allowedCommands,
-                    "SAFE_WRITE_PATHS": config.safeWritePaths,
-                    "ALLOWED_WRITE_PATTERNS": config.allowedWritePatterns,
-                    "ALLOWED_INTERPRETERS": config.allowedInterpreters,
-                    "SAFE_GIT_OPERATIONS": config.safeGitOperations,
-                }
-                _old_priv = {k: set(filter(None, _old_env.get(k, "").split(","))) for k in sc._LIST_FIELDS}
+                _old_delta = sc.compute_delta(sc.parse_env_scope(
+                    dict(mcp_config["mcpServers"]["shell"]["env"])))
                 
                 mcp_config["mcpServers"]["shell"]["env"]["ALLOW_COMMANDS"] = ",".join(config.allowedCommands)
                 mcp_config["mcpServers"]["shell"]["env"]["GIT_OPERATIONS_ENABLED"] = "true" if config.gitOperationsEnabled else "false"
@@ -1118,25 +1116,29 @@ async def update_shell_config(config: ShellConfig):
                 mcp_config["mcpServers"]["shell"]["env"]["ALWAYS_BLOCKED_COMMANDS"] = ",".join(config.alwaysBlocked)
                 mcp_config["mcpServers"]["shell"]["enabled"] = config.enabled
                 
-                # Contract (per the shell-config modal): "editing a privileged
-                # field voids any prior approval until you re-sign." A persisted
-                # ZIYA_SCOPE_SIG covers a specific delta; if a gated field changed
-                # the old signature no longer describes this config, so drop it.
-                # Compare as sets so a pure reorder does not force a needless
-                # re-sign. Driven off sc._LIST_FIELDS for the reasons above; a
-                # gated field absent from _PRIV_ATTRS defaults to the empty set,
-                # which differs from any non-empty stored value and thus voids
-                # the signature conservatively rather than keeping a stale one.
-                _new_priv = {k: set(_PRIV_ATTRS.get(k, [])) for k in sc._LIST_FIELDS}
-                if _new_priv != _old_priv:
-                    mcp_config["mcpServers"]["shell"]["env"].pop("ZIYA_SCOPE_SIG", None)
-
                 # ASR mandate: YOLO_MODE must never be persisted to disk. This
                 # branch is a read-modify-write that otherwise preserves any
                 # pre-existing keys (e.g. ZIYA_SCOPE_SIG), so a YOLO_MODE value
                 # that ever reached the file would survive future saves. Strip
                 # it unconditionally so it can only ever live in process memory.
                 mcp_config["mcpServers"]["shell"]["env"].pop("YOLO_MODE", None)
+
+                # A persisted ZIYA_SCOPE_SIG covers one signed delta. If this
+                # save widened the escalation, the signature no longer covers
+                # the config: drop it. If it only removed escalations (a strict
+                # subset of what was signed), rebind it as a bundled signature
+                # so the remaining approved privileges stay live.  Edits within
+                # the floor, reorders and non-privileged fields leave the delta,
+                # and so the signature, intact.  Computed after the YOLO strip
+                # so it reflects exactly what is written.
+                _env_out = mcp_config["mcpServers"]["shell"]["env"]
+                _new_delta = sc.compute_delta(sc.parse_env_scope(_env_out))
+                _rebound = sc.rebind_signature(
+                    _env_out.get(sc.SIG_ENV_KEY), _old_delta, _new_delta)
+                if _rebound:
+                    _env_out[sc.SIG_ENV_KEY] = _rebound
+                else:
+                    _env_out.pop(sc.SIG_ENV_KEY, None)
                 
                 # Save back to file
                 with open(config_path, 'w') as f:
