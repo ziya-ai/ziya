@@ -42,12 +42,18 @@ function headers(): Record<string, string> {
   return h;
 }
 
-function getProjectId(): string {
-  return (window as any).__ZIYA_CURRENT_PROJECT_ID__ || 'default';
+function getProjectId(override?: string | null): string {
+  return override || (window as any).__ZIYA_CURRENT_PROJECT_ID__ || 'default';
 }
 
-function base(chatId: string): string {
-  return `/api/v1/projects/${getProjectId()}/chats/${chatId}/handoff`;
+/**
+ * Pass the conversation's OWN projectId.  The window's current project is
+ * only a fallback: with windows open on several projects, or a global
+ * conversation shown outside its home, the two differ, and a commit routed
+ * by the window wrote the continuation into the wrong project.
+ */
+function base(chatId: string, projectId?: string | null): string {
+  return `/api/v1/projects/${getProjectId(projectId)}/chats/${chatId}/handoff`;
 }
 
 async function check<T>(res: Response, what: string): Promise<T> {
@@ -59,27 +65,28 @@ async function check<T>(res: Response, what: string): Promise<T> {
   return res.json();
 }
 
-export async function getHandoffState(chatId: string): Promise<HandoffState> {
-  return check(await fetch(base(chatId), { headers: headers() }), 'Load handoff state');
+export async function getHandoffState(chatId: string, projectId?: string | null): Promise<HandoffState> {
+  return check(await fetch(base(chatId, projectId), { headers: headers() }), 'Load handoff state');
 }
 
 /** Edit the living draft on a SOURCE.  Empty document clears it. */
-export async function editHandoffDraft(chatId: string, document: string) {
+export async function editHandoffDraft(chatId: string, document: string, projectId?: string | null) {
   return check<{ ok: boolean; draft: HandoffDocument | null; cleared?: boolean }>(
-    await fetch(`${base(chatId)}/draft`, { method: 'PATCH', headers: headers(), body: JSON.stringify({ document }) }),
+    await fetch(`${base(chatId, projectId)}/draft`, { method: 'PATCH', headers: headers(), body: JSON.stringify({ document }) }),
     'Save handoff draft');
 }
 
 /** Edit the inherited document on a CONTINUATION. */
-export async function editInheritedHandoff(chatId: string, document: string) {
+export async function editInheritedHandoff(chatId: string, document: string, projectId?: string | null) {
   return check<{ ok: boolean; handoff: HandoffDocument }>(
-    await fetch(base(chatId), { method: 'PATCH', headers: headers(), body: JSON.stringify({ document }) }),
+    await fetch(base(chatId, projectId), { method: 'PATCH', headers: headers(), body: JSON.stringify({ document }) }),
     'Save handoff document');
 }
 
 export async function commitHandoff(
   chatId: string, body: { document?: string; workingSet?: string[]; title?: string },
+  projectId?: string | null,
 ): Promise<HandoffCommitResponse> {
-  return check(await fetch(`${base(chatId)}/commit`, { method: 'POST', headers: headers(), body: JSON.stringify(body) }),
+  return check(await fetch(`${base(chatId, projectId)}/commit`, { method: 'POST', headers: headers(), body: JSON.stringify(body) }),
     'Create continuation');
 }

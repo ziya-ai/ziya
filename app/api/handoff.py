@@ -14,6 +14,11 @@ so it can retrieve any prior turn at full fidelity.
 
 The model's side of the same record is the handoff_write tool
 (app/mcp/tools/handoff_tools.py); both writers touch the same fields.
+
+Every handler here awaits nothing and does blocking chat-file I/O, so each
+is a plain ``def``: Starlette runs it on its worker threadpool instead of
+parking the event loop.  Guarded by
+tests/test_handoff_not_event_loop_blocking.py.
 """
 
 import re
@@ -44,6 +49,26 @@ def _load(storage, chat_id: str) -> dict:
     if not raw:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return raw
+
+
+def _resolve_source(project_id: str, chat_id: str):
+    """Load a conversation from its real home: ``(storage, project_id, raw)``.
+
+    A window sends the project it has open, not the conversation's own.  For
+    a GLOBAL conversation the two differ, and the open project can hold a
+    stale same-id copy with no messages (a shadow left by an earlier
+    cross-project sync).  Committing against that shadow put the
+    continuation in the wrong project, gave its document a 0-message
+    source, and wrote the forward link onto the shadow.  See
+    app/utils/chat_home.py for which copy is chosen; a continuation (empty
+    by construction) is found even when the window's project lacks it.
+    """
+    from app.utils.chat_home import resolve_chat_home
+    home = resolve_chat_home(project_id, get_project_dir(project_id), chat_id)
+    if home is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    home_pid, storage, raw = home
+    return storage, home_pid, raw
 
 
 def _save(storage, project_id: str, raw: dict, now: int) -> None:
@@ -82,9 +107,8 @@ def continuation_title(source_title: str) -> str:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}/handoff")
-async def get_handoff_state(project_id: str, chat_id: str):
-    storage = _storage(project_id)
-    raw = _load(storage, chat_id)
+def get_handoff_state(project_id: str, chat_id: str):
+    storage, project_id, raw = _resolve_source(project_id, chat_id)
     messages = raw.get("messages") or []
     draft = raw.get(DRAFT_FIELD)
     handoff = raw.get(HANDOFF_FIELD)
@@ -115,12 +139,11 @@ class DocumentBody(BaseModel):
 
 
 @router.patch("/api/v1/projects/{project_id}/chats/{chat_id}/handoff/draft")
-async def edit_draft(project_id: str, chat_id: str, body: DocumentBody):
+def edit_draft(project_id: str, chat_id: str, body: DocumentBody):
     """User edit of the living draft.  An empty document CLEARS the draft
     (the one way to stop the per-turn "update the draft" instruction short
     of committing)."""
-    storage = _storage(project_id)
-    raw = _load(storage, chat_id)
+    storage, project_id, raw = _resolve_source(project_id, chat_id)
     now = int(time.time() * 1000)
     text = (body.document or "").strip()
     if not text:
@@ -142,12 +165,11 @@ async def edit_draft(project_id: str, chat_id: str, body: DocumentBody):
 
 
 @router.patch("/api/v1/projects/{project_id}/chats/{chat_id}/handoff")
-async def edit_inherited(project_id: str, chat_id: str, body: DocumentBody):
+def edit_inherited(project_id: str, chat_id: str, body: DocumentBody):
     """User edit of a CONTINUATION's inherited document.  Takes effect on
     the child's next turn (the prelude re-reads the record); no message is
     created."""
-    storage = _storage(project_id)
-    raw = _load(storage, chat_id)
+    storage, project_id, raw = _resolve_source(project_id, chat_id)
     existing = raw.get(HANDOFF_FIELD)
     if not isinstance(existing, dict):
         raise HTTPException(status_code=400,
@@ -173,9 +195,8 @@ class CommitBody(BaseModel):
 
 
 @router.post("/api/v1/projects/{project_id}/chats/{chat_id}/handoff/commit")
-async def commit_handoff(project_id: str, chat_id: str, body: CommitBody):
-    storage = _storage(project_id)
-    src = _load(storage, chat_id)
+def commit_handoff(project_id: str, chat_id: str, body: CommitBody):
+    storage, project_id, src = _resolve_source(project_id, chat_id)
     now = int(time.time() * 1000)
 
     draft = src.get(DRAFT_FIELD) if isinstance(src.get(DRAFT_FIELD), dict) else {}
@@ -201,6 +222,10 @@ async def commit_handoff(project_id: str, chat_id: str, body: CommitBody):
         "folderId": src.get("folderId"),
         "groupId": src.get("groupId"),
         "isActive": True,
+        # Visible wherever the source is: a continuation of a global
+        # conversation that is not itself global disappears from the
+        # window the user was working in.
+        "isGlobal": bool(src.get("isGlobal")),
         "contextIds": src.get("contextIds") or [],
         "skillIds": src.get("skillIds") or [],
         "additionalFiles": (body.workingSet if body.workingSet is not None

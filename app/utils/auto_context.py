@@ -90,19 +90,21 @@ def _open_chat(conversation_id: str, project_root: str):
     Never registers a project or creates a chat record: a write that cannot be
     attributed to a persisted conversation is simply not recorded.
     """
-    from app.storage.chats import ChatStorage
     from app.storage.projects import ProjectStorage
+    from app.utils.chat_home import resolve_chat_home
     from app.utils.paths import get_project_dir, get_ziya_home
 
     project = ProjectStorage(get_ziya_home()).get_by_path(project_root)
     if not project:
         return None
-    storage = ChatStorage(get_project_dir(project.id))
-    chat_file = storage._chat_file(conversation_id)
-    chat_data = storage._read_json(chat_file)
-    if not chat_data:
+    # The window's project is not necessarily the conversation's home: a
+    # global conversation is stored in another project, and this project
+    # may hold an empty same-id shadow.  Record against the real copy.
+    home = resolve_chat_home(project.id, get_project_dir(project.id), conversation_id)
+    if home is None:
         return None
-    return storage, chat_file, chat_data
+    _pid, storage, chat_data = home
+    return storage, storage._chat_file(conversation_id), chat_data
 
 
 def _tokens_and_limit(abs_path: str, project_root: str) -> Tuple[int, int]:
