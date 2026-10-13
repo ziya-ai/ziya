@@ -101,7 +101,7 @@ async def test_end_to_end_diagnostics(tmp_path, monkeypatch, capsys):
 
     # --- /details payload ------------------------------------------------
     with patch("app.routes.mcp_routes.get_mcp_manager", return_value=m):
-        details = await get_mcp_server_details("context7")
+        details = get_mcp_server_details("context7")
     assert details["preflight_failure"]["code"] == "command_not_on_path"
     assert details["logs"], "logs must not be empty"
     report.append(f"  /details logs: {len(details['logs'])} line(s)")
@@ -114,7 +114,7 @@ async def test_end_to_end_diagnostics(tmp_path, monkeypatch, capsys):
     assert "filesystem" not in m.server_configs
     with patch("app.routes.mcp_routes.get_mcp_manager", return_value=m):
         with pytest.raises(_HTTPExc) as ei:
-            await get_mcp_server_details("filesystem")
+            get_mcp_server_details("filesystem")
     assert ei.value.status_code == 404
     report.append("  filesystem -> 404 (covered by findings panel)")
 
