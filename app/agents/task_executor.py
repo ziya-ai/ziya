@@ -1535,5 +1535,47 @@ async def execute_task_block(
         "duration_ms": elapsed_ms,
         "tool_calls": tool_call_count,
         "ts": time.time(),
+        # Structured verdict.  The run record is encrypted at rest and
+        # ``ok`` alone does not say WHY a task failed, so an operator
+        # reading events.jsonl after the fact had to reconstruct the
+        # self-assessment from text deltas.  Carry it, and the specific
+        # reason the executor flipped ok to false, on the event itself.
+        "self_assessment": self_assessment,
+        "failure_signature": assessment_signature if assessment_failed else None,
+        "failure_reason": _failure_reason(
+            assessment_failed, self_assessment, assessment_signature, decisions,
+        ),
     })
     return artifact
+
+
+def _failure_reason(
+    failed: bool,
+    self_assessment: Optional[Dict[str, str]],
+    signature: Optional[str],
+    decisions: List[str],
+) -> Optional[str]:
+    """One human-readable sentence for why a task was recorded failed.
+
+    The executor fails a task for one of four reasons — the model's own
+    ``false``/``partial`` verdict, an empty summary, a stream truncated at a
+    tool boundary, or a missing contracted output — and each leaves a
+    differently-shaped trace (a rationale attribute, a decisions entry).
+    Normalise to a single string so the event consumer does not re-derive
+    the executor's rules.  ``None`` when the task passed.
+    """
+    if not failed:
+        return None
+    sig = signature or ""
+    if sig.startswith("self_assessment_") and self_assessment:
+        verdict = self_assessment.get("objective_met", "unknown")
+        rationale = (self_assessment.get("rationale") or "").strip()
+        return (f"self_assessment objective_met={verdict}"
+                + (f": {rationale}" if rationale else ""))
+    # Non-verdict failures record their explanation as a decision whose
+    # prefix is the signature kind ("empty_summary:", "output_contract:").
+    kind = sig.split(":", 1)[0]
+    for d in decisions:
+        if kind and d.startswith(kind):
+            return d
+    return sig or "failed"

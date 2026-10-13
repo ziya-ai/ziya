@@ -207,7 +207,10 @@ class _CapturingStorage:
         self.summaries = []
         self.artifacts = []
 
-    def write_iteration_artifact(self, run_id, block_id, index, artifact):
+    # Same signature as TaskRunStorage.write_iteration_artifact; the
+    # executor passes pass_key for nested loops.
+    def write_iteration_artifact(self, run_id, block_id, index, artifact,
+                                 pass_key=None):
         self.artifacts.append((block_id, index, artifact))
 
     def append_iteration_summary(self, run_id, block_id, summary):
