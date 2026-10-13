@@ -593,6 +593,7 @@ The model interacts with memory through six builtin MCP tools:
 | `memory_save` | Direct save (user-initiated via `/remember`) |
 | `memory_propose` | Agent proposes a memory for later user approval |
 | `memory_retract_proposal` | Agent withdraws a proposal **it created this session** (own-session only; never approves — approval stays the user's gate) |
+| `memory_delete` | Agent deletes a durable memory by id. One it saved with `memory_save` in **this** conversation goes without a prompt; any other (promoted from proposals, extracted, or from another conversation) opens the consent panel showing the memory's text. Same deletion path as the UI (`DELETE /api/v1/memory/{id}`), so mind-map refs and the embedding go too |
 | `memory_context` | Browse mind-map handles — omit node_id for root overview |
 | `memory_expand` | Load all memories under a node and its descendants |
 

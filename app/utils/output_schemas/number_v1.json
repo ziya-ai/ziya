@@ -1,0 +1,28 @@
+{
+  "$id": "ziya:number/v1",
+  "title": "number",
+  "description": "A measured number: a ledger claim reference {claim, field?}, or (only when claims are not required) a literal {value, unit?, source?}.",
+  "oneOf": [
+    {
+      "type": "object",
+      "title": "claim reference",
+      "properties": {
+        "claim": {"type": "string", "minLength": 1, "description": "ledger claim id, optionally pinned with @vN"},
+        "field": {"type": "string", "minLength": 1, "description": "field of the claim to cite, e.g. distribution.median (default: value)"}
+      },
+      "required": ["claim"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "title": "literal",
+      "properties": {
+        "value": {"type": "number", "description": "the number"},
+        "unit": {"type": "string", "description": "unit of the number"},
+        "source": {"type": "string", "description": "where the number came from (free text; recorded as unverified)"}
+      },
+      "required": ["value"],
+      "additionalProperties": false
+    }
+  ]
+}

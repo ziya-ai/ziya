@@ -212,7 +212,9 @@ def format_records(records: List[Dict[str, Any]], max_chars: int = 12000) -> str
             if r.get("truncated"):
                 lines.append("     … (continues in next record)")
         elif t == "exit":
-            lines.append(f"[{seq}] → exit {r.get('code')}")
+            code = r.get("code")
+            lines.append(f"[{seq}] → exit {code}" if code is not None
+                         else f"[{seq}] → done (exit code unknown)")
         elif t == "meta":
             ev = r.get("event")
             data = r.get("data") or {}
@@ -295,6 +297,26 @@ def wait_idle(ref: str, quiet_ms: int = 800, timeout_ms: int = 15000) -> Dict[st
     # Socket-level timeout must outlast the server-side wait.
     return request(entry, "wait_idle", quiet_ms=quiet_ms, timeout_ms=timeout_ms,
                    timeout=(timeout_ms / 1000.0) + 5.0)
+
+
+WAIT_CHUNK_MS = 60000   # == sock_server.ShadowSocketServer.WAIT_CAP_MS
+
+
+def wait(ref: str, *, until=None, cmd_seq=None, from_seq=None, pattern=None,
+         lines: int = 5, quiet_ms: int = 800, timeout_ms: int = WAIT_CHUNK_MS,
+         max_tail_records: int = 40) -> Dict[str, Any]:
+    """One ``wait`` hop (design/shadow-wait.md): blocks until a condition
+    holds or ``timeout_ms`` (clamped to WAIT_CHUNK_MS) passes.  Longer waits
+    chain hops, passing the returned ``from_seq`` back so each hop re-reads
+    the same window and the last one's result is complete.
+    """
+    entry = resolve_one(ref)
+    chunk = max(0, min(int(timeout_ms), WAIT_CHUNK_MS))
+    params = {"until": until, "cmd_seq": cmd_seq, "from_seq": from_seq, "pattern": pattern,
+              "lines": lines, "quiet_ms": quiet_ms, "timeout_ms": chunk,
+              "max_tail_records": max_tail_records}
+    params = {k: v for k, v in params.items() if v is not None}
+    return request(entry, "wait", timeout=chunk / 1000.0 + 5.0, **params)
 
 
 class LeaseKeepalive:

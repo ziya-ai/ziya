@@ -125,7 +125,8 @@ class TaskCardLaunchTool(BaseMCPTool):
     description: str = (
         "[DIRECT] Launch a SAVED task card — create a run and start it "
         "executing in the background — and return the run id immediately "
-        "(poll the task-run views for status and the final artifact).  "
+        "(read its status, failures and outputs later with "
+        "task_run_read(run_id=...)).  "
         "Use task_card_list to find the card_id.  The model may launch "
         "only a NON-ESCALATING card (no shell grants, no writes outside "
         ".ziya//tmp); an escalating card is refused and must be launched "
@@ -191,16 +192,33 @@ class TaskCardLaunchTool(BaseMCPTool):
         # records one, and without it a model-launched run executes
         # invisibly.  Same unanchored binding task_card_stage uses; the
         # frontend re-fetches bindings on this tool's result.
+        #
+        # If the card was STAGED in this chat first (task_card_stage mints
+        # a binding with run_id=None, which renders as the Run/Edit/Discard
+        # tile), promote that binding rather than adding a second one —
+        # what the tile's own Run button does via launch_staged_binding.
+        # Otherwise the staged tile stays on screen offering to run a card
+        # that is already running, next to its monitor.
         binding_id = None
         if chat_id and run_id:
             try:
                 from app.storage.task_bindings import TaskBindingStorage
                 from app.utils.paths import get_project_dir
-                binding = TaskBindingStorage(
-                    get_project_dir(project_id)
-                ).create(chat_id=chat_id, card_id=card_id, run_id=run_id,
-                         anchor_message_id=None)
-                binding_id = binding.id
+                store = TaskBindingStorage(get_project_dir(project_id))
+                staged = [
+                    b for b in store.list_for_chat(chat_id)
+                    if b.card_id == card_id and not b.run_id
+                ]
+                if staged and store.update_run_id(chat_id, staged[-1].id, run_id):
+                    binding_id = staged[-1].id
+                    logger.info(
+                        f"🔗 task_card_launch: promoted staged binding "
+                        f"{binding_id[:8]} → run {str(run_id)[:8]}")
+                else:
+                    binding = store.create(
+                        chat_id=chat_id, card_id=card_id, run_id=run_id,
+                        anchor_message_id=None)
+                    binding_id = binding.id
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"task_card_launch: binding failed: {e}")
 

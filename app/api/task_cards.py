@@ -1177,6 +1177,19 @@ async def _launch_run_for_card(
             await _emit_run(_st, error=str(e))
             logger.error(f"❌ Task run crashed: {run_id[:8]}: {e}", exc_info=True)
         finally:
+            # Managed jobs owned by this run (design/job-runner.md,
+            # Ownership): killed when the run ends or is cancelled.  A HELD
+            # run keeps them running; on resume job_status shows them.
+            try:
+                _final = run_storage.get(run_id)
+                if _final is None or _final.status != "held":
+                    from app.jobs.manager import get_job_manager
+                    _killed = await asyncio.to_thread(
+                        get_job_manager().kill_owned, {"run_id": run_id}, "run_end")
+                    if _killed:
+                        logger.info(f"🧵 run {run_id[:8]} ended; killed {len(_killed)} job(s)")
+            except Exception as _je:  # noqa: BLE001 -- cleanup never masks the run's verdict
+                logger.warning(f"job cleanup at run end failed: {_je}")
             # Always drop from the active-runs set, even on error.
             run_storage.mark_inactive(run_id)
             _relay.close_journal(run_id)

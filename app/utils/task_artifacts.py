@@ -129,19 +129,40 @@ def start_artifact_collection(
     block_id: Optional[str] = None,
     artifacts_dir: Optional[str] = None,
     run_id: Optional[str] = None,
+    contracts: Optional[Dict[str, Any]] = None,
+    claim_lookup: Optional[Any] = None,
 ) -> contextvars.Token:
     """Open a collector for the current task scope; returns a reset token.
 
     ``artifacts_dir`` is where rendered-diagram blobs are persisted
     (``<project>/task_runs/<run_id>/artifacts``).  None disables blob
     persistence (emit_artifact's diagram capture will report an error).
+
+    ``contracts`` maps part name -> ``output_contracts.ActiveContract``.
+    A part whose name is contracted is validated before it is recorded
+    and is NOT recorded when invalid (design/typed-findings.md).
+    ``claim_lookup`` resolves ledger claim references in those parts.
     """
     return _collector.set({
         "parts": [],
         "block_id": block_id,
         "artifacts_dir": artifacts_dir,
         "run_id": run_id,
+        "contracts": dict(contracts or {}),
+        "claim_lookup": claim_lookup,
     })
+
+
+def active_contracts() -> Dict[str, Any]:
+    """The open collector's contracts (name -> ActiveContract); {} if none."""
+    state = _collector.get()
+    return dict((state or {}).get("contracts") or {})
+
+
+def collected_parts() -> List[dict]:
+    """A copy of the parts recorded so far in the open collector."""
+    state = _collector.get()
+    return list((state or {}).get("parts") or [])
 
 
 def finish_artifact_collection(token: contextvars.Token) -> List[dict]:
@@ -186,11 +207,70 @@ def emit_part(part: dict) -> Tuple[bool, str]:
             f"recorded. Split the work across loop iterations or separate "
             f"tasks — each task has its own budget."
         )
+    contracts = state.get("contracts") or {}
+    note = ""
+    if contracts and part.get("name") in contracts:
+        from app.utils.output_contracts import check_part
+        ok, why = check_part(contracts, part, parts, claims=state.get("claim_lookup"))
+        if not ok:
+            return False, why
+        _store_contracted_part(part)
+    elif contracts:
+        # Recorded as an ordinary part, but say what is still owed.  Live
+        # run 33d141aa: a lane told to emit `finding` emitted
+        # `alpha_finding`, was told "recorded", and believed it had
+        # complied; the contract stayed unsatisfied through the correction
+        # turn and the re-run.  Contracts match on the exact name, so the
+        # moment of the mismatch is the only cheap place to say so.
+        from app.utils.output_contracts import missing_required
+        owed = [c.name for c in missing_required(contracts, parts)]
+        if owed:
+            names = ", ".join(f"'{n}'" for n in owed)
+            note = (
+                f" Note: this does NOT satisfy the required output(s) {names}; "
+                f"a contracted output must be emitted under exactly that name "
+                f"(name={owed[0]!r}), with its declared schema."
+            )
     parts.append(part)
     return True, (
         f"Artifact '{part.get('name', '?')}' recorded "
-        f"({used + 1}/{cap} {kind})."
+        f"({used + 1}/{cap} {kind})." + note
     )
+
+
+def _store_contracted_part(part: dict) -> None:
+    """Append a part that passed its contract to the project's output store.
+
+    Best-effort: the store is a query surface (``analyze`` over
+    ``.ziya/outputs/<family>.jsonl``), and a failure to append must never
+    turn a valid emit into a refused one.  Text parts are stored as
+    ``{"text": ...}`` so every record's ``data`` is an object.
+    """
+    try:
+        from app.context import get_ledger_root, get_project_root_or_none
+        from app.utils.evidence.service import provenance_from_context
+        from app.utils import output_store
+        # The card's project (task_executor sets it as the ledger root even
+        # when scope.cwd is a subdirectory), else the request's project.
+        # Never the process cwd: a collector opened outside any request
+        # (tests, a direct call) must not write into whatever directory the
+        # server happens to run in.
+        root = get_ledger_root() or get_project_root_or_none()
+        if not root:
+            return
+        data = part.get("data") if part.get("part_type") == "data" else {
+            k: part.get(k) for k in ("text", "file_uri", "media_type") if part.get(k) is not None}
+        rec = output_store.append(
+            root,
+            schema_id=part["schema_id"], schema_sha256=part["schema_sha256"],
+            schema_lineage=part.get("schema_lineage") or [], data=data,
+            resolved_claims=part.get("resolved_claims"),
+            unverified_numbers=part.get("unverified_numbers"),
+            provenance=provenance_from_context(via="run", part=part.get("name")),
+        )
+        part["stored_id"] = rec["id"]
+    except Exception as e:  # noqa: BLE001 -- see docstring
+        logger.debug(f"output store append skipped: {e}")
 
 
 # ── Part construction / validation ──────────────────────────────────
@@ -700,6 +780,12 @@ def build_part(
         if iter_ctx and iter_ctx.get("index") is not None:
             part["iteration"] = int(iter_ctx["index"])
             part["iteration_owner"] = iter_ctx.get("block_id")
+            # Every enclosing iteration, outermost first, so an outer
+            # loop's gather contract can credit a part emitted inside a
+            # nested loop (``iteration``/``iteration_owner`` are the
+            # innermost pair only).
+            if iter_ctx.get("path"):
+                part["iteration_path"] = [list(p) for p in iter_ctx["path"]]
     except Exception as e:  # noqa: BLE001 — stamping is best-effort
         logger.debug(f"artifact iteration stamp skipped: {e}")
 

@@ -222,10 +222,19 @@ def build_permissions_snapshot(
     block_scopes = build_block_scopes(
         root_block, deck_scope=deck_scope, card_scope=card_scope,
     )
-    return {
+    out = {
         "schema_version": SCHEMA_VERSION,
         "captured_at": int(time.time() * 1000),
         "project_root": project_root,
         "base_policy": _base_policy_snapshot(),
         "block_scopes": block_scopes,
     }
+    # Output-contract schemas, pinned with their SHA-256 at the same moment
+    # as the permissions (design/typed-findings.md, "Pinned at launch").
+    # The run root reads them back (output_contracts.pinned_for_run), so an
+    # edit to .ziya/schemas/ after launch does not change the checks.
+    from app.utils.output_contracts import launch_snapshot_entry
+    schemas = launch_snapshot_entry(root_block, project_root)
+    if schemas is not None:
+        out["output_schemas"] = schemas
+    return out

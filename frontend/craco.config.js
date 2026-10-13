@@ -58,4 +58,16 @@ module.exports = {
       return webpackConfig;
     },
   },
+  jest: {
+    configure: (jestConfig) => {
+      // D3Renderer does `await import('d3')`, which resolves to d3's ESM
+      // entry; jest cannot parse it without a transform. Use the UMD bundle
+      // under test instead.
+      jestConfig.moduleNameMapper = {
+        ...(jestConfig.moduleNameMapper || {}),
+        '^d3$': '<rootDir>/node_modules/d3/dist/d3.min.js',
+      };
+      return jestConfig;
+    },
+  },
 };

@@ -170,11 +170,18 @@ Best available method, recorded in the registry entry:
 2. **prompt-heuristic** — detect the prompt by observing the byte
    sequence that follows the user's first Enter; subsequently match
    prompt reappearance + local echo of typed commands. Good boundaries,
-   exit codes unavailable (no `exit` records emitted). This is the
+   exit codes unavailable: when the prompt returns, an `exit` record is
+   written with `code: null` (finished, status unknown), so a
+   `shadow_wait(cmd_seq=…)` still wakes on completion. This is the
    expected workhorse at fleet scale and gets primary engineering
    investment; osc133 is an upgrade where taken, not an assumption.
-3. **raw** — no detectable structure: journal becomes timestamped output
-   chunks with `t: "output"`, `cmd_seq: null`. Still model-parseable.
+3. **raw** — no prompt learned, so nothing marks a command's end. Each
+   Enter still writes a `cmd` record and the output that follows is
+   grouped under it until the next Enter, but no `exit` record is ever
+   written and `send_line` returns `cmd_seq: null`. `shadow_send`'s hint
+   therefore waits for `quiet`, and `shadow_wait` refuses an exit-only wait
+   on a raw session (`no_exit_signal`) instead of sleeping to its timeout.
+   Still model-parseable.
 
 The ladder is per-*stretch*, not per-session: an ssh hop can downgrade
 mid-session (local osc133 shell → remote raw bash). A `meta` record
@@ -199,6 +206,7 @@ requests carry `"v": 1`.
 | `send_keys` | `lease_id`, `bytes` (b64) | screen mode (§6.1b): `{written: n}` or `control_paused` |
 | `screen` | — | screen mode only: rendered grid + cursor + altscreen flag |
 | `wait_idle` | `quiet_ms` (≤5000) | resolves when output quiesces (control-loop pacing) |
+| `wait` | `until` (list of `exit\|change\|pattern\|lines\|quiet\|ask`), `cmd_seq?`, `from_seq?`, `pattern?`, `lines?`, `quiet_ms?`, `timeout_ms` (≤60000 per request), `max_tail_records` (≤100) | event-driven: replays from `from_seq`, then blocks on a journal listener until any condition fires (or `session_ended`); returns `{reason, exit_code?, matched?, new_records, records (tail), next_seq, still_running}`. Longer waits are the client chaining requests (`design/shadow-wait.md`) |
 | `comment` | `text`, `provenance` | overlay note rendered in the shadow terminal; never written to the child PTY |
 | `subscribe` | `from_seq` | server pushes new journal records on this connection as they append (eventing for attached chats; how shadow-initiated `ask` records reach a controller promptly) |
 | `set_meta` | `label?`, `data?`, `provenance` | update session label / freeform metadata; journaled; reflected in registry and `shadow_list` |
@@ -654,7 +662,16 @@ same-process, same codebase):
   (§6.1). Defaults to requesting the narrower restriction; the model
   must opt in to asking for `unrestricted`.
 - `shadow_send(session_id, line)` → line-mode input under an active
-  lease; returns the journal records the command produced.
+  lease; returns the journal records the command produced. When the
+  settle wait times out the result carries `still_running` and a `next`
+  hint naming `shadow_wait`.
+- `shadow_wait(session_id, until=[...], cmd_seq?, from_seq?, pattern?,
+  timeout_ms=240000 … up to 24 h, tail_lines=20)` → wait for something to
+  *happen* (exit with code, any change, regex match, N new lines, quiet,
+  a human ask) and return a bounded tail. Replaces "sleep then dump the
+  transcript". Needs no lease; chains ≤60 s socket hops off the event
+  loop and lifts the executor's tool guard via `exec_timeout_for`
+  (`design/shadow-wait.md`).
 - `shadow_send_keys(session_id, keys)` / `shadow_screen(session_id)` →
   screen-mode raw input and screen snapshot (§6.1b, later phase).
 - `shadow_comment(session_id, text)` → render a note on the session's

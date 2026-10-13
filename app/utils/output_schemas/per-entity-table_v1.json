@@ -1,0 +1,22 @@
+{
+  "$id": "ziya:per-entity-table/v1",
+  "title": "per-entity table",
+  "description": "A per-entity table, by reference (a dataset id or a project file), never inline.",
+  "type": "object",
+  "properties": {
+    "entity_kind": {"type": "string", "minLength": 1, "description": "what one row is, e.g. ct"},
+    "dataset": {"type": "string", "pattern": "^ds_", "description": "dataset id (ds_...) holding the table"},
+    "file": {"type": "string", "minLength": 1, "description": "project-relative path of the table"},
+    "key_column": {"type": "string", "minLength": 1, "description": "column identifying the entity"},
+    "value_column": {"type": "string", "minLength": 1, "description": "column holding the per-entity value"},
+    "unit": {"type": "string", "minLength": 1, "description": "unit of value_column"},
+    "columns": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "minLength": 1},
+      "description": "every column name mapped to what it means"
+    }
+  },
+  "required": ["entity_kind", "key_column", "value_column", "unit", "columns"],
+  "anyOf": [{"required": ["dataset"]}, {"required": ["file"]}]
+}

@@ -678,3 +678,98 @@ class MemoryRetractProposalTool(_OffLoopMemoryBase):
             "message": f"Proposal '{proposal_id}' could not be retracted "
                        f"(already removed?).",
         }
+
+
+# ---------------------------------------------------------------------------
+# Tool: memory_delete
+# ---------------------------------------------------------------------------
+
+class MemoryDeleteInput(BaseModel):
+    """Input schema for memory_delete."""
+    memory_id: str = Field(..., description="The m_* id of the memory to delete.")
+    reason: Optional[str] = Field(
+        None, description="Why it should go (shown to the user and logged).")
+
+
+class MemoryDeleteTool(_OffLoopMemoryBase):
+    """Delete a durable memory, gated by who created it.
+
+    The consent op is derived, not passed (see consent_gate.op_for_call):
+      own      saved by memory_save in THIS conversation -- the agent undoing
+               its own unreviewed action, the principle memory_retract_proposal
+               applies to proposals.  Runs without asking.
+      other    everything else, including memories promoted out of the
+               proposal queue (a review outcome) and anything from another
+               conversation.  Asks; the panel shows the memory's text.
+      missing  nothing to protect; execute reports "not found".
+    With no conversation id the op is 'other', so a gate failure refuses.
+    Deletion goes through MemoryStorage.delete, the same call the UI's
+    DELETE /api/v1/memory/{id} makes (mind-map refs and embedding go too).
+    """
+
+    name: str = "memory_delete"
+    description: str = (
+        "Delete a memory from the persistent store by its m_* id (from "
+        "memory_search / memory_expand / memory_save).  Use it for a memory "
+        "that is wrong, superseded, or redundant.  A memory you saved with "
+        "memory_save in THIS conversation is deleted directly; any other "
+        "memory is shown to the user for approval first.  Give a reason."
+    )
+    InputSchema = MemoryDeleteInput
+    consent_default = "ask"
+    consent_op_defaults = {"own": "off", "missing": "off", "other": "ask"}
+
+    @staticmethod
+    def _get(memory_id: str):
+        from app.storage.memory import get_memory_storage
+        return get_memory_storage().get((memory_id or "").strip()) if memory_id else None
+
+    def consent_op_for(self, args: Dict[str, Any], conversation_id: Optional[str]) -> str:
+        mem = self._get(args.get("memory_id") or "")
+        if mem is None:
+            return "missing"
+        if (conversation_id
+                and getattr(mem, "learned_from", None) == "explicit_save"
+                and getattr(mem, "learned_from_conversation", None) == conversation_id):
+            return "own"
+        return "other"
+
+    def preflight(self, **kwargs) -> Dict[str, Any]:
+        """What the approval panel shows for an 'other' delete."""
+        mem = self._get(kwargs.get("memory_id") or "")
+        if mem is None:
+            return {"error": True,
+                    "message": f"No memory with id '{kwargs.get('memory_id')}'."}
+        return {
+            "op": "delete",
+            "memory_id": mem.id,
+            "layer": mem.layer,
+            "content": mem.content,
+            "tags": list(mem.tags or []),
+            "learned_from": mem.learned_from,
+            "reason": kwargs.get("reason") or "",
+        }
+
+    def _execute_sync(self, **kwargs) -> Dict[str, Any]:
+        kwargs.pop("conversation_id", None)
+        kwargs.pop("_workspace_path", None)
+        memory_id = (kwargs.get("memory_id") or "").strip()
+        reason = (kwargs.get("reason") or "").strip()
+        if not memory_id:
+            return {"error": True, "message": "memory_id is required."}
+        from app.storage.memory import get_memory_storage
+        store = get_memory_storage()
+        mem = store.get(memory_id)
+        if mem is None or not store.delete(memory_id):
+            return {"error": True,
+                    "message": f"No memory with id '{memory_id}' (already deleted?)."}
+        logger.info(f"🗑️ memory_delete {memory_id}"
+                    + (f" ({reason[:80]})" if reason else "")
+                    + f": {mem.content[:60]}")
+        return {
+            "success": True,
+            "message": f"Deleted memory [{memory_id}] ({mem.layer}) {mem.content[:80]}",
+            "memory_id": memory_id,
+            "content": mem.content,
+            "layer": mem.layer,
+        }

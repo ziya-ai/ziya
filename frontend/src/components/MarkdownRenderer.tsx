@@ -26,7 +26,9 @@ import { FileOperationRenderer } from './FileOperationRenderer';
 import { parseMockupFence } from '../utils/mockupFence';
 import { blockquoteTheme } from '../utils/blockquoteTheme';
 import { repairNearMissTableSeparator } from '../utils/tableSeparatorRepair';
+import { DraggableTable } from './DraggableTable';
 import { FailedHunkList } from './FailedHunkList';
+import { FileDragChip, filePathFromHeader } from './FileDragChip';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
 // D-014: horizontal-overflow affordances for markdown sub-surfaces (long code
@@ -935,6 +937,10 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
         // Fallback: extract from content or show generic tool name
         return `🛠️ ${cleanToolName}`;
     };
+    // `file write: Docs/x.md` / `file read: …` headers name a project file;
+    // offer it as a draggable chip so the file itself can be dropped into
+    // another application.
+    const headerFilePath = filePathFromHeader(encodedCommand);
 
     // Destructure formatted output and compute cleanContent before any early returns,
     // so the useEffect below (which is a hook) always runs in the same order.
@@ -1073,7 +1079,8 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
                     letterSpacing: '0.5px'
                 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span>{verified === true && '🔐 '}{getToolSummary()}</span>
+                        <span>{verified === true && '🔐 '}{getToolSummary()}
+                            {headerFilePath && <FileDragChip path={headerFilePath} isDarkMode={isDarkMode} />}</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             {(renderedHeaderHtml || summary) && (
                                 renderedHeaderHtml ? (
@@ -1223,7 +1230,8 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
                 letterSpacing: '0.5px'
             }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>{verified === true && '🔐 '}{getToolSummary()}</span>
+                    <span>{verified === true && '🔐 '}{getToolSummary()}
+                        {headerFilePath && <FileDragChip path={headerFilePath} isDarkMode={isDarkMode} />}</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         {shouldShowCollapsed && (
                             <div style={{
