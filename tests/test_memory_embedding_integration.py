@@ -310,7 +310,10 @@ class TestStartupInitialization:
             await _startup_fn()
 
             assert mock_backfill.called
-            assert len(mock_backfill.call_args[0][0]) == 12
+            # Startup backfills memories first, then open proposals (a second
+            # call, empty here).  Assert on the memories call by position
+            # rather than on `call_args`, which is only the LAST call.
+            assert len(mock_backfill.call_args_list[0][0][0]) == 12
 
     @_skip_startup
     @pytest.mark.asyncio
