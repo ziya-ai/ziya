@@ -3365,6 +3365,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             if (deletedIds.includes(c.id)) return false;
                             // Don't push inactive (deleted) conversations back to server
                             if (c.isActive === false) return false;
+                            // A conversation owned by ANOTHER project (a global
+                            // one listed here) is not this project's to push:
+                            // bulk_sync_chats skips foreign chats by design, so
+                            // the server copy never moves, the count rule below
+                            // re-fires every cycle, and a same-id shadow here is
+                            // read as the server's copy ("local=60 server=0 —
+                            // pushing" every 30 s).  The dual-write fast path
+                            // groups by projectId and carries its edits to its
+                            // own project.
+                            const ownerPid = (c as any).projectId;
+                            if (ownerPid && ownerPid !== projectId) return false;
                             // Use _fullMessageCount (real IDB count) when available,
                             // since merged entries are shells with stripped messages.
                             const localMsgCount = (c as any)._fullMessageCount
