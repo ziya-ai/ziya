@@ -258,6 +258,8 @@ export interface Block {
   schedule_enabled?: boolean;
   schedule_catch_up?: boolean;
   schedule_max_runs?: number | null;
+  // What a due slot does while a run of this card is live. Unset = skip.
+  schedule_concurrency?: 'skip' | 'queue' | 'parallel' | null;
 
   // State-only: read-only run-scoped variables (name -> literal).
   // Tasks read them via {{var.NAME}} templating; nothing writes back.

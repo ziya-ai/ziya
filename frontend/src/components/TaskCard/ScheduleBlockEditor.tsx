@@ -17,6 +17,7 @@ import type {
 import { BlockBody } from './BlockBody';
 import { BlockScopeButton } from './BlockScopeButton';
 import { DragHandle } from './DragContext';
+import { ScheduleHistory } from './ScheduleHistory';
 import './task-card-editor.css';
 
 interface Props {
@@ -123,6 +124,17 @@ export const ScheduleBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
             schedule_max_runs: e.target.value ? parseInt(e.target.value, 10) : null,
           })}
         />
+        <span className="tc-label-dim">if still running</span>
+        <select
+          className="tc-select"
+          value={block.schedule_concurrency ?? 'skip'}
+          onChange={e => update({ schedule_concurrency: e.target.value as any })}
+          title="What a due fire does while a run of this card (scheduled or hand-launched) is still live. Also applies to catch-up fires."
+        >
+          <option value="skip">skip the slot</option>
+          <option value="queue">queue until it ends</option>
+          <option value="parallel">fire anyway</option>
+        </select>
         {onDelete && (
           <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}
@@ -134,6 +146,7 @@ export const ScheduleBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
           title={block.name || 'this Schedule block'}
         />
       </div>
+      <ScheduleHistory blockId={block.id} />
       <BlockBody
         parentId={block.id}
         body={block.body}

@@ -580,6 +580,16 @@ each subsequent fire produces its own independent TaskRun.  "Run now" on
 such a card runs the body immediately as a one-off, in addition to (not
 instead of) its scheduled fires.
 
+`schedule_concurrency` decides what a due slot does when a run of the
+card — a previous fire OR a hand-launched run — is still live:
+- `"skip"` (DEFAULT) — the slot is dropped and recorded (`skips` in the
+  card's schedule-state, "skipped: run <id> still live"); the next slot
+  is scheduled from now.
+- `"queue"` — the slot is held and fires as soon as the live run ends.
+  Wrong for long jobs: a 6 h nightly would start its second copy mid-morning.
+- `"parallel"` — fires regardless.
+This applies to catch-up fires too; a missed slot is still a slot.
+
 ```
 {
   "block_type": "schedule",

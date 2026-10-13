@@ -473,6 +473,10 @@ class Block(BaseModel):
     schedule_enabled: bool = True
     schedule_catch_up: bool = True                # run-once-on-recovery
     schedule_max_runs: Optional[int] = None       # None = unlimited
+    # What a due slot does while a run of this card (scheduled or
+    # hand-launched) is still live.  None = "skip".  See
+    # task_scheduler._concurrency_gate; applies to catch-up fires too.
+    schedule_concurrency: Optional[Literal["skip", "queue", "parallel"]] = None
 
     # State-only fields.  A read-only map of run-scoped named variables
     # (name -> literal value).  Tasks read them via {{var.NAME}}

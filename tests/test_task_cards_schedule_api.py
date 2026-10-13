@@ -170,6 +170,52 @@ class TestScheduleStateEndpoint:
         assert body["fires_so_far"] == 1
         assert body["last_fire_at"] == 1_699_996_400_000
         assert body["run_ids"] == ["run-xyz-1"]
+        # A listed run that no longer exists (or never did) is not an
+        # error: the record passes through with no last_run key.
+        assert body.get("last_run") is None
+
+    def test_enriches_with_last_run_outcome_and_skips(self, client):
+        """The schedule editor's status line needs WHY the last fire
+        failed and whether slots were skipped, not just a run id — the
+        record alone made a SKIPPED night indistinguishable from a quiet
+        one until someone opened the run.  The endpoint resolves the
+        newest existing run in run_ids to {status, failure_reason} via
+        the same rule task_run_read uses, and passes skips[] through."""
+        from app.agents import task_scheduler as ts
+        from app.models.task_run import TaskRunCreate
+        from app.storage.task_runs import TaskRunStorage
+        tc, pid, ziya_home = client
+        card_id = _create_card(tc, pid, _schedule_root())
+
+        runs = TaskRunStorage(ziya_home / "projects" / pid)
+        run = runs.create(TaskRunCreate(card_id=card_id, source_conversation_id=None))
+        runs.set_artifact(run.id, Artifact(
+            summary="s", failed=True, signature="self_assessment_partial",
+            self_assessment={"objective_met": "partial", "rationale": "lane 1B skipped"}))
+        runs.update_status(run.id, "failed")
+
+        ts._write_state(pid, {card_id: {
+            "block_id": "s-abc", "next_fire_at": 1, "last_fire_at": 0,
+            "fires_so_far": 2,
+            # Newest first; the deleted/unknown head is skipped over.
+            "run_ids": ["gone-run", run.id],
+            "skips_so_far": 1, "last_skip_at": 5,
+            "skips": [{"at": 5, "live_run_id": "abc",
+                       "reason": "skipped: run abc of this card still live"}],
+        }})
+
+        body = tc.get(
+            f"/api/v1/projects/{pid}/task-cards/{card_id}/schedule-state"
+        ).json()
+        assert body["fires_so_far"] == 2
+        assert body["skips_so_far"] == 1
+        assert body["skips"][0]["reason"].startswith("skipped: run abc")
+        last = body["last_run"]
+        assert last["run_id"] == run.id
+        assert last["status"] == "failed"
+        assert last["failed"] is True
+        assert last["failure_reason"] == (
+            "self_assessment objective_met=partial: lane 1B skipped")
 
     def test_empty_state_for_card_without_schedule(self, client):
         """Card has no schedule block at all → endpoint returns {}.

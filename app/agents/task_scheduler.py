@@ -32,9 +32,21 @@ Per-card state lives in a single file per project at
         "next_fire_at": 17000...,
         "last_fire_at": 17000...,
         "fires_so_far": 12,
-        "run_ids": ["...", ...]   # capped at most-recent 50
+        "run_ids": ["...", ...],  # capped at most-recent 50
+        # Present once the concurrency gate has acted (see _concurrency_gate):
+        "skips_so_far": 1, "last_skip_at": 17000...,
+        "skips": [{"at": ..., "live_run_id": "...", "reason": "..."}],
+        "deferred_since": 17000..., "deferred_behind_run_id": "..."
       }, ...
     }
+
+Concurrency
+-----------
+A due slot whose card already has a LIVE run (any run of the card —
+scheduled or hand-launched) is governed by the schedule block's
+`schedule_concurrency`: skip (default; the slot is dropped and recorded),
+queue (held until the live run ends), or parallel (fire anyway).  The
+gate runs before the catch-up gate, so a catch-up fire is subject to it.
 """
 
 from __future__ import annotations
@@ -64,6 +76,37 @@ _RUN_HISTORY_CAP = 50
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+# The in-flight system-job pass, if any.  The scheduler loop spawns the
+# pass instead of awaiting it: the loop body is the ONLY place the lock
+# heartbeat is written, so awaiting a multi-minute memory_organize inline
+# meant no heartbeat for its whole duration.  After _LOCK_STALE_THRESHOLD_S
+# a peer server declared the lock stale, took it over and started its own
+# organize; the two then fought over the memories filelock, each poll-sleep
+# parking its own event loop (two servers, ~10 minutes of stalled users,
+# 2026-10-09).  The single-writer guarantee depended on a loop the job was
+# blocking.
+_system_jobs_task: Optional["asyncio.Task[Any]"] = None
+
+
+def _spawn_system_jobs_tick(now_ms: int) -> bool:
+    """Start a system-job pass as a background task unless one is still
+    running.  Returns True when a pass was started."""
+    global _system_jobs_task
+    if _system_jobs_task is not None and not _system_jobs_task.done():
+        return False
+
+    async def _pass() -> None:
+        try:
+            from app.agents.system_jobs import tick_system_jobs
+            await tick_system_jobs(now_ms)
+        except Exception as e:  # noqa: BLE001 -- never affects card firing
+            logger.warning(f"⏰ System-job tick error (continuing): {e}")
+
+    _system_jobs_task = asyncio.get_running_loop().create_task(
+        _pass(), name="ziya-system-jobs")
+    return True
 
 
 def _state_path(project_id: str) -> Path:
@@ -403,6 +446,121 @@ async def _fire_one(target: _ScheduledCard) -> None:
     asyncio.create_task(_go())
 
 
+def _live_runs_for_card(project_id: str, card_id: str) -> List[Any]:
+    """Runs of this card whose executor is still alive, newest first.
+
+    Every run of the card counts — a hand-launched one as much as an
+    earlier fire — because the overlap the concurrency gate exists to
+    prevent is "two copies of this body working the same workspace",
+    and the body does not care which button started the other copy.
+    """
+    from ..models.task_run import LIVE_RUN_STATUSES
+    from ..storage.task_runs import TaskRunStorage
+    try:
+        runs = TaskRunStorage(get_project_dir(project_id)).list(card_id=card_id)
+    except Exception as e:  # noqa: BLE001 — an unreadable run dir must not stop the tick
+        logger.warning(f"⏰ Scheduler: run listing failed for {card_id[:8]}: {e}")
+        return []
+    live = [r for r in runs if r.status in LIVE_RUN_STATUSES]
+    live.sort(key=lambda r: getattr(r, "created_at", 0) or 0, reverse=True)
+    return live
+
+
+def _concurrency_gate(
+    target: _ScheduledCard, rec: Dict[str, Any], now_ms: int,
+) -> bool:
+    """Decide whether a due slot may fire while a run of the card is live.
+
+    Returns True to fire.  Mutates ``rec`` (the card's schedule_state
+    record) when the slot is not fired, so the outcome is on disk and
+    readable through GET …/schedule-state:
+
+      * ``skip`` (the default) — drops the slot, appends to ``skips`` and
+        advances ``next_fire_at`` from now.  A skipped night is a
+        visible event, not silence: "skipped: run <id> still live".
+      * ``queue`` — holds the slot (``next_fire_at`` unchanged) and
+        marks ``deferred_since`` so the next tick after the live run
+        ends fires it, bypassing the catch-up gate — a deferral is a
+        decision to run late, not a missed slot.
+      * ``parallel`` — fires regardless; the pre-field behaviour.
+
+    Checked BEFORE the catch-up gate so a catch-up fire (laptop wakes at
+    09:00 with the 03:00 slot due) is gated like any other — the case
+    where a hand-launched run is most likely to still be live.
+    """
+    policy = (target.block.schedule_concurrency or "skip").lower()
+    if policy == "parallel":
+        return True
+    live = _live_runs_for_card(target.project_id, target.card_id)
+    if not live:
+        return True
+    live_id = live[0].id
+    if policy == "queue":
+        rec.setdefault("deferred_since", now_ms)
+        rec["deferred_behind_run_id"] = live_id
+        logger.info(
+            f"⏰ Scheduler: {target.card_name!r} slot deferred — run "
+            f"{live_id[:8]} still live (schedule_concurrency=queue)"
+        )
+        return False
+    # skip
+    skips = list(rec.get("skips", []))
+    skips.insert(0, {
+        "at": now_ms, "live_run_id": live_id,
+        "reason": f"skipped: run {live_id[:8]} of this card still live "
+                  f"(status={live[0].status}, schedule_concurrency=skip)",
+    })
+    rec["skips"] = skips[:_RUN_HISTORY_CAP]
+    rec["skips_so_far"] = int(rec.get("skips_so_far", 0)) + 1
+    rec["last_skip_at"] = now_ms
+    rec["next_fire_at"] = compute_next_fire(target.block, now_ms)
+    logger.warning(f"⏰ Scheduler: {target.card_name!r} {skips[0]['reason']}")
+    return False
+
+
+async def _tick_card(target: _ScheduledCard, now_ms: int) -> None:
+    """One scheduler tick for one card: fire if due and permitted.
+
+    Extracted from the loop so the fire/skip/defer decision is testable
+    without the lock or the sleep.  Writes schedule_state whenever it
+    changes the record and does not fire.
+    """
+    state = _read_state(target.project_id)
+    rec = state.get(target.card_id, {})
+    next_fire = rec.get("next_fire_at")
+    fires_so_far = int(rec.get("fires_so_far", 0))
+    if (target.block.schedule_max_runs is not None
+            and fires_so_far >= int(target.block.schedule_max_runs)):
+        return
+    if next_fire is None:
+        rec["block_id"] = target.block.id
+        rec["next_fire_at"] = compute_next_fire(target.block, now_ms)
+        rec.setdefault("fires_so_far", 0)
+        rec.setdefault("run_ids", [])
+        state[target.card_id] = rec
+        _write_state(target.project_id, state)
+        return
+    if next_fire > now_ms:
+        return
+    if not _concurrency_gate(target, rec, now_ms):
+        state[target.card_id] = rec
+        _write_state(target.project_id, state)
+        return
+    deferred = rec.pop("deferred_since", None) is not None
+    rec.pop("deferred_behind_run_id", None)
+    if not deferred and not target.block.schedule_catch_up and fires_so_far > 0:
+        rec["next_fire_at"] = compute_next_fire(target.block, now_ms)
+        state[target.card_id] = rec
+        _write_state(target.project_id, state)
+        return
+    if deferred:
+        # _fire_one re-reads state; persist the cleared deferral first so
+        # the fire's own write does not resurrect it.
+        state[target.card_id] = rec
+        _write_state(target.project_id, state)
+    await _fire_one(target)
+
+
 async def _scheduler_loop() -> None:
     """The single-writer fire loop.  Acquires the lock, then ticks
     every _TICK_INTERVAL_S until shutdown.  If the lock can't be
@@ -435,38 +593,14 @@ async def _scheduler_loop() -> None:
                 # Fire pass
                 now_ms = _now_ms()
                 for target in _enumerate_scheduled_cards():
-                    state = _read_state(target.project_id)
-                    rec = state.get(target.card_id, {})
-                    next_fire = rec.get("next_fire_at")
-                    fires_so_far = int(rec.get("fires_so_far", 0))
-                    if (target.block.schedule_max_runs is not None
-                            and fires_so_far >= int(target.block.schedule_max_runs)):
-                        continue
-                    if next_fire is None:
-                        rec["block_id"] = target.block.id
-                        rec["next_fire_at"] = compute_next_fire(target.block, now_ms)
-                        rec.setdefault("fires_so_far", 0)
-                        rec.setdefault("run_ids", [])
-                        state[target.card_id] = rec
-                        _write_state(target.project_id, state)
-                        continue
-                    if next_fire <= now_ms:
-                        if not target.block.schedule_catch_up and fires_so_far > 0:
-                            rec["next_fire_at"] = compute_next_fire(target.block, now_ms)
-                            state[target.card_id] = rec
-                            _write_state(target.project_id, state)
-                            continue
-                        await _fire_one(target)
+                    await _tick_card(target, now_ms)
 
                 # System-job pass — internal periodic jobs (memory organize,
                 # etc.) that ride this same single-writer loop.  Each job is
                 # interval-gated and isolated; a failure here never affects
-                # card firing.  See app/agents/system_jobs.py.
-                try:
-                    from app.agents.system_jobs import tick_system_jobs
-                    await tick_system_jobs(now_ms)
-                except Exception as e:
-                    logger.warning(f"⏰ System-job tick error (continuing): {e}")
+                # card firing.  Spawned, not awaited, so the heartbeat above
+                # keeps the lock while a long job runs (see _spawn_system_jobs_tick).
+                _spawn_system_jobs_tick(now_ms)
             except Exception as e:
                 logger.warning(f"⏰ Scheduler tick error (continuing): {e}", exc_info=True)
             await asyncio.sleep(_TICK_INTERVAL_S)
