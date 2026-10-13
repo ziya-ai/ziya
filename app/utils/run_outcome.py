@@ -180,6 +180,56 @@ def classify_terminal_status(
     return base_status
 
 
+def stage_tally(stages: Optional[Iterable[Any]]) -> Dict[str, int]:
+    """Count a container artifact's ``stages`` by outcome.
+
+    ``passed`` / ``unfinished`` mirror has_progress / has_incomplete_work
+    over block_states: a ``failed`` or ``cancelled`` stage is unfinished
+    work, a ``replayed`` stage is inherited from a prior attempt and
+    counts as neither (the same exclusion _iteration_statuses applies).
+    """
+    passed = unfinished = total = 0
+    for st in stages or []:
+        status = _get(st, "status", None)
+        if status == "replayed":
+            continue
+        total += 1
+        if status == "passed":
+            passed += 1
+        elif status in ("failed", "cancelled"):
+            unfinished += 1
+    return {"passed": passed, "unfinished": unfinished, "total": total}
+
+
+def classify_artifact_outcome(
+    artifact: Any, *, passed_iterations: int = 0, failed_iterations: int = 0,
+) -> str:
+    """``done`` / ``partial`` / ``failed`` for a root artifact alone.
+
+    The artifact-shaped twin of classify_terminal_status, for a caller
+    with no ``block_states`` — the CLI runner executes with
+    ``storage=None``.  Evidence comes from the artifact's own ``stages``
+    plus an optional tally of loop iterations observed on the event
+    stream (``iteration_completed``), which is what sees through a root
+    group whose only child is a repeat: that group records ONE failed
+    stage for the loop, and the 99 passed iterations under it are
+    visible only as events.
+
+    Same rule as the block_states classifier: ``failed`` becomes
+    ``partial`` only when something passed AND something did not
+    finish.  An artifact that failed with every stage passed — a gather
+    contract or self-assessment verdict on the whole — stays ``failed``:
+    the work completed and the result was judged short, which is not a
+    partial.  ``done`` is never reclassified.
+    """
+    if not getattr(artifact, "failed", False):
+        return "done"
+    tally = stage_tally(getattr(artifact, "stages", None))
+    progress = tally["passed"] > 0 or passed_iterations > 0
+    unfinished = tally["unfinished"] > 0 or failed_iterations > 0
+    return "partial" if progress and unfinished else "failed"
+
+
 def _files_written(state: Any, project_root: Optional[str] = None) -> List[str]:
     """Paths a completed block declared as file artifacts.
 
