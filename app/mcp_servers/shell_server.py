@@ -1359,6 +1359,19 @@ class ShellServer:
                     stdout=stdout_target,
                     stderr=stderr_target,
                 )
+            except FileNotFoundError:
+                # A shell reports a missing executable as exit 127 and
+                # keeps going; letting the exception escape turned the
+                # whole call into an opaque tool error.
+                last_result = subprocess.CompletedProcess(
+                    args=args, returncode=127, stdout='',
+                    stderr=f'{args[0]}: command not found\n',
+                )
+            except PermissionError:
+                last_result = subprocess.CompletedProcess(
+                    args=args, returncode=126, stdout='',
+                    stderr=f'{args[0]}: Permission denied\n',
+                )
             finally:
                 for handle in open_files:
                     handle.close()
