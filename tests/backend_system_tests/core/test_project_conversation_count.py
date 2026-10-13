@@ -107,7 +107,7 @@ class TestListProjectsConversationCount:
              patch("os.getcwd", return_value="/tmp/a"):
             storage = ProjectStorage(tmp_path)
             mock_storage.return_value = storage
-            result = await list_projects()
+            result = list_projects()
 
         counts = {item.name: item.conversationCount for item in result}
         assert counts["Project A"] == 5
@@ -138,7 +138,7 @@ class TestListProjectsConversationCount:
              patch("os.getcwd", return_value="/tmp/nc"):
             storage = ProjectStorage(tmp_path)
             mock_storage.return_value = storage
-            result = await list_projects()
+            result = list_projects()
 
         assert len(result) == 1
         assert result[0].conversationCount == 0
