@@ -831,3 +831,60 @@ export function shouldRehydrateActiveFromFuller(
     if (growthExplainedByTombstones(local, candMsgs)) return false;
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// Bulk hydration
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether adopting `full` (a server record from bulk hydration) would drop
+ * messages the in-memory record holds, with nothing on the server saying
+ * they were deleted.
+ *
+ * A newer, shorter server record is not proof of a deliberate shrink.
+ * Backend writers (handoff_write, bead tools, context auto-vivify) re-stamp
+ * _version on whatever messages are on disk, which may not yet include an
+ * assistant reply that only streamed to the browser.  Adopting that record
+ * removed the reply from screen, the post-sync rehydration put it back from
+ * IndexedDB, and the cycle repeated every sync tick.  Only tombstones on the
+ * server record (written by rewind and message delete) justify the shrink.
+ */
+export function hydrationWouldDropMessages(local: any, full: any): boolean {
+    if (!local || local._isShell) return false;
+    const localMsgs: any[] = Array.isArray(local.messages) ? local.messages : [];
+    if (localMsgs.length === 0) return false;
+    const fullMsgs: any[] = Array.isArray(full?.messages) ? full.messages : [];
+    if (droppedMessages(localMsgs, fullMsgs).length === 0) return false;
+    return !shrinkExplainedByTombstones(localMsgs, full);
+}
+
+/**
+ * Fold a full server record from bulk hydration into the in-memory one.
+ * Returns `local` unchanged when it is newer.  Otherwise the server's
+ * metadata and _version are adopted; its messages are adopted unless that
+ * would drop local messages (hydrationWouldDropMessages).  Taking the
+ * server's _version while keeping the longer list leaves the push filter
+ * seeing equal versions and more local messages, so the next sync pushes
+ * them instead of treating the server as having shrunk past local.
+ */
+export function applyHydratedChat(local: any, full: any, projectId: string): any {
+    if ((local?._version || 0) > (full?._version || 0)) return local;
+    const fullDisplayMode = full.displayMode;
+    const displayMode = fullDisplayMode === 'raw' || fullDisplayMode === 'pretty'
+        ? fullDisplayMode : local.displayMode;
+    const messages = hydrationWouldDropMessages(local, full) ? local.messages : (full.messages ?? local.messages);
+    return {
+        ...local,
+        ...full,
+        messages,
+        title: mergeTitle(full.title, local.title) ?? local.title,
+        displayMode,
+        _isShell: false,
+        _fullMessageCount: undefined,
+        projectId: full.projectId || projectId,
+        folderId: full.groupId || full.folderId || local.folderId || null,
+        delegateMeta: full.delegateMeta || local.delegateMeta || null,
+        isActive: full.isActive !== false,
+        _version: full._version || Date.now(),
+    };
+}
