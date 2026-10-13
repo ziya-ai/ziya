@@ -616,6 +616,32 @@ async def lifespan(app: FastAPI):
     _main_event_loop = asyncio.get_running_loop()
     _set_folder_service_event_loop(_main_event_loop)
 
+    # In-process stack dump on SIGUSR1: `kill -USR1 <pid>` writes every
+    # thread's Python stack to stderr.  This is the py-spy substitute for
+    # attributing a stall: py-spy's ptrace attach segfaulted the server on
+    # macOS before it reached the blocked state, and an HTTP debug route
+    # cannot answer while the thing it would describe is blocking requests.
+    # faulthandler dumps from a C signal handler without taking the GIL, so
+    # it works precisely when nothing else does.  SIGUSR1's default action
+    # is to terminate the process, so registering is strictly safer.
+    try:
+        import faulthandler as _fh
+        import signal as _sig
+        if hasattr(_sig, "SIGUSR1"):
+            _fh.register(_sig.SIGUSR1, all_threads=True, chain=False)
+    except Exception as e:  # noqa: BLE001 — diagnostics must never block startup
+        app_logger.debug(f"faulthandler SIGUSR1 registration skipped: {e}")
+
+    # Stall watchdog (ZIYA_STALL_DUMP=<seconds>): logs one all-thread stack
+    # dump plus the to_thread executor census per stall episode, from a
+    # daemon thread via sys._current_frames().  Replaces the two dumpers
+    # above for attribution: both crashed the server on this machine.
+    try:
+        from app.utils.stall_watchdog import start_from_env as _start_stall_watchdog
+        _start_stall_watchdog(_main_event_loop)
+    except Exception as e:  # noqa: BLE001
+        app_logger.debug(f"stall watchdog not started: {e}")
+
     # Opt-in event-loop stall detector: ZIYA_DEBUG_LOOP=1
     #
     # Diagnoses "server serves nothing for N seconds" symptoms. Any callback or
