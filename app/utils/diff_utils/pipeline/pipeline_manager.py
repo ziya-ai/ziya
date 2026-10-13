@@ -176,6 +176,48 @@ def clean_duplicate_headers(diff_content: str) -> str:
     
     return '\n'.join(cleaned_lines)
 
+
+def _norm_diff_path(p: str) -> str:
+    p = os.path.normpath(p.strip())
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def select_diffs_for_target(individual_diffs: List[str], file_path: str) -> List[str]:
+    """The diff blocks in a combined diff that belong to *file_path*.
+
+    Tiers, the first non-empty one wins:
+      1. exact path (after normalisation);
+      2. path suffix at a separator boundary, in either direction, so an
+         absolute *file_path* matches a project-relative block and a bare
+         ``name.py`` block still matches;
+      3. basename only, when no block names a compatible path.
+
+    Before tiering, a basename match was accepted alongside exact ones, so
+    ``app/config/write_policy.py`` and ``app/mcp_servers/write_policy.py``
+    in one combined diff were merged and applied to whichever file was the
+    target.
+    """
+    target = _norm_diff_path(file_path)
+    base = os.path.basename(target)
+    exact: List[str] = []
+    suffix: List[str] = []
+    basename: List[str] = []
+    for diff in individual_diffs:
+        dt = extract_target_file_from_diff(diff)
+        if not dt:
+            continue
+        dt = _norm_diff_path(dt)
+        if dt == target:
+            exact.append(diff)
+        elif target.endswith(os.sep + dt) or dt.endswith(os.sep + target):
+            suffix.append(diff)
+        elif os.path.basename(dt) == base:
+            basename.append(diff)
+    return exact or suffix or basename
+
+
 def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False, user_codebase_dir: Optional[str] = None) -> Dict[str, Any]:
     """Thin lock-acquiring wrapper around the diff-application pipeline.
 
@@ -282,21 +324,11 @@ def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optio
         logger.debug(f"First individual diff first 10 lines:\n{individual_diffs[0].splitlines()[:10]}")
     
     if len(individual_diffs) > 1:
-        # Find the diff that matches our target file
-        # Compare using basename to handle full paths vs relative paths
-        target_basename = os.path.basename(file_path)
-        matching_diffs = []
-        
-        for diff in individual_diffs:
-            diff_target = extract_target_file_from_diff(diff)
-            if diff_target:
-                # Try exact match first
-                if diff_target == file_path or diff_target == target_basename:
-                    matching_diffs.append(diff)
-                # Try basename match
-                elif os.path.basename(diff_target) == target_basename:
-                    matching_diffs.append(diff)
-        
+        # Find the diff block(s) for our target file.  See
+        # select_diffs_for_target: a basename match is only a fallback, so
+        # app/config/write_policy.py never absorbs app/mcp_servers/write_policy.py.
+        matching_diffs = select_diffs_for_target(individual_diffs, file_path)
+
         if matching_diffs:
             if len(matching_diffs) > 1:
                 logger.debug(
