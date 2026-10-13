@@ -170,7 +170,7 @@ class TestStreamingModels:
                     "files": [],
                     "messages": [
                         ["human", "whats your cwd"],
-                        ["assistant", "I'm currently in /Users/dcohn/workplace/ziya-release-debug"],
+                        ["assistant", "I'm currently in /Users/alice/workplace/ziya-release-debug"],
                         ["human", "how many perl files are there in this project?"],
                         ["assistant", "I found 2 perl files in this project: script1.pl and script2.pl"],
                         ["human", "what does that file do?"]
@@ -345,7 +345,7 @@ class TestStreamingModels:
             
             content = response.text
             # Check for the exact working directory path
-            if '/Users/dcohn/workplace/ziya-release-debug' in content:
+            if '/Users/alice/workplace/ziya-release-debug' in content:
                 record_result("tool_calling", endpoint, model_name, True, "Tool execution successful")
             # Check for tool execution evidence in streaming format
             elif any(term in content.lower() for term in ['tool_execution', 'pwd', 'mcp_run_shell_command', 'current working directory', 'working directory']):
@@ -358,7 +358,7 @@ class TestStreamingModels:
                 print(f"\n=== DEBUG: {endpoint}/{model_name} TOOL CALLING FAILED ===")
                 print(f"Response status: {response.status_code}")
                 print(f"Response content (first 2000 chars): {content[:2000]}")
-                print(f"Looking for: '/Users/dcohn/workplace/ziya-release-debug'")
+                print(f"Looking for: '/Users/alice/workplace/ziya-release-debug'")
                 print(f"Also looking for: 'tool_execution', 'pwd', 'mcp_run_shell_command', 'current working directory'")
                 print("=== END DEBUG ===\n")
                 record_result("tool_calling", endpoint, model_name, False, "No tool execution evidence")
