@@ -8,6 +8,7 @@ import type { TaskBinding } from '../types/task_binding';
 import { v4 as uuidv4 } from "uuid";
 import { isDuplicateMessage } from '../utils/messageDedup';
 import { db } from '../utils/db';
+import { buildSearchPattern } from '../utils/searchPattern';
 import * as syncMerge from '../utils/syncMerge';
 import { forkLineageFields } from '../utils/lineage';
 import { detectIncompleteResponse } from '../utils/responseUtils';
@@ -2134,15 +2135,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             .replace(/</g, '&lt;')
                             .replace(/>/g, '&gt;')
                             .replace(/"/g, '&quot;');
-                        const escapedTerm = escapeHtml(searchTerm)
-                            .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        // Whitespace-tolerant, same as the search that found
+                        // this message; built over the HTML-escaped term so it
+                        // matches the escaped haystack below.
+                        const termPattern = buildSearchPattern(escapeHtml(searchTerm));
+                        const probe = buildSearchPattern(searchTerm, { global: false });
                         const walk = (node: Node) => {
                             if (node.nodeType === Node.TEXT_NODE) {
                                 const text = node.textContent || '';
-                                if (text.toLowerCase().includes(searchTerm.toLowerCase())) {
+                                if (termPattern && probe && probe.test(text)) {
                                     const span = document.createElement('span');
                                     span.innerHTML = escapeHtml(text).replace(
-                                        new RegExp(`(${escapedTerm})`, 'gi'),
+                                        termPattern,
                                         (m) => `<mark style="background:${isDarkMode ? '#b8860b' : '#fff176'};color:${isDarkMode ? '#fff' : '#000'};border-radius:2px;padding:0 1px">${m}</mark>`);
                                     node.parentNode?.replaceChild(span, node);
                                 }
