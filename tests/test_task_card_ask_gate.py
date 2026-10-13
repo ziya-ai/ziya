@@ -231,12 +231,12 @@ def test_the_first_answer_wins(storage, run):
     and silently overriding a decision already acted upon is worse.
     """
     storage.open_ask(run.id, "b1", "Ship it?")
-    storage.record_ask_answer(run.id, "b1", "approve", "go", "dcohn")
+    storage.record_ask_answer(run.id, "b1", "approve", "go", "alice")
     storage.record_ask_answer(run.id, "b1", "reject", "changed my mind", "x")
     recorded = storage.get(run.id).ask_answers["b1"]
     assert recorded["decision"] == "approve"
     assert recorded["answer"] == "go"
-    assert recorded["answered_by"] == "dcohn"
+    assert recorded["answered_by"] == "alice"
 
 
 def test_answers_for_different_blocks_coexist(storage, run):
@@ -330,7 +330,7 @@ def test_answer_then_resume_finds_the_ask_already_settled(storage, run):
     assert held.status == "held"
 
     storage.record_ask_answer(run.id, held.pending_ask["block_id"],
-                              "approve", "yes, ship it", "dcohn")
+                              "approve", "yes, ship it", "alice")
 
     settled = storage.get(run.id).ask_answers["b-tag"]
     assert settled["decision"] == "approve"
