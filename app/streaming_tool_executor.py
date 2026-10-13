@@ -1527,6 +1527,23 @@ class StreamingToolExecutor:
             effective_max_tokens = ziya_env("ZIYA_MAX_OUTPUT_TOKENS")
         else:
             effective_max_tokens = (self.model_config.get('max_output_tokens', 16384) if self.model_config else 16384)
+        # ZIYA_MAX_OUTPUT_TOKENS is process-global and sized for the
+        # top-level conversation's model.  A task block whose scope routes
+        # to a different model (model_tier "small" -> Haiku 4.5, cap 64000)
+        # still saw that value, and Bedrock refused the request outright
+        # ("max_tokens: 70001 > 64000 ... maximum allowed").  The env var
+        # and a skill override express a preferred ceiling, not permission
+        # to exceed the resolved model's hard limit, so clamp to the cap the
+        # model config declares.
+        model_cap = (self.model_config or {}).get('max_output_tokens')
+        try:
+            if model_cap and int(effective_max_tokens) > int(model_cap):
+                logger.info(f"max_output_tokens {effective_max_tokens} exceeds "
+                            f"{self.model_id if hasattr(self, 'model_id') else 'model'} "
+                            f"cap {model_cap}; clamping")
+                effective_max_tokens = int(model_cap)
+        except (TypeError, ValueError):
+            pass
 
         return ProviderConfig(
             max_output_tokens=effective_max_tokens,
