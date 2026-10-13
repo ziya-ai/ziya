@@ -29,6 +29,20 @@ it('an MCP detail drawer opens the status panel focused on that server', async (
     expect(openMcpServers).toHaveBeenCalledWith('jira');
 });
 
+it('the board itself reaches the MCP Servers panel, unfocused, so Reload Config is reachable with no card', () => {
+    // A server just added to mcp_config.json has no card yet; the detail
+    // drawer's per-server link cannot be the only route to Reload Config.
+    const openMcpServers = jest.fn();
+    const { unmount } = render(<BenchActionsProvider actions={{ openMcpServers }}>
+        <BenchPanel bench={{ ...panelModel(), items: [] } as any} /></BenchActionsProvider>);
+    fireEvent.click(screen.getByTestId('bench-mcp-servers'));
+    expect(openMcpServers).toHaveBeenCalledTimes(1);
+    expect(openMcpServers.mock.calls[0][0]).toBeUndefined();
+    unmount();
+    render(<BenchPanel bench={panelModel() as any} />);
+    expect(screen.queryByTestId('bench-mcp-servers')).toBeNull();
+});
+
 it('find more opens the registry; without actions neither control renders', () => {
     const openRegistry = jest.fn();
     const { unmount } = render(<BenchActionsProvider actions={{ openRegistry }}>
