@@ -804,6 +804,13 @@ class StreamingToolExecutor:
         if blocked_tools >= 3:
             return ('end', 'runaway_loop', None)
 
+        # The provider stream was closed because the model began looping
+        # (app/utils/repetition_guard.py). Every continue/nudge/inject branch
+        # below would hand the model the same loop to resume, so end the turn;
+        # the caller shows REPETITION_NOTICE so the cut is not silent.
+        if repetition_stopped:
+            return ('end', 'repetition_stopped', None)
+
         if assistant_text.strip():
             # (a) Non-prefill gate — decided by stop_reason==max_tokens ONLY.
             if not supports_prefill and not tools_executed:
@@ -3254,8 +3261,9 @@ class StreamingToolExecutor:
             continuation_happened = False  # Track if code block continuation occurred
 
             # Streaming repetition detection state (reset per iteration)
-            self._recent_sentences = []
-            self._sentence_buffer = ''
+            from app.utils.repetition_guard import (
+                SentenceRepetitionGuard, StoppableStream)
+            self._repetition_guard = SentenceRepetitionGuard()
             self._repetition_suppressed = False
             
             # Safety guard: prevent sending conversation ending with assistant message
@@ -3380,9 +3388,14 @@ class StreamingToolExecutor:
                     TextDelta, ToolUseStart, ToolUseInput, ToolUseEnd,
                     UsageEvent, ThinkingDelta, ThinkingBlock, ErrorEvent,
                     ErrorType, StreamEnd, ProcessingEvent)
-                async for stream_event in self.provider.stream_response(
+                # Stoppable so the repetition guard can close the upstream
+                # stream (ending generation and its cost); the wrapper then
+                # yields StreamEnd(stop_reason='repetition'), so the normal
+                # message_stop handling below still runs.
+                _provider_stream = StoppableStream(self.provider.stream_response(
                     conversation, system_content, bedrock_tools, provider_config
-                ):
+                ))
+                async for stream_event in _provider_stream:
                     event_count += 1
 
                     # --- Periodic feedback check during streaming ---
@@ -3692,10 +3705,14 @@ class StreamingToolExecutor:
                             from app.text_delta_processor import process_text_delta
 
                             # Streaming repetition suppression: if we already
-                            # detected a degenerate loop, swallow text silently
+                            # detected a degenerate loop, drop further text.
+                            # It is NOT appended to assistant_text: that is the
+                            # model's own record of this turn, and it must match
+                            # what the user was shown. Appending it made the
+                            # model believe its answer was complete while the
+                            # user's copy was truncated, so a later "you were
+                            # cut off" continuation contradicted what it saw.
                             if self._repetition_suppressed:
-                                assistant_text += delta.get('text', '')
-                                _td_state.assistant_text = assistant_text
                                 continue
 
                             # Close the open thinking block when the model
@@ -3798,41 +3815,27 @@ class StreamingToolExecutor:
                                 break
 
                             # Check for autoregressive degeneration in real time.
-                            # Accumulate text into sentences; if the same sentence
-                            # appears 3+ times, suppress further output.
+                            # The guard is fed the RAW delta and tracks fences
+                            # itself; text inside any fenced block is ignored.
                             #
-                            # Skip entirely while inside a fenced code block.
-                            # Code legitimately repeats structurally (the same
-                            # ternary/boilerplate line appearing in an optimistic
-                            # update and both revert-path branches of a diff, for
-                            # example) in ways prose degeneration never does. This
-                            # guard previously scanned code verbatim and cut a
-                            # real diff off mid-line after the third occurrence of
-                            # a shared line fragment, silently corrupting the
-                            # diff on disk with no signal to the model that it had
-                            # been truncated — the model then reasonably reported
-                            # (correctly, from what it could see) that its
-                            # response was not cut off, because it never learned
-                            # otherwise.
-                            if not code_block_tracker.get('in_block'):
-                                self._sentence_buffer += delta.get('text', '')
-                            while True:
-                                m = re.search(r'([.!?])\s', self._sentence_buffer)
-                                if not m:
-                                    break
-                                end = m.end()
-                                sentence = self._sentence_buffer[:end].strip()
-                                self._sentence_buffer = self._sentence_buffer[end:]
-                                if len(sentence) >= 20:
-                                    norm = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', sentence.lower())).strip()
-                                    count = sum(1 for s in self._recent_sentences if s == norm)
-                                    if count >= 2:
-                                        self._repetition_suppressed = True
-                                        logger.info(f"✂️ STREAM_REPETITION: Suppressing after 3x: {sentence[:80]}")
-                                        break
-                                    self._recent_sentences.append(norm)
-                                    if len(self._recent_sentences) > 50:
-                                        self._recent_sentences = self._recent_sentences[-30:]
+                            # Gating on code_block_tracker was unreliable: the
+                            # tracker sees text only after the content optimizer
+                            # and viz buffering release it, which can be a whole
+                            # fence at once, so it reported in_block False for a
+                            # body that was streaming. The guard then read a
+                            # chart gallery's repeated JSON as prose and cut it
+                            # on the third copy (and earlier, a diff mid-line).
+                            #
+                            # On a loop, stop the provider stream rather than
+                            # draining it silently: the model stops generating
+                            # text nobody sees, and the turn ends with a notice.
+                            _rep_hit = self._repetition_guard.feed(delta.get('text', ''))
+                            if _rep_hit:
+                                self._repetition_suppressed = True
+                                _provider_stream.request_stop()
+                                logger.info(
+                                    f"✂️ STREAM_REPETITION: loop detected, closing "
+                                    f"provider stream: {_rep_hit[:80]}")
 
                         elif delta.get('type') == 'input_json_delta':
                             # Find tool by index
@@ -5000,6 +5003,7 @@ Please retry the tool call with valid JSON. Ensure:
                             empty_completion_retry_used=empty_completion_retry_used,
                             block_continue_stalls=block_continue_stalls,
                             intent_stalls=intent_stalls,
+                            repetition_stopped=self._repetition_suppressed,
                         )
                         if _probe:
                             _grace_probe(_probe[0], says_continue=_probe[1], decider=_probe[2])
@@ -5103,7 +5107,14 @@ Please retry the tool call with valid JSON. Ensure:
                             logger.debug(f"🔍 CONTINUE: {_reason} (iteration={iteration})")
                             continue
                         # _verdict == 'end'
-                        if _reason == 'no_prefill_end':
+                        if _reason == 'repetition_stopped':
+                            from app.utils.repetition_guard import REPETITION_NOTICE
+                            logger.info(
+                                f"✂️ STREAM_REPETITION: turn ended after loop "
+                                f"(iteration={iteration}, stop_reason={last_stop_reason})"
+                            )
+                            yield track_yield({'type': 'text', 'content': REPETITION_NOTICE})
+                        elif _reason == 'no_prefill_end':
                             logger.info(
                                 f"🛑 NO_PREFILL_END: Model doesn't support prefill, ending stream "
                                 f"after text-only response (continuation={continuation_happened}, "

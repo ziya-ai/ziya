@@ -69,6 +69,34 @@ class TestRunawayGuard:
         assert _call(decide, blocked_tools=3)[:2] == ('end', 'runaway_loop')
 
 
+class TestRepetitionStopped:
+    """A turn whose provider stream was closed by the repetition guard ends,
+    whatever branch would otherwise have continued or nudged it."""
+
+    # iteration=0 throughout: at iteration>=1 the short-stable branch (b)
+    # ends a <50-char text first and would mask the branch under test.
+    _CONTINUING = [
+        dict(assistant_text=_LONG_INTENT, iteration=0),           # textonly grace
+        dict(assistant_text="x", code_block_open=True, iteration=0),   # incomplete block
+        dict(assistant_text="x", continuation_happened=True, iteration=0),
+        dict(assistant_text="Here is the plan:", iteration=0),    # suggests continuation
+        dict(assistant_text="x", supports_prefill=False, iteration=0,
+             code_block_open=True, last_stop_reason='end_turn'),  # non-prefill block
+    ]
+
+    @pytest.mark.parametrize("overrides", _CONTINUING)
+    def test_ends(self, decide, overrides):
+        verdict, reason, _ = _call(decide, repetition_stopped=True, **overrides)
+        assert (verdict, reason) == ('end', 'repetition_stopped')
+
+    @pytest.mark.parametrize("overrides", _CONTINUING)
+    def test_same_inputs_do_not_end_without_flag(self, decide, overrides):
+        """Positive control: each case really is a continuing branch when the
+        flag is absent, so the test above is not vacuous."""
+        verdict, _, _ = _call(decide, **overrides)
+        assert verdict != 'end'
+
+
 class TestNonPrefillGate:
     """Branch (a) — decided by stop_reason==max_tokens ONLY."""
 
