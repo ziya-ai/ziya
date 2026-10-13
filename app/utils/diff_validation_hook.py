@@ -72,6 +72,8 @@ def reader_reason(validation_result: Dict[str, Any]) -> str:
         base = f"{noun} {ids} of {total} did not match the current file"
         return f"{base} ({'; '.join(kinds)[:120]})" if kinds else base
     feedback = str(validation_result.get("model_feedback") or "")
+    if validation_result.get("pending_new_file"):
+        return "the target file is created by an earlier diff in this response that is not applied yet"
     if "does not exist" in feedback:
         return "the target file does not exist"
     if "Could not extract file path" in feedback:
@@ -109,6 +111,16 @@ class DiffValidationHook:
         # validation_retry event so the frontend can mark exactly those
         # fences unappliable and explain the pause before the correction.
         self.last_rejected: List[Dict[str, Any]] = []
+        # The phrase by which the most recent response cited a diff it never
+        # emitted (app/utils/phantom_diff.py), or None.  server.py reads it
+        # to word the correction request: this is "nothing was produced",
+        # not "a diff failed to apply".
+        self.phantom_reference: Optional[str] = None
+        # Files a new-file fence (``--- /dev/null``) in this response creates.
+        # A later fence patching one of them is refused like any diff whose
+        # target is missing, but with a reason that names the cause and the
+        # correct correction (one complete new-file diff), see _validate_one.
+        self.created_in_response: Set[str] = set()
         
     def detect_completed_diffs(self, content: str) -> List[Dict[str, Any]]:
         """
@@ -296,6 +308,26 @@ class DiffValidationHook:
             if validation_result["status"] == "error" and validation_result["total_hunks"] == 0:
                 has_failures = True
                 logger.warning(f"❌ Validation failed for {file_path}: {validation_result['model_feedback']}")
+                # The target is missing because an EARLIER fence in this same
+                # response creates it and the user has not applied that yet.
+                # Refusing is right: every fence must apply on its own against
+                # the live file, and a patch stacked on an unapplied new-file
+                # diff forces apply order on the user.  But the generic advice
+                # ("mark as new file creation") would have the model recreate
+                # the file from a fragment.  Say what the correction is.
+                if (file_path in self.created_in_response
+                        and "does not exist" in str(validation_result.get("model_feedback") or "")):
+                    validation_result["pending_new_file"] = True
+                    validation_result["model_feedback"] = (
+                        f"❌ {file_path} does not exist yet: it is created by an earlier diff in "
+                        f"this response, which has not been applied. Do not patch a file you are "
+                        f"creating in the same response. Re-emit ONE complete new-file diff for "
+                        f"{file_path} (--- /dev/null, new file mode 100644) containing the full "
+                        f"corrected content, replacing both the earlier new-file diff and this patch."
+                    )
+            elif not has_failures and (
+                    "--- /dev/null" in diff_content or "new file mode" in diff_content):
+                self.created_in_response.add(file_path)
             
             if has_failures:
                 
@@ -476,6 +508,8 @@ class DiffValidationHook:
         self.successful_diffs.clear()
         self.failed_diff_details.clear()
         self.added_files.clear()
+        self.created_in_response.clear()
+        self.phantom_reference = None
     
     def _detect_language(self, file_path: str) -> str:
         """Detect language from file extension for code fence."""
