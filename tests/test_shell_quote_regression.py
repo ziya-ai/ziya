@@ -17,6 +17,8 @@ multiline ``python3 -c "..."`` payload:
      a real command substitution.
 """
 
+import shlex
+
 import pytest
 
 from app.mcp_servers.shell_server import ShellServer, _extract_command_substitutions
@@ -183,8 +185,11 @@ class TestResolveSubstitutionsSpanBased:
     def test_paren_inside_quoted_body_not_truncated(self, server):
         # The [^)]+ truncation bug: the ) inside the quoted body must not
         # end the substitution early.
+        # The output of a double-quoted substitution is re-quoted so later
+        # tokenization keeps it as one word, so assert on the tokenized
+        # argument rather than the exact spliced text.
         r = server._resolve_substitutions("echo \"$(echo 'a) b')\"", self.TIMEOUT, self.CWD)
-        assert r == "echo \"a) b\"", r
+        assert shlex.split(r) == ["echo", "a) b"], r
 
     def test_nested_substitution_resolved_inner_first(self, server):
         # Old single-level regex left the inner $() as a literal; now it
