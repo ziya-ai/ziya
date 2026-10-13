@@ -21,8 +21,8 @@ from app.utils.error_handlers import sanitize_client_error
 
 class TestPathCollapsing:
     def test_three_segment_path_collapsed_to_last_two(self):
-        out = sanitize_client_error("boom at /Users/dcohn/workplace/ziya/app.py")
-        assert "/Users/dcohn" not in out
+        out = sanitize_client_error("boom at /Users/alice/workplace/ziya/app.py")
+        assert "/Users/alice" not in out
         assert ".../ziya/app.py" in out
 
     def test_two_segment_path_not_collapsed(self):
@@ -56,7 +56,7 @@ class TestPathCollapsing:
 
 class TestUrlsPreserved:
     def test_https_url_untouched(self):
-        url = "see https://code.amazon.com/packages/Ziya/blobs/x/y/z"
+        url = "see https://git.example.com/packages/Ziya/blobs/x/y/z"
         assert sanitize_client_error(url) == url
 
     def test_http_url_untouched(self):
@@ -119,8 +119,8 @@ class TestCombined:
     def test_path_collapsed_then_truncated(self):
         # A long message containing a path: path is collapsed, then the whole
         # thing is bounded. Both transforms apply, redaction first.
-        msg = "error at /Users/dcohn/workplace/ziya/mod.py — " + ("x" * 400)
+        msg = "error at /Users/alice/workplace/ziya/mod.py — " + ("x" * 400)
         out = sanitize_client_error(msg)
-        assert "/Users/dcohn" not in out
+        assert "/Users/alice" not in out
         assert out.endswith("…")
         assert len(out) == 301
