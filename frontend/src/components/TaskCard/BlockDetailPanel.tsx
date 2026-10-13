@@ -25,6 +25,7 @@ import { ArtifactViewer } from './ArtifactViewer';
 import { stripTaskMetaTags } from './completionCheck';
 import { blockConfigLines, blockEmoji, blockLabel } from './runMapModel';
 import { IterationBindingsBox } from './IterationBindings';
+import { failureReasonOf } from './failureReason';
 
 interface Props {
   block: Block;
@@ -64,8 +65,21 @@ interface Props {
 
 const ArtifactBody: React.FC<{
   artifact: Artifact; projectId?: string; runId?: string;
-}> = ({ artifact, projectId, runId }) => (
+}> = ({ artifact, projectId, runId }) => {
+  // WHY the block failed, in the words task_finished and task_run_read
+  // use.  Shown before the summary: a reader who sees "did most of it"
+  // first and the verdict last draws the wrong conclusion from the text.
+  // Previously the rationale lived only in the self_assessment field (not
+  // rendered) or deep in the decisions list.
+  const reason = failureReasonOf(artifact);
+  return (
   <>
+    {reason && (
+      <div className="tc-detail__error-box" data-testid="detail-failure-reason">
+        <div className="tc-detail__error-label">Why it failed</div>
+        <pre>{reason}</pre>
+      </div>
+    )}
     {artifact.summary
       ? <TaskMarkdown markdown={artifact.summary} enableCodeApply={false}
           isStreaming={false} isSubRender={true} />
@@ -88,7 +102,8 @@ const ArtifactBody: React.FC<{
       </div>
     )}
   </>
-);
+  );
+};
 
 /**
  * The resolutions a focused view should show, if any.

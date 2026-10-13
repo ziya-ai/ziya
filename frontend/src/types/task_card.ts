@@ -149,6 +149,10 @@ export interface Artifact {
   // Optional error-identity hash for failure clustering.  Null on success.
   signature?: string | null;
   failed?: boolean;
+  // The model's own verdict, parsed from its <self_assessment .../> tag.
+  // {objective_met: 'true'|'partial'|'false'|..., rationale?: string}.
+  // Mirrors app/models/task_card.py::Artifact.self_assessment.
+  self_assessment?: Record<string, string> | null;
   /** One per templated task that produced this artifact; empty/absent otherwise. */
   template_resolutions?: TemplateResolution[];
 }
