@@ -58,4 +58,46 @@ describe('StagedCardTile full inspection', () => {
     // The old presentation: a lone <details> wrapping card instructions.
     expect(staged).not.toMatch(/<summary><strong>Instructions<\/strong><\/summary>/);
   });
+
+  it('loads the outline stylesheet, which otherwise only arrives with the deck', () => {
+    // .tc-outline rules live in task-card-editor.css; a chat that never
+    // opened the deck would render the outline unstyled.
+    expect(TILE).toMatch(/import '\.\/task-card-editor\.css';/);
+  });
+});
+
+describe('edits in the deck reach the staged tile', () => {
+  // Edit opens the deck in a modal over the same window; without a saved
+  // event the tile keeps showing the pre-edit card (and a stale
+  // "Save to deck" button after Add to deck) until the chat remounts.
+  const HOOK = fs.readFileSync(
+    path.join(__dirname, '..', '..', '..', 'hooks', 'useTaskBindings.ts'), 'utf8');
+  const LIBRARY = fs.readFileSync(
+    path.join(__dirname, '..', 'TaskCardsLibrary.tsx'), 'utf8');
+  const staged = componentBody(TILE, 'StagedCardTile');
+
+  const handler = (name: string) => {
+    const start = LIBRARY.indexOf(`const ${name} = useCallback`);
+    expect(start).toBeGreaterThan(-1);
+    return LIBRARY.slice(start, LIBRARY.indexOf('}, [', start));
+  };
+
+  it('declares the event', () => {
+    expect(HOOK).toMatch(/export const TASK_CARD_SAVED_EVENT = '[\w-]+';/);
+  });
+
+  it('the deck announces both Save and Add to deck, naming the card', () => {
+    for (const name of ['handleSave', 'handleAddToDeck']) {
+      const body = handler(name);
+      expect(body).toMatch(/TASK_CARD_SAVED_EVENT/);
+      expect(body).toMatch(/cardId:\s*draft\.id/);
+    }
+  });
+
+  it('the staged tile refetches its own card and its signature status on that event', () => {
+    expect(staged).toMatch(/addEventListener\(TASK_CARD_SAVED_EVENT/);
+    expect(staged).toMatch(/removeEventListener\(TASK_CARD_SAVED_EVENT/);
+    expect(staged).toMatch(/detail\?\.cardId !== binding\.card_id/);
+    expect(staged).toMatch(/fetchFresh\(\)/);
+  });
 });
