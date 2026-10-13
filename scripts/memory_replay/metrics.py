@@ -14,8 +14,9 @@ ids-free aggregates and shares only.
                 BEFORE the proposal.
 * fairness      each project's / group's share of the active store vs its
                 share of extract events (groups for REPORTING ONLY:
-                KuiperEAR-* and qos -> kuiper, ziya-* and ZiyaInternal -> ziya,
-                rest -> other).
+                ziya-* -> ziya, rest -> other; ZIYA_REPLAY_GROUPS adds
+                groups as "name=prefix,prefix;name=..." matched on the
+                project directory name).
 * structure     node/root counts, largest-node share, max root tag count,
                 per-node project-mix entropy, orphan rate, depth.
 * promotion     proposal -> active latency in extract events and in domain
@@ -43,11 +44,26 @@ _TOK = re.compile(r"[a-z0-9_]{3,}")
 _STOP = frozenset("the and for with that this from are was were have has not but you your its into when then than they them".split())
 
 
+def _extra_groups() -> List[Tuple[str, Tuple[str, ...]]]:
+    """Reporting groups from ZIYA_REPLAY_GROUPS: ``name=prefix,prefix;...``.
+    Read per call so a test can set it with monkeypatch."""
+    out: List[Tuple[str, Tuple[str, ...]]] = []
+    for part in os.environ.get("ZIYA_REPLAY_GROUPS", "").split(";"):
+        if "=" not in part:
+            continue
+        name, prefixes = part.split("=", 1)
+        pre = tuple(x.strip() for x in prefixes.split(",") if x.strip())
+        if name.strip() and pre:
+            out.append((name.strip(), pre))
+    return out
+
+
 def group_of(project: Optional[str]) -> str:
     p = (project or "").strip()
-    if p.startswith("KuiperEAR") or p == "qos":
-        return "kuiper"
-    if p.lower().startswith("ziya") or p == "ZiyaInternal":
+    for name, prefixes in _extra_groups():
+        if any(p.startswith(x) or p == x for x in prefixes):
+            return name
+    if p.lower().startswith("ziya"):
         return "ziya"
     return "other"
 

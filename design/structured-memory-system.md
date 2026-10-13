@@ -91,7 +91,7 @@ Enterprise domain memory stratifies naturally by volatility:
 
 | Layer | Description | Volatility | Example |
 |-------|-------------|-----------|---------|
-| **Domain Context** | What the system/project IS | Years | "LEO is a 1,600-sat broadband constellation, formerly Kuiper" |
+| **Domain Context** | What the system/project IS | Years | "LEO is a 1,600-sat broadband constellation" |
 | **Architecture** | How it's structured | Quarters | "Gen 1: GMS→Ka→OBP→ISL→OBP→Ka→UT, three orbital shells" |
 | **Lexicon** | Domain vocabulary, disambiguations | Grows, rarely deprecated | "FCTS = Forward Channel Transport System (ground→sat→UT path)" |
 | **Decisions & Rationale** | What was chosen and why | Permanent | "Chose CCSDS framing over IP — OBP can't handle full IP stack" |
