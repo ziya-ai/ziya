@@ -2,11 +2,16 @@
 Tests for the GPT-5.5 family registration in the openai endpoint.
 
 Verifies:
-  - All four variants (gpt-5.5, gpt-5.5-pro, gpt-5.5-mini, gpt-5.5-nano) are registered
+  - Both published variants (gpt-5.5, gpt-5.5-pro) are registered.  gpt-5.5-mini
+    and gpt-5.5-nano were registered speculatively and never shipped: OpenAI's
+    /v1/models (checked 2026-10-01) lists only gpt-5.5 and gpt-5.5-pro, so the
+    two phantom entries were removed and now resolve as aliases to gpt-6-luna
+    (see tests/test_provider_catalog_2026_10.py).
   - Vision support is enabled on all variants (GPT-5.5 is omnimodal)
   - Token limits and family wiring match other openai-gpt models
-  - Older models (5.4, 5.3, 4.1) remain available (API-side is not yet deprecated)
-  - OpenAIDirectProvider accepts the new model_ids without configuration errors
+  - Older models (5.4, 4.1) remain available where OpenAI has not announced an
+    API shutdown
+  - OpenAIDirectProvider accepts the model_ids without configuration errors
 """
 
 import pytest
@@ -16,7 +21,7 @@ from unittest.mock import MagicMock, patch
 from app.config.models_config import MODEL_CONFIGS, get_model_capabilities
 
 
-GPT_55_VARIANTS = ["gpt-5.5", "gpt-5.5-pro", "gpt-5.5-mini", "gpt-5.5-nano"]
+GPT_55_VARIANTS = ["gpt-5.5", "gpt-5.5-pro"]
 
 
 class TestGPT55Registration:
@@ -59,14 +64,16 @@ class TestGPT55Registration:
 
 class TestOlderModelsNotDeprecated:
     """
-    OpenAI's announced retirements (Feb 2026) apply to ChatGPT only; API access
-    to 5.4, 5.3, 4.1 continues. These must stay registered and must NOT carry
-    a 'deprecated' marker until the API sunset is announced.
+    Models OpenAI has NOT given an API shutdown date stay registered.  The
+    2026-10-01 deprecations page retired gpt-5.4-nano (shutdown 2027-04-01),
+    o3 / o3-mini / o4-mini and the gpt-4o-2024-05-13 snapshot; those left the
+    table and are MODEL_ALIASES now.  5.4 / 5.4-pro / 5.4-mini / 4.1 have no
+    date and must remain.
     """
 
     @pytest.mark.parametrize("name", [
-        "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano",
-        "gpt-4.1",
+        "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini",
+        "gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini",
     ])
     def test_still_registered_and_not_deprecated(self, name):
         assert name in MODEL_CONFIGS["openai"], f"{name} unexpectedly removed"

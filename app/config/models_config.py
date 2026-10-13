@@ -14,10 +14,10 @@ DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
     "bedrock": "opus4.8",
     "google": "gemini-3.1-pro",
-    "openai": "gpt-5.5",
-    "anthropic": "claude-sonnet-5",
-    "zai": "glm-5.2",
-    "meta": "muse-spark-1.2",
+    "openai": "gpt-6.1-sol",
+    "anthropic": "claude-sonnet-5-5",
+    "zai": "glm-5.3",
+    "meta": "muse-spark-1.3",
     # Phase 0 of design/local-models.md: the one model named by
     # ZIYA_LOCAL_MODEL. Phase 1 discovers the list from the running server.
     "local": local_model_name(),
@@ -41,7 +41,14 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
         # End-of-life on Bedrock (entries removed 2026-07) — keep the old
         # names resolving for users with saved settings:
         "sonnet3.7": "sonnet4.6",
-        "opus4": "opus4.1",
+        "opus4": "opus4.5",
+        # Entries removed 2026-10.  `sonnet` / `haiku` were Claude 3 entries
+        # (Bedrock: "reached the end of its life") whose keys shadowed the
+        # `sonnet` / `haiku` aliases above, so those aliases never resolved.
+        # sonnet4.0 is EOL 2026-10-14; opus4.1 has been Legacy since
+        # 2026-07-08 (EOL 2027-01-08) and never had a global. profile.
+        "sonnet4.0": "sonnet4.6",
+        "opus4.1": "opus4.5",
     },
     "google": {
         "gemini": "gemini-3.1-pro",
@@ -53,6 +60,20 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
         "gemini-2.0-flash": "gemini-flash",
         "gemini-2.0-flash-lite": "gemini-3.1-flash-lite",
     },
+    "openai": {
+        # Entries removed 2026-10.  gpt-5.5-mini / -nano were never served
+        # (/v1/models lists only gpt-5.5 and gpt-5.5-pro; both 404), yet
+        # they held the small / xsmall rungs and the service default.  The
+        # rest carry OpenAI shutdown dates: o3-mini / o4-mini 2026-10-23,
+        # o3 / gpt-4o later in 2026, gpt-5.4-nano 2027-04-01.
+        "gpt-5.5-mini": "gpt-6-luna",
+        "gpt-5.5-nano": "gpt-6-luna",
+        "gpt-5.4-nano": "gpt-6-luna",
+        "o3": "gpt-6-sol",
+        "o3-mini": "gpt-5.4-mini",
+        "o4-mini": "gpt-5.4-mini",
+        "gpt-4o": "gpt-6-sol",
+    },
     "anthropic": {
         "sonnet": "claude-sonnet-4-6",
         "opus": "claude-opus-5-5",
@@ -63,13 +84,15 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
         "claude-sonnet-4": "claude-sonnet-4-6",
         "claude-opus-4": "claude-opus-4-5",
         "claude-opus-4-1": "claude-opus-4-5",
+        # claude-sonnet-4-5-20250929 retires 2026-11-30 (entry removed 2026-10).
+        "claude-sonnet-4-5": "claude-sonnet-4-6",
     },
     "zai": {
-        "glm": "glm-5.2",
+        "glm": "glm-5.3",
     },
     "meta": {
-        "muse": "muse-spark-1.2",
-        "spark": "muse-spark-1.2",
+        "muse": "muse-spark-1.3",
+        "spark": "muse-spark-1.3",
         # Data-sharing tier — see the muse-spark-1.2-contributor entry in
         # MODEL_CONFIGS before using this.
         "muse-contributor": "muse-spark-1.2-contributor",
@@ -158,7 +181,7 @@ def resolve_tier_model(endpoint: str, tier: str) -> str:
 DEFAULT_SERVICE_MODELS = {
     "bedrock": "us.amazon.nova-lite-v1:0",
     "google": "gemini-3.1-flash-lite",
-    "openai": "gpt-5.5-mini",
+    "openai": "gpt-6-luna",
     "anthropic": "claude-haiku-4-5-20251001",
     "zai": "glm-4.6",
     "local": local_model_name(),
@@ -173,7 +196,7 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     "memory_extraction": {
         "bedrock": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         "google": "gemini-3.8-flash",       # flash (not lite) for extraction
-        "openai": "gpt-5.5-mini",           # already strong enough
+        "openai": "gpt-6-luna",             # gpt-5.5-mini never existed
         "anthropic": "claude-haiku-4-5-20251001",
     },
     # Memory eval needs the strongest available judgment model — its
@@ -204,7 +227,7 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     "intent_judge": {
         "bedrock": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         "google": "gemini-3.8-flash",
-        "openai": "gpt-5.5-mini",
+        "openai": "gpt-6-luna",
         "anthropic": "claude-haiku-4-5-20251001",
     },
 }
@@ -232,8 +255,9 @@ SERVICE_MODEL_TIERS: dict[str, str] = {
 
 # Default regions for specific models
 MODEL_DEFAULT_REGIONS = {
-    # Add more model-specific defaults as needed
-    "sonnet4.0": "us-east-1",
+    # Add model-specific defaults as needed.  (The only entry, sonnet4.0,
+    # went with the model in 2026-10; preferred_region on the entry is the
+    # usual way to express this now.)
 }
 
 # Default region when not specified
@@ -515,6 +539,12 @@ ENDPOINT_DEFAULTS = {
         "token_limit": 272000,
         "max_output_tokens": 128000,
         "default_max_output_tokens": 32768,
+        # Every GPT-5.x / 6.x chat model rejects `max_tokens` with a 400
+        # ("Use 'max_completion_tokens' instead"; live-verified 2026-10-09
+        # on gpt-5.5, gpt-6-luna and gpt-6.1-sol).  The older models still
+        # on this endpoint (4.1, 4o-mini) accept max_completion_tokens too.
+        # Read by OpenAIDirectProvider, as openai_bedrock already does.
+        "max_tokens_param": "max_completion_tokens",
         "supported_parameters": ["temperature", "top_p", "max_tokens"],
         "parameter_ranges": {
             "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
@@ -560,31 +590,6 @@ ENDPOINT_DEFAULTS = {
 # Model-specific configs that override endpoint defaults
 MODEL_CONFIGS = {
     "bedrock": {
-        "sonnet4.0": {
-            "model_id": {
-                "us": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-                "eu": "eu.anthropic.claude-sonnet-4-20250514-v1:0",
-                "global": "global.anthropic.claude-sonnet-4-20250514-v1:0"
-            },
-            "available_regions": [
-                "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-south-1", 
-                "ap-southeast-1", "ap-southeast-2", "eu-central-1", "eu-north-1", 
-                "eu-south-2", "eu-west-1", "eu-west-3", "us-east-1", "us-east-2", 
-                "us-west-1", "us-west-2"
-            ],
-            "preferred_region": "us-east-1",  # Default preference but not restricted
-            "token_limit": 200000,  # Total context window size
-            "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 36000,  # Default value for max_output_tokens
-            "supports_max_input_tokens": True,
-            "supports_thinking": True,  # Override global default
-            "supports_vision": True,  # Sonnet 4.0+ supports vision
-            "family": "claude",
-            "supports_context_caching": True,
-            "supports_extended_context": True,  # Supports 1M token context window
-            "extended_context_limit": 1000000,  # Extended context window size
-            "extended_context_header": "context-1m-2025-08-07"  # Beta header for extended context
-        },
         "sonnet4.5": {
             "model_id": {
                 "us": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -635,7 +640,6 @@ MODEL_CONFIGS = {
             "extended_context_header": "context-1m-2025-08-07"
         },
         "sonnet5": {
-            "tier": "medium",
             "model_id": {
                 "us": "us.anthropic.claude-sonnet-5",
                 "global": "global.anthropic.claude-sonnet-5"
@@ -660,27 +664,33 @@ MODEL_CONFIGS = {
             # ("`temperature` is deprecated for this model"), same as Opus 4.8.
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
-        "opus4.1": {
+        "sonnet5.5": {
+            # Owns the bedrock `medium` rung (moved off sonnet5).  Live-verified
+            # 2026-10-09: us. and global. profiles invoke via Converse from
+            # us-west-2; temperature rejected ("deprecated for this model").
+            # No eu. profile was listed in us-east-1 / us-west-2, so none here.
+            "tier": "medium",
             "model_id": {
-                # No global. inference profile exists for Opus 4.1 — verified
-                # 2026-08-19: GetInferenceProfile returns ResourceNotFoundException
-                # and Converse rejects the ID.  us. is the only valid prefix.
-                "us": "us.anthropic.claude-opus-4-1-20250805-v1:0"
+                "us": "us.anthropic.claude-sonnet-5-5",
+                "global": "global.anthropic.claude-sonnet-5-5"
             },
-            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
-            "region_restricted": True,  # Only available in US regions
+            "available_regions": [
+                "us-east-1", "us-east-2", "us-west-2"
+            ],
             "preferred_region": "us-east-1",
-            "token_limit": 200000,  # Total context window size
-            "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 32000,  # Increased from 10k to 32k for longer responses
-            "max_iterations": 8,
-            "timeout_multiplier": 6,
-            "is_advanced_model": True,
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 36000,
             "supports_max_input_tokens": True,
-            "supports_thinking": True,  # Override global default
-            "family": "claude",
-            "supports_context_caching": True,
+            "supports_thinking": True,
             "supports_vision": True,
+            "family": "claude",
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_context_caching": True,
+            "supports_assistant_prefill": False,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "opus4.5": {
             "model_id": "global.anthropic.claude-opus-4-5-20251101-v1:0",  # Global inference profile
@@ -850,24 +860,6 @@ MODEL_CONFIGS = {
             # prompting + the `effort` parameter instead.
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
-        "sonnet": {
-            "model_id": {
-                "us": "us.anthropic.claude-3-sonnet-20240229-v1:0",
-                "eu": "anthropic.claude-3-sonnet-20240229-v1:0"
-            },
-            "family": "claude",
-            "supports_vision": True,
-            "supports_context_caching": True,
-        },
-        "haiku": {
-            "model_id": {
-                "us": "us.anthropic.claude-3-haiku-20240307-v1:0",
-                "eu": "anthropic.claude-3-haiku-20240307-v1:0"
-            },
-            "family": "claude",
-            "supports_vision": True,
-            "supports_context_caching": True,
-        },
         "haiku-4.5": {
             # Owns the bedrock 'small' rung so portable tiers resolve to
             # Claude here as they do on the anthropic endpoint. Nova models
@@ -886,6 +878,35 @@ MODEL_CONFIGS = {
             "family": "claude",
             "supports_context_caching": True,
             "supports_vision": True,
+        },
+        "haiku-5.5": {
+            # Released 2026-10-07.  Live-verified 2026-10-09: us. and global.
+            # profiles invoke via Converse; temperature rejected.  1M in /
+            # 128K out and adaptive thinking (which, unlike Opus/Sonnet 5.5,
+            # can be disabled) per the Anthropic /v1/models capability record.
+            # Deliberately untiered for now: the `small` rung, the `haiku`
+            # alias and the Haiku service-model pins stay on haiku-4.5 until
+            # someone decides to move them (Haiku 5.5 lists at a tenth of 4.5's
+            # price, with a step-up above 100K-token prompts).
+            "model_id": {
+                "us": "us.anthropic.claude-haiku-5-5",
+                "global": "global.anthropic.claude-haiku-5-5"
+            },
+            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "low",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_context_caching": True,
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "nova-pro": {
             "model_id": {
@@ -1104,6 +1125,26 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
         },
+        "glm-5.3": {
+            # Live-verified 2026-10-09: zai.glm-5.3 is INFERENCE_PROFILE-only
+            # (us./global., us-east-1 + us-west-2) and invokes via Converse,
+            # so no wrapper_class (glm-5's on-demand OpenAIBedrock path does
+            # not take profile ids).  Accepts temperature.  Window and output
+            # follow docs.z.ai (1M / 128K, text only); not probed on Bedrock.
+            "model_id": {
+                "us": "us.zai.glm-5.3",
+                "global": "global.zai.glm-5.3"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "glm",
+            "token_limit": 1000000,
+            "max_input_tokens": 1000000,
+            "context_window": 1000000,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 32000,
+            "supports_thinking": True,
+        },
         "grok-4.6": {
             # Live-verified 2026-09-23: xai.grok-4.6 "Grok 4.6" invocable via
             # Converse on bedrock-runtime (us./global. CRIS, us-east-1 +
@@ -1119,6 +1160,27 @@ MODEL_CONFIGS = {
             "model_id": {
                 "us": "us.xai.grok-4.6",
                 "global": "global.xai.grok-4.6"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "oss_openai_gpt",
+            "token_limit": 524288,
+            "max_input_tokens": 524288,
+            "context_window": 524288,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "grok-4.7": {
+            # Live-verified 2026-10-09: us. profile invokes via Converse from
+            # us-west-2; "This model doesn't support the temperature field".
+            # Window and output ceiling copied from grok-4.6 (probed there,
+            # not here) — a conservative cap until 4.7 is probed.
+            "model_id": {
+                "us": "us.xai.grok-4.7",
+                "global": "global.xai.grok-4.7"
             },
             "available_regions": ["us-east-1", "us-west-2"],
             "preferred_region": "us-east-1",
@@ -1433,6 +1495,36 @@ MODEL_CONFIGS = {
             "endpoint_override": "bedrock-mantle",
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
+        "mythos5.1": {
+            # Restricted access.  Unlike mythos5 (mantle-only, bare id), the
+            # Bedrock model card lists us./global. CRIS profiles on
+            # bedrock-runtime, the same shape as fable5.1.  NOT invoke-probed:
+            # neither the model nor its profiles are visible to accounts
+            # without access (checked 2026-10-09, us-east-1 + us-west-2).
+            "model_id": {
+                "us": "us.anthropic.claude-mythos-5-1",
+                "global": "global.anthropic.claude-mythos-5-1"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 10,
+            "timeout_multiplier": 8,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "high",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "preview": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
         # GPT-5.6 family (Sol/Terra/Luna) — served exclusively through the
         # bedrock-mantle gateway on its OpenAI Responses API path
         # (/openai/v1/responses).  This is neither bedrock-runtime
@@ -1550,6 +1642,26 @@ MODEL_CONFIGS = {
             "model_id": {
                 "us": "us.openai.gpt-6-luna",
                 "global": "global.openai.gpt-6-luna"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "oss_openai_gpt",
+            "token_limit": 1048576,
+            "max_input_tokens": 1048576,
+            "context_window": 1048576,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-6.1-sol": {
+            # Same native-Converse shape as the GPT-6 family above.
+            # Live-verified 2026-10-09: us. profile invokes via Converse from
+            # us-west-2; temperature rejected.  Limits copied from gpt-6-sol.
+            "model_id": {
+                "us": "us.openai.gpt-6.1-sol",
+                "global": "global.openai.gpt-6.1-sol"
             },
             "available_regions": ["us-east-1", "us-west-2"],
             "preferred_region": "us-east-1",
@@ -1751,8 +1863,97 @@ MODEL_CONFIGS = {
         },
     },
     "openai": {
-        "gpt-5.5": {
+        # Live-verified 2026-10-09 (/v1/models + one chat call each): every
+        # 5.6 / 6.x model rejects a non-default temperature ("Only the
+        # default (1) value is supported") and `max_tokens` (the endpoint
+        # default max_tokens_param handles the latter).  Window and output
+        # ceiling for the 6.x line follow the Bedrock-probed GPT-6 entries;
+        # the 5.6 line follows its Bedrock (mantle) entries.
+        "gpt-6.1-sol": {
             "tier": "medium",
+            "model_id": "gpt-6.1-sol",
+            "family": "openai-gpt",
+            "token_limit": 1048576,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-6-astra": {
+            "tier": "large",
+            "model_id": "gpt-6-astra",
+            "family": "openai-gpt",
+            "token_limit": 1048576,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-6-sol": {
+            "model_id": "gpt-6-sol",
+            "family": "openai-gpt",
+            "token_limit": 1048576,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-6-luna": {
+            # `small` rung and the endpoint's service model; `xsmall` rounds
+            # up to it (nothing cheaper on this endpoint is still served).
+            "tier": "small",
+            "model_id": "gpt-6-luna",
+            "family": "openai-gpt",
+            "token_limit": 1048576,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-5.6-sol": {
+            "model_id": "gpt-5.6-sol",
+            "family": "openai-gpt",
+            "token_limit": 272000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-5.6-terra": {
+            "model_id": "gpt-5.6-terra",
+            "family": "openai-gpt",
+            "token_limit": 272000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-5.6-luna": {
+            "model_id": "gpt-5.6-luna",
+            "family": "openai-gpt",
+            "token_limit": 272000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "gpt-5.5": {
+            # gpt-5.5 also rejects a non-default temperature (live-verified
+            # 2026-10-09); declared so service calls stop sending it.
             "model_id": "gpt-5.5",
             "family": "openai-gpt",
             "token_limit": 1000000,
@@ -1760,35 +1961,15 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 32768,
             "supports_vision": True,
             "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "gpt-5.5-pro": {
-            "tier": "large",
             "model_id": "gpt-5.5-pro",
             "family": "openai-gpt",
             "token_limit": 1000000,
             "max_output_tokens": 128000,
             "default_max_output_tokens": 32768,
             "supports_thinking": True,
-            "supports_vision": True,
-            "native_function_calling": True,
-        },
-        "gpt-5.5-mini": {
-            "tier": "small",
-            "model_id": "gpt-5.5-mini",
-            "family": "openai-gpt",
-            "token_limit": 1000000,
-            "max_output_tokens": 128000,
-            "default_max_output_tokens": 32768,
-            "supports_vision": True,
-            "native_function_calling": True,
-        },
-        "gpt-5.5-nano": {
-            "tier": "xsmall",
-            "model_id": "gpt-5.5-nano",
-            "family": "openai-gpt",
-            "token_limit": 1000000,
-            "max_output_tokens": 128000,
-            "default_max_output_tokens": 32768,
             "supports_vision": True,
             "native_function_calling": True,
         },
@@ -1819,15 +2000,6 @@ MODEL_CONFIGS = {
             "supports_vision": True,
             "native_function_calling": True,
         },
-        "gpt-5.4-nano": {
-            "model_id": "gpt-5.4-nano",
-            "family": "openai-gpt",
-            "token_limit": 400000,
-            "max_output_tokens": 128000,
-            "default_max_output_tokens": 32768,
-            "supports_vision": True,
-            "native_function_calling": True,
-        },
         "gpt-4.1": {
             "model_id": "gpt-4.1",
             "family": "openai-gpt",
@@ -1846,15 +2018,6 @@ MODEL_CONFIGS = {
             "supports_vision": True,
             "native_function_calling": True,
         },
-        "gpt-4o": {
-            "model_id": "gpt-4o",
-            "family": "openai-gpt",
-            "token_limit": 128000,
-            "max_output_tokens": 16384,
-            "default_max_output_tokens": 16384,
-            "supports_vision": True,
-            "native_function_calling": True,
-        },
         "gpt-4o-mini": {
             "model_id": "gpt-4o-mini",
             "family": "openai-gpt",
@@ -1862,33 +2025,6 @@ MODEL_CONFIGS = {
             "max_output_tokens": 16384,
             "default_max_output_tokens": 16384,
             "supports_vision": True,
-            "native_function_calling": True,
-        },
-        "o3": {
-            "model_id": "o3",
-            "family": "openai-gpt",
-            "token_limit": 200000,
-            "max_output_tokens": 100000,
-            "default_max_output_tokens": 32768,
-            "supports_thinking": True,
-            "native_function_calling": True,
-        },
-        "o3-mini": {
-            "model_id": "o3-mini",
-            "family": "openai-gpt",
-            "token_limit": 200000,
-            "max_output_tokens": 65536,
-            "default_max_output_tokens": 16384,
-            "supports_thinking": True,
-            "native_function_calling": True,
-        },
-        "o4-mini": {
-            "model_id": "o4-mini",
-            "family": "openai-gpt",
-            "token_limit": 200000,
-            "max_output_tokens": 100000,
-            "default_max_output_tokens": 32768,
-            "supports_thinking": True,
             "native_function_calling": True,
         },
     },
@@ -1905,26 +2041,46 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "claude-sonnet-5": {
-            "tier": "medium",
             "model_id": "claude-sonnet-5",
             "family": "claude",
-            "token_limit": 200000,
-            "max_output_tokens": 64000,
+            # Was 200K / 64K; /v1/models reports 1M in / 128K out.
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
             "default_max_output_tokens": 16384,
             "supports_vision": True,
             "supports_thinking": True,
             "supports_adaptive_thinking": True,
             "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
-        "claude-sonnet-4-5": {
-            "model_id": "claude-sonnet-4-5-20250929",
+        "claude-sonnet-5-5": {
+            # Endpoint default and `medium` rung.  /v1/models (2026-10-09):
+            # 1M in / 128K out, adaptive thinking only; temperature 400s.
+            "tier": "medium",
+            "model_id": "claude-sonnet-5-5",
             "family": "claude",
-            "token_limit": 200000,
-            "max_output_tokens": 64000,
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
             "default_max_output_tokens": 16384,
             "supports_vision": True,
             "supports_thinking": True,
+            "supports_adaptive_thinking": True,
             "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "claude-haiku-5-5": {
+            # Released 2026-10-07; same envelope as Sonnet 5.5, but thinking
+            # can be disabled.  Untiered for now (see bedrock haiku-5.5).
+            "model_id": "claude-haiku-5-5",
+            "family": "claude",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "claude-opus-4-6": {
             "model_id": "claude-opus-4-6",
@@ -2059,10 +2215,50 @@ MODEL_CONFIGS = {
             "preview": True,
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
+        "claude-mythos-5-1": {
+            # Restricted access: absent from /v1/models for accounts without
+            # it, like claude-mythos-5.  Listed on the pricing page.
+            "model_id": "claude-mythos-5-1",
+            "family": "claude",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+            "preview": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
     },
     "zai": {
-        "glm-5.2": {
+        "glm-5.3": {
+            # Endpoint default and `medium` rung.  docs.z.ai (2026-10-09):
+            # same base model as 5.2, 1M window, 128K output, text only,
+            # reasoning always on (effort low / high / max).  Same price as 5.2.
             "tier": "medium",
+            "model_id": "glm-5.3",
+            "family": "zai-glm",
+            "token_limit": 1000000,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+        "glm-5.3-flash": {
+            # `xsmall` rung.  Same text parameters as 5.3 (1M window) plus
+            # image input, at about a tenth of the price.
+            "tier": "xsmall",
+            "model_id": "glm-5.3-flash",
+            "family": "zai-glm",
+            "token_limit": 1000000,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "glm-5.2": {
             "model_id": "glm-5.2",
             "family": "zai-glm",
             "token_limit": 1000000,
@@ -2090,8 +2286,22 @@ MODEL_CONFIGS = {
         # model_json_schema()) fails every request. inline_schema_refs makes
         # the OpenAI-compatible provider expand refs before sending. This is
         # an endpoint-wide API constraint, hence set on every meta model.
-        "muse-spark-1.2": {
+        "muse-spark-1.3": {
+            # Endpoint default and `medium` rung; listed on /v1/models
+            # (api.meta.ai, 2026-10-09).  Same price and envelope as 1.2.
             "tier": "medium",
+            "model_id": "muse-spark-1.3",
+            "family": "meta-muse",
+            "token_limit": 1048576,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 16384,
+            "supports_thinking": True,
+            "thinking_display_options": ["off", "on"],
+            "native_function_calling": True,
+            "supports_vision": True,
+            "inline_schema_refs": True,
+        },
+        "muse-spark-1.2": {
             "model_id": "muse-spark-1.2",
             "family": "meta-muse",
             "token_limit": 1048576,
@@ -2130,6 +2340,20 @@ MODEL_CONFIGS = {
         # harness makes on the user's behalf.
         "muse-spark-1.2-contributor": {
             "model_id": "muse-spark-1.2-contributor",
+            "family": "meta-muse",
+            "token_limit": 1048576,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 16384,
+            "supports_thinking": True,
+            "native_function_calling": True,
+            "supports_vision": True,
+            "shares_data_for_training": True,
+            "inline_schema_refs": True,
+        },
+        # Contributor tier for 1.3: same rules as 1.2-contributor above
+        # (no alias except the explicit `muse-contributor`, no tier tag).
+        "muse-spark-1.3-contributor": {
+            "model_id": "muse-spark-1.3-contributor",
             "family": "meta-muse",
             "token_limit": 1048576,
             "max_output_tokens": 131072,

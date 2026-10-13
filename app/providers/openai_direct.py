@@ -292,15 +292,25 @@ class OpenAIDirectProvider(LLMProvider):
                 passthrough.pop("tool_call_id", None)
             openai_messages.append(passthrough)
 
+        # GPT-5.x / 6.x reject `max_tokens` ("Use 'max_completion_tokens'
+        # instead"), which broke every request on --endpoint openai.  The
+        # openai endpoint declares max_tokens_param in ENDPOINT_DEFAULTS;
+        # zai / meta / openrouter / local keep the classic name.
+        max_tokens_key = self.model_config.get("max_tokens_param") or "max_tokens"
         kwargs: Dict[str, Any] = {
             "model": self.model_id,
             "messages": openai_messages,
-            "max_tokens": config.max_output_tokens,
+            max_tokens_key: config.max_output_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        # Same defense-in-depth as AnthropicDirectProvider: a ProviderConfig
+        # built directly (skill override, delegate, calibration) must not
+        # send a sampling parameter the model declares it rejects.
         if config.temperature is not None:
-            kwargs["temperature"] = config.temperature
+            unsupported = set(self.model_config.get("unsupported_parameters", []) or [])
+            if "temperature" not in unsupported:
+                kwargs["temperature"] = config.temperature
         if tools and not config.suppress_tools:
             # Some OpenAI-compatible endpoints (Meta) reject any tool schema
             # containing $ref with "400 Recursive JSON schemas are not currently

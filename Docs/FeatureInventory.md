@@ -237,11 +237,14 @@ How task-card work is fired on a timer, tracked through its states, observed liv
 
 | Feature | Detail |
 |---|---|
-| **AWS Bedrock — Claude** | Sonnet 4.6 (default), Sonnet 4.5/4.0/3.7/3.5, Opus 4.6/4.5/4.1/4.0/3, Haiku 4.5/3 |
-| **AWS Bedrock — Nova** | Nova Premier (1M ctx), Nova Pro, Nova Lite, Nova Micro |
-| **AWS Bedrock — Other** | DeepSeek R1/V3/V3.2, Qwen3 Coder 480B, Kimi K2.5, MiniMax M2.1, GLM 4.7/4.7 Flash, OpenAI GPT 120B/20B (via Bedrock) |
+| **AWS Bedrock — Claude** | Opus 4.8 (default), Fable 5/5.1, Mythos 5/5.1 *(restricted)*, Opus 5.5/5/4.7/4.6/4.5, Sonnet 5.5/5/4.6/4.5, Haiku 5.5/4.5. Bedrock EOL'd Claude 3 Haiku/Sonnet, Sonnet 4 and Opus 4.1 (`haiku`, `sonnet`, `sonnet4.0`, `opus4.1` now resolve as aliases to live models) |
+| **AWS Bedrock — Nova** | Nova 2 Lite, Nova Pro, Nova Lite, Nova Micro |
+| **AWS Bedrock — Other** | GPT‑6 Sol/Astra/Luna and GPT‑6.1 Sol, GPT‑5.6 Sol/Terra/Luna, DeepSeek R1/V3.1/V3.2, Qwen3 line, Kimi K2.5/K3, MiniMax M2/M2.1/M2.5, GLM 4.7/4.7 Flash/5/5.3, Grok 4.6/4.7, Llama 4, Mistral Large 3 / Devstral 2, Nemotron, Gemma 3, gpt-oss 120B/20B |
 | **Google Gemini** | Gemini 4 Argon *(provisional id; API rollout pending)*, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3.5/3.1 Flash‑Lite, Gemini 3.1 Pro (incl. `-customtools`), Gemini 3 Flash preview, Gemini 2.5 Pro/Flash/Flash‑Lite. `gemini-2.0-flash(-lite)` are shut down by Google and resolve as aliases |
-| **OpenAI** | GPT-4.1/Mini/Nano, GPT-4o/Mini, o3, o3-mini, o4-mini |
+| **OpenAI** | GPT‑6.1 Sol (default), GPT‑6 Astra/Sol/Luna, GPT‑5.6 Sol/Terra/Luna, GPT‑5.5/5.5 Pro, GPT‑5.4/Pro/Mini, GPT‑4.1/Mini, GPT‑4o Mini. OpenAI retired o3/o3‑mini/o4‑mini/GPT‑4o and GPT‑5.4 Nano (shutdowns Oct 2026–Apr 2027); those names resolve as aliases |
+| **Anthropic direct** | Sonnet 5.5 (default), Sonnet 5/4.6, Opus 5.5/5/4.8/4.7/4.6/4.5, Haiku 5.5/4.5, Fable 5/5.1, Mythos 5/5.1 *(restricted)*. Sonnet 4.5 (retires 2026‑11‑30) resolves as an alias |
+| **z.ai** | GLM‑5.3 (default), GLM‑5.3 Flash, GLM‑5.2, GLM‑4.6 |
+| **Meta** | Muse Spark 1.3 (default), 1.2, 1.1; `-contributor` data‑sharing tiers only by explicit name |
 | **Mid-conversation model switching** | Change models at any point without losing history |
 | **Per-conversation / per-project model pinning** | Pin a model to one conversation or project without changing the server default; requests resolve conversation pin → project pin → server default (per-tab, non-persisted — reload falls back to server default) |
 | **Folder-scoped & persistent model pins** | Model pins also apply at folder scope (greyed when not in a folder), and each pin can be tab-only (ephemeral) or persisted to the conversation/folder/project record (syncs, survives restarts). Resolution: conversation → folder → project → server; tab pin overrides saved pref at the same level. Sidebar chip shows scope (`conv`/`folder`/`proj`) and layer (`tab`/`saved`). Pins are stored as a model alias string; validation and resolution of that alias are handled by the model-config subsystem | <!-- cap: per-conversation-model-pin -->
