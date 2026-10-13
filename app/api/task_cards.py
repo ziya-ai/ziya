@@ -669,6 +669,7 @@ async def _launch_run_for_card(
     resume_iteration_artifacts: dict = None,
     resume_iteration_summaries: list = None,
     resume_call_chain: list = None,
+    resume_banked_ids: list = None,
     resume_card_version: int = None,
 ) -> TaskRun:
     """Shared helper: validates the card, creates a TaskRun, seeds
@@ -1078,6 +1079,9 @@ async def _launch_run_for_card(
                 # reports success having executed nothing — which is worse
                 # than the 404 that behaviour replaced.
                 resume_call_chain=list(resume_call_chain or []),
+                # Finished branches of a resumed parallel: replayed, not
+                # re-run.  Empty unless the resume endpoint supplied them.
+                resume_banked_ids=set(resume_banked_ids or []),
             )
             logger.info(f"🚀 TASK_RUN: {run_id[:8]} → execute_block start (type={block.block_type})")
 

@@ -383,7 +383,10 @@ def parallel_replay_indices(
     if not is_loop_node(node) or not (node or {}).get("repeat_parallel"):
         return None
     out: List[int] = []
-    for s in (summaries or []):
+    # A re-run (rerun_missing) appends a second attempt for the same
+    # index; the highest attempt is that iteration's result.
+    from .iteration_attempts import latest_attempts
+    for s in latest_attempts(summaries or []):
         if s.get("status") != "passed" or not s.get("has_artifact", True):
             continue
         if s.get("replayed"):
@@ -449,7 +452,8 @@ def serial_replay_prefix(
     if not is_loop_node(node) or (node or {}).get("repeat_parallel"):
         return None
     recorded: Dict[int, Dict[str, Any]] = {}
-    for s in (summaries or []):
+    from .iteration_attempts import latest_attempts
+    for s in latest_attempts(summaries or []):
         idx = s.get("index")
         if isinstance(idx, int) and idx >= 0:
             recorded[idx] = s
@@ -616,3 +620,186 @@ def resolve_resume_point(
             "to. Use retry to re-run it, or rerun the card from scratch."
         )
     return successor, normalized, None
+
+
+def concurrent_resume_block(
+    root: Dict[str, Any], running_ids: Any,
+) -> Optional[str]:
+    """The one block whose retry covers every concurrently in-flight block.
+
+    For a run that died with several branches running at once (a
+    ``parallel`` fan-out), "the running block with the latest
+    started_at" names ONE sibling, and retrying it loses the others.
+    The executor's resume gate is a single shared flag that clears when
+    the target is reached, and a parallel starts its children in body
+    order: siblings ordered before the target are replayed — as an empty
+    "no recorded result" marker when they never finished — and siblings
+    after it re-execute.  So a retry of Lane D re-ran D, skipped A-C, and
+    let V/R run on the gap.
+
+    Returns None when there is at most one in-flight leaf (a single line
+    of execution; the caller's existing choice stands, including the
+    mid-loop and through-Call cases it handles), or when ``running_ids``
+    cannot be placed in ``root``.
+
+    Otherwise: the lowest common ancestor of the in-flight leaves, raised
+    to the OUTERMOST ``parallel`` on its path.  Raising is what removes
+    the ordering hazard — any target strictly inside a parallel is
+    subject to it, so the target must be a block no parallel encloses
+    (or the parallel itself).  Finally normalized through
+    ``find_resume_target`` so a block inside a loop body resolves to its
+    loop, matching what the resume endpoint will accept.
+    """
+    parents: Dict[str, Optional[str]] = {}
+    types: Dict[str, str] = {}
+
+    def _walk(node: Dict[str, Any], parent: Optional[str]) -> None:
+        bid = node.get("id")
+        if bid:
+            parents[bid] = parent
+            types[bid] = node.get("block_type") or ""
+        for child in (node.get("body") or []):
+            _walk(child, bid or parent)
+
+    _walk(root, None)
+
+    def _path(bid: str) -> List[str]:
+        out: List[str] = []
+        cur: Optional[str] = bid
+        while cur is not None:
+            out.append(cur)
+            cur = parents.get(cur)
+        return list(reversed(out))
+
+    running = {b for b in (running_ids or []) if b in parents}
+    paths = {b: _path(b) for b in running}
+    leaves = [
+        b for b in running
+        if not any(o != b and b in paths[o] for o in running)
+    ]
+    if len(leaves) < 2:
+        return None
+    common: List[str] = []
+    for level in zip(*(paths[b] for b in sorted(leaves))):
+        if all(x == level[0] for x in level):
+            common.append(level[0])
+        else:
+            break
+    if not common:
+        return None
+    target = common[-1]
+    for bid in common:
+        if types.get(bid) == "parallel":
+            target = bid
+            break
+    return find_resume_target(root, target) or target
+
+
+# ── Resuming a parallel: one target, banked branches ────────────────────
+#
+# The executor's resume gate is one shared ``resume_skipping`` flag that
+# clears when the target is reached, and a parallel starts its children in
+# body order.  So a target strictly INSIDE a parallel replays the siblings
+# ordered before it (as an empty marker when they never finished) and
+# re-executes the ones after it — an outcome decided by body order, not by
+# what each branch accomplished.  The rule is therefore: a resume never
+# targets inside a parallel.  It targets the outermost enclosing parallel,
+# and that parallel's branches which already finished are replayed from
+# record (``banked_parallel_children``) while the rest execute.  Re-running
+# every branch is still available as an explicit fresh re-run of the
+# parallel (mode ``rerun`` on the resume endpoint).
+
+# Summary of the marker ``block_executor._replay_artifact`` substitutes for
+# a block with no recorded result.  A persisted marker is not a result and
+# must never be banked as one.  Kept in step with that function by
+# tests/test_resume_target_fanout.py.
+REPLAY_MISSING_PREFIX = "(skipped on resume: no recorded result"
+
+
+def outermost_parallel_ancestor(
+    root: Dict[str, Any], block_id: str,
+) -> Optional[str]:
+    """Id of the outermost ``parallel`` STRICTLY enclosing ``block_id``.
+
+    None when no parallel encloses it, including when ``block_id`` is
+    itself a top-level parallel or is not in ``root`` at all.
+    """
+    def _walk(node: Dict[str, Any], outer: Optional[str]) -> Optional[str]:
+        if node.get("id") == block_id:
+            return outer or ""
+        here = outer
+        if here is None and node.get("block_type") == "parallel":
+            here = node.get("id")
+        for child in (node.get("body") or []):
+            found = _walk(child, here)
+            if found is not None:
+                return found
+        return None
+
+    hit = _walk(root, None)
+    return hit or None
+
+
+def _bankable(state: Any) -> bool:
+    """True when a persisted block state holds a result a resume can replay.
+
+    Accepts a ``TaskRunBlockState`` or its dict form.  ``skipped`` counts
+    because a branch banked by an earlier resume is recorded as skipped
+    (this run did not execute it) while still holding its original
+    artifact; without it a chain of resumes would re-run, one attempt at
+    a time, every branch it had already banked.
+    """
+    if state is None:
+        return False
+    if isinstance(state, dict):
+        status, art = state.get("status"), state.get("artifact")
+    else:
+        status, art = getattr(state, "status", None), getattr(state, "artifact", None)
+    if status not in ("done", "skipped") or art is None:
+        return False
+    if hasattr(art, "model_dump"):
+        art = art.model_dump()
+    if not isinstance(art, dict) or art.get("failed"):
+        return False
+    if (art.get("summary") or "").startswith(REPLAY_MISSING_PREFIX):
+        return False
+    return not is_cancelled_sibling_artifact(art)
+
+
+def banked_parallel_children(
+    root: Dict[str, Any], target_id: str, block_states: Optional[Dict[str, Any]],
+) -> Set[str]:
+    """Branches of parallels within ``target_id``'s subtree to replay.
+
+    A branch is a DIRECT child of a ``parallel`` — the target itself when
+    it is one, or any parallel nested beneath it — that finished with a
+    passing result.  Direct children only: branches of a parallel are
+    independent, so replaying a finished one cannot feed a stale input to
+    another, whereas banking an arbitrary descendant of a SEQUENCE could
+    replay a stage whose upstream is being re-run.  A partly finished
+    branch (a group whose own record is incomplete) therefore re-runs
+    whole.
+
+    Blocks inside a loop body are never banked: they have no durable
+    per-block state, and the loop owns their resume semantics.
+    """
+    node = find_block(root, target_id)
+    if node is None:
+        return set()
+    states = block_states or {}
+    out: Set[str] = set()
+
+    def _walk(n: Dict[str, Any]) -> None:
+        if n.get("block_type") in _LOOP_TYPES:
+            return
+        is_par = n.get("block_type") == "parallel"
+        for child in (n.get("body") or []):
+            cid = child.get("id")
+            if is_par and cid and _bankable(states.get(cid)):
+                out.add(cid)
+                continue      # replayed whole; nothing beneath it runs
+            _walk(child)
+
+    _walk(node)
+    out.discard(target_id)
+    return out

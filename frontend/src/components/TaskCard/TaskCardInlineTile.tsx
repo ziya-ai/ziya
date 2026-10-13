@@ -881,7 +881,12 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
     // card.  That is not recoverable from the run records, so confirm
     // before launching.  'continue' needs no gate: it accepts the
     // block's recorded outcome and re-executes nothing.
-    if (mode === 'retry' && run.block_states?.[blockId]?.artifact) {
+    // A retried PARALLEL replays its finished branches, so it discards
+    // nothing; a fresh re-run of one does.
+    const _target = run.block_states?.[blockId];
+    const discards = mode === 'rerun'
+      || (mode === 'retry' && _target?.block_type !== 'parallel');
+    if (discards && _target?.artifact) {
       const proceed = await new Promise<boolean>((resolve) => {
         Modal.confirm({
           title: 'Re-run this block?',
@@ -1463,6 +1468,11 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             onContinueFrom={
               controls.canContinueFromBlock
                 ? (blockId: string) => handleResumeFrom(blockId, 'continue')
+                : undefined
+            }
+            onRerunFrom={
+              controls.canResumeFromBlock
+                ? (blockId: string) => handleResumeFrom(blockId, 'rerun')
                 : undefined
             }
             resumingBlockId={resumingBlockId}

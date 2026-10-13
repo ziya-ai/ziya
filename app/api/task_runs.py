@@ -538,7 +538,7 @@ def _source_anchor(project_id: str, chat_id: str, run_id: str) -> Optional[str]:
 @router.post("/{run_id}/resume-from/{block_id}", response_model=ResumeFromResponse)
 async def resume_run_from_block(
     project_id: str, run_id: str, block_id: str,
-    mode: str = Query("retry", pattern="^(retry|continue)$"),
+    mode: str = Query("retry", pattern="^(retry|continue|rerun)$"),
 ):
     """Continue a finished run, preserving prior state.
 
@@ -606,7 +606,9 @@ async def resume_run_from_block(
         )
 
     from ..utils.resume_targets import (
-        is_cancelled_sibling_artifact, parallel_replay_indices,
+        banked_parallel_children, find_resume_target,
+        is_cancelled_sibling_artifact, locate_block,
+        outermost_parallel_ancestor, parallel_replay_indices,
         resolve_resume_point, resume_call_chain, serial_replay_prefix,
     )
     # ``call_snapshots`` is required, not enrichment: a Call runs its target
@@ -615,8 +617,25 @@ async def resume_run_from_block(
     # this endpoint otherwise sees.  Without it every such request 404'd,
     # leaving Restart as the only offered recovery for a multi-phase study.
     _calls = run.call_snapshots or {}
+    # A target inside a parallel is never resumed AT: the gate's single
+    # skip flag would replay the branches ordered before it and re-run
+    # those after it, by body order rather than by what each finished.
+    # It resumes the outermost enclosing parallel instead, whose finished
+    # branches are banked below.  ``continue`` past a branch therefore
+    # means "accept that branch" (bank it too), not "skip its siblings".
+    resolve_id = block_id
+    resolve_mode = "retry" if mode == "rerun" else mode
+    accepted: set = set()
+    _owner, _ = locate_block(root, _calls, block_id)
+    if _owner is not None:
+        _norm = find_resume_target(_owner, block_id) or block_id
+        _outer = outermost_parallel_ancestor(_owner, _norm)
+        if _outer:
+            if mode == "continue":
+                accepted.add(_norm)
+            resolve_id, resolve_mode = _outer, "retry"
     resume_point, user_target, err = resolve_resume_point(
-        root, block_id, mode, call_snapshots=_calls,
+        root, resolve_id, resolve_mode, call_snapshots=_calls,
     )
     if err and user_target is None:
         # Unknown block id.
@@ -651,6 +670,15 @@ async def resume_run_from_block(
         for bid, st in (run.block_states or {}).items()
         if st.artifact is not None
     }
+    # Finished branches of every parallel the resume point contains replay
+    # rather than re-run.  ``rerun`` is the explicit opt-out: it executes
+    # every branch again.
+    banked_ids: set = set(accepted)
+    if mode != "rerun":
+        _rp_tree, _ = locate_block(root, _calls, resume_point)
+        if _rp_tree is not None:
+            banked_ids |= banked_parallel_children(
+                _rp_tree, resume_point, run.block_states or {})
 
     # Banked iterations of the loop at the resume point.  This is what
     # makes resuming a long loop worth doing at all: a 20-agent audit
@@ -669,7 +697,11 @@ async def resume_run_from_block(
     serial_start: Optional[int] = None
     _st = (run.block_states or {}).get(resume_point)
     if mode == "retry" and _st is not None:
-        _sums = [s.model_dump() for s in (_st.iteration_summaries or [])]
+        # Highest attempt per iteration (a rerun_missing re-run appends a
+        # second record for the same index; see app/utils/iteration_attempts).
+        from ..utils.iteration_attempts import latest_attempts
+        _latest = latest_attempts(_st.iteration_summaries or [])
+        _sums = [s.model_dump() for s in _latest]
         # Indices this run INHERITED rather than executed.  Their
         # summaries are absent whenever the resume point sits inside a
         # Call: launch-time seeding walks only the CALLER's tree, so
@@ -731,8 +763,8 @@ async def resume_run_from_block(
         # preserved iteration keeps its own status and timings rather than
         # reading as though this attempt produced it.  ``replayed=True`` is
         # what keeps them out of every progress aggregate.
-        _recorded = {_s.index for _s in (_st.iteration_summaries or [])}
-        for _s in (_st.iteration_summaries or []):
+        _recorded = {_s.index for _s in _latest}
+        for _s in _latest:
             if _s.index in fanout_artifacts:
                 fanout_summaries.append(IterationSummary(
                     index=_s.index, status=_s.status,
@@ -769,6 +801,7 @@ async def resume_run_from_block(
         resume_artifacts=resume_artifacts,
         # Reached THROUGH these Calls rather than replaying them whole.
         resume_call_chain=resume_call_chain(root, _calls, resume_point),
+        resume_banked_ids=sorted(banked_ids),
         resume_iteration_artifacts=fanout_artifacts,
         resume_iteration_summaries=fanout_summaries,
         # Mid-loop restart position for a serial loop; None for a parallel
@@ -778,7 +811,10 @@ async def resume_run_from_block(
         parent_run_id=run.id,
         root_run_id=run.root_run_id or run.id,
         attempt=(run.attempt or 1) + 1,
-        resume_kind=("retry_from" if mode == "retry" else "continue_from"),
+        resume_kind=(
+            "retry_from" if mode in ("retry", "rerun")
+            else "continue_from"
+        ),
         # The block the USER pointed at — for a continue this is NOT the
         # resume point (that is its successor), and naming the successor
         # here would make the UI report the wrong stage.

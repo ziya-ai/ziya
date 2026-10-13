@@ -239,7 +239,10 @@ export interface ResumeFromResult {
  * earlier block from record, so prior deck state is preserved either
  * way — the only difference is whether the named block runs again.
  */
-export type ResumeMode = 'retry' | 'continue';
+ // ``rerun`` is ``retry`` without banking: a retried parallel replays the
+ // branches that finished, a re-run executes every one (and a loop re-plans
+ // from iteration 0).
+ export type ResumeMode = 'retry' | 'continue' | 'rerun';
 
 /**
  * Re-run a finished run from ``blockId`` onward, replaying the earlier

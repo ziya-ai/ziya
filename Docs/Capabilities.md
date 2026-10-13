@@ -1495,6 +1495,16 @@ carry per-block state — so you can click any row and let the server decide.
 Runs created before run snapshotting existed cannot be resumed, and show no
 button.
 
+A **parallel** is resumed as a whole, never one branch at a time. If a run
+stops (or the server restarts) while several branches are in flight, the hold
+names the outermost enclosing parallel rather than whichever branch started
+last. **↻ Retry** / **↻ re-run from here** on that parallel replays the branches
+that already finished from record and runs the rest. To run every branch again,
+including the finished ones, use **⟲ fresh** on the parallel's row. Rows inside a
+parallel show their resume buttons disabled, and **▶ Continue past** a branch
+means "accept that branch's result": the parallel resumes with that branch
+banked, and its siblings are not skipped.
+
 Retrying a loop this way does **not** restart it at iteration zero. The retry
 banks the iterations the loop already completed and restarts at the first one
 that did not, so a run held 22 iterations into a serial campaign re-runs from
