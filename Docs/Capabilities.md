@@ -304,6 +304,10 @@ Also called: parroting detection, tool-output regurgitation detection, n-gram fi
 <!-- cap: fake-tool-result-echo-detection -->
 Also called: fabricated result dict detection, fake JSON tool-result detection, invented tool-output detection, tool-result echo detection, hallucination layer C.
 
+**Autoregressive repetition suppression.** While the model streams, prose outside fenced blocks is split into sentences and checked for a loop: a sentence whose last two copies bracket a run of text that then repeats exactly (`A A A`, `A B A B A`), or one sentence filling 5 of the last 12. On a loop, Ziya closes the provider stream, so the model stops generating and being billed, and ends the turn with a visible "Output stopped: the response began repeating" note. The cut is never silent, and the model's record of the turn matches what you saw. The guard tracks backtick and tilde fences on the raw stream itself, so repeated content inside code, diffs or any diagram fence is never treated as a loop. Limit (maturity 3): sentence splitting is punctuation-based and English-oriented, and fragments under 20 characters are ignored, so a loop of very short sentences is not caught.
+<!-- cap: stream-repetition-suppression -->
+Also called: anti-loop, degeneration guard, runaway output guard, stuck model detection.
+
 ---
 
 ## Web security, encryption & extensibility
