@@ -442,31 +442,32 @@ Server-side HTTP hardening that is always on, independent of the shell/approval 
 
 ---
 
-## 12. What Ziya Does NOT Have (as of v0.6.x)
+## 12. What Ziya Does NOT Have
 
-Tracked against the competitive landscape: Aki, Kiro, Cursor, GitHub Copilot, Windsurf, Claude Code, Aider, Cline.  
-Format per row: the gap, who has it, and notes for context.
+Known gaps, reconciled against the source-verified capability ledger of the 2026-09 competitive study. Tracked against the competitive landscape: Aki, Kiro, Cursor, GitHub Copilot, Windsurf, Claude Code, Aider, Cline.  
+Format per row: the gap, who has it, and notes for context. A row marked **Partial** means Ziya covers part of it and the note says which part is missing.
+
+Some things are left out on purpose and are not gaps. Gating safe work, automatic context compaction, multi-user accounts and being an editor are design positions, explained in [Design Philosophy](DesignPhilosophy.md#what-ziya-deliberately-does-not-do). Rows removed because Ziya ships the capability: persistent cross-session memory (see "Memory & beads — capability index").
 
 ### 12a. Agentic & Workflow
 
 | Gap | Who Has It | Notes |
 |---|---|---|
-| **Persistent cross-session memory** | Claude Code (MEMORY.md auto-save), Codex (two-phase memory pipeline), Aki (`~/.aki/memories/`), Mem0 integrations | No `~/.ziya/memories/` equivalent; history survives within a session but the model has no recall of previous sessions |
-| **Plan / Act mode** | Aki (Plan=read-only, Act=execute), Cursor (preview mode) | No read-only preview toggle before file writes; users cannot review what the agent _intends_ to do before it does it |
+| **Plan / Act mode (read-only session toggle)** | Aki (Plan=read-only, Act=execute), Cursor (preview mode), Claude Code (`plan` mode) | Review-before-write is already the default for project files: with `direct_write_mode: none` (the default), edits outside the writable paths arrive as diffs the user reviews and applies by click. What Ziya lacks is a single switch that also suppresses the safe floor (allowlisted read-only shell, scratch writes to `.ziya/` and `/tmp/`) for a planning-only turn. That floor runs unprompted on purpose — see [Design Philosophy](DesignPhilosophy.md#security-is-load-bearing) |
 | **Lifecycle hooks** | Aki (`PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`) | No hook system for approvals, notifications, logging, or external writes around tool calls |
 | **Output schema enforcement** | Aki, LangChain structured output | No validation that LLM responses conform to a declared JSON schema; matters for pipeline/automation use cases |
 | **Custom subagent definitions** | Claude Code (`.claude/agents/` YAML), Kiro (`.kiro/agents/`) | Delegates are dynamically generated from task decomposition; no user-defined agent templates |
-| **Commit / PR creation** | Claude Code (branch + PR via gh), Codex (GhostCommit + PR), Kiro (autonomous PRs) | No built-in git commit generation or PR creation; users apply diffs manually and commit themselves |
+| **Commit / PR creation** | Claude Code (branch + PR via gh), Codex (GhostCommit + PR), Kiro (autonomous PRs) | Opt-in `git` builtin tool (off by default): the model can stage, commit, stash, push the current branch and switch, and every mutating call needs your approval of a preflight showing exactly what will happen. Destructive and history-rewriting ops aren't offered. No PR creation |
 | **Automatic context compaction** | Claude Code (auto at ~95% + manual /compact), Codex (model_auto_compact_token_limit), Cline (AI summarization), Kiro (customizable thresholds) | Deliberate design choice: Ziya provides user-controlled context curation (per-message muting, fork+truncate, selective file removal) instead of automatic compaction. Auto-compaction risks discarding details the user knows are important. See §4 "Context curation vs. auto-compaction" for rationale. |
 | **Git checkpointing / rewind** | Claude Code (per-prompt checkpoint, /rewind, Esc+Esc), Codex (Ghost snapshots + `codex undo`), Cline (shadow Git per tool use), Kiro (GA checkpointing) | Ziya has per-diff undo but no filesystem-level snapshot/rewind across an entire prompt's changes |
-| **Permission modes** | Claude Code (6 modes: default, acceptEdits, plan, delegate, dontAsk, bypassPermissions), Codex (suggest, auto-edit, full-auto), Cline (per-category auto-approve) | No tiered permission system; all tool calls are either allowed or require manual shell allowlisting |
+| **Named permission-mode selector** | Claude Code (6 modes: default, acceptEdits, plan, delegate, dontAsk, bypassPermissions), Codex (suggest, auto-edit, full-auto), Cline (per-category auto-approve) | Ziya's permissions are tiered, but they aren't exposed as one named mode switch. The tiers are: a default-permit safe floor (project reads, read-only shell allowlist, scratch writes), `direct_write_mode` (`none` / `new_files` / `all_files`), per-session and persistent allowlist additions (`/shell add … save`), YOLO mode (confirmation required), an always-blocked deny floor no mode can lift, and Ed25519 root-signed escalation (`ziya-approve`) for Task Card and CLI-task grants past the floor. The safe floor is deliberately unprompted, not a missing "ask" mode: gating safe work leads to approval fatigue and blanket auto-approve, so prompts are kept for real exceptions. See [Design Philosophy](DesignPhilosophy.md#security-is-load-bearing) and §11a |
 
 ### 12b. Customization & Profiles
 
 | Gap | Who Has It | Notes |
 |---|---|---|
 | **Profile packaging (export/import bundle)** | Aki (`aki profile pack/install`), Cursor rules export | No way to export a bundle of skills + system prompt + model config + tool set and share/install it as a unit |
-| **Per-profile tool selection** | Aki (`enabled_tools` per manifest) | Tools are global; cannot define a profile that exposes only a restricted or specialized tool subset |
+| **Per-profile tool selection** | Aki (`enabled_tools` per manifest) | **Partial.** A custom skill can carry its own instructions, a tool subset (`toolIds` / `allowedTools`), context files and model overrides, so it acts as a named assistant profile (`custom-personas-assistants`). Task Card blocks scope tools per block. Missing: a profile that restricts the tool set for a whole session, as opposed to layering onto it |
 | **Profile marketplace / remote registry** | Aki (Profile Service), Cursor community rules | No community or team-shared store for Ziya profiles or skill sets |
 | **Custom branding per profile** | Aki (logo, favicon, theme, tips per profile) | Single global UI theme |
 | **Response annotation** | Aki (v1.11), Cursor inline comments | Cannot select and annotate specific text within a model response |
@@ -481,7 +482,7 @@ Format per row: the gap, who has it, and notes for context.
 | **Artifacts / side-panel document editing** | Aki ("Write with Aki"), Claude.ai Artifacts, Cursor Composer | No separate editable document pane alongside the chat |
 | **Incognito / no-persist mode (web UI)** | Aki (incognito in UI) | CLI has `--ephemeral`; web UI supports session-wide ephemeral mode via `ZIYA_EPHEMERAL_MODE` env var, plus per-conversation ephemeral chats via the ghosted "+" button (see Capabilities.md). No in-UI toggle for whole-session incognito mode |
 | **LSP integration** | Claude Code (`.lsp.json` for go-to-def, type errors), Kiro (Code OSS native), Q Developer | No language server protocol integration; code intelligence is AST-based only |
-| **Filesystem / network sandbox** | Claude Code (Seatbelt/bubblewrap), Codex (Landlock+seccomp), Kiro (Agent Sandbox) | Shell commands run unsandboxed in the user's environment; allowlist is the only guardrail |
+| **Filesystem / network sandbox** | Claude Code (Seatbelt/bubblewrap), Codex (Landlock+seccomp), Kiro (Agent Sandbox) | A real gap: shell commands run in the user's environment with no OS-level (kernel) confinement. The guardrails are process-level instead: the injection-resistant allowlist engine (`shell=False`, per-segment parsing), the interpreter-escape guard, the write-policy path gate, the always-blocked floor, and signed escalation for anything past the default floor (§11a). These are policy controls, not isolation; a kernel sandbox for delegate/task-card subprocesses is the scoped next step |
 | **Structured JSON CLI output** | Claude Code (`--output-format json/stream-json, --json-schema`), Codex (`--json`) | No machine-readable output mode for CI/scripting pipelines; CLI always outputs human-readable markdown |
 
 ### 12d. Data & Integrations
@@ -492,7 +493,7 @@ Format per row: the gap, who has it, and notes for context.
 | **Database direct connection** | Aki (AWS Postgres integration) | No built-in DB tool |
 | **Microsoft Office automation (write)** | Aki (Gandalf MCP for Word/Excel, built-in PowerPoint MCP, Outlook MCP) | Ziya reads DOCX/XLSX/PPTX; it cannot write to or automate Office apps |
 | **Runtime MCP hot-reload** | Aki (connect/disconnect without restart) | Supported: individual servers can be enabled/disabled/restarted live and the manager can reinitialize via `POST /api/mcp/initialize` without an app restart; picking up a *newly-added* config server still requires that re-read rather than a file watcher (`mcp-server-lifecycle`) | <!-- cap: mcp-server-lifecycle -->
-| **Figma / design import** | Augment Code Design Mode, Cursor | No design-to-code path |
+| **Figma / design import** | Augment Code Design Mode, Cursor | **Partial.** Screenshots and design images can be attached to a message and read by vision-capable models, which then produce code or an inline HTML mockup (`design-to-code`). Missing: importing Figma files or design tokens directly |
 | **OAuth 2.0 for MCP** | Claude Code (full OAuth 2.0), Codex, Cline | Partial — static bearer/header token auth ships (v0.6.0, via the `"auth"` config block; inline tokens and env-var references), but the OAuth 2.0 authorization-code flow is not implemented | <!-- cap: mcp-remote-bearer-auth -->
 | **GitHub Actions / CI integration** | Claude Code (`claude-code-action@v1`), Codex (@codex on PRs), Kiro (autonomous agent) | No published GitHub Action or CI pipeline integration |
 
@@ -501,7 +502,7 @@ Format per row: the gap, who has it, and notes for context.
 | Gap | Who Has It | Notes |
 |---|---|---|
 | **Security / vulnerability scanning** | Amazon Q Developer, Qodo, GitHub Advanced Security | No built-in CVE, secret detection, or SAST scanning |
-| **Compliance audit log** | Enterprise tools generally | No structured audit trail of what files were read/written per session |
+| **Compliance audit log** | Enterprise tools generally | **Partial.** Every MCP tool invocation is written to an append-only, daily-rotated log under `~/.ziya/audit/`: timestamp, tool, OS user, host, argument summary, status, conversation id, HMAC-verification result and duration. It's on by default; `ZIYA_DISABLE_AUDIT_LOG=1` turns it off (`enterprise-governance-audit`). Task runs also record the permissions they were granted at launch. Missing: a per-file read/write ledger, and export to an external SIEM |
 
 ---
 
