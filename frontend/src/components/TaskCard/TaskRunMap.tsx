@@ -26,7 +26,7 @@ import type { TaskCard } from '../../types/task_card';
 import type { TaskRun } from '../../types/task_run';
 import type { LiveTaskState } from '../../hooks/useTaskRunStream';
 import {
-  flattenBlocks, resolveBlockStatus, isLoopBlock, buildDotPasses,
+  flattenBlocks, resolveBlockStatus, isLoopBlock, buildDotPasses, idsInsideParallel,
   blockEmoji, blockLabel, STATUS_GLYPHS,
 } from './runMapModel';
 import { IterationDotStrip } from './IterationDotStrip';
@@ -64,6 +64,12 @@ interface Props {
    */
   onContinueFrom?: (blockId: string) => void;
   /**
+   * When set, a parallel's row also offers a FRESH re-run: every branch
+   * executes again.  "re-run from here" on a parallel resumes it instead,
+   * replaying the branches that already finished.
+   */
+  onRerunFrom?: (blockId: string) => void;
+  /**
    * Block id whose resume request is in flight — disables every row's
    * affordance so a double-click can't launch two runs.
    */
@@ -82,9 +88,15 @@ const POSITION_LABELS: Record<string, string> = {
   ancestor: 'blocked',
 };
 
+/** Why a parallel branch's resume controls are disabled. */
+const PARALLEL_BRANCH_TITLE =
+  'Inside a parallel: branches are not resumed one at a time. Use the '
+  + 'enclosing parallel — "re-run from here" replays the branches that '
+  + 'finished and runs the rest; "fresh" runs every branch again.';
+
 export const TaskRunMap: React.FC<Props> = ({
   card, run, live, focusedId, focusedIndex, focusedPassKey = null, onFocus,
-  onResumeFrom, onContinueFrom, resumingBlockId,
+  onResumeFrom, onContinueFrom, onRerunFrom, resumingBlockId,
 }) => {
   const rows = flattenBlocks(card.root, 0, run.call_snapshots ?? undefined);
   // Loop rows whose collapsed pass history has been expanded.  Local to
@@ -101,6 +113,11 @@ export const TaskRunMap: React.FC<Props> = ({
   // blocks.  A hold inside a callee therefore resolves to no position
   // rather than a wrong one, and the run-level banner still reports it.
   const hold = deriveHoldChain(run, card.root);
+  // Branches of a parallel are never resume points: the server resumes the
+  // outermost enclosing parallel instead (body-order replay would otherwise
+  // decide which branches re-run).  Their per-row controls are disabled so
+  // the row says so rather than launching something it does not name.
+  const insideParallel = idsInsideParallel(card.root);
 
   // A single-node map adds nothing over the tile's own status chrome.
   if (rows.length <= 1) return null;
@@ -128,6 +145,8 @@ export const TaskRunMap: React.FC<Props> = ({
           && passes.some(p => p.dots.total > 0 || p.dots.running);
         const rowSelected = focusedId === block.id && focusedIndex == null;
         const holdPos = positionOf(hold, block.id);
+        const inParallel = insideParallel.has(block.id);
+        const isParallel = block.block_type === 'parallel' && !inParallel;
         return (
             <div
               key={block.id}
@@ -210,10 +229,17 @@ export const TaskRunMap: React.FC<Props> = ({
               {onResumeFrom && !viaCall && (
                 <button
                   className="tc-map__resume"
-                  disabled={!!resumingBlockId}
+                  disabled={!!resumingBlockId || inParallel}
                   title={
-                    resumingBlockId === block.id
+                    inParallel
+                      ? PARALLEL_BRANCH_TITLE
+                      : resumingBlockId === block.id
                       ? 'Re-running…'
+                      : isParallel
+                      ? 'Resume this parallel and everything after it. '
+                        + 'Branches that already finished are replayed from '
+                        + 'record; the rest execute. To run every branch '
+                        + 'again, use "fresh" instead.'
                       : 'Re-run this block and everything after it. This '
                         + 'block EXECUTES AGAIN, so anything it wrote '
                         + '(files, deck state) is produced from scratch. '
@@ -227,6 +253,25 @@ export const TaskRunMap: React.FC<Props> = ({
                   {resumingBlockId === block.id ? '…' : '↻ re-run from here'}
                 </button>
               )}
+              {/* Fresh re-run of a parallel: every branch executes again,
+                  including the ones that finished.  Separate from re-run so
+                  the default on a parallel keeps the work already paid for. */}
+              {onRerunFrom && !viaCall && isParallel && (
+                <button
+                  className="tc-map__resume"
+                  disabled={!!resumingBlockId}
+                  title={
+                    'Run every branch of this parallel again, including '
+                    + 'ones that already finished, then everything after it.'
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRerunFrom(block.id);
+                  }}
+                >
+                  ⟲ fresh
+                </button>
+              )}
               {/* Continue past this block.  Offered alongside retry
                   rather than instead of it: after a failure the two are
                   genuinely different intents ("try again" vs "I fixed
@@ -236,9 +281,11 @@ export const TaskRunMap: React.FC<Props> = ({
               {onContinueFrom && !viaCall && (
                 <button
                   className="tc-map__continue"
-                  disabled={!!resumingBlockId}
+                  disabled={!!resumingBlockId || inParallel}
                   title={
-                    'Continue from the next block. Use after fixing the problem by hand.'
+                    inParallel
+                      ? PARALLEL_BRANCH_TITLE
+                      : 'Continue from the next block. Use after fixing the problem by hand.'
                   }
                   onClick={(e) => {
                     e.stopPropagation();

@@ -161,6 +161,26 @@ function digestStatus(
 export const isLoopBlock = (b: Block): boolean =>
   b.block_type === 'repeat' || b.block_type === 'until';
 
+/**
+ * Ids of every block strictly inside a ``parallel``.
+ *
+ * Such a block is never a resume point: the server resumes the outermost
+ * enclosing parallel and replays its finished branches
+ * (app/utils/resume_targets.py, banked_parallel_children), so the run map
+ * disables per-row resume on these rows rather than offering a target the
+ * server would substitute.
+ */
+export function idsInsideParallel(root: Block | undefined | null): Set<string> {
+  const out = new Set<string>();
+  const walk = (b: Block, inside: boolean) => {
+    if (inside && b.id) out.add(b.id);
+    const next = inside || b.block_type === 'parallel';
+    for (const c of b.body ?? []) walk(c, next);
+  };
+  if (root) walk(root, false);
+  return out;
+}
+
 /** Max iteration dots rendered per loop row; older passes collapse
  * into a "+N" prefix so a 10,000-iteration loop stays one line. */
 export const MAX_DOTS = 30;
@@ -393,6 +413,9 @@ export function blockConfigLines(b: Block): ConfigLine[] {
     }
   }
   if (b.on_failure) lines.push({ label: 'On failure', value: b.on_failure });
+  // Only the non-default is worth a line: a reader checking why a failed
+  // lane did NOT halt the run finds the answer here.
+  if (b.required === false) lines.push({ label: 'Required', value: 'no (may fail without failing its container)' });
   const s = b.scope;
   if (s) {
     const parts: string[] = [];
@@ -400,6 +423,7 @@ export function blockConfigLines(b: Block): ConfigLine[] {
     if (s.tools?.length) parts.push(`${s.tools.length} tool(s)`);
     if (s.skills?.length) parts.push(`${s.skills.length} skill(s)`);
     if (s.shell_commands?.length) parts.push(`${s.shell_commands.length} shell grant(s)`);
+    if (s.cwd) parts.push(`cwd: ${s.cwd}`);
     if (s.model_tier) parts.push(`tier: ${s.model_tier}`);
     if (s.model_name) parts.push(`model: ${s.model_name}`);
     if (parts.length) lines.push({ label: 'Scope', value: parts.join(', ') });

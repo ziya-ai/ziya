@@ -303,6 +303,13 @@ class ExecutionContext:
     # and for a resume targeting the caller's own tree, so this is inert on
     # every pre-existing path.
     resume_call_chain: List[str] = field(default_factory=list)
+    # ---- Resume of a parallel: banked branches ----
+    # Block ids within the resume target's subtree that replay their
+    # recorded artifact instead of executing, even after the gate above
+    # has stopped skipping: the finished branches of a resumed parallel
+    # (app.utils.resume_targets.banked_parallel_children).  Empty for a
+    # normal launch and for an explicit fresh re-run (mode ``rerun``).
+    resume_banked_ids: Set[str] = field(default_factory=set)
 
     def resume_descend_ids(self) -> List[str]:
         """Ids whose enclosing CONTAINERS must be descended into.
@@ -785,8 +792,29 @@ async def _execute_block_dispatch(block: Block, ctx: ExecutionContext) -> Artifa
             pass
         else:
             return await _replay_artifact(block, ctx)
+    elif block.id and block.id in ctx.resume_banked_ids:
+        # A finished branch of the resumed parallel: its recorded result
+        # stands in for it, decided per branch rather than by body order.
+        return await _replay_artifact(block, ctx)
 
     ctx.scope_stack.append(block.scope)
+    saved_contract_defaults = ctx.contract_defaults
+    saved_gather_defaults = ctx.gather_defaults
+    saved_gather_pushdown = ctx.gather_pushdown
+    # Container (gather) contracts: this block's own entries plus matching
+    # State defaults, pushed down to the Tasks beneath it before its body
+    # runs, and checked against its gathered outputs when it returns.
+    gather_entries: List[Any] = []
+    gather_started_ms = now_ms()
+    if block.block_type in _GATHER_CONTAINERS:
+        from ..utils.output_contracts import effective_gather, gather_pushdown
+        gather_entries = effective_gather(block, ctx.gather_defaults)
+        if gather_entries:
+            ctx.gather_pushdown = _combine_pushdown(
+                ctx.gather_pushdown, gather_pushdown(block, gather_entries))
+            if block.id:
+                ctx.gather_entries_by_block[block.id] = gather_entries
+                ctx.gather_reruns.pop(block.id, None)
     await _mark_block_status(ctx, block, "running")
     try:
         if block.block_type == "task":
@@ -1221,7 +1249,14 @@ async def _replay_artifact(block: Block, ctx: ExecutionContext) -> Artifact:
     # renders as though its earlier blocks never happened — losing the
     # prior deck state the resume exists to preserve.  "skipped" is the
     # honest status: this run did not execute the block.
-    await _mark_block_status(ctx, block, "skipped", artifact=artifact)
+    # Persist the ORIGINAL record, not the failed-cleared copy: clearing
+    # is a control-flow device for this run only, and a record reading
+    # "not failed" would let a later resume bank the failure as a
+    # finished parallel branch.
+    await _mark_block_status(
+        ctx, block, "skipped",
+        artifact=replayed if replayed is not None else artifact,
+    )
     return artifact
 
 
