@@ -57,7 +57,7 @@ function loopCard(): TaskCard {
       body: [task('inner', 'Inner task')],
     },
     tags: [], is_template: false, source: 'user',
-    created_at: 0, updated_at: 0, run_count: 0,
+    created_at: 0, updated_at: 0, run_count: 0, version: 1,
   } as TaskCard;
 }
 
