@@ -200,10 +200,20 @@ def fanout_seam_violations(root: Block):
     return problems
 
 
+# The one admitted form of a forbidden verb: an anchored regex for an index-only
+# unstage.  `git restore --staged -- <paths>` never touches the working tree.
+# It exists because a dirty index poisons every later commit iteration (run
+# cli-462ad587602c, 2026-10-11: 16 leftover staged paths made all 160 commit
+# iterations refuse); without it a stage cannot leave the index clean on failure.
+UNSTAGE_GRANT = "re:^git restore --staged -- \\S.*$"
+
+
 def escalation_violations(root: Block):
     problems = []
     for block in iter_blocks(root):
         for grant in grants_of(block):
+            if grant == UNSTAGE_GRANT:
+                continue
             low = grant.lower()
             for bad in FORBIDDEN_GIT:
                 # Match on token boundaries so "git apply" is not read as
@@ -464,6 +474,11 @@ def test_the_destructive_check_discriminates():
                      if any(g.startswith("git commit") for g in grants_of(b)))
     loop_task.scope.shell_commands.append("git reset --hard")
     assert escalation_violations(root), "a git reset --hard grant was not detected"
+    # The unstage carve-out is exact: any other restore form is still refused.
+    loop_task.scope.shell_commands[-1] = "git restore --staged"
+    assert escalation_violations(root), "an unanchored restore grant was let through"
+    loop_task.scope.shell_commands[-1] = "re:^git restore -- \\S.*$"
+    assert escalation_violations(root), "a worktree restore grant was let through"
 
 
 def test_the_analysis_half_cannot_mutate_the_repository():
@@ -811,6 +826,58 @@ def test_the_index_stage_runs_the_release_agnostic_indexer():
     assert "Do NOT re-derive the partition by hand" in text
 
 
+def test_the_index_stage_fans_out_only_files_reconcile_left_pending():
+    """Run cli-4da9fec1b70e died with EMFILE after 83 of 130 contended files.
+    A rerun must attribute only the rest, and must quarantine patches from
+    earlier runs before the commit plan reads the patch directory."""
+    text = find_block(load_root(), "P2a").instructions or ""
+    assert "scripts/release_hunks.py reconcile --ledger {{var.ledger}}" in text
+    assert "--attrib-dir {{var.attrib_dir}} --out {{var.patch_dir}}" in text
+    assert "--quarantine" in text
+    assert "pending list, exactly" in text
+    # Ordering: reconcile reads the entry_index the indexer just wrote.
+    assert text.index("release_plan.py index") < text.index("release_hunks.py reconcile")
+
+
+# Run cli-81921cb9b5eb (2026-10-10): the hand-built triage batching dropped 25
+# paths, the commit-plan gate refused, but P4a still reported done, P4b ran an
+# empty roster, and P5 committed 13 entries the gate never accepted before
+# its Until loop ran out.
+
+def test_triage_batches_come_from_the_script_and_files_are_named_by_content():
+    root = load_root()
+    assert "scripts/release_plan.py batches --ledger {{var.ledger}}" in (
+        find_block(root, "P3a").instructions or "")
+    tri = find_block(root, "Triage a batch of unclaimed files").instructions or ""
+    assert "{{item.paths}}" in tri and "batch-{{item.id}}.json" in tri
+    assert "batch-{{index}}" not in tri, "a rerun would overwrite earlier verdicts"
+
+
+def test_a_refused_commit_plan_fails_its_block_by_contract():
+    blk = find_block(load_root(), "P4a")
+    contracts = blk.output_contract or []
+    plan = [c for c in contracts if c.name == "commit_plan"]
+    assert plan and plan[0].required
+    schema = plan[0].schema_
+    assert schema["properties"]["status"] == {"enum": ["ready", "partial"]}
+    assert schema["properties"]["gate"]["properties"]["passed"] == {"const": True}
+    assert schema["properties"]["groups"]["minItems"] == 1
+
+
+def test_the_residue_sweep_does_not_commit_without_a_ready_plan():
+    text = find_block(load_root(), "Sweep the residue").instructions or ""
+    assert text.startswith("PRECONDITION.")
+    assert "If its 'status' is neither \"ready\" nor \"partial\", make no commit" in text
+    assert "Never commit a path or entry listed in the plan's 'deferred'" in text
+
+
+def test_attribution_covers_new_files_and_hunks_no_entry_describes():
+    text = find_block(load_root(), "Attribute the hunks of one file").instructions or ""
+    assert "NEW FILES." in text and "new:<slug>" in text and ".drafts.json" in text
+    hunks = (CARD_PATH.parents[1] / "scripts/release_hunks.py").read_text(encoding="utf-8")
+    assert 'NEW_PREFIX = "new:"' in hunks and 'DRAFTS_SUFFIX = ".drafts.json"' in hunks
+
+
 def test_the_attribution_stage_records_a_mapping_and_lets_the_splitter_write_patches():
     text = find_block(load_root(), "Attribute the hunks of one file").instructions or ""
     assert "scripts/release_hunks.py dump {{item}}" in text
@@ -833,6 +900,92 @@ def test_the_tooling_the_card_names_exists_and_is_release_agnostic():
     plan = (repo / "scripts/release_plan.py").read_text(encoding="utf-8")
     assert 'add_parser("index"' in plan
     hunks = (repo / "scripts/release_hunks.py").read_text(encoding="utf-8")
-    for sub in ("dump", "split", "merge"):
+    for sub in ("dump", "split", "merge", "reconcile"):
         assert f'add_parser("{sub}"' in hunks, f"release_hunks.py has no {sub} mode"
     assert "--cached" in hunks and "--check" in hunks
+
+
+# 2026-10-10: one unresolvable item (an entry with no code) stopped the whole
+# sweep at P4a with ~100 entries still committable.  Unresolvable items are now
+# deferred, the rest commits, and only the release stages wait.
+
+def test_one_unresolvable_item_defers_instead_of_stopping_the_run():
+    root = load_root()
+    for name in ("P2b", "P3b", "P4b"):
+        assert find_block(root, name).required is False, f"{name} failure would halt the run"
+    p4a = find_block(root, "P4a").instructions or ""
+    assert "DEFER (record it, keep going)" in p4a and "'deferred'" in p4a
+    assert "such an exclusion is invalid" in p4a
+    # Positive control: structural faults still refuse.
+    assert "REFUSE (fail this block)" in p4a and "no group remains to commit" in p4a
+
+
+# Run cli-7b1daa542f37 (2026-10-10): the P3 triage tasks resolve
+# model_tier "small" to haiku-4.5 (200k).  With no tools allowlist each task
+# started at ~126k tokens of tool definitions, and one batch failed with
+# "prompt is too long: 200825 tokens > 200000 maximum".
+
+def _small_tier_tasks(root):
+    out = []
+    for b in iter_blocks(root):
+        if b.block_type != "task" or b.scope is None:
+            continue
+        if getattr(b.scope, "model_tier", None) in ("small", "xsmall"):
+            out.append(b)
+    return out
+
+
+def test_small_tier_tasks_carry_a_tools_allowlist():
+    tasks = _small_tier_tasks(load_root())
+    assert {b.name for b in tasks} >= {
+        "P3a - Batch the unclaimed files", "Triage a batch of unclaimed files"}
+    for b in tasks:
+        assert b.scope.tools, f"{b.name}: no tools allowlist on a 200k-context tier"
+
+
+def test_triage_allowlist_keeps_the_tools_its_instructions_use():
+    """The seam: the allowlist goes through the real filter, against the
+    names the tools are registered under (shell is an MCP server, so it
+    arrives prefixed)."""
+    from app.utils.task_tool_floor import filter_tools_by_scope
+
+    class T:
+        def __init__(self, n): self.name = n
+    registered = [T(n) for n in ("mcp_run_shell_command", "file_read", "file_write",
+                                 "emit_artifact", "memory_search", "mcp_InternalSearch")]
+    root = load_root()
+    triage = find_block(root, "Triage a batch of unclaimed files")
+    kept = {t.name for t in filter_tools_by_scope(registered, triage.scope.tools)}
+    assert {"mcp_run_shell_command", "file_read", "file_write", "emit_artifact"} <= kept
+    assert "memory_search" not in kept and "mcp_InternalSearch" not in kept
+    batch = find_block(root, "P3a - Batch the unclaimed files")
+    kept = {t.name for t in filter_tools_by_scope(registered, batch.scope.tools)}
+    assert {"mcp_run_shell_command", "emit_artifact"} <= kept
+    assert "file_write" not in kept, "the batching stage writes nothing"
+
+
+def test_release_stages_wait_for_an_empty_deferred_list():
+    p6 = find_block(load_root(), "P6").instructions or ""
+    assert p6.startswith("RELEASE GATE")
+    assert "'deferred' list is non-empty" in p6 and "fail this block" in p6
+    until = find_block(load_root(), "P5").until_condition or ""
+    assert "deferred list" in until
+
+
+# cli-462ad587602c: 16 paths staged before the run began; every commit
+# iteration refused the dirty index, P5 could land only whole files.
+
+def test_a_dirty_index_is_cleared_not_fatal_and_every_exit_leaves_it_empty():
+    root = load_root()
+    for name in ("P0", "Commit one group", "Sweep the residue"):
+        assert UNSTAGE_GRANT in grants_of(find_block(root, name)), f"{name} cannot unstage"
+    loop = find_block(root, "Commit one group").instructions or ""
+    assert "never fail on a dirty index" in loop
+    assert "LEAVE THE INDEX EMPTY ON EVERY EXIT" in loop
+    p0 = find_block(root, "P0").instructions or ""
+    assert "THE INDEX." in p0 and "reconciliation.unstaged_at_start" in p0
+    assert "needing fresh attribution" in p0, "a staged hunk is invisible to git diff"
+    residue = find_block(root, "Sweep the residue")
+    assert "git apply" in grants_of(residue), "P5 cannot land a patch-mode group"
+    state = next(b for b in iter_blocks(root) if b.block_type == "state")
+    assert "Never file_read it whole" in (state.state_context or "")
