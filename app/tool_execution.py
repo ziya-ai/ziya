@@ -292,6 +292,15 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
     if _arg_edits:
         ctx.args.update(_arg_edits)
 
+    # Detach from the model's dict before any routing key is added below.
+    # ``ctx.args`` IS the object the streaming executor keeps in
+    # all_tool_calls[i]['args'] and serialises as the assistant's
+    # tool_use.input, so in-place injection of _workspace_path /
+    # conversation_id / _task_scope showed the model parameters it never
+    # wrote, and weaker models imitated and mangled them (``conversion_id``,
+    # ``workspace_path_alt2``, ...).  After ``_arg_edits`` on purpose: a
+    # human's rewritten commit message should appear in the recorded call.
+    ctx.args = dict(ctx.args)
     # --- Execute the tool ---
     try:
         TOOL_EXEC_TIMEOUT = int(os.environ.get('TOOL_EXEC_TIMEOUT', '300'))
