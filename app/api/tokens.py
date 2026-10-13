@@ -1,5 +1,10 @@
 """
 Token calculation API endpoints.
+
+Handlers that await nothing are plain ``def`` so Starlette runs them in its
+worker threadpool: ``calculate_tokens`` reads project/context/skill stores and
+tokenizes files from disk, which as a zero-await ``async def`` parked the event
+loop.  Guarded by tests/test_tokens_not_event_loop_blocking.py.
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -29,7 +34,7 @@ class TokenCalculationResponse(BaseModel):
     deduplicatedTokens: int
 
 @router.post("/calculate", response_model=TokenCalculationResponse)
-async def calculate_tokens(project_id: str, request: TokenCalculationRequest):
+def calculate_tokens(project_id: str, request: TokenCalculationRequest):
     """Calculate token count for files, contexts, and skills."""
     ziya_home = get_ziya_home()
     project_storage = ProjectStorage(ziya_home)

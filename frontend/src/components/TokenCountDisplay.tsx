@@ -11,10 +11,16 @@ import { CheckCircleOutlined, CloseCircleOutlined, DashboardOutlined } from '@an
 import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
 import { folderTotalTokens, expandCheckedKeysToFiles } from '../utils/contextTokenTotals';
 import { dispatchHandoffOpen } from '../utils/handoffOpen';
-import { handoffPressureTier } from '../utils/handoffPressure';
+import { handoffAffordance, handoffPressureTier } from '../utils/handoffPressure';
 import { getHandoffState } from '../api/handoffApi';
 // Global request deduplication cache
 const activeRequests = new Map<string, Promise<any>>();
+
+// Muting a turn or deselecting a file shrinks the next request without
+// losing anything, so the pressure warning names those first; a hand-off
+// is the remedy when the work itself has outgrown the conversation.
+const CONTEXT_RELIEF_HINT =
+    'To free space here, mute earlier turns that no longer matter, or deselect files you are done with.';
 
 // Post to /api/token-count and return the token_count field, or 0 on error.
 // Uses the activeRequests map to dedupe concurrent identical requests.
@@ -108,15 +114,21 @@ export const TokenCountDisplay = memo(() => {
     // ahead of the client estimate when a turn's tool results grew the
     // submitted context, so the Hand off affordance gates on max(client, server).
     const [serverPressure, setServerPressure] = useState<number | null>(null);
+    // A living draft also earns the affordance, below the pressure gate.
+    const [hasHandoffDraft, setHasHandoffDraft] = useState(false);
     useEffect(() => {
         if (!currentConversationId || isStreaming) return;
         let cancelled = false;
         getHandoffState(currentConversationId)
-            .then(s => { if (!cancelled) setServerPressure(s.contextPressure ?? null); })
-            .catch(() => { if (!cancelled) setServerPressure(null); });
+            .then(s => {
+                if (cancelled) return;
+                setServerPressure(s.contextPressure ?? null);
+                setHasHandoffDraft(!!s.draft);
+            })
+            .catch(() => { if (!cancelled) { setServerPressure(null); setHasHandoffDraft(false); } });
         return () => { cancelled = true; };
     }, [currentConversationId, isStreaming]);
-    useEffect(() => { setServerPressure(null); }, [currentConversationId]);
+    useEffect(() => { setServerPressure(null); setHasHandoffDraft(false); }, [currentConversationId]);
 
     const [chatTokenCount, setChatTokenCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
@@ -1129,10 +1141,18 @@ export const TokenCountDisplay = memo(() => {
                             Gated on the higher of the client estimate and the provider's
                             billed figure for the last turn: the estimate sat at 52%
                             while the provider reported 79% after that turn's tool results. */}
-                        {currentConversationId && handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure) !== 'none' && (
-                            <Tooltip title={handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure) === 'danger'
-                                ? 'Context is nearly full. Hand off to a fresh conversation — the original stays intact and searchable.'
-                                : 'Context is getting large. Review or start a handoff draft.'}>
+                        {currentConversationId && (() => {
+                            const aff = handoffAffordance(
+                                handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure),
+                                hasHandoffDraft);
+                            if (aff === 'none') return null;
+                            const color = aff === 'danger' ? '#ff4d4f' : '#1890ff';
+                            return (
+                            <Tooltip title={aff === 'danger'
+                                ? `Context is nearly full. ${CONTEXT_RELIEF_HINT} Or hand off to a fresh conversation — the original stays intact and searchable.`
+                                : aff === 'warning'
+                                    ? `Context is getting large. ${CONTEXT_RELIEF_HINT} Or review or start a handoff draft.`
+                                    : 'A handoff draft is ready. Review it or hand off to a fresh conversation.'}>
                                 <span
                                     role="button"
                                     data-testid="handoff-affordance"
@@ -1140,14 +1160,15 @@ export const TokenCountDisplay = memo(() => {
                                     style={{
                                         cursor: 'pointer', fontSize: 12, lineHeight: '18px', padding: '0 8px',
                                         borderRadius: 6, whiteSpace: 'nowrap',
-                                        border: `1px solid ${handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure) === 'danger' ? '#ff4d4f' : '#1890ff'}`,
-                                        color: handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure) === 'danger' ? '#ff4d4f' : '#1890ff',
+                                        border: `1px solid ${color}`,
+                                        color,
                                     }}
                                 >
                                     ⇢ Hand off…
                                 </span>
                             </Tooltip>
-                        )}
+                            );
+                        })()}
                         {cacheHealthIndicator}
 
                         <Tooltip title="Open Telemetry Dashboard">
