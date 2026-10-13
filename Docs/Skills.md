@@ -117,11 +117,65 @@ order; a project skill of the same name beats a user-global one):
 ~/.claude/skills/  ~/.kiro/skills/
 ```
 
+Skills may be filed under grouping folders inside a root. A subdirectory that
+has no `SKILL.md` of its own is searched further, down to three directory
+levels below the root, so both of these are found:
+
+```
+.agents/skills/react-patterns/SKILL.md
+.agents/skills/frontend/react/react-patterns/SKILL.md
+```
+
+The agentskills.io rule that `name` must match the parent directory applies to
+the leaf (`react-patterns`), never to the grouping folders. A directory that
+does have a `SKILL.md` is a skill and is not searched inside: its `scripts/`,
+`references/` and `assets/` are resources, not skills. The same layout works
+for a local or git skill *source* (the install side).
+
 Project skills appear with a "project" badge and are available to all users of
 that project; user-global skills carry a "user" badge. To edit either, modify
 the `SKILL.md` file directly — changes are picked up on the next project load.
 Symlinked skill directories are followed, which is how skill installers
 provision them.
+
+### Bundled scripts, references and assets
+
+A skill directory can carry helper files next to `SKILL.md`, following the
+[agentskills.io](https://agentskills.io/specification) conventions:
+
+```
+.skills/csv-helper/
+  SKILL.md
+  scripts/summarise.py      executable helpers the model runs
+  references/REFERENCE.md   documentation the model reads when needed
+  assets/template.csv       templates and data files
+```
+
+Refer to them from `SKILL.md` by paths relative to the skill directory
+(`Run scripts/summarise.py <file>`). However a skill is activated (the model
+loading it on demand, an "always" placement, a task card, a delegate, or a
+manual toggle), the instructions it receives end with the skill's absolute
+directory and a list of its bundled files:
+
+```
+Skill directory: /path/to/project/.skills/csv-helper
+Relative paths in this skill are relative to the skill directory.
+
+<skill_resources>
+  <file>assets/template.csv</file>
+  <file>references/REFERENCE.md</file>
+  <file>scripts/summarise.py</file>
+</skill_resources>
+```
+
+Files are listed, not read. The model opens or runs them only when the
+instructions call for it. The list skips hidden files, `__pycache__` and
+`node_modules`, and stops at 50 entries with a note giving how many were left
+out. Helpers run through the shell tool's normal allowlist (`python3`, `bash`,
+`node`, …) and are subject to the same write policy as any other command.
+`file_read`, `file_list` and the PDF tools can read inside user-global skill
+roots, including the targets of symlinked skills. Project skills are readable
+because they already sit inside the project.
 
 ### Installing skills with `npx skills`
 

@@ -19,12 +19,15 @@ from typing import Dict, List, Optional, Tuple
 from ..models.skill import Skill
 from ..services.color_service import generate_color
 from ..services.token_service import TokenService
+from ..utils.skill_resources import skill_resource_manifest
 
 logger = logging.getLogger(__name__)
 
-# Remembers shadowing situations already warned about, so the per-call
+# Remembers shadowing situations already reported, so the per-call
 # discovery in list()/catalog paths doesn't re-log the same clash every
 # request.  Keyed on (name, winner_path, tuple(shadowed_paths)).
+# Shadowing is a normal, resolved condition (two installers shipping the
+# same skill), so it is summarised once at INFO with per-skill detail at DEBUG.
 _WARNED_SHADOWS: set = set()
 
 # Project-relative skill roots, in priority order.  ``.ziya/skills`` is
@@ -47,63 +50,62 @@ DISCOVERY_PATHS = [
 # is visible to Ziya without a second copy.
 USER_HARNESS_PATHS = [".agents/skills", ".claude/skills", ".kiro/skills"]
 
+
+def user_skill_roots() -> List[Tuple[Path, bool]]:
+    """User-global skill roots as ``(path, is_ziya)``, in precedence order.
+
+    Shared by discovery and by the read-tool allowlist
+    (app/utils/skill_resources.readable_skill_dirs) so the two cannot
+    drift.  The roots need not exist.
+    """
+    roots: List[Tuple[Path, bool]] = []
+    try:
+        from ..utils.paths import get_ziya_home
+        roots.append((get_ziya_home() / "skills", True))
+    except Exception as e:
+        logger.debug("Could not resolve Ziya home for user skills: %s", e)
+    try:
+        home = Path.home()
+        for rel in USER_HARNESS_PATHS:
+            roots.append((home / rel, rel.startswith(".ziya")))
+    except Exception as e:
+        logger.debug("Could not resolve $HOME for user skills: %s", e)
+    # Plugin-contributed roots (e.g. an enterprise harness such as Amazon AIM
+    # that installs skills under its own home).  Appended last so built-in
+    # roots win a name clash; each entry is a Path/str (non-ziya) or an
+    # (path, is_ziya) pair.  A failing provider must never break discovery or
+    # the read-tool allowlist.
+    try:
+        from app.plugins import get_user_skill_root_providers
+        for provider in get_user_skill_root_providers():
+            try:
+                for entry in provider.roots() or []:
+                    if isinstance(entry, (tuple, list)):
+                        path = entry[0]
+                        is_ziya = bool(entry[1]) if len(entry) > 1 else False
+                    else:
+                        path, is_ziya = entry, False
+                    roots.append((Path(path), is_ziya))
+            except Exception as e:  # noqa: BLE001
+                logger.debug("User skill root provider failed: %s", e)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Could not consult user skill root providers: %s", e)
+    return roots
+
+
 # YAML frontmatter regex — captures everything between opening and closing ---
 _FRONTMATTER_RE = re.compile(
     r"\A\s*---[ \t]*\n(.*?)\n---[ \t]*\n",
     re.DOTALL,
 )
 
-# Simple YAML key-value parser (avoids PyYAML dependency for this narrow use)
-# Handles: key: value, key: "value", multi-line metadata blocks
-_YAML_LINE_RE = re.compile(r"^(\w[\w-]*):\s*(.*?)\s*$")
+# Frontmatter parsing lives in app/utils/skill_frontmatter.py (lenient:
+# multi-line plain scalars, | and > block scalars).  The old name is kept
+# for callers and tests.
+from ..utils.skill_frontmatter import parse_frontmatter as _parse_simple_yaml  # noqa: E402
 
 # agentskills name validation
 _NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-
-
-def _parse_simple_yaml(text: str) -> Dict[str, str]:
-    """Parse flat YAML frontmatter into a dict.
-
-    Handles simple key: value pairs and the metadata: block (one level deep).
-    Does NOT handle full YAML — just enough for the agentskills spec.
-    """
-    result: Dict[str, str] = {}
-    current_map_key: Optional[str] = None
-    map_values: Dict[str, str] = {}
-
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        # Detect indented map entry (e.g. under metadata:)
-        if current_map_key and line.startswith("  "):
-            m = _YAML_LINE_RE.match(stripped)
-            if m:
-                map_values[m.group(1)] = m.group(2).strip('"').strip("'")
-                continue
-
-        # Flush any accumulated map
-        if current_map_key and map_values:
-            # Store as comma-separated k=v for simple transport
-            result[current_map_key] = ",".join(f"{k}={v}" for k, v in map_values.items())
-            map_values = {}
-            current_map_key = None
-
-        m = _YAML_LINE_RE.match(stripped)
-        if m:
-            key, value = m.group(1), m.group(2).strip('"').strip("'")
-            if not value:
-                # Bare key with no value — start of a map block
-                current_map_key = key
-            else:
-                result[key] = value
-
-    # Flush trailing map
-    if current_map_key and map_values:
-        result[current_map_key] = ",".join(f"{k}={v}" for k, v in map_values.items())
-
-    return result
 
 
 def _parse_metadata_string(raw: str) -> Dict[str, str]:
@@ -273,6 +275,10 @@ def _skill_from_dir(
         hasScripts=(child / "scripts").is_dir(),
         hasReferences=(child / "references").is_dir(),
         hasAssets=(child / "assets").is_dir(),
+        # Rendered only alongside the body: the cheap catalog (load_body=False)
+        # must not walk every skill directory.
+        resourceManifest=(skill_resource_manifest(str(child)) or None)
+        if load_body else None,
     )
 
 
@@ -420,7 +426,8 @@ def discover_all_skills(
       1. a ``.ziya`` root beats any non-ziya root (absolute preference);
       2. otherwise a project root beats a user-global root;
       3. otherwise the newest SKILL.md (by mtime) wins.
-    A warning is logged naming the winning path and the shadowed paths.
+    New clashes are summarised in one INFO line; each winning/shadowed
+    path pair is logged at DEBUG.
 
     Returns a name-deduped list.  IDs/sources match the legacy
     discover_project_skills / discover_user_skills outputs so stored-skill
@@ -445,20 +452,7 @@ def discover_all_skills(
                     _add(skill, is_ziya, 0)
 
     # --- user-global roots ---
-    user_roots: List[Tuple[Path, bool]] = []
-    try:
-        from ..utils.paths import get_ziya_home
-        user_roots.append((get_ziya_home() / "skills", True))
-    except Exception as e:
-        logger.debug("Could not resolve Ziya home for user skills: %s", e)
-    try:
-        home = Path.home()
-        for rel in USER_HARNESS_PATHS:
-            user_roots.append((home / rel, rel.startswith(".ziya")))
-    except Exception as e:
-        logger.debug("Could not resolve $HOME for user skills: %s", e)
-
-    for skills_root, is_ziya in user_roots:
+    for skills_root, is_ziya in user_skill_roots():
         for skill in _scan_skill_root(
             skills_root, token_service, load_body=load_body,
             source="user", id_base=str(skills_root), id_prefix="user",
@@ -467,6 +461,7 @@ def discover_all_skills(
 
     # --- resolve precedence per name ---
     result: List[Skill] = []
+    new_shadows = 0
     for name, cands in candidates.items():
         # Sort ascending so the first element is the winner:
         #   ziya first, then project-over-user, then newest mtime.
@@ -480,7 +475,8 @@ def discover_all_skills(
             sig = (name, winner.skillPath, tuple(shadowed))
             if sig not in _WARNED_SHADOWS:
                 _WARNED_SHADOWS.add(sig)
-                logger.warning(
+                new_shadows += 1
+                logger.debug(
                     "Skill '%s' found in multiple roots; using %s "
                     "(preferred), shadowing: %s",
                     name, winner.skillPath,
@@ -488,6 +484,12 @@ def discover_all_skills(
                 )
         result.append(winner)
 
+    if new_shadows:
+        logger.info(
+            "%d skill name(s) found in multiple roots; using the preferred "
+            "copy of each (ZIYA_LOG_LEVEL=DEBUG lists the shadowed paths)",
+            new_shadows,
+        )
     logger.info(
         "Discovered %d skills across all roots (workspace=%s)",
         len(result), workspace_path,

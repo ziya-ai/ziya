@@ -484,7 +484,9 @@ def prompt_inputs(project_id: str, conversation_id: Optional[str],
         full = storage.get(s.id) or s
         always_names.append(full.name)
         if full.prompt:
-            blocks.append(f"[Active Skill: {full.name}]\n{full.prompt}")
+            from app.utils.skill_resources import skill_activation_body
+            blocks.append(
+                f"[Active Skill: {full.name}]\n{skill_activation_body(full)}")
         mo = full.modelOverrides
         if mo is not None:
             for f in _OVERRIDE_FIELDS:

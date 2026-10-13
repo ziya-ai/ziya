@@ -67,13 +67,15 @@ class GetSkillDetailsTool(BaseMCPTool):
 
         skill = get_skill_by_id(skill_id)
 
-        # Fuzzy fallback: try matching by name or keywords
+        # Fuzzy fallback: the shared matcher (app.utils.skill_match), so
+        # "Code Review" / "code-review" / "code_review" are one skill here
+        # exactly as they are for a card's scope.skills; plus keywords.
         if not skill:
+            from app.utils.skill_match import skill_key, skill_matches
+            want_key = skill_key(skill_id)
             for candidate in get_model_discoverable_skills():
-                cid = candidate.get("id", "")
-                cname = candidate.get("name", "").lower().replace(" ", "_")
-                ckw = [k.lower() for k in candidate.get("keywords", [])]
-                if skill_id in (cid, cname) or skill_id in ckw:
+                ckw = [skill_key(k) for k in candidate.get("keywords", [])]
+                if skill_matches(skill_id, candidate) or want_key in ckw:
                     skill = candidate
                     break
 
@@ -89,16 +91,32 @@ class GetSkillDetailsTool(BaseMCPTool):
             try:
                 from app.services.skill_discovery import discover_all_skills
                 from app.services.token_service import TokenService
+                from app.utils.skill_match import skill_key, skill_matches
 
-                workspace = os.environ.get("ZIYA_USER_CODEBASE_DIR", "") or None
+                # The CALLER's project, not the server's startup env: a
+                # task-card body (project_root set on its context) or a
+                # second project's chat window must find ITS .ziya/skills,
+                # not whichever repo the server happened to be launched in.
+                workspace = (
+                    kwargs.get("_workspace_path")
+                    or _request_project_root()
+                    or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+                    or None
+                )
+                want_key = skill_key(skill_id)
                 for ds in discover_all_skills(
                     workspace, TokenService(), load_body=True,
                 ):
-                    ds_kw = [k.lower() for k in (ds.keywords or [])]
-                    if skill_id in (ds.name, ds.id) or skill_id in ds_kw:
+                    ds_kw = [skill_key(k) for k in (ds.keywords or [])]
+                    if skill_matches(skill_id, ds) or want_key in ds_kw:
                         logger.info(f"🎓 SKILL_ACTIVATED ({ds.source}): {ds.name}")
+                        # agentskills.io: give the skill's directory and list
+                        # its bundled files so relative references in the
+                        # body ("scripts/x.py") resolve.
+                        from app.utils.skill_resources import skill_activation_body
                         return {
-                            "content": f"[Skill: {ds.name}]\n\n{ds.prompt}"
+                            "content": f"[Skill: {ds.name}]\n\n"
+                                       f"{skill_activation_body(ds)}"
                         }
             except Exception as e:
                 logger.debug(f"Skill lookup failed: {e}")
