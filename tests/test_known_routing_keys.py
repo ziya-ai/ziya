@@ -60,3 +60,19 @@ def test_genuinely_unknown_param_still_warns():
 def test_routing_keys_constant_contains_task_scope():
     assert "_task_scope" in MCPClient._KNOWN_ROUTING_KEYS
     assert "_workspace_path" in MCPClient._KNOWN_ROUTING_KEYS
+
+
+def test_ledger_scope_preserved_without_warning():
+    # MCPManager.call_tool attaches _ledger_scope = {url, token} to every
+    # shell call (evidence ledger); the shell server pops it.  It must reach
+    # the server intact and must not log "Unknown parameter: _ledger_scope".
+    v = _validator()
+    envelope = {"url": "http://127.0.0.1:6969/api/ledger", "token": "t0k"}
+    args = {"command": "env", "_ledger_scope": envelope}
+    with mock.patch("app.mcp.client.logger.warning") as warn:
+        out = v._validate_and_convert_arguments(args, _SHELL_SCHEMA)
+    assert out["_ledger_scope"] == envelope
+    assert out["command"] == "env"
+    warned = " ".join(str(c.args) for c in warn.call_args_list)
+    assert "_ledger_scope" not in warned
+    assert "_ledger_scope" in MCPClient._KNOWN_ROUTING_KEYS
