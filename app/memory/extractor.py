@@ -393,13 +393,13 @@ REJECT examples (common failures to avoid):
 
 ACCEPT examples:
 - "Component A handles packet forwarding; Component B handles routing policy" → durable system knowledge
-- "The ingestion pipeline uses TCAM-based queue routing with per-queue byte counters" → durable architecture fact
+- "The ingestion pipeline uses a hash-partitioned queue per tenant with per-queue byte counters" → durable architecture fact
 - "Exponential backoff with jitter is required for retries to Service X" → durable operational pattern
-- "SDN quantum = 4.8112s, SDN slot = 3 × SDN quantum = 14.4s" → durable technical constant
-- "Safety_inhibit ALWAYS overrides persistence in flight mode" → durable safety constraint
+- "Batch window = 4 s, flush interval = 3 × batch window = 12 s" → durable technical constant
+- "Safety_inhibit ALWAYS overrides persistence in production mode" → durable safety constraint
 - "Ziya stores data under ~/.ziya/: ale_key (KEK), keyring.json (wrapped DEKs), projects/<id>/chats/" → durable layout of the user's OWN tool; a new session cannot guess it
 - "Ziya's MCP tool-result signing uses HMAC-SHA256 with a per-process secret from os.urandom(32), regenerated each server start" → durable security design, not a line-level detail
-- "Package Builder caches dependency packages at /opt/brazil-pkg-cache/packages/<Pkg>/<Version>/<Platform>/" → durable path convention
+- "The build system caches dependency packages at /opt/pkg-cache/packages/<Pkg>/<Version>/<Platform>/" → durable path convention
 - "Ziya encrypted files begin with the magic string 'ZIYA-ALE-V1' followed by version/DEK identifier bytes" → durable wire/file format
 
 Output format — for each extracted fact, a JSON object with:
@@ -1045,7 +1045,7 @@ def _strip_artifacts(text: str) -> str:
     # plus its argument and any URLs the tool produced.  Without stripping,
     # the URLs in tool output get classified as references, and the prompt
     # bleeds into consulted_for snippets.  Examples:
-    #   "dcohn@host frontend % npx npm-check"
+    #   "alice@host frontend % npx npm-check"
     #   "$ git status"
     #   "user@host:/path# cmd"
     text = re.sub(
@@ -1054,7 +1054,7 @@ def _strip_artifacts(text: str) -> str:
         text, flags=re.MULTILINE,
     )
     # Mid-paragraph shell prompts -- when the user pastes prompt+command
-    # inline ("first: dcohn@host frontend % npx ...") rather than starting
+    # inline ("first: alice@host frontend % npx ...") rather than starting
     # a fresh line.  Match user@host path %|$|# command from anywhere on
     # a line through end-of-line.
     text = re.sub(

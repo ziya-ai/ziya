@@ -11,7 +11,7 @@ golden set, `memory_eval_ab.py`, the search-only A/B harness,
 None of the defects found in this period are visible at that level: they only
 appear over weeks, across interleaved domains, in an accumulating store
 (cleanup false positives compounding over 217 organize runs; the gravity-well
-root; the global activity clock aging Kuiper proposals on Ziya days).
+root; the global activity clock aging one project's proposals on another's days).
 
 The replay re-runs the whole memory system over the real conversation history
 in timestamp order, into a sandbox store, so a change is judged by what the
@@ -22,8 +22,8 @@ store becomes.
 `scripts/memory_replay/timeline.py`: 1,816 chat records, 25,416 messages, all
 with ms timestamps.  12,144 extraction events from 1,210 chats, 2025-12-02 to
 2026-09-27.  516 of 2,007 active hours touched two or more projects; 3,735
-project switches between consecutive events.  ~26% of events are Kuiper
-projects, ~62% Ziya.
+project switches between consecutive events.  ~26% of events are from a second project family,
+~62% Ziya.
 
 ## Event model
 
@@ -99,7 +99,7 @@ Judge-free, per arm, sampled over time:
 |---|---|---|
 | retention | of memories ever active, share still active at end; by layer and domain; each loss attributed (cleanup, merge, decay, dormant, repair) | cleanup attrition |
 | relearn rate | proposals whose text matches (>=0.6 containment) a memory the store once held and lost | harmful forgetting |
-| domain fairness | domain share of active store vs share of events | Kuiper shrinking on Ziya weeks |
+| domain fairness | domain share of active store vs share of events | a minority project shrinking on Ziya weeks |
 | structure | largest-node share, max root tags, per-node project mix, orphan rate, depth | gravity wells |
 | promotion latency | proposal -> active, in events and in domain sessions | clock tuning |
 
