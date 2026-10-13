@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, memo, useCallback, useMemo, useState, Suspense } from "react";
+import { createPortal } from 'react-dom';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { useScrollContext } from '../context/ScrollContext';
@@ -26,6 +27,10 @@ import { useTaskBindings } from '../hooks/useTaskBindings';
 // re-derived because the local copy this replaces omitted 'partial' and
 // 'held' — see the reconciler effect below.
 import { isRunOver } from './TaskCard/runControls';
+import { placeUnanchoredBindings } from '../utils/taskBindingPlacement';
+import { TILE_SLOT_ATTR } from './TaskCard/taskSurfacing';
+import TaskRail from './TaskCard/TaskRail';
+import TaskUpdateFeed from './TaskCard/TaskUpdateFeed';
 import { MessageIdContext } from '../context/MessageIdContext';
 import { useCopyCleanup } from '../hooks/useCopyCleanup';
 import { getSharedScrollVelocityTracker } from '../utils/scrollVelocity';
@@ -607,51 +612,46 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
 
     // Chronological placement for unanchored bindings.
     //
-    // Bindings whose anchor_message_id is null (e.g. created when no
-    // prior anchor message id was available, or whose anchor was later
-    // deleted) used to render at the chat tail unconditionally.  That
-    // produced wrong ordering: a task launched, finished, and then a
-    // follow-up query was added — the tile would still render *after*
-    // the follow-up because the tail is "after everything".
-    //
-    // Instead, we splice unanchored bindings inline using their
-    // \`created_at\` timestamp.  Each binding is attached to the most
-    // recent message whose timestamp is <= its created_at.  Bindings
-    // older than the first message (or for chats with no messages) are
-    // rendered at the head.  Bindings newer than the last message
-    // remain at the tail (correct: they were created after everything).
+    // Bindings whose anchor_message_id is null (created by the model's
+    // task_card_stage / task_card_launch mid-turn) are spliced by
+    // created_at — at the END of the turn that built them.  The rule
+    // and its reasoning live in utils/taskBindingPlacement.ts; the
+    // previous inline version anchored to the prompt, so the tile sat
+    // ABOVE the reply that staged it.
     const unanchoredBindings = bindingsByAnchor.get('__no_anchor__') ?? [];
-    const splicedUnanchored = useMemo(() => {
-        const byMessageIdx = new Map<number, typeof unanchoredBindings>();
-        const head: typeof unanchoredBindings = [];
-        const tail: typeof unanchoredBindings = [];
-        if (unanchoredBindings.length === 0) {
-            return { byMessageIdx, head, tail };
+    const splicedUnanchored = useMemo(
+        () => placeUnanchoredBindings(unanchoredBindings, (currentMessages || []) as any[]),
+        [unanchoredBindings, currentMessages],
+    );
+
+    // Every rendered (non-superseded) binding of this chat, for the rail
+    // and the update feed.  Both consume the flat list; grouping by
+    // anchor is a render concern of the thread itself.
+    const visibleBindings = useMemo(
+        () => Array.from(bindingsByAnchor.values()).flat(), [bindingsByAnchor]);
+    // Bindings whose tile already sits at the thread's bottom need no
+    // update card beneath themselves.
+    const bottomBindingIds = useMemo(() => new Set(
+        [...splicedUnanchored.tail, ...splicedUnanchored.inFlight].map(b => b.id)),
+        [splicedUnanchored]);
+
+    // In-flight tiles (the turn's reply is still streaming) render AFTER
+    // the live stream, which StreamedContent mounts as a sibling below
+    // this component.  It exposes an empty slot; we portal into it when
+    // present and fall back to the thread's end when not.
+    const [inFlightSlot, setInFlightSlot] = useState<HTMLElement | null>(null);
+    useEffect(() => {
+        if (splicedUnanchored.inFlight.length === 0) {
+            setInFlightSlot(null);
+            return;
         }
-        const msgs = currentMessages || [];
-        const lastIdx = msgs.length - 1;
-        for (const b of unanchoredBindings) {
-            const t = b.created_at || 0;
-            // Find last message whose _timestamp <= binding.created_at.
-            // Messages without a _timestamp don't qualify as anchors
-            // but still occupy positions in the array.
-            let anchorIdx = -1;
-            for (let i = 0; i < msgs.length; i++) {
-                const mt = (msgs[i] as any)._timestamp;
-                if (typeof mt === 'number' && mt <= t) anchorIdx = i;
-            }
-            if (anchorIdx === -1) {
-                head.push(b);
-            } else if (anchorIdx === lastIdx) {
-                tail.push(b);
-            } else {
-                const arr = byMessageIdx.get(anchorIdx) ?? [];
-                arr.push(b);
-                byMessageIdx.set(anchorIdx, arr);
-            }
-        }
-        return { byMessageIdx, head, tail };
-    }, [unanchoredBindings, currentMessages]);
+        setInFlightSlot(document.querySelector<HTMLElement>('.tc-inflight-slot'));
+    }, [splicedUnanchored.inFlight.length]);
+    const tileSlot = (binding: { id: string }, node: React.ReactNode) => (
+        <div key={binding.id} className="tc-tile-slot" {...{ [TILE_SLOT_ATTR]: binding.id }}>
+            {node}
+        </div>
+    );
 
     // Earliest possible signal that a project switch is happening
     const isSwitchingProject = projectCtx.isLoadingProject || isProjectSwitching;
@@ -1016,11 +1016,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         >Rendered</Button>
                     </div>
                 )}
+                {/* Sticky rail: live / waiting-on-you tasks of this chat,
+                    one chip each, click to scroll to the tile.  Renders
+                    nothing when no task is in flight. */}
+                <TaskRail bindings={visibleBindings} projectId={projectCtx.currentProject?.id ?? ''} />
                 {/* Unanchored task tiles whose created_at predates the
                     earliest message in the chat (or the chat has no
                     messages at all).  Rendered at the head so the tile
                     sits above subsequent conversational turns. */}
-                {splicedUnanchored.head.map(binding => (
+                {splicedUnanchored.head.map(binding => tileSlot(binding,
                     <Suspense key={binding.id} fallback={null}>
                         <TaskCardInlineTile binding={binding} />
                     </Suspense>
@@ -1238,7 +1242,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     {activeSeam && activeSeam.seamIndex === actualIndex && (
                         <SeamRibbon seam={activeSeam} />
                     )}
-                    {anchorBindings?.map(binding => (
+                    {anchorBindings?.map(binding => tileSlot(binding,
                         <Suspense key={binding.id} fallback={null}>
                             <TaskCardInlineTile binding={binding} />
                         </Suspense>
@@ -1246,19 +1250,35 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     </React.Fragment>;
                 })}
 
-                {/* Unanchored task card tiles whose created_at is newer
-                    than every existing message.  Bindings created
-                    earlier are spliced inline above (see
-                    splicedUnanchored.byMessageIdx in the render loop)
-                    so they appear in the correct chronological position
-                    rather than always at the chat tail.  Tiles stay
-                    visible after completion (collapsing to receipt form
-                    8 s after terminal) so users can see the result. */}
-                {splicedUnanchored.tail.map(binding => (
+                {/* Unanchored tiles belonging after the last persisted
+                    message.  Earlier ones are spliced inline above (see
+                    splicedUnanchored.byMessageIdx in the render loop).
+                    Tiles stay visible after completion (collapsing to a
+                    receipt 8 s after terminal) so the result is seen. */}
+                {splicedUnanchored.tail.map(binding => tileSlot(binding,
                     <Suspense key={binding.id} fallback={null}>
                         <TaskCardInlineTile binding={binding} />
                     </Suspense>
                 ))}
+                {/* Tiles of the turn still streaming: after the live reply
+                    (portal into StreamedContent's slot) when it is mounted,
+                    else here. */}
+                {splicedUnanchored.inFlight.length > 0 && (() => {
+                    const tiles = splicedUnanchored.inFlight.map(binding => tileSlot(binding,
+                        <Suspense key={binding.id} fallback={null}>
+                            <TaskCardInlineTile binding={binding} />
+                        </Suspense>
+                    ));
+                    return inFlightSlot ? createPortal(tiles, inFlightSlot) : tiles;
+                })()}
+                {/* Task state changes observed while here, posted next to
+                    the composer with a link back to the tile. */}
+                <TaskUpdateFeed
+                    conversationId={currentConversationId}
+                    projectId={projectCtx.currentProject?.id ?? ''}
+                    bindings={visibleBindings}
+                    atBottomIds={bottomBindingIds}
+                />
 
                 {/* Fallback for when no messages to display */}
                 {(!displayMessages || displayMessages.length === 0) && (
