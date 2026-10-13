@@ -39,7 +39,7 @@ from app.utils.document_ir import (
 FULL_DOC = """---
 ziya-doc: 1
 title: "Queue Depth Analysis"
-author: "dcohn"
+author: "alice"
 layout: report
 page:
   size: A4
@@ -63,7 +63,7 @@ graph TD; a-->b
 def test_parse_document_full_front_matter():
     meta, body = parse_document(FULL_DOC)
     assert meta['title'] == 'Queue Depth Analysis'
-    assert meta['author'] == 'dcohn'
+    assert meta['author'] == 'alice'
     assert meta['layout'] == 'report'
     assert meta['page']['size'] == 'A4'
     assert meta['page']['margin'] == {
@@ -260,7 +260,7 @@ def test_build_document_print_payload_shape():
     payload = build_document_print_payload(meta, sections, title='Override')
     assert payload['kind'] == 'document'
     assert payload['title'] == 'Override'
-    assert payload['author'] == 'dcohn'
+    assert payload['author'] == 'alice'
     assert payload['layout'] == 'report'
     assert len(payload['sections']) == 2
     assert 'messages' not in payload  # document payloads carry no transcript
@@ -363,7 +363,7 @@ def test_export_document_pdf_seam(tmp_path, monkeypatch):
     # Front-matter margin flows through to page.pdf().
     assert call['margin']['top'] == '18mm'
     # Front-matter author OVERRIDES the model/provider default.
-    assert call['metadata']['/Author'] == 'dcohn'
+    assert call['metadata']['/Author'] == 'alice'
     assert call['metadata']['/Title'] == 'Queue Depth Analysis'
     # Payload is document-shaped.
     assert call['payload']['kind'] == 'document'
@@ -394,7 +394,7 @@ def test_export_document_pdf_drives_document_aesthetics(monkeypatch):
 
     monkeypatch.setattr(pe, 'get_render_session', fake_get_session)
     doc = (
-        "---\ntitle: Aesthetics\nsubtitle: Sub line\nauthor: dcohn\n"
+        "---\ntitle: Aesthetics\nsubtitle: Sub line\nauthor: alice\n"
         "date: 2026-09-19\nlayout: titlepage\nnumbering:\n  sections: true\n"
         "---\n# A\n\nbody\n"
     )
@@ -414,7 +414,7 @@ def test_export_document_pdf_drives_document_aesthetics(monkeypatch):
     assert callable(getattr(js, 'strip', None)) and '(opts)' in js
     assert opts['numbering'] == {'sections': True, 'figures': True, 'tables': True}
     assert opts['layout'] == 'titlepage'
-    assert opts['subtitle'] == 'Sub line' and opts['author'] == 'dcohn'
+    assert opts['subtitle'] == 'Sub line' and opts['author'] == 'alice'
     assert opts['date'] == 'September 19, 2026'
     assert opts['pageHeightPx'] == page_content_box_px(DEFAULT_DOCUMENT_MARGIN)[1]
 
@@ -424,7 +424,7 @@ def test_export_document_pdf_drives_document_aesthetics(monkeypatch):
     assert call['payload']['numbering'] == {'sections': True}
 
     footer = call['footer_template']
-    assert 'Aesthetics · dcohn · September 19, 2026' in footer
+    assert 'Aesthetics · alice · September 19, 2026' in footer
     assert 'orchestration harness' not in footer   # transcript tagline gone
     assert 'fable (Bedrock)' in footer and 'v0.9' in footer
 
