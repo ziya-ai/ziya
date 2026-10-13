@@ -16,6 +16,7 @@ import { BlockScopeButton } from './BlockScopeButton';
 import { SelfImproveSection } from './SelfImproveSection';
 import { DragHandle } from './DragContext';
 import { AutoGrowTextarea } from './AutoGrowTextarea';
+import { RequiredToggle } from './RequiredToggle';
 import './task-card-editor.css';
 
 interface Props {
@@ -76,6 +77,7 @@ export const UntilBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, i
           <option value="continue">on fail: continue</option>
           <option value="stop">on fail: stop</option>
         </select>
+        {!isRoot && <RequiredToggle block={block} onChange={update} />}
         {onDelete && (
           <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}

@@ -177,6 +177,9 @@ export interface Block {
   block_type: BlockType;
   id: string;
   name: string;
+  // Whether this block's failure counts against its enclosing container.
+  // Unset = true.  See app/models/task_card.py::Block.required.
+  required?: boolean;
 
   // Task-only
   instructions?: string | null;
