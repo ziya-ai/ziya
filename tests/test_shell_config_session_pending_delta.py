@@ -95,7 +95,7 @@ async def test_get_shell_config_exposes_session_pending_delta(fake_home, monkeyp
     monkeypatch.setattr(shell_config, "_read_mcp_config", lambda: {})
     (fake_home / ".ziya" / "pending_session_shell.json").write_text(json.dumps(ESCALATED_ENV))
 
-    data = await mcp_routes.get_shell_config()
+    data = mcp_routes.get_shell_config()
 
     assert data["sessionPending"] is True
     assert "sessionPendingDelta" in data
@@ -108,7 +108,7 @@ async def test_request_session_grant_returns_delta(fake_home):
     cfg = mcp_routes.ShellConfig(
         allowedCommands=["ls", "cat", "grep", "/usr/bin/danger"],
     )
-    result = await mcp_routes.request_session_grant(cfg)
+    result = mcp_routes.request_session_grant(cfg)
 
     assert result["success"] is True
     assert "pendingDelta" in result
