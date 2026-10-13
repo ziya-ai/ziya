@@ -108,12 +108,14 @@ def test_failure_record_without_a_count_is_a_calibrated_estimate(calibrated):
     assert e["total_input_tokens"] == e["estimated_tokens"] > 900_000
 
 
-def test_handoff_nudge_fires_on_the_real_payload(calibrated):
+def test_handoff_pressure_reflects_the_real_payload(calibrated):
+    # The pressure cache feeds the handoff drawer's "context N%" (the model
+    # is never told).  It must be calibrated, not chars/4.
     messages = [{"role": "system", "content": "s" * SYSTEM_CHARS},
                 {"role": "user", "content": [{"type": "text", "text": "c" * CONV_CHARS}]}]
     tokens = handoff_prelude.estimate_messages_tokens(messages)
     handoff_prelude.record_context_pressure("conv-793a", tokens, 1_000_000)
     pressure = handoff_prelude.get_context_pressure("conv-793a")
-    assert pressure >= handoff_prelude.nudge_ratio(), pressure
+    assert pressure >= 0.7, pressure
     # And with chars/4 it would not have (the bug): 509k / 1M = 0.51.
-    assert (SYSTEM_CHARS + CONV_CHARS) // 4 / 1_000_000 < handoff_prelude.nudge_ratio()
+    assert (SYSTEM_CHARS + CONV_CHARS) // 4 / 1_000_000 < 0.7
