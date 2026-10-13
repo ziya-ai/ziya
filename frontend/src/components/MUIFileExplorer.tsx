@@ -110,8 +110,16 @@ export const MUIFileExplorer = () => {
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [foldersLoadedFromDB, setFoldersLoadedFromDB] = useState(false);
   const lastCheckedKeysRef = useRef<string>('');
+  // Selection the auto-expand effect last saw, so it can expand for added
+  // keys only; and a window during which a tree click suppresses it.
+  const prevCheckedSetRef = useRef<Set<string>>(new Set());
+  const suppressAutoExpandUntilRef = useRef<number>(0);
   const lastDBFetchRef = useRef<number>(0);
   const lastClickRef = useRef<number>(0);
+  // Lazy [external] folders being fetched, and ones that failed (not retried
+  // until Refresh).
+  const lazyLoadingRef = useRef<Set<string>>(new Set());
+  const lazyFailedRef = useRef<Set<string>>(new Set());
 
   // State for add path dialog
   const [addPathDialogOpen, setAddPathDialogOpen] = useState(false);
@@ -631,6 +639,7 @@ export const MUIFileExplorer = () => {
       // if (checkedKeys.length === 0 && expandedKeys.length > 0) {
       //   setExpandedKeys([]);
       // }
+      if (checkedKeys.length === 0) prevCheckedSetRef.current = new Set();
       return;
     }
 
@@ -677,18 +686,22 @@ export const MUIFileExplorer = () => {
       return false;
     };
 
-    // Calculate which directories should be expanded
     const checkedSet = new Set(checkedKeys.map(String));
-    const requiredExpansions = findAncestorsOfSelected(treeData, checkedSet);
-
-    // Only update if the expansion set has changed
-    const newExpandedKeys = Array.from(requiredExpansions).sort();
-    const currentExpandedSorted = [...expandedKeys].sort();
-
-    // Compare sorted arrays to avoid unnecessary updates
-    if (JSON.stringify(newExpandedKeys) === JSON.stringify(currentExpandedSorted)) {
-      return;
-    }
+    const prevSet = prevCheckedSetRef.current;
+    prevCheckedSetRef.current = checkedSet;
+    // A click in the tree: the clicked node is already on screen, and a
+    // folder click adds its whole subtree, so expanding would open every
+    // subfolder.  Only selections made elsewhere (restore, context sync,
+    // auto-add) reveal their paths.
+    if (Date.now() < suppressAutoExpandUntilRef.current) return;
+    // Expand for newly added keys only.  Running over the whole selection
+    // on every change reopened every folder holding a checked file.
+    const added = new Set([...checkedSet].filter(k => !prevSet.has(k)));
+    if (added.size === 0) return;
+    const requiredExpansions = findAncestorsOfSelected(treeData, added);
+    const current = new Set(expandedKeys.map(String));
+    const newExpandedKeys = Array.from(requiredExpansions).filter(k => !current.has(k));
+    if (newExpandedKeys.length === 0) return;
 
     // When search is active, preserve search-driven expansions
     // When not searching, MERGE with existing manual expansions instead of replacing
@@ -929,6 +942,10 @@ export const MUIFileExplorer = () => {
   // Handle checkbox click
   // This function is crucial for selecting/deselecting folders and files
   const handleCheckboxClick = (nodeId, checked) => {
+    // Both setCheckedKeys calls below (immediate and the setTimeout
+    // hierarchy pass) come from this click; the auto-expand effect must
+    // not treat them as a selection to reveal.
+    suppressAutoExpandUntilRef.current = Date.now() + 500;
     // Clear token calculation cache immediately when any selection changes
     tokenCalculationCache.current.clear();
 
