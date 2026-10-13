@@ -32,6 +32,41 @@ def get_project_dir(project_id: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Memory store location and write mode.
+#
+# Every memory artifact (memories.json, mindmap.json, probationary.jsonl,
+# embeddings.npz, domain_clocks.json, feedback_stats.jsonl,
+# organize_history.json) lives in one directory.  ``get_memory_dir`` is the
+# single resolver for it so a run can be pointed at a different store:
+#
+#   ZIYA_MEMORY_DIR=/path       use this directory instead of <home>/memory
+#   ZIYA_MEMORY_READONLY=1      the store is a reference set for this run;
+#                               every writer becomes a no-op and
+#                               post-conversation extraction is skipped
+#
+# Both are set by ``--memory-dir`` / ``--memory-bundle`` / ``--memory-readonly``
+# (app/config/environment.py).  Writers check ``memory_writes_allowed()``
+# rather than the variable so the rule lives in one place.
+# ---------------------------------------------------------------------------
+
+MEMORY_DIR_ENV = "ZIYA_MEMORY_DIR"
+MEMORY_READONLY_ENV = "ZIYA_MEMORY_READONLY"
+
+
+def get_memory_dir() -> Path:
+    """Directory holding the memory store for this process."""
+    override = os.environ.get(MEMORY_DIR_ENV)
+    d = Path(override).expanduser() if override else get_ziya_home() / "memory"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def memory_writes_allowed() -> bool:
+    """False when the memory store is a read-only reference set."""
+    return os.environ.get(MEMORY_READONLY_ENV, "").strip().lower() not in ("1", "true", "yes")
+
+
+# ---------------------------------------------------------------------------
 # Classified storage accessors (design/capabilities-hub.md, slice 1).
 #
 # Writers should compose paths through these rather than inline

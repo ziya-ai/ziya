@@ -284,6 +284,10 @@ class EmbeddingCache:
 
     def flush(self):
         """Write cache to disk if dirty."""
+        from app.utils.paths import memory_writes_allowed
+        if not memory_writes_allowed():
+            # Reference-set run: vectors computed this run stay in memory.
+            return
         with self._lock:
             if not self._dirty or self._ids is None:
                 return
@@ -370,8 +374,8 @@ def get_embedding_cache() -> EmbeddingCache:
     global _cache
     with _init_lock:
         if _cache is None:
-            from app.utils.paths import get_ziya_home
-            memory_dir = get_ziya_home() / "memory"
+            from app.utils.paths import get_memory_dir
+            memory_dir = get_memory_dir()
             dim = ziya_env("ZIYA_EMBEDDING_DIM", default=DEFAULT_DIM)
             _cache = EmbeddingCache(memory_dir, dim=dim)
     return _cache
