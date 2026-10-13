@@ -28,6 +28,22 @@
   gap: 8px;
   align-items: center;
 }
+.tc-staged__desc { margin-top: 6px; font-size: 12px; opacity: 0.8; }
+.tc-staged__canvas { margin-top: 8px; }
+/* The deck's 60vh outline is too tall inside a chat message. */
+.tc-staged__canvas .tc-outline { max-height: 320px; }
+.tc-staged__defn {
+  flex: 1; min-width: 0; max-height: 320px; overflow-y: auto; font-size: 12px;
+  border: 1px solid var(--tc-card-border, rgba(127, 127, 127, 0.3)); border-radius: 4px;
+  padding: 6px 10px;
+}
+.tc-staged__defn-title { font-weight: 600; margin-bottom: 4px; }
+.tc-staged__defn-row { display: flex; gap: 8px; padding: 2px 0; align-items: baseline; }
+.tc-staged__defn-label { flex: 0 0 90px; opacity: 0.6; }
+.tc-staged__defn-pre {
+  flex: 1; min-width: 0; margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-size: 12px;
+}
 .tc-tile__inspector {
   margin-top: 8px;
   border-top: 1px solid rgba(127, 127, 127, 0.2);
@@ -768,6 +784,50 @@ body:not(.dark) .tc-ask-panel__icon { color: #8a5a00; }
   font-size: 10px; max-height: 200px; overflow: auto;
   background: rgba(0,0,0,0.15); padding: 6px 8px;
   border-radius: 3px; margin: 2px 0;
+}
+/* Finding card (FindingCard.tsx): a ziya:finding/* part read as a finding.
+   Text colour is inherited so the card follows the theme; only verdict
+   and provenance cues carry their own colour. */
+.tc-find { font-size: 11px; line-height: 1.45; }
+.tc-find__head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-bottom: 3px; }
+.tc-find__title { font-weight: 600; font-size: 12px; }
+.tc-find__id { font-size: 10px; opacity: 0.7; }
+.tc-find__verdict {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: 8px; border: 1px solid currentColor;
+}
+.tc-find__verdict--confirmed { color: #2e9e5b; }
+.tc-find__verdict--candidate { color: #3b82f6; }
+.tc-find__verdict--weakened { color: #c98a12; }
+.tc-find__verdict--known { color: #8a8f98; }
+.tc-find__verdict--refuted { color: #d14343; }
+.tc-find__verdict--reproduced_unexplained { color: #8b5cf6; }
+.tc-find__p { margin: 2px 0 4px; }
+.tc-find__meta { opacity: 0.7; }
+.tc-find__na { opacity: 0.5; }
+.tc-find__impact { border-collapse: collapse; margin: 4px 0; }
+.tc-find__impact th { text-align: left; font-weight: 500; opacity: 0.75; padding: 1px 10px 1px 0; vertical-align: top; white-space: nowrap; }
+.tc-find__impact td { padding: 1px 0; }
+.tc-find__num { font-variant-numeric: tabular-nums; }
+.tc-find__num--claim { border-bottom: 1px dotted #2e9e5b; cursor: help; }
+.tc-find__num--literal { border-bottom: 1px dashed #c98a12; cursor: help; }
+.tc-find__num--unresolved { border-bottom: 1px dashed #d14343; }
+.tc-find__num--drifted, .tc-find__num--superseded { border-bottom-color: #c98a12; }
+.tc-find__sec { margin: 4px 0; }
+.tc-find__list { margin: 2px 0 2px 16px; padding: 0; }
+.tc-find__chip {
+  display: inline-block; margin: 1px 4px 1px 0; padding: 0 5px;
+  border: 1px solid rgba(127,127,127,0.4); border-radius: 3px; font-size: 10px;
+}
+.tc-find__outcome { font-size: 9.5px; text-transform: uppercase; }
+.tc-find__outcome--agrees { color: #2e9e5b; }
+.tc-find__outcome--disagrees { color: #d14343; }
+.tc-find__outcome--not_testable { opacity: 0.7; }
+.tc-find__foot { display: flex; gap: 6px; align-items: center; font-size: 10px; opacity: 0.8; margin-top: 4px; }
+.tc-find__warn { color: #c98a12; }
+.tc-find__rawbtn {
+  margin-left: auto; font-size: 10px; background: none; cursor: pointer;
+  border: 1px solid rgba(127,127,127,0.4); border-radius: 3px; color: inherit; padding: 0 6px;
 }
 /* Frozen render: fills its cell, capped so a tall diagram can't
    dominate the tile.  Click opens the blob at full size. */

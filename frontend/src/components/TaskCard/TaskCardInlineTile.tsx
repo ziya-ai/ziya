@@ -23,7 +23,7 @@ import type {
   TaskRun, RunStatus, IterationsResponse, ProgressNote,
 } from '../../types/task_run';import type { TaskCard, Block, Artifact } from '../../types/task_card';
 import { cancelTaskRun, pauseTaskRun, resumeTaskRun, stepTaskRun, resumeRunFromBlock, resumeRunFromIteration, listIterations, getIterationArtifact, getRunLineage, answerTaskRunAsk } from '../../services/taskRunApi';import type { IterationResumeMode, ResumeMode } from '../../services/taskRunApi';import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
-import { TASK_BINDING_EVENT, TASK_CARD_OPEN_EVENT } from '../../hooks/useTaskBindings';
+import { TASK_BINDING_EVENT, TASK_CARD_OPEN_EVENT, TASK_CARD_SAVED_EVENT } from '../../hooks/useTaskBindings';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { CommandBlock } from '../CommandBlock';
@@ -31,10 +31,11 @@ import { TaskRunInspector } from './TaskRunInspector';
 import { TaskRunMap } from './TaskRunMap';
 import { AskAnswerPanel } from './AskAnswerPanel';
 import { BlockDetailPanel } from './BlockDetailPanel';
+import { BlockOutline } from './BlockOutline';
 import { ArtifactViewer } from './ArtifactViewer';
 import { RunRecoveryBanner } from './RunRecoveryBanner';
 import {
-  blockLabel, findBlockInRun, resolveBlockStatus,
+  blockConfigLines, blockLabel, findBlockById, findBlockInRun, resolveBlockStatus,
 } from './runMapModel';
 import { deriveRunControls, heldLabel, canForceAbort } from './runControls';
 import { RUN_STATUS_FILL, RUN_STATUS_FG } from './runStatusVocabulary';
@@ -1727,6 +1728,46 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
     return () => { cancelled = true; };
   }, [projectId, binding.card_id]);
 
+  // Edit opens the deck over this window; when it saves this card, show
+  // the saved version (and re-check signatures: an edit can change scope).
+  useEffect(() => {
+    const onSaved = (e: Event) => {
+      if ((e as CustomEvent).detail?.cardId !== binding.card_id || !projectId) return;
+      taskCardApi.get(projectId, binding.card_id)
+        .then(setCard)
+        .catch(() => { /* non-fatal */ });
+      void fetchFresh();
+    };
+    window.addEventListener(TASK_CARD_SAVED_EVENT, onSaved);
+    return () => window.removeEventListener(TASK_CARD_SAVED_EVENT, onSaved);
+  }, [projectId, binding.card_id, fetchFresh]);
+
+  // The whole card, not a summary: the same outline the deck uses (so the
+  // two cannot drift) beside the selected block's definition.  Nothing has
+  // run yet, so the outline is in edit mode with no status glyphs.
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleCollapse = useCallback((id: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  // Falls back to the root when nothing is selected or an edit in the
+  // deck removed the selected block.
+  const selectedBlock = useMemo(() => {
+    if (!card) return null;
+    return (selectedBlockId && findBlockById(card.root, selectedBlockId)) || card.root;
+  }, [card, selectedBlockId]);
+  const configLines = selectedBlock ? blockConfigLines(selectedBlock) : [];
+
+  const handleEdit = () => {
+    window.dispatchEvent(new CustomEvent(TASK_CARD_OPEN_EVENT, {
+      detail: { cardId: binding.card_id },
+    }));
+  };
+
   const handleRun = async () => {
     if (!projectId) return;
     const doLaunch = async () => {
@@ -1805,12 +1846,6 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
     }
   };
 
-  const instructions = useMemo(() => {
-    if (!card) return '';
-    const root: any = card.root;
-    return (root.instructions || root.body?.[0]?.instructions || '').trim();
-  }, [card]);
-
   return (
     <div className="task-card-inline-tile staged">
       <div className="header">
@@ -1837,16 +1872,44 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
           <SignCommands status={scopeStatus} unsignedCount={unsignedCount} />
         </div>
       )}
-      {instructions && (
-        <details>
-          <summary><strong>Instructions</strong></summary>
-          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{instructions}</pre>
-        </details>
+      {card?.description && <div className="tc-staged__desc">{card.description}</div>}
+      {!card && <Spin size="small" />}
+      {card && (
+        <div className="tc-card-canvas--outline tc-staged__canvas">
+          <div className="tc-outline-col">
+            <BlockOutline
+              root={card.root}
+              mode="edit"
+              selectedId={selectedBlock?.id ?? null}
+              onSelect={setSelectedBlockId}
+              collapsed={collapsed}
+              onToggleCollapse={toggleCollapse}
+            />
+          </div>
+          <div className="tc-staged__defn" aria-label="Block definition">
+            {selectedBlock && (
+              <div className="tc-staged__defn-title">{blockLabel(selectedBlock)}</div>
+            )}
+            {configLines.map(l => (
+              <div key={l.label} className="tc-staged__defn-row">
+                <span className="tc-staged__defn-label">{l.label}</span>
+                {l.pre
+                  ? <pre className="tc-staged__defn-pre">{l.value}</pre>
+                  : <span>{l.value}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
       <div className="actions" style={{ display: 'flex', gap: 8, marginTop: 8 }}>
         <Button type="primary" loading={launching} onClick={handleRun}>
           Run
         </Button>
+        <Tooltip title="Open this card in the editor; changes show here when you save">
+          <Button icon={<EditOutlined />} onClick={handleEdit} disabled={launching}>
+            Edit
+          </Button>
+        </Tooltip>
         {card?.draft && (
           <Tooltip title="Keep this card in the Task Cards deck for reuse">
             <Button loading={promoting} onClick={handleSaveToDeck} disabled={launching}>

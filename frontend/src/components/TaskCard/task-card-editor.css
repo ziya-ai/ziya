@@ -501,10 +501,17 @@ textarea.tc-text-input {
 }
 .tc-select-right { margin-left: auto; }
 .tc-label-dim { font-size: 11px; color: var(--tc-muted, #7d8590); }
+.tc-schedule-history { padding: 2px 8px 4px; }
+/* A skip, a queued slot or a failed/held last run: readable on both themes. */
+.tc-schedule-history--attention { color: #d48806; }
 .tc-checkbox-label {
   display: inline-flex; align-items: center; gap: 4px;
   color: var(--tc-muted, #7d8590); font-size: 11px;
 }
+/* Block.required toggle: an unchecked (optional) block is a deliberate
+   choice the reader should notice, so it takes the attention colour. */
+.tc-required-toggle { white-space: nowrap; cursor: pointer; }
+.tc-required-toggle--optional { color: #d48806; font-style: italic; }
 
 /* Scope chips */
 .tc-scope-row {
