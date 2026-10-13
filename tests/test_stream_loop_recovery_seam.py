@@ -58,10 +58,12 @@ class _ScriptedProvider:
     def __init__(self, script):
         self.script = list(script)
         self.calls = []  # conversation snapshots, one per call
+        self.configs = []  # ProviderConfig passed on each call
 
     async def stream_response(self, conversation, system_content, tools, config):
         import copy
         self.calls.append(copy.deepcopy(conversation))
+        self.configs.append(config)
         idx = len(self.calls) - 1
         events = self.script[idx] if idx < len(self.script) else []
         for ev in events:
