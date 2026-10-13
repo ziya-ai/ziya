@@ -53,7 +53,7 @@ class TestExternalPathPersistence(unittest.TestCase):
         ps = ProjectStorage(self.ziya_home)
 
         # Simulate what /api/add-explicit-paths does
-        ext_paths = ["/Users/dcohn/work/qos", "/Users/dcohn/docs"]
+        ext_paths = ["/Users/alice/work/qos", "/Users/alice/docs"]
         ps.update(project.id, ProjectUpdate(
             settings=ProjectSettings(externalPaths=ext_paths)
         ))
