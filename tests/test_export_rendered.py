@@ -370,8 +370,9 @@ class TestExportProviderInterface:
 class TestExportTargetsEndpoint:
     """Test that /api/export/targets includes ExportProvider targets."""
 
-    @pytest.mark.asyncio
-    async def test_includes_plugin_targets(self):
+    def test_includes_plugin_targets(self):
+        # get_export_targets is a plain ``def`` (runs on the threadpool;
+        # see test_export_routes_not_event_loop_blocking), so call it sync.
         from app.routes.export_routes import get_export_targets
 
         class FakeProvider:
@@ -388,7 +389,7 @@ class TestExportTargetsEndpoint:
                     return_value=[FakeProvider()]), \
              patch("app.plugins.get_active_config_providers",
                     return_value=[]):
-            result = await get_export_targets()
+            result = get_export_targets()
 
         target_ids = [t["id"] for t in result["targets"]]
         assert "public" in target_ids  # base target
