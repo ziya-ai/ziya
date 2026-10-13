@@ -12,7 +12,7 @@
  * is the shared bead tree, which the continuation shares rather than
  * copies, so it is never baked into the document.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Alert, Button, Drawer, Input, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { useActiveChat } from '../context/ActiveChatContext';
@@ -41,11 +41,18 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
   const [busy, setBusy] = useState<'save' | 'commit' | 'draft' | null>(null);
 
   const open = !!conversationId;
+  // The SOURCE conversation's own project, read through a ref so that
+  // `reload` keeps a stable identity (every sync commit replaces
+  // `conversations`; re-running the load effect would reset an
+  // in-progress edit).  Every handoff call routes by it.
+  const sourceProjectRef = useRef<string | null>(null);
+  sourceProjectRef.current =
+    (conversations.find(c => c.id === conversationId) as any)?.projectId ?? null;
 
   const reload = useCallback(async (id: string) => {
     setLoading(true);
     try {
-      const s = await handoffApi.getHandoffState(id);
+      const s = await handoffApi.getHandoffState(id, sourceProjectRef.current);
       setState(s);
       setDoc(s.draft?.document ?? '');
       setWorkingSet(s.additionalFiles ?? []);
@@ -90,7 +97,7 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
     if (!conversationId) return;
     setBusy('save');
     try {
-      await handoffApi.editHandoffDraft(conversationId, doc);
+      await handoffApi.editHandoffDraft(conversationId, doc, sourceProjectRef.current);
       await reload(conversationId);
       message.success(doc.trim() ? 'Draft saved' : 'Draft cleared');
     } catch (e: any) {
@@ -104,21 +111,29 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
     if (!conversationId || !doc.trim()) return;
     setBusy('commit');
     try {
-      const res = await handoffApi.commitHandoff(conversationId, { document: doc, workingSet });
+      const res = await handoffApi.commitHandoff(
+        conversationId, { document: doc, workingSet }, sourceProjectRef.current);
       const child = res.child;
       const parent = conversations.find(c => c.id === conversationId);
       const now = Date.now();
-      // Insert a lineage-stamped shell now (same pattern as useBranchFromBead)
+      // Insert the continuation now (same pattern as useBranchFromBead)
       // and link the source forward, so the sidebar shows the chain before
-      // the next server sync; loadConversation hydrates the shell.
+      // the next server sync.
+      //
+      // Not a shell: a fresh continuation has no messages BY CONSTRUCTION,
+      // so its empty list is complete.  Marked `_isShell` it armed
+      // SHELL_GUARD on the first send, whose recovery then had to find the
+      // record on the server — and when it looked in the wrong project it
+      // held the whole first turn in memory, where a reload discarded it.
+      // The project is the server's: it wrote the record and knows where.
       const shell: any = {
         ...child,
         messages: [],
-        projectId: (parent as any)?.projectId ?? child.projectId,
-        folderId: (parent as any)?.folderId ?? child.folderId ?? null,
+        projectId: child.projectId ?? (parent as any)?.projectId,
+        folderId: child.folderId ?? (parent as any)?.folderId ?? null,
         lastAccessedAt: now,
         isActive: true,
-        _isShell: true,
+        _isShell: false,
         hasUnreadResponse: false,
       };
       setConversations(prev => prev

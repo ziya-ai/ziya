@@ -91,7 +91,8 @@ const ContinuationCard: React.FC<Props> = ({ conversation, conversations, onNavi
     if (!text.trim()) { message.warning('The handoff document cannot be empty'); return; }
     setSaving(true);
     try {
-      const res = await handoffApi.editInheritedHandoff(conversation.id, text);
+      const res = await handoffApi.editInheritedHandoff(
+        conversation.id, text, (conversation as any).projectId);
       onDocumentSaved?.(conversation.id, res.handoff);
       setEditing(false);
       message.success('Handoff document updated — takes effect on the next turn');
