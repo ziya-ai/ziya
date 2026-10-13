@@ -30,7 +30,7 @@ from app.mcp.manager import MCPManager, DEFAULT_TOOL_TIMEOUT
 _SUCCESS = {"content": [{"type": "text", "text": "ok"}]}
 _WS_SERVER = "workspace-shell"  # not literally "shell" → skips _task_scope re-attach
 _WS_PATH = "/tmp/ws-under-test"
-_CMD = 'find /Users/dcohn/workplace/ziya -maxdepth 2 -iname "CHANGELOG*"'
+_CMD = 'find /Users/alice/workplace/ziya -maxdepth 2 -iname "CHANGELOG*"'
 
 
 def _make_manager(**overrides) -> MCPManager:

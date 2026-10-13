@@ -2492,17 +2492,30 @@ class StreamingToolExecutor:
         means the opposite of a silent exit — an earlier revision of this
         handler logged it at ERROR with the false claim "No stream_end was
         emitted", firing on successful turns and burying the real signal.
+
+        The feedback monitor task is cancelled HERE, not in the impl.  The
+        impl's own cancel sites all sit on explicit return paths after the
+        iteration loop; a consumer that breaks on ``stream_end`` (the CLI,
+        task_executor) abandons the impl at a yield inside the loop and
+        reaches none of them, so each task-card iteration left one monitor
+        polling forever -- 46 of them in the sweep run cli-695c6e36c9f8.
+        ``_monitor`` is a one-slot holder the impl fills when it creates the
+        task; ``Task.cancel()`` is synchronous, so the finally stays await-free.
         """
         if conversation_id:
             from app.server import pending_feedback_lists, pending_feedback_refcounts
             pending_feedback_refcounts[conversation_id] = (
                 pending_feedback_refcounts.get(conversation_id, 0) + 1)
+        _monitor: List[Optional[asyncio.Task]] = [None]
         try:
             async for chunk in self._stream_with_tools_impl(
                 messages, tools=tools, conversation_id=conversation_id,
                 project_root=project_root, is_delegate=is_delegate,
                 extra_tools=extra_tools, cancel_event=cancel_event,
                 tool_allowlist=tool_allowlist, interactive=interactive,
+                tool_denylist=tool_denylist,
+                unattended=unattended,
+                _monitor_holder=_monitor,
             ):
                 yield chunk
         except asyncio.CancelledError:
@@ -2517,6 +2530,9 @@ class StreamingToolExecutor:
             )
             raise
         finally:
+            _mt = _monitor[0]
+            if _mt is not None and not _mt.done():
+                _mt.cancel()
             if conversation_id:
                 pending_feedback_refcounts[conversation_id] -= 1
                 if pending_feedback_refcounts[conversation_id] <= 0:
@@ -2831,6 +2847,10 @@ class StreamingToolExecutor:
         # Start the concurrent feedback monitor
         if conversation_id:
             _feedback_monitor_task = asyncio.create_task(_feedback_monitor(conversation_id))
+            # Hand the task to stream_with_tools, whose finally is the only
+            # exit path a stream_end-breaking consumer reaches (see there).
+            if _monitor_holder is not None:
+                _monitor_holder[0] = _feedback_monitor_task
             logger.debug(f"🔄 FEEDBACK_MONITOR: Started for {conversation_id}")
 
         # Guard: provider must be available

@@ -50,6 +50,11 @@ class _FaultExecutor:
     chunk_type = "connection_error"
     detail_key = "detail"
     detail = 'Could not connect to the endpoint URL: "https://bedrock-runtime..."'
+    # Read by execute_task_block for the run UI's model facts; the real
+    # StreamingToolExecutor always has them.
+    model_config = {"name": "fake", "token_limit": 100_000}
+    model_id = "fake-id"
+    endpoint = "fake-not-bedrock"
 
     def __init__(self, *args, **kwargs):
         pass
@@ -64,6 +69,9 @@ class _CleanExecutor:
     """Baseline: finishes normally with a self-assessment so the artifact
     is not failed.  Used to prove the hold path is fault-specific rather
     than firing on every run."""
+    model_config = _FaultExecutor.model_config
+    model_id = _FaultExecutor.model_id
+    endpoint = _FaultExecutor.endpoint
 
     def __init__(self, *args, **kwargs):
         pass
@@ -131,7 +139,7 @@ class TestInfraChunkRaisesInfraError:
         # like (run.error was "").
         _FaultExecutor.chunk_type = "authentication_error"
         _FaultExecutor.detail_key = key
-        _FaultExecutor.detail = "creds expired, run mwinit"
+        _FaultExecutor.detail = "creds expired, re-run the SSO login"
         with patch("app.streaming_tool_executor.StreamingToolExecutor",
                    _FaultExecutor), \
              patch("app.agents.models.ModelManager.get_state",
@@ -328,7 +336,7 @@ class TestRunLoopRoutingEndToEnd:
         tc, pid = launch_client
         _FaultExecutor.chunk_type = "authentication_error"
         _FaultExecutor.detail_key = "detail"
-        _FaultExecutor.detail = "creds expired, run mwinit"
+        _FaultExecutor.detail = "creds expired, re-run the SSO login"
         run, card = _launch(tc, pid, _FaultExecutor)
         assert run.status == "held"
         assert run.held_at_block_id, "held run names no resume target"
