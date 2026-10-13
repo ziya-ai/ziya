@@ -2,6 +2,12 @@
 Folder and file management routes.
 
 Extracted from server.py during Phase 3b refactoring.
+
+Handlers that await nothing are plain ``def`` so Starlette runs them on its
+worker threadpool: a zero-await ``async def`` runs its disk I/O (listdir,
+file reads, project-storage writes) ON the event loop and stalls every other
+request.  Handlers that do await offload blocking work with
+``asyncio.to_thread``.  Guarded by tests/test_folder_routes_not_event_loop_blocking.py.
 """
 import os
 import re
@@ -135,7 +141,7 @@ async def get_folder(request: FolderRequest):
         return {"error": str(e)}
 
 @router.get("/folder-progress")
-async def get_folder_progress(project_path: str = Query(None)):
+def get_folder_progress(project_path: str = Query(None)):
     """Get current folder scanning progress."""
     from app.utils.directory_util import get_scan_progress
     # Per-project progress: resolve the requested project to its absolute path
@@ -163,7 +169,7 @@ async def get_folder_progress(project_path: str = Query(None)):
     return progress
 
 @router.post("/api/cancel-scan")
-async def cancel_folder_scan(project_path: str = Query(None)):
+def cancel_folder_scan(project_path: str = Query(None)):
     """Cancel current folder scanning operation."""
     from app.utils.directory_util import cancel_scan
     # Cancel only the requested project's scan, leaving other projects'
@@ -179,7 +185,7 @@ async def cancel_folder_scan(project_path: str = Query(None)):
     return {"cancelled": was_active}
 
 @router.post("/api/clear-folder-cache")
-async def clear_folder_cache():
+def clear_folder_cache():
     """Clear the folder structure cache."""
     global _folder_cache
     _folder_cache = {}
@@ -187,7 +193,7 @@ async def clear_folder_cache():
     return {"cleared": True}
 
 @router.post("/api/clear-external-paths")
-async def clear_external_paths():
+def clear_external_paths():
     """Remove all external paths from the folder cache without clearing project files."""
     global _folder_cache, _cache_lock
     removed = 0
@@ -215,7 +221,7 @@ async def clear_external_paths():
     return {"cleared": removed}
 
 @router.post("/file")
-async def get_file(request: FileRequest):
+def get_file(request: FileRequest):
     """Get the content of a file."""
     try:
         # ASR PT-02. /save was contained (realpath + write policy) because a
@@ -250,7 +256,7 @@ async def get_file(request: FileRequest):
         return {"error": "Unable to read file."}
 
 @router.post("/save")
-async def save_file(request: FileContentRequest):
+def save_file(request: FileContentRequest):
     """Save content to a file."""
     try:
         # Gate through the same write policy the MCP fileio tool enforces.
@@ -285,6 +291,15 @@ async def get_default_included_folders(project_path: str = Query(None)):
     AGENTS.md is collected recursively from the project root; README.md is
     collected at the project root only. Used by the frontend to seed the
     checked selection on initial load and after a project switch.
+
+    The walk is offloaded to a worker thread.  It used to run inline in this
+    zero-await ``async def``, i.e. directly on the event loop: a faulthandler
+    dump of a live server (2026-10-09) caught the loop inside ``os.walk`` here
+    for the whole duration of a walk over a large project tree, during which
+    no request at all was served -- the config modals that "would not open"
+    while the file browser was syncing.  This endpoint fires on load and on
+    every project switch, so the loop was parked at exactly the moment the
+    user was waiting on everything else.
     """
     try:
         if project_path:
@@ -295,7 +310,8 @@ async def get_default_included_folders(project_path: str = Query(None)):
         if not root or not os.path.isdir(root):
             return {"defaultIncludedFolders": []}
 
-        keys = _collect_documentation_file_keys(
+        keys = await asyncio.to_thread(
+            _collect_documentation_file_keys,
             root,
             is_inside_workspace=True,
             user_codebase_dir=root,
@@ -307,7 +323,7 @@ async def get_default_included_folders(project_path: str = Query(None)):
         return {"defaultIncludedFolders": []}
 
 @router.get('/api/browse-directory')
-async def api_browse_directory(path: str = '~'):
+def api_browse_directory(path: str = '~'):
     """
     Browse a directory on the server filesystem.
     Returns list of files and directories for the file browser dialog.
