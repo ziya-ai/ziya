@@ -105,7 +105,7 @@ def test_default_placement_is_the_fixture_default():
 
 
 def test_keys_round_trip_and_reject_garbage():
-    assert parse_key(make_key("skill", "kuiper-conventions")) == ("skill", "kuiper-conventions")
+    assert parse_key(make_key("skill", "team-conventions")) == ("skill", "team-conventions")
     assert parse_key("mcp:shell") == ("mcp", "shell")
     for bad in ("shell", "tool:x", "skill:", "", None, 42):
         assert parse_key(bad) is None, bad
