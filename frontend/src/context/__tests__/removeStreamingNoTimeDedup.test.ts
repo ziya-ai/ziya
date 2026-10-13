@@ -37,7 +37,9 @@ const CTX = fs.readFileSync(
 const code = CTX.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
 
 function removeBody(): string {
-  const start = code.indexOf('const removeStreamingConversation = useCallback((id: string) => {');
+  // Signature carries an optional `opts` (broadcast suppression for the
+  // cross-tab streaming-ended handler); match on the prefix only.
+  const start = code.indexOf('const removeStreamingConversation = useCallback((id: string');
   expect(start).toBeGreaterThan(-1);
   // Body ends at the first dependency-array close after the start.
   const end = code.indexOf('}, [currentConversationId]);', start);
