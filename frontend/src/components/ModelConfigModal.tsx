@@ -748,7 +748,10 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
           }
         >
           <Slider
-            min={1}
+            // Stops are min + k*step, so a min of 1 produced 1, 1001, 2001, …
+            // Start at one step so every stop is a round thousand; rc-slider
+            // always keeps max itself reachable.
+            min={outputRange.max > 100000 ? 10000 : 1000}
             max={outputRange?.max || 4096} // <-- Use max from range with fallback
             step={outputRange.max > 100000 ? 10000 : 1000} // Adjust step based on max
             onChange={(value) => form.setFieldsValue({ max_output_tokens: value })}
@@ -885,7 +888,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             </div>
           }>
           <Slider
-            min={1}
+            min={inputRange.max > 100000 ? 10000 : 1000}
             max={inputRange?.max || 4096} // <-- Use max from range with fallback
             step={inputRange.max > 100000 ? 10000 : 1000} // Adjust step based on max
             onChange={(value) => form.setFieldsValue({ max_input_tokens: value })}
