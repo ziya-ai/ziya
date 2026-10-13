@@ -1271,10 +1271,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // role+content exactly as DUPLICATE_GUARD does.
                             const fresh = toApply.filter(m => !base.some(
                                 b => b.role === m.role && b.content === m.content));
+                            // This path bypasses the derivation below, so a
+                            // first message that lands on a shell has to
+                            // derive the title here or it stays a placeholder.
+                            const firstHuman = fresh.find(m => shouldDeriveTitleFromMessage(
+                                m, base, c.title));
                             return {
                                 ...c, messages: [...base, ...fresh],
                                 _isShell: false, _fullMessageCount: undefined,
                                 _version: Date.now(),
+                                title: firstHuman
+                                    ? deriveTitleFromContent(firstHuman.content, dynamicTitleLength)
+                                    : c.title,
                             };
                         }));
                     }).catch(e => console.error('Shell recovery failed:', e))
