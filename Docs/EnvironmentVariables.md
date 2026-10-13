@@ -263,6 +263,14 @@ max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) \
 
 `ZIYA_MAX_OUTPUT_TOKENS` takes precedence when both are set.
 
+Saving **Model Settings** in any window writes `ZIYA_MAX_OUTPUT_TOKENS` into the server's own environment, so the value applies to every conversation and every model on that server until it is changed or the server restarts. The per-request resolution in the streaming loop is: an active skill's `maxOutputTokens` override, then `ZIYA_MAX_OUTPUT_TOKENS`, then the model's configured limit. After a throttling error, the limit is also lowered automatically for the rest of that turn. The server log records which of these set the limit on each request, and again whenever it changes:
+
+```
+🎚️ MAX_TOKENS_SOURCE iteration=0 source=env value=4096 model_config_max=... env=4096 throttle_override=None
+```
+
+`source` is one of `skill`, `env`, `model_config` or `throttle`. If a response uses its whole output budget twice in a row without producing any text or a complete tool call, the turn ends with an error that gives the limit and this source.
+
 ---
 
 ## Adding a New Variable
