@@ -791,6 +791,53 @@ wrapping it reports success to its own caller.  The failure is not merely
 tolerated, it becomes invisible.  `"stop"` is what keeps a failure
 visible to the level above.
 
+**Parallel reports failed if ANY required child failed.**  `on_failure`
+has no effect on a Parallel (its children are concurrent; all of them
+run to completion).  Its artifact is `failed` when any child's is, and
+the enclosing container's policy then applies to it as to any failed
+child — so a Parallel with one failed lane inside a `Group(stop)` halts
+the Group.
+
+**`required: false` on a child lets that lane fail without failing its
+container.**  Any block in a body may set it (default `true`).  An
+optional child's failure does not trip an enclosing `on_failure:
+"stop"`, does not make a Parallel report failed, and as the LAST child
+of a sequence does not fail the sequence's artifact.  It is recorded,
+not hidden: the container's `decisions` carry "optional child <name>
+failed …" and the lane's own stage still reads failed.  Use it per lane
+— `{1A baseline (required), 1B known-issues (required: false)}` — rather
+than loosening the whole container; the report stage after such a
+Parallel stays required.
+
+### How a Task's result is judged
+
+A Task is recorded `ok` or `failed` by the executor, not by the model,
+from four checks.  Any one of them failing fails the task:
+
+- **Self-assessment.**  Every Task is told to end with
+  `<self_assessment objective_met="true|false|partial" rationale="…"/>`.
+  `true` passes.  **`false` AND `partial` both record the task as
+  FAILED** — `partial` is not success-with-a-warning, with ONE
+  exception: a `partial` on a Task whose `required` `output_contract`
+  entries are all present and valid is recorded ok, the verdict kept as
+  a warning in `decisions` — the contract tests "abandoned mid-run"
+  more directly than the self-report does.  `false` is never
+  overridden.  A missing or malformed tag is a warning in the task's
+  decisions, not a failure.
+- **Empty summary.**  A task whose visible output was only thinking
+  and tool calls (no prose) is failed.
+- **Truncated summary.**  A task whose stream ended right after a tool
+  call with no closing prose and no self-assessment tag is failed.
+- **Output contract.**  A `required` entry in `output_contract` that was
+  never emitted (after one correction turn) fails the task.
+
+The verdict and the specific reason are carried on the `task_finished`
+event (`self_assessment`, `failure_signature`, `failure_reason`) and in
+the task's `decisions`.  A Task whose honest answer is often "did most
+of it" should therefore declare its deliverables as a `required`
+`output_contract`, so the judgment rests on what was produced rather
+than on the self-report — or be split so each piece can answer `true`.
+
 ## Propagation (templating)
 
 A block's `instructions` may reference prior results via `{{ }}` templates,
