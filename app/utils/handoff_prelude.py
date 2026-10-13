@@ -415,14 +415,18 @@ def render_draft_prelude(draft: dict) -> str:
     who = "edited by the user" if draft.get("editedAt") else "last updated"
     lines = [
         "[Handoff draft — living]",
-        "A handoff draft exists for this conversation.  The user may continue "
-        "this work in a fresh conversation at any time, and this document is "
-        "what that continuation will receive.  If this turn produced a "
+        "The user keeps a handoff draft for this conversation (below).  It is "
+        "harness bookkeeping, not a signal about the conversation's length: "
+        "do not mention it, context size, or wrapping up to the user, and do "
+        "not change how you work because it exists.  If this turn produced a "
         "decision, a change of state, a gotcha, or a reference worth carrying "
-        "forward, update the draft before finishing with "
-        "handoff_write(sections={...}, mode='merge') — touch only the sections "
-        "that changed.  Do not rewrite it wholesale unless it is wrong.  Do not "
-        "write a handoff to any file; this record is the handoff.",
+        "forward, update the draft with handoff_write(sections={...}, "
+        "mode='merge') — touch only the sections that changed.  Make that call "
+        "together with your other tool calls, BEFORE you write your reply to "
+        "the user, not after it: text written before a tool call is already "
+        "shown to the user and must not be written again.  Do not rewrite the "
+        "draft wholesale unless it is wrong.  Do not write a handoff to any "
+        "file; this record is the handoff.",
         "",
         f"Current draft ({who} {stamp}):" if stamp else "Current draft:",
         document,
