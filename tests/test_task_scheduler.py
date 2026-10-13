@@ -406,3 +406,242 @@ def test_enumerate_finds_nested_schedule(isolated_home):
     found = ts._enumerate_scheduled_cards()
     assert len(found) == 1
     assert found[0].block.id == "s-inner"
+
+
+# ── _fire_one: launch-time audit snapshots ──────────────────
+
+def test_fire_one_records_card_and_permissions_snapshot(isolated_home):
+    """A scheduled fire must record the same launch-time snapshots the
+    interactive launch path does.
+
+    The scheduler re-reads the card every tick, so a fire runs the CURRENT
+    definition; without ``card_snapshot`` nothing on the run says which
+    definition that was, and resume-from-block (which walks
+    ``card_snapshot.root``) cannot work on scheduled runs at all.  The
+    snapshot must describe the resolved body — the tree ``block_states``
+    were seeded from — not the raw card root with the schedule wrapper.
+    """
+    from app.models.project import ProjectCreate
+    from app.models.task_card import Artifact, TaskCardCreate
+    from app.storage.projects import ProjectStorage
+    from app.storage.task_cards import TaskCardStorage
+    from app.storage.task_runs import TaskRunStorage
+    from app.utils.paths import get_ziya_home, get_project_dir
+
+    repo = isolated_home / "repo"
+    repo.mkdir()
+    proj = ProjectStorage(get_ziya_home()).create(
+        ProjectCreate(path=str(repo), name="repo"))
+    body = Block(block_type="task", id="t1", name="t1", instructions="x")
+    # A scope on the SCHEDULE block: _go() seeds it onto the executor's
+    # scope stack even though the block is not in body_root, so the
+    # permissions snapshot must show it reaching the body's tasks.
+    from app.models.task_card import TaskScope
+    sched = Block(block_type="schedule", id="s1", name="nightly",
+                  schedule_mode="interval", schedule_interval_value=1,
+                  schedule_interval_unit="hours", body=[body],
+                  scope=TaskScope(tools=["file_read"]))
+    card = TaskCardStorage(get_project_dir(proj.id)).create(
+        TaskCardCreate(name="sched", description="d", root=sched))
+    target = ts._ScheduledCard(
+        project_id=proj.id, card_id=card.id, card_name="sched",
+        block=card.root, body_root=ts._resolve_body_root(card.root))
+
+    async def fake_exec(block, ctx):
+        return Artifact(summary="ok")
+
+    async def go():
+        with patch("app.agents.block_executor.execute_block",
+                   side_effect=fake_exec):
+            await ts._fire_one(target)
+            for _ in range(20):
+                await asyncio.sleep(0)
+    asyncio.run(go())
+
+    run_storage = TaskRunStorage(get_project_dir(proj.id))
+    runs = run_storage.list()
+    assert len(runs) == 1
+    run = run_storage.get(runs[0].id)
+
+    snap = run.card_snapshot
+    assert snap is not None, "scheduled fire recorded no card_snapshot"
+    assert snap["name"] == "sched"
+    assert snap["version"] == getattr(card, "version", None)
+    assert snap["schedule_block_id"] == "s1"
+    # The snapshot tree is the resolved body: its ids are exactly the
+    # ids block_states were seeded with, so resume can map one to the
+    # other.  The schedule wrapper itself is not part of the run's tree.
+    assert snap["root"]["id"] == "t1"
+    assert set(run.block_states or {}) == {"t1"}
+
+    assert run.permissions_snapshot is not None, \
+        "scheduled fire recorded no permissions_snapshot"
+    scopes = run.permissions_snapshot.get("block_scopes") or {}
+    assert "t1" in scopes, scopes
+    assert "file_read" in scopes["t1"]["tools"]
+
+
+# ── _tick_card: schedule_concurrency ────────────────────────
+
+def _scheduled_target(isolated_home, concurrency=None, catch_up=True):
+    """A real project + card with a one-task Schedule body, returned as the
+    _ScheduledCard the loop would build, plus the storages the test needs."""
+    from app.models.project import ProjectCreate
+    from app.models.task_card import TaskCardCreate
+    from app.storage.projects import ProjectStorage
+    from app.storage.task_cards import TaskCardStorage
+    from app.storage.task_runs import TaskRunStorage
+    from app.utils.paths import get_ziya_home, get_project_dir
+
+    repo = isolated_home / "repo"
+    repo.mkdir(exist_ok=True)
+    proj = ProjectStorage(get_ziya_home()).create(
+        ProjectCreate(path=str(repo), name="repo"))
+    body = Block(block_type="task", id="t1", name="t1", instructions="x")
+    kw = {} if concurrency is None else {"schedule_concurrency": concurrency}
+    sched = Block(block_type="schedule", id="s1", name="nightly",
+                  schedule_mode="interval", schedule_interval_value=1,
+                  schedule_interval_unit="hours", schedule_catch_up=catch_up,
+                  body=[body], **kw)
+    card = TaskCardStorage(get_project_dir(proj.id)).create(
+        TaskCardCreate(name="sched", description="d", root=sched))
+    target = ts._ScheduledCard(
+        project_id=proj.id, card_id=card.id, card_name="sched",
+        block=card.root, body_root=ts._resolve_body_root(card.root))
+    return target, TaskRunStorage(get_project_dir(proj.id))
+
+
+def _hand_launch_live_run(run_storage, card_id, status="running"):
+    """A run of the card started by some other path (interactive launch),
+    left in a live status — exactly what a 03:00 catch-up fire at 09:00
+    collides with."""
+    from app.models.task_run import TaskRunCreate
+    run = run_storage.create(TaskRunCreate(card_id=card_id, source_conversation_id=None))
+    run_storage.update_status(run.id, status)
+    return run
+
+
+def _due_state(target, now_ms, fires_so_far=1):
+    ts._write_state(target.project_id, {target.card_id: {
+        "block_id": "s1", "fires_so_far": fires_so_far,
+        "last_fire_at": now_ms - 3_600_000, "next_fire_at": now_ms - 60_000,
+        "run_ids": [],
+    }})
+
+
+def _tick(target, now_ms):
+    fired = []
+
+    async def fake_fire(t):
+        fired.append(t.card_id)
+
+    async def go():
+        with patch.object(ts, "_fire_one", side_effect=fake_fire):
+            await ts._tick_card(target, now_ms)
+    asyncio.run(go())
+    return fired
+
+
+def test_tick_fires_when_due_and_no_live_run(isolated_home):
+    """Positive control: the gate lets a due slot through when nothing is
+    live, so the skip assertions below cannot pass by never firing."""
+    target, _ = _scheduled_target(isolated_home)
+    now = int(time.time() * 1000)
+    _due_state(target, now)
+    assert _tick(target, now) == [target.card_id]
+
+
+def test_tick_default_skips_when_a_run_of_the_card_is_live(isolated_home):
+    """Unset schedule_concurrency means skip: a due slot is dropped while a
+    hand-launched run is live, the skip is on disk (so the schedule-state
+    endpoint shows it) and the slot advances so it is not retried every tick."""
+    target, runs = _scheduled_target(isolated_home)
+    live = _hand_launch_live_run(runs, target.card_id)
+    now = int(time.time() * 1000)
+    _due_state(target, now)
+
+    assert _tick(target, now) == []
+
+    rec = ts._read_state(target.project_id)[target.card_id]
+    assert rec["skips_so_far"] == 1
+    assert rec["last_skip_at"] == now
+    assert rec["skips"][0]["live_run_id"] == live.id
+    assert live.id[:8] in rec["skips"][0]["reason"]
+    assert "still live" in rec["skips"][0]["reason"]
+    assert rec["next_fire_at"] > now, "skipped slot must advance, not re-arm"
+    assert rec["fires_so_far"] == 1, "a skip is not a fire"
+    # Once the live run ends the next slot fires normally.
+    runs.update_status(live.id, "done")
+    _due_state(target, now)
+    assert _tick(target, now) == [target.card_id]
+
+
+def test_tick_skip_applies_to_catch_up_fires(isolated_home):
+    """The laptop-wakes-at-09:00 case: a missed 03:00 slot (catch-up) is
+    gated like any other slot.  The gate runs before the catch-up logic."""
+    target, runs = _scheduled_target(isolated_home, catch_up=True)
+    _hand_launch_live_run(runs, target.card_id)
+    now = int(time.time() * 1000)
+    # Six hours overdue.
+    ts._write_state(target.project_id, {target.card_id: {
+        "block_id": "s1", "fires_so_far": 3,
+        "last_fire_at": now - 30 * 3_600_000, "next_fire_at": now - 6 * 3_600_000,
+        "run_ids": [],
+    }})
+    assert _tick(target, now) == []
+    rec = ts._read_state(target.project_id)[target.card_id]
+    assert rec["skips_so_far"] == 1
+
+
+def test_tick_queue_defers_then_fires_when_live_run_ends(isolated_home):
+    target, runs = _scheduled_target(isolated_home, concurrency="queue")
+    live = _hand_launch_live_run(runs, target.card_id)
+    now = int(time.time() * 1000)
+    _due_state(target, now)
+
+    assert _tick(target, now) == []
+    rec = ts._read_state(target.project_id)[target.card_id]
+    assert rec["deferred_since"] == now
+    assert rec["deferred_behind_run_id"] == live.id
+    assert rec["next_fire_at"] == now - 60_000, "queue holds the slot"
+    assert "skips_so_far" not in rec
+
+    # Still live on the next tick: still held, deferred_since unchanged.
+    assert _tick(target, now + 15_000) == []
+    assert ts._read_state(target.project_id)[target.card_id]["deferred_since"] == now
+
+    runs.update_status(live.id, "done")
+    assert _tick(target, now + 30_000) == [target.card_id]
+    rec = ts._read_state(target.project_id)[target.card_id]
+    assert "deferred_since" not in rec and "deferred_behind_run_id" not in rec
+
+
+def test_tick_queue_deferral_bypasses_catch_up_gate(isolated_home):
+    """A deferred slot is a decision to run late, not a missed slot: with
+    catch_up=False it still fires once the live run ends."""
+    target, runs = _scheduled_target(isolated_home, concurrency="queue", catch_up=False)
+    live = _hand_launch_live_run(runs, target.card_id)
+    now = int(time.time() * 1000)
+    _due_state(target, now)
+    assert _tick(target, now) == []
+    runs.update_status(live.id, "cancelled")
+    assert _tick(target, now + 15_000) == [target.card_id]
+
+
+def test_tick_parallel_fires_despite_live_run(isolated_home):
+    target, runs = _scheduled_target(isolated_home, concurrency="parallel")
+    _hand_launch_live_run(runs, target.card_id)
+    now = int(time.time() * 1000)
+    _due_state(target, now)
+    assert _tick(target, now) == [target.card_id]
+    assert "skips_so_far" not in ts._read_state(target.project_id)[target.card_id]
+
+
+def test_tick_terminal_runs_do_not_block(isolated_home):
+    """Only LIVE statuses gate; a failed or held predecessor is not an overlap."""
+    target, runs = _scheduled_target(isolated_home)
+    for st in ("done", "failed", "held", "partial", "cancelled"):
+        _hand_launch_live_run(runs, target.card_id, status=st)
+    now = int(time.time() * 1000)
+    _due_state(target, now)
+    assert _tick(target, now) == [target.card_id]
