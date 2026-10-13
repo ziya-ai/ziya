@@ -31,7 +31,7 @@ class ResolutionChangeRequest(BaseModel):
     resolution: str
 
 @router.get("/status")
-async def get_status(request: Request):
+def get_status(request: Request):
     """
     Get the current status of AST indexing.
     """
@@ -87,7 +87,7 @@ async def get_status(request: Request):
         raise HTTPException(status_code=500, detail=f"Error getting AST status: {str(e)}")
 
 @router.get("/resolutions")
-async def get_resolutions() -> Dict[str, Any]:
+def get_resolutions() -> Dict[str, Any]:
     """
     Get available AST resolution levels and their estimated token counts.
     
@@ -105,7 +105,7 @@ async def get_resolutions() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Error getting AST resolutions: {str(e)}")
 
 @router.post("/change-resolution")
-async def change_resolution(request: ResolutionChangeRequest) -> Dict[str, Any]:
+def change_resolution(request: ResolutionChangeRequest) -> Dict[str, Any]:
     """
     Change the AST resolution and trigger re-indexing.
     

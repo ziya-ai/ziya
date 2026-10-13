@@ -1,5 +1,12 @@
 """
 API routes for MCP (Model Context Protocol) management.
+
+Handlers that await nothing are plain ``def``: Starlette runs them on its
+worker threadpool, so their config/store reads and tool-token counting never
+park the event loop (the frontend polls /status and /shell-config from
+startup).  Only handlers that genuinely await the MCP manager or a registry
+provider stay ``async``.  Guarded by
+tests/test_mcp_routes_not_event_loop_blocking.py.
 """
 
 from fastapi import APIRouter, HTTPException
@@ -300,7 +307,7 @@ def calculate_model_instruction_tokens() -> Dict[str, Any]:
     }
 
 @router.get("/status")
-async def get_mcp_status():
+def get_mcp_status():
     """
     Get the status of all MCP servers.
     
@@ -492,7 +499,7 @@ async def get_mcp_status():
         raise HTTPException(status_code=500, detail=f"Error getting MCP status: {str(e)}")
 
 @router.get("/resources")
-async def get_mcp_resources():
+def get_mcp_resources():
     """
     Get all available MCP resources.
     
@@ -529,7 +536,7 @@ async def get_mcp_resources():
         raise HTTPException(status_code=500, detail=f"Error getting MCP resources: {str(e)}")
 
 @router.get("/tools")
-async def get_mcp_tools():
+def get_mcp_tools():
     """
     Get all available MCP tools.
     
@@ -579,7 +586,7 @@ async def get_mcp_tools():
         raise HTTPException(status_code=500, detail=f"Error getting MCP tools: {str(e)}")
 
 @router.get("/prompts")
-async def get_mcp_prompts():
+def get_mcp_prompts():
     """
     Get all available MCP prompts.
     
@@ -658,7 +665,7 @@ async def initialize_mcp():
         raise HTTPException(status_code=500, detail=f"Error initializing MCP: {str(e)}")
 
 @router.get("/shell-config")
-async def get_shell_config():
+def get_shell_config():
     """
     Get current shell configuration from the running MCP manager.
     
@@ -927,7 +934,7 @@ async def apply_session_grant():
         raise HTTPException(status_code=500, detail=f"Error applying session grant: {str(e)}")
 
 @router.post("/shell-config/request-session-grant")
-async def request_session_grant(config: ShellConfig):
+def request_session_grant(config: ShellConfig):
     """Stage an EPHEMERAL escalation request for `ziya-approve --session`.
 
     Writes the requested shell env to a TRANSIENT file
@@ -984,7 +991,7 @@ async def request_session_grant(config: ShellConfig):
         raise HTTPException(status_code=500, detail=f"Error staging session request: {str(e)}")
 
 @router.post("/shell-config/discard-session-grant")
-async def discard_session_grant():
+def discard_session_grant():
     """Abandon a staged (but not-yet-activated) ephemeral escalation.
 
     Removes the transient staging input and any minted-but-unapplied grant
@@ -1017,7 +1024,7 @@ class GitGrantHazardsRequest(BaseModel):
 
 
 @router.post("/git-grant-hazards")
-async def git_grant_hazards(req: GitGrantHazardsRequest):
+def git_grant_hazards(req: GitGrantHazardsRequest):
     """What each explicit ``git <sub>`` entry in an allowlist admits
     (design/git-tool.md step 6).  Read-only; the shell-config modal calls it
     as the user edits so the warning shows before Save."""
@@ -1238,7 +1245,7 @@ class ServerReauthorizeRequest(BaseModel):
     force: bool = False
 
 @router.post("/reauthorize-server")
-async def reauthorize_server(request: ServerReauthorizeRequest):
+def reauthorize_server(request: ServerReauthorizeRequest):
     """
     Clear a rug-pull quarantine for a server (CWE-345) and accept its
     current tool definitions as the new approved baseline. Explicit,
@@ -1312,7 +1319,7 @@ class WritePolicyUpdate(BaseModel):
     always_blocked: Optional[List[str]] = None
 
 @router.get("/write-policy/{project_id}")
-async def get_project_write_policy(project_id: str):
+def get_project_write_policy(project_id: str):
     """Get effective write policy for a project."""
     try:
         from app.storage.projects import ProjectStorage
@@ -1329,7 +1336,7 @@ async def get_project_write_policy(project_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/write-policy")
-async def update_project_write_policy(request: WritePolicyUpdate):
+def update_project_write_policy(request: WritePolicyUpdate):
     """Update per-project write policy overrides."""
     try:
         overrides = {}
@@ -1362,27 +1369,27 @@ async def update_project_write_policy(request: WritePolicyUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/permissions")
-async def get_mcp_permissions():
+def get_mcp_permissions():
     """Get MCP permission settings."""
     manager = get_permissions_manager()
     return manager.get_permissions()
 
 @router.post("/permissions/server")
-async def update_server_permission(request: ServerPermissionUpdateRequest):
+def update_server_permission(request: ServerPermissionUpdateRequest):
     """Update permission for a specific server."""
     manager = get_permissions_manager()
     manager.update_server_permission(request.server_name, request.permission)
     return {"success": True, "message": f"Server '{request.server_name}' {request.permission}."}
 
 @router.post("/permissions/tool")
-async def update_tool_permission(request: ToolPermissionUpdateRequest):
+def update_tool_permission(request: ToolPermissionUpdateRequest):
     """Update permission for a specific tool on a server."""
     manager = get_permissions_manager()
     manager.update_tool_permission(request.server_name, request.tool_name, request.permission)
     return {"success": True, "message": f"Permission for tool '{request.tool_name}' on server '{request.server_name}' updated."}
 
 @router.get("/servers/{server_name}/details")
-async def get_mcp_server_details(server_name: str):
+def get_mcp_server_details(server_name: str):
     """Get details (tools, resources, prompts) for a specific MCP server."""
     try:
         mcp_manager = get_mcp_manager()
@@ -1533,7 +1540,7 @@ class ToggleRegistryRequest(BaseModel):
     enabled: bool
 
 @router.post("/registry/providers/toggle")
-async def toggle_registry_provider(request: ToggleRegistryRequest):
+def toggle_registry_provider(request: ToggleRegistryRequest):
     """Enable or disable a registry provider."""
     try:
         # This would update a configuration file or database
@@ -1568,7 +1575,7 @@ class AddRegistryRequest(BaseModel):
     authPassword: Optional[str] = None
 
 @router.post("/registry/providers/add")
-async def add_custom_registry(request: AddRegistryRequest):
+def add_custom_registry(request: AddRegistryRequest):
     """Add a custom registry provider."""
     try:
         # This would create a new custom registry provider
@@ -1944,7 +1951,7 @@ class BuiltinToolToggleRequest(BaseModel):
     enabled: bool
 
 @router.get("/builtin-tools/status")
-async def get_builtin_tools_status():
+def get_builtin_tools_status():
     """Get status of all builtin tool categories."""
     try:
         from app.mcp.builtin_tools import (
@@ -1990,7 +1997,7 @@ async def get_builtin_tools_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/builtin-tools/toggle")
-async def toggle_builtin_tool_category(request: BuiltinToolToggleRequest):
+def toggle_builtin_tool_category(request: BuiltinToolToggleRequest):
     """Enable or disable a builtin tool category."""
     try:
         from app.mcp.builtin_tools import BUILTIN_TOOL_CATEGORIES, set_builtin_category_enabled
@@ -2188,7 +2195,7 @@ class FavoritesRequest(BaseModel):
     favorites: List[str]
 
 @router.post("/registry/favorites")
-async def update_favorites(request: FavoritesRequest):
+def update_favorites(request: FavoritesRequest):
     """Update user's favorite services."""
     # Store in user config, encryption-aware [PenPal #143, CWE-311].
     config_path = Path.home() / ".ziya" / "registry_favorites.json"
@@ -2199,7 +2206,7 @@ async def update_favorites(request: FavoritesRequest):
     return {'success': True, 'favorites': request.favorites}
 
 @router.get("/registry/favorites")
-async def get_favorites():
+def get_favorites():
     """Get user's favorite services."""
     config_path = Path.home() / ".ziya" / "registry_favorites.json"
     

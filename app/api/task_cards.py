@@ -4,14 +4,22 @@ Task card API endpoints.
 CRUD endpoints plus a launch endpoint.  Launch creates a TaskRun,
 schedules execution in a background task, and returns immediately
 with the run_id.  Clients poll GET /task-runs/{run_id} for status.
+
+Handlers that await nothing are plain ``def`` (Starlette worker pool), as in
+app/api/chats.py: they read and decrypt card files and open approval
+records, and as zero-await ``async def`` that ran on the event loop.  The
+stall watchdog caught the loop in ``get_signature_summary`` (2026-10-09),
+which the header re-polls on every window focus.  Only ``launch_task_card``
+awaits.  tests/test_task_cards_api_not_event_loop_blocking.py enforces this.
 """
 
 import asyncio
 import os
 import time
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List
+from typing import Any, List, Optional
 
 from ..models.task_card import (
     # ``Artifact`` is needed to coerce mid-loop resume iteration records,
@@ -47,7 +55,7 @@ def _get_storage(project_id: str) -> TaskCardStorage:
 
 
 @router.get("", response_model=List[TaskCard])
-async def list_task_cards(
+def list_task_cards(
     project_id: str,
     templates_only: bool = Query(False),
     include_drafts: bool = Query(False),
@@ -62,7 +70,7 @@ async def list_task_cards(
 
 
 @router.get("/lessons-summary")
-async def get_lessons_summary(project_id: str):
+def get_lessons_summary(project_id: str):
     """Per-card self-improvement aggregates for the whole deck in one
     request: {card_id: {count, edits_applied, last_ts}}.
 
@@ -86,7 +94,7 @@ async def get_lessons_summary(project_id: str):
 
 
 @router.get("/signature-summary")
-async def get_signature_summary(project_id: str):
+def get_signature_summary(project_id: str):
     """Deck-wide list of cards whose privilege escalation is not signed.
 
     Drives the header-level Task Cards button outline and its tooltip.
@@ -387,7 +395,7 @@ def _escalation_rows(
 
 
 @router.get("/{card_id}/scope-status")
-async def get_card_scope_status(project_id: str, card_id: str):
+def get_card_scope_status(project_id: str, card_id: str):
     """Per-block escalation-approval status for a card (ASR F-001).
 
     For every LEAF TASK block whose EFFECTIVE scope (deck-level project
@@ -477,7 +485,7 @@ async def get_card_scope_status(project_id: str, card_id: str):
 
 
 @router.post("/scope-preview")
-async def preview_card_scope(project_id: str, body: TaskCardCreate):
+def preview_card_scope(project_id: str, body: TaskCardCreate):
     """Escalation preview for an UNSAVED card spec.
 
     Exists because the by-id status endpoint cannot answer for a spec
@@ -519,12 +527,12 @@ async def preview_card_scope(project_id: str, body: TaskCardCreate):
 
 
 @router.post("", response_model=TaskCard, status_code=201)
-async def create_task_card(project_id: str, body: TaskCardCreate):
+def create_task_card(project_id: str, body: TaskCardCreate):
     return _get_storage(project_id).create(body)
 
 
 @router.put("/{card_id}", response_model=TaskCard)
-async def update_task_card(project_id: str, card_id: str, body: TaskCardUpdate):
+def update_task_card(project_id: str, card_id: str, body: TaskCardUpdate):
     card = _get_storage(project_id).update(card_id, body)
     if not card:
         raise HTTPException(status_code=404, detail="Task card not found")
@@ -532,13 +540,13 @@ async def update_task_card(project_id: str, card_id: str, body: TaskCardUpdate):
 
 
 @router.delete("/{card_id}", status_code=204)
-async def delete_task_card(project_id: str, card_id: str):
+def delete_task_card(project_id: str, card_id: str):
     if not _get_storage(project_id).delete(card_id):
         raise HTTPException(status_code=404, detail="Task card not found")
 
 
 @router.post("/{card_id}/duplicate", response_model=TaskCard, status_code=201)
-async def duplicate_task_card(
+def duplicate_task_card(
     project_id: str, card_id: str,
     as_template: bool = Query(False),
 ):
@@ -549,7 +557,7 @@ async def duplicate_task_card(
 
 
 @router.get("/{card_id}/lessons")
-async def get_card_lessons(
+def get_card_lessons(
     project_id: str, card_id: str,
     limit: int = Query(200, ge=1, le=2000),
 ):
@@ -597,7 +605,7 @@ class LessonRevertRequest(BaseModel):
 
 
 @router.post("/{card_id}/lessons/revert")
-async def revert_card_lesson(
+def revert_card_lesson(
     project_id: str, card_id: str, body: LessonRevertRequest,
 ):
     """Write an applied revision's pre-image back onto the live card.
@@ -975,7 +983,11 @@ async def _launch_run_for_card(
                 _endpoint = (ModelManager.get_state() or {}).get("endpoint", "bedrock")
             if _endpoint == "bedrock":
                 from ..utils.aws_utils import check_aws_credentials
-                _ok, _msg = check_aws_credentials(is_server_startup=False)
+                # STS round trip (~10s cold) plus botocore client setup:
+                # never on the event loop.
+                _ok, _msg = await asyncio.to_thread(
+                    check_aws_credentials, is_server_startup=False,
+                )
                 if not _ok:
                     run_storage.mark_held(
                         run_id, reason="authentication_error",
@@ -1191,7 +1203,7 @@ async def launch_task_card(
 
 
 @router.get("/{card_id}/schedule-state")
-async def get_schedule_state(project_id: str, card_id: str) -> dict:
+def get_schedule_state(project_id: str, card_id: str) -> dict:
     """Return the scheduler's per-card fire-history record.
 
     Empty dict if the card has no schedule block, or has one but has
