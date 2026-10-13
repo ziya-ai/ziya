@@ -1,5 +1,12 @@
 """
 Project API endpoints.
+
+Handlers here are plain ``def``, not ``async def``: they do synchronous
+project-store / template / chat-dir I/O and await nothing, so as ``async
+def`` that disk work ran on the event loop (and the startup-path handlers
+hit it during startup scans).  Starlette runs plain ``def`` handlers on its
+worker threadpool.  ``tests/test_projects_not_event_loop_blocking.py``
+enforces this.
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -58,7 +65,7 @@ class SnapshotTemplateRequest(BaseModel):
 
 
 @router.get("/templates", response_model=TemplateListResponse)
-async def list_project_templates():
+def list_project_templates():
     """List built-in and user templates, plus the default preference."""
     from ..utils.template_store import all_templates, get_default_template_id
     return TemplateListResponse(
@@ -68,7 +75,7 @@ async def list_project_templates():
 
 
 @router.get("/templates/detect", response_model=DetectTemplateResponse)
-async def detect_project_template(path: str):
+def detect_project_template(path: str):
     """Sniff a directory for template markers, without creating anything.
 
     Lets the create dialog show its detection before the user commits.
@@ -83,7 +90,7 @@ async def detect_project_template(path: str):
 
 
 @router.put("/templates/default", response_model=TemplateListResponse)
-async def set_default_project_template(data: SetDefaultTemplateRequest):
+def set_default_project_template(data: SetDefaultTemplateRequest):
     """Set or clear the default template for new projects."""
     from ..utils.template_store import (
         all_templates, get_default_template_id, get_template,
@@ -99,7 +106,7 @@ async def set_default_project_template(data: SetDefaultTemplateRequest):
 
 
 @router.delete("/templates/{template_id}")
-async def delete_project_template(template_id: str):
+def delete_project_template(template_id: str):
     """Delete a user template.  Built-ins cannot be deleted.
 
     Safe for projects created from it: apply-once means they already own
@@ -115,7 +122,7 @@ async def delete_project_template(template_id: str):
 
 
 @router.get("", response_model=List[ProjectListItem])
-async def list_projects():
+def list_projects():
     """List all known projects."""
     storage = get_project_storage()
     projects = storage.list_deduped()
@@ -148,7 +155,7 @@ def _count_chats(chats_dir) -> int:
     return sum(1 for f in d.iterdir() if f.suffix == '.json' and not f.name.startswith('_'))
 
 @router.get("/current", response_model=Project)
-async def get_current_project():
+def get_current_project():
     """Get or create project for current working directory."""
     storage = get_project_storage()
     # Use the REQUEST-SCOPED root only. get_project_root() falls back to
@@ -186,7 +193,7 @@ async def get_current_project():
     return project
 
 @router.get("/last-accessed", response_model=Project)
-async def get_last_accessed_project():
+def get_last_accessed_project():
     """Return the most recently accessed project across all projects."""
     storage = get_project_storage()
     projects = storage.list()
@@ -218,7 +225,7 @@ def _require_project_dir(project: Project) -> None:
         )
 
 @router.get("/startup", response_model=StartupInfo)
-async def get_startup_info():
+def get_startup_info():
     """Return startup-directory context for new web sessions.
 
     Pure read: unlike /current and /last-accessed this never creates a
@@ -243,7 +250,7 @@ async def get_startup_info():
     )
 
 @router.post("", response_model=Project)
-async def create_project(data: ProjectCreate):
+def create_project(data: ProjectCreate):
     """Create or get existing project for a path."""
     # If path is provided, resolve it to absolute
     if data.path:
@@ -252,7 +259,7 @@ async def create_project(data: ProjectCreate):
     return storage.create(data)
 
 @router.get("/{project_id}", response_model=Project)
-async def get_project(project_id: str):
+def get_project(project_id: str):
     """Get a specific project."""
     storage = get_project_storage()
     project = storage.get(project_id)
@@ -263,7 +270,7 @@ async def get_project(project_id: str):
     return project
 
 @router.put("/{project_id}", response_model=Project)
-async def update_project(project_id: str, data: ProjectUpdate):
+def update_project(project_id: str, data: ProjectUpdate):
     """Update project metadata."""
     storage = get_project_storage()
     project = storage.update(project_id, data)
@@ -272,7 +279,7 @@ async def update_project(project_id: str, data: ProjectUpdate):
     return project
 
 @router.delete("/{project_id}")
-async def delete_project(project_id: str):
+def delete_project(project_id: str):
     """Delete a project and all its data."""
     storage = get_project_storage()
     if not storage.delete(project_id):
@@ -281,7 +288,7 @@ async def delete_project(project_id: str):
 
 
 @router.post("/{project_id}/save-as-template")
-async def save_project_as_template(project_id: str, data: SnapshotTemplateRequest):
+def save_project_as_template(project_id: str, data: SnapshotTemplateRequest):
     """Snapshot this project's settings as a reusable template.
 
     Only the templatable subset is captured (see
