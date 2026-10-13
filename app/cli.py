@@ -90,6 +90,16 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.formatted_text import FormattedText
 
 
+def _trace(msg: str) -> None:
+    """Dim stderr trace line for the ask/continuation state machine.
+
+    Emitted only when ZIYA_LOG_LEVEL=DEBUG (set by --debug); silent by default
+    so the interactive session isn't interleaved with internal bookkeeping.
+    """
+    if ziya_env('ZIYA_LOG_LEVEL') == 'DEBUG':
+        print(f"\033[90m[trace] {msg}\033[0m", file=sys.stderr)
+
+
 # ============================================================================
 # Session history management
 # ============================================================================
@@ -221,9 +231,9 @@ async def _adjudicate_continuation(response: str) -> Tuple[bool, bool]:
             from app.services.intent_judge import judge_dangling_intent
             verdict = await judge_dangling_intent(response)
         except Exception as e:
-            print(f"\033[90m[trace] intent judge unavailable ({type(e).__name__}), not continuing\033[0m", file=sys.stderr)
+            _trace(f"intent judge unavailable ({type(e).__name__}), not continuing")
         if not verdict:
-            print("\033[90m[trace] intent judge: response complete, not continuing\033[0m", file=sys.stderr)
+            _trace("intent judge: response complete, not continuing")
             has_unexecuted_intent = False
             looks_incomplete = _looks_truncated(response)
     return looks_incomplete, has_unexecuted_intent
@@ -1612,14 +1622,14 @@ class CLI:
         for attempt in range(max_attempts):
             # Reset cancellation flag for each attempt
             self._cancellation_requested = False
-            print(f"\033[90m[trace] model call attempt={attempt}\033[0m", file=sys.stderr)
+            _trace(f"model call attempt={attempt}")
             
             response = await self._run_with_tools_from_messages(messages, stream)
             # Compute has_diff BEFORE the f-string: a backslash inside an
             # f-string expression part is a SyntaxError on Python 3.11 (allowed
             # only in 3.12+), and the toolbox venv is 3.11.
             _diff_re = re.search(r'^`{3,}diff\s*$', response, re.MULTILINE)
-            print(f"\033[90m[trace] model returned, len={len(response)}, has_diff={bool(_diff_re)}\033[0m", file=sys.stderr)
+            _trace(f"model returned, len={len(response)}, has_diff={bool(_diff_re)}")
             
             # If no diffs, we're done
             if '```diff' not in response:
@@ -1633,9 +1643,9 @@ class CLI:
                 looks_incomplete, _has_unexecuted_intent = await _adjudicate_continuation(response)
                 if looks_incomplete:
                     if _has_unexecuted_intent:
-                        print("\033[90m[trace] response narrates unexecuted intent, auto-continuing\033[0m", file=sys.stderr)
+                        _trace("response narrates unexecuted intent, auto-continuing")
                     else:
-                        print("\033[90m[trace] response looks incomplete, auto-continuing\033[0m", file=sys.stderr)
+                        _trace("response looks incomplete, auto-continuing")
                     messages.append(AIMessage(content=response))
                     messages.append(HumanMessage(content="[System: Your response appears incomplete. Please continue where you left off.]"))
                     continuation = await self._run_with_tools_from_messages(messages, stream)
@@ -1654,7 +1664,7 @@ class CLI:
                     return response
             
             # Validate diffs using FULL apply pipeline (dry-run)
-            print(f"\033[90m[trace] starting validate_and_enhance\033[0m", file=sys.stderr)
+            _trace("starting validate_and_enhance")
             try:
                 validation_feedback = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -1667,7 +1677,7 @@ class CLI:
             except (asyncio.TimeoutError, Exception) as e:
                 print(f"\033[33m⚠ Diff validation timed out or failed ({e}), skipping validation\033[0m", file=sys.stderr)
                 validation_feedback = None
-            print(f"\033[90m[trace] validate_and_enhance done, has_feedback={bool(validation_feedback)}\033[0m", file=sys.stderr)
+            _trace(f"validate_and_enhance done, has_feedback={bool(validation_feedback)}")
             
             # If validation passed, process diffs interactively
             if not validation_feedback:
@@ -1685,9 +1695,9 @@ class CLI:
                 while True:
                     # Show diffs to user for interactive application
                     try:
-                        print("\033[90m[trace] entering process_response\033[0m", file=sys.stderr)
+                        _trace("entering process_response")
                         completed_normally = self.diff_applicator.process_response(full_response)
-                        print(f"\033[90m[trace] process_response done, completed_normally={completed_normally}\033[0m", file=sys.stderr)
+                        _trace(f"process_response done, completed_normally={completed_normally}")
                     except (OSError, ValueError, RuntimeError, KeyError, IndexError) as e:
                         import traceback
                         print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
@@ -1771,9 +1781,9 @@ class CLI:
                                 "than just describing it again."
                             )
                         # Continue conversation with the model
-                        print("\033[90m[trace] sending continuation to model\033[0m", file=sys.stderr)
+                        _trace("sending continuation to model")
                         continue_response = await self._continue_conversation(continuation_message, messages)
-                        print(f"\033[90m[trace] continuation returned, len={len(continue_response)}\033[0m", file=sys.stderr)
+                        _trace(f"continuation returned, len={len(continue_response)}")
                         
                         # Persist the diff results and continuation to history so the
                         # model knows what was applied on subsequent turns.
@@ -2437,7 +2447,7 @@ class CLI:
                 # GUI (and any other attached CLI) sees it (no-op if local).
                 self._sync_after_turn()
                 sys.stdout.write("\033]133;D\007"); sys.stdout.flush()
-                print("\033[90m[trace] ask() returned, looping to prompt\033[0m", file=sys.stderr)
+                _trace("ask() returned, looping to prompt")
                 print()
                 
             except KeyboardInterrupt:
