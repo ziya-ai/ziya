@@ -111,7 +111,7 @@ class TestFakeShellDetector_ShouldDetect:
     def test_grep_output_with_workspace_paths(self):
         """Realistic fabricated grep output referencing the actual workspace."""
         body = (
-            "$ grep -n 'detect_fake' /Users/dcohn/workspace/ziya-0.4.0.1/app/text_delta_processor.py\n"
+            "$ grep -n 'detect_fake' /Users/alice/workspace/ziya-0.4.0.1/app/text_delta_processor.py\n"
             "284:    if state.conversation_id:\n"
             "290:        _shell_match = detect_fake_shell_session(state.assistant_text)\n"
             "295:            state.hallucination_detected = True\n"
@@ -143,7 +143,7 @@ class TestFakeShellDetector_ShouldDetect:
         assert detect_fake_shell_session(text) is not None
 
     def test_dollar_prompt_with_output_zsh_fence(self):
-        text = _fence("zsh", "$ pwd\n/Users/dcohn/workspace/ziya-0.4.0.1\n/Users/dcohn/workspace\n")
+        text = _fence("zsh", "$ pwd\n/Users/alice/workspace/ziya-0.4.0.1\n/Users/alice/workspace\n")
         assert detect_fake_shell_session(text) is not None
 
     def test_dollar_prompt_with_output_console_fence(self):
@@ -628,7 +628,7 @@ class TestIntegration:
         text = (
             "Let me verify what's actually happening.\n\n"
             "```\n"
-            " cd /Users/dcohn/workspace/ziya-0.4.0.1 && "
+            " cd /Users/alice/workspace/ziya-0.4.0.1 && "
             "grep -n \"graph.addCell\\|parentCell\" frontend/src/plugins/d3/drawioPlugin.ts | head -10\n"
             "1414:                        // Look up parent from XML\n"
             "1416:                        const parentId = cellElement?.getAttribute('parent');\n"
@@ -1016,7 +1016,7 @@ class TestUserComplaintRegressions:
     def test_J1_verbatim_grep_output_from_conversation(self):
         text = (
             "```bash\n"
-            "$ cd /Users/dcohn/workspace/ziya-0.4.0.1 && grep -n "
+            "$ cd /Users/alice/workspace/ziya-0.4.0.1 && grep -n "
             "\"graph.addCell\\|parentCell\" "
             "frontend/src/plugins/d3/drawioPlugin.ts | head -10\n"
             "1414:                        // Look up parent from XML\n"
@@ -1044,9 +1044,9 @@ class TestUserComplaintRegressions:
     def test_J3_invented_ls_output(self):
         text = (
             "```bash\n"
-            "$ ls -la /Users/dcohn/workspace\n"
-            "drwxr-xr-x  10 dcohn staff  320 Jan 01 12:00 ziya-0.4.0.1\n"
-            "drwxr-xr-x   5 dcohn staff  160 Jan 01 12:00 other-project\n"
+            "$ ls -la /Users/alice/workspace\n"
+            "drwxr-xr-x  10 alice staff  320 Jan 01 12:00 ziya-0.4.0.1\n"
+            "drwxr-xr-x   5 alice staff  160 Jan 01 12:00 other-project\n"
             "```\n"
         )
         assert detect_fake_shell_session(text) is not None
