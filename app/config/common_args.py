@@ -83,3 +83,15 @@ def add_common_arguments(parser):
     # Experimental features
     parser.add_argument('--memory', action='store_true',
                         help='Enable persistent memory across sessions (experimental, disabled by default)')
+    # Memory store location, for headless runs against a reference set.
+    # --memory-bundle alone gives a run its own copy of the bundle in a
+    # temporary directory; add --memory-dir to keep what it learns, or
+    # --memory-readonly to use the bundle as reference only.
+    parser.add_argument('--memory-dir', metavar='DIR', default=None,
+                        help='Use DIR as the memory store instead of ~/.ziya/memory')
+    parser.add_argument('--memory-bundle', metavar='FILE', default=None,
+                        help='Seed the memory store from a ziya-memory-export JSON file '
+                             '(exported from another Ziya\'s Memory Browser)')
+    parser.add_argument('--memory-readonly', action='store_true',
+                        help='Treat the memory store as a reference set: read it, learn nothing, '
+                             'write nothing (implies no post-conversation extraction)')

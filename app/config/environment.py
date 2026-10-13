@@ -301,3 +301,55 @@ def setup_environment(args: Any) -> None:
         logger.info("Persistent memory system enabled (experimental)")
     else:
         os.environ.setdefault("ZIYA_ENABLE_MEMORY", "true")
+
+    # -- Memory store location / reference-set mode ----------------------------
+    # Resolved here, before any get_memory_storage() call, because the store
+    # is a lazy singleton keyed on app.utils.paths.get_memory_dir().
+    _setup_memory_store(args)
+
+
+def _setup_memory_store(args: Any) -> None:
+    """Apply --memory-dir / --memory-bundle / --memory-readonly.
+
+    Seeding runs with writes allowed; the read-only flag is set afterwards
+    so a reference run still gets its bundle on disk.
+    """
+    import json
+    from pathlib import Path
+    from app.utils.paths import MEMORY_DIR_ENV, MEMORY_READONLY_ENV
+
+    mem_dir = getattr(args, 'memory_dir', None)
+    bundle = getattr(args, 'memory_bundle', None)
+    readonly = getattr(args, 'memory_readonly', False)
+
+    if bundle and not mem_dir:
+        import tempfile
+        import atexit
+        import shutil
+        mem_dir = tempfile.mkdtemp(prefix="ziya-memory-")
+        logger.info(f"Memory bundle given without --memory-dir; using {mem_dir} for this run")
+        # The run owns this copy; nothing else will ever read it.  Remove it
+        # at exit so repeated headless runs do not pile ziya-memory-* up in
+        # $TMPDIR.  Pass --memory-dir to keep a store across runs.
+        atexit.register(shutil.rmtree, mem_dir, ignore_errors=True)
+    if mem_dir:
+        os.environ[MEMORY_DIR_ENV] = str(Path(mem_dir).expanduser())
+        logger.info(f"Memory store: {os.environ[MEMORY_DIR_ENV]}")
+    if bundle:
+        from app.utils.memory_import import seed_store
+        try:
+            with open(Path(bundle).expanduser(), "r", encoding="utf-8") as fh:
+                obj = json.load(fh)
+            result = seed_store(os.environ[MEMORY_DIR_ENV], obj, source=str(bundle))
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            logger.error(f"--memory-bundle {bundle}: {e}")
+            sys.exit(2)
+        logger.info(f"Memory bundle {bundle}: {result['imported']} imported, "
+                    f"{result['counts'].get('identical', 0)} already present")
+        if result["imported"]:
+            logger.info("Semantic retrieval over imported memories needs an embedding "
+                        "backfill (Memory Browser > Health, or POST /api/v1/memory/embeddings/backfill); "
+                        "keyword search works immediately.")
+    if readonly:
+        os.environ[MEMORY_READONLY_ENV] = "1"
+        logger.info("Memory store is read-only for this run: no extraction, no writes")

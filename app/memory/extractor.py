@@ -1646,6 +1646,11 @@ async def run_post_conversation_extraction(
     from app.mcp.builtin_tools import is_builtin_category_enabled
     if not is_builtin_category_enabled("memory"):
         return {"skipped": True, "reason": "memory_disabled"}
+    from app.utils.paths import memory_writes_allowed
+    if not memory_writes_allowed():
+        # Reference-set run (ZIYA_MEMORY_READONLY): nothing learned, and no
+        # extraction model call for a result that could not be stored.
+        return {"skipped": True, "reason": "memory_readonly"}
 
     # One session per (conversation, day) on this project's clock.  Every
     # proposal below carries the post-tick stamp, so it ages only with

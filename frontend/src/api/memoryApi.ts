@@ -458,3 +458,291 @@ export function memoryPauseLabel(
     'It retries on its own with backoff; Resume skips the wait.'
   );
 }
+
+// ── Export ────────────────────────────────────────────────────────────
+// Mirrors app/utils/memory_export.py.  The export is the one sanctioned
+// path for memory to leave the machine, so the client echoes the preview
+// fingerprint and the server refuses (409) if the store has moved on.
+
+export interface ExportSelection {
+  domains: string[];
+  include_projects: string[];
+  exclude_projects: string[];
+  include_unscoped: boolean;
+  layers: string[];
+  statuses: string[];
+  strip_provenance: boolean;
+  anonymize_paths: boolean;
+  include_mindmap: boolean;
+}
+
+export const DEFAULT_EXPORT_SELECTION: ExportSelection = {
+  domains: [],
+  include_projects: [],
+  exclude_projects: [],
+  include_unscoped: true,
+  layers: [],
+  statuses: ['active'],
+  strip_provenance: true,
+  anonymize_paths: true,
+  include_mindmap: true,
+};
+
+export interface ExportDomainOption {
+  id: string;
+  handle: string;
+  count: number;
+  children: ExportDomainOption[];
+}
+
+export interface ExportOptions {
+  total: number;
+  domains: ExportDomainOption[];
+  unplaced: number;
+  projects: Array<{ path: string; label: string; count: number }>;
+  unscoped: number;
+  layers: Array<{ layer: string; count: number }>;
+  statuses: Array<{ status: string; count: number }>;
+  /** Folder the save dialog starts in (~/Downloads, else home). */
+  default_save_dir?: string;
+}
+
+export interface ExportWarning {
+  memory_id: string | null;
+  kind: string;
+  match: string;
+  snippet: string;
+}
+
+export interface ExportPreview {
+  memory_ids: string[];
+  fingerprint: string;
+  total: number;
+  held_back: Record<string, number>;
+  counts: {
+    by_layer: Record<string, number>;
+    by_domain: Array<{ id: string; handle: string; count: number }>;
+    by_project: Array<{ path: string; label: string; count: number }>;
+    nodes: number;
+  };
+  warnings: ExportWarning[];
+  node_ids: string[];
+  sample: MemoryItem[];
+  /** Server-chosen filename for this selection, used to prefill the save path. */
+  suggested_filename?: string;
+}
+
+export async function getExportOptions(): Promise<ExportOptions> {
+  const res = await fetch('/api/v1/memory/export/options', { headers: headers() });
+  if (!res.ok) throw new Error(`Export options failed: ${res.status}`);
+  return res.json();
+}
+
+export async function previewExport(selection: ExportSelection): Promise<ExportPreview> {
+  const res = await fetch('/api/v1/memory/export/preview', {
+    method: 'POST', headers: headers(), body: JSON.stringify(selection),
+  });
+  if (!res.ok) throw new Error(`Export preview failed: ${res.status}`);
+  return res.json();
+}
+
+/** Run the export.  Resolves to the bundle blob and the server's filename;
+ *  throws with the server's detail on 409 (store changed) / 412 (warnings). */
+export async function runExport(
+  selection: ExportSelection, fingerprint: string, acknowledgeWarnings: boolean,
+): Promise<{ blob: Blob; filename: string }> {
+  const res = await fetch('/api/v1/memory/export', {
+    method: 'POST', headers: headers(),
+    body: JSON.stringify({ selection, fingerprint, acknowledge_warnings: acknowledgeWarnings }),
+  });
+  if (!res.ok) {
+    let detail = `Export failed: ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch { /* keep status text */ }
+    throw new Error(detail);
+  }
+  const cd = res.headers.get('content-disposition') || '';
+  const m = /filename="([^"]+)"/.exec(cd);
+  return { blob: await res.blob(), filename: m ? m[1] : 'ziya-memory-export.json' };
+}
+
+/** Error from saveExport.  code === 'file_exists' means the target is
+ *  taken and the caller may retry with overwrite; any other 409 means the
+ *  store moved since the preview. */
+export class ExportSaveError extends Error {
+  constructor(message: string, public status: number,
+              public code: string | null = null, public path: string | null = null) {
+    super(message);
+  }
+}
+
+/** Have the server write the bundle to savePath (a folder or a file
+ *  path).  Resolves to the absolute path it was written to: unlike a
+ *  browser download, this can tell the user where the file is. */
+export async function saveExport(
+  selection: ExportSelection, fingerprint: string, acknowledgeWarnings: boolean,
+  savePath: string, overwrite: boolean = false,
+): Promise<{ path: string; filename: string; total: number; fingerprint: string }> {
+  const res = await fetch('/api/v1/memory/export', {
+    method: 'POST', headers: headers(),
+    body: JSON.stringify({
+      selection, fingerprint, acknowledge_warnings: acknowledgeWarnings,
+      save_path: savePath, overwrite,
+    }),
+  });
+  if (!res.ok) {
+    let detail: any = null;
+    try { detail = (await res.json()).detail; } catch { /* keep status text */ }
+    if (detail && typeof detail === 'object') {
+      throw new ExportSaveError(detail.message || `Export failed: ${res.status}`,
+        res.status, detail.code || null, detail.path || null);
+    }
+    throw new ExportSaveError(detail || `Export failed: ${res.status}`, res.status);
+  }
+  return res.json();
+}
+
+/** Prefill for the save dialog: folder + filename joined with one
+ *  separator (a backslash when the folder is Windows-style). */
+export function defaultSaveTarget(dir?: string | null, filename?: string | null): string {
+  if (!dir) return filename || '';
+  if (!filename) return dir;
+  const sep = dir.includes('\\') && !dir.includes('/') ? '\\' : '/';
+  return `${dir.replace(/[\\/]+$/, '')}${sep}${filename}`;
+}
+
+export interface ExportReadiness {
+  ready: boolean;
+  reason: string | null;
+}
+
+/**
+ * Whether the Export button may be enabled.  Pure, so the gate is testable:
+ * no preview, an empty selection, or unacknowledged warnings all block.
+ * The server enforces the same rules (409/412); this just explains them
+ * before the click.
+ */
+export function exportReadiness(
+  preview: ExportPreview | null | undefined,
+  acknowledged: boolean,
+  stale: boolean = false,
+): ExportReadiness {
+  if (!preview) return { ready: false, reason: 'Run the preview first.' };
+  if (stale) return { ready: false, reason: 'Selection changed — preview is refreshing.' };
+  if (preview.total === 0) return { ready: false, reason: 'Nothing selected.' };
+  if (preview.warnings.length > 0 && !acknowledged) {
+    const n = preview.warnings.length;
+    return { ready: false, reason: `Acknowledge ${n} warning${n === 1 ? '' : 's'} to export.` };
+  }
+  return { ready: true, reason: null };
+}
+
+// ── Import ────────────────────────────────────────────────────────────
+// Mirrors app/utils/memory_import.py.  Preview classifies every bundle
+// memory against this store; import echoes both fingerprints and the
+// server refuses (409) if either moved.
+
+export interface ImportOptions {
+  on_collision: 'rename' | 'skip' | 'overwrite';
+  skip_duplicate_content: boolean;
+  include_mindmap: boolean;
+  source_label: string | null;
+}
+
+export const DEFAULT_IMPORT_OPTIONS: ImportOptions = {
+  on_collision: 'rename',
+  skip_duplicate_content: true,
+  include_mindmap: true,
+  source_label: null,
+};
+
+export type ImportDisposition =
+  | 'new' | 'identical' | 'duplicate_content'
+  | 'collision_renamed' | 'collision_skipped' | 'collision_overwritten';
+
+export interface ImportPreview {
+  bundle_fingerprint: string;
+  store_fingerprint: string;
+  total: number;
+  exported_by: string | null;
+  exported_at: string | null;
+  counts: Record<string, number>;   // new, identical, duplicate_content, collision_*, nodes_new, nodes_merged, to_write
+  nodes_new: string[];
+  nodes_merged: string[];
+  warnings: string[];
+  sample: Array<{ id: string; final_id: string | null; disposition: ImportDisposition; layer: string | null; content: string }>;
+}
+
+export interface ImportResult {
+  imported: number;
+  counts: Record<string, number>;
+  nodes_new: string[];
+  nodes_merged: string[];
+  embeddings_pending: number;
+  bundle_fingerprint: string;
+}
+
+/** Parse an uploaded file as a bundle, with a readable error. */
+export async function readBundleFile(file: File): Promise<unknown> {
+  const text = await file.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${file.name} is not valid JSON`);
+  }
+}
+
+async function detailOr(res: Response, fallback: string): Promise<string> {
+  try { return (await res.json()).detail || fallback; } catch { return fallback; }
+}
+
+export async function previewImport(bundle: unknown, options: ImportOptions): Promise<ImportPreview> {
+  const res = await fetch('/api/v1/memory/import/preview', {
+    method: 'POST', headers: headers(), body: JSON.stringify({ bundle, options }),
+  });
+  if (!res.ok) throw new Error(await detailOr(res, `Import preview failed: ${res.status}`));
+  return res.json();
+}
+
+export async function runImport(
+  bundle: unknown, options: ImportOptions, preview: ImportPreview, source: string | null,
+): Promise<ImportResult> {
+  const res = await fetch('/api/v1/memory/import', {
+    method: 'POST', headers: headers(),
+    body: JSON.stringify({
+      bundle, options, source,
+      bundle_fingerprint: preview.bundle_fingerprint,
+      store_fingerprint: preview.store_fingerprint,
+    }),
+  });
+  if (!res.ok) throw new Error(await detailOr(res, `Import failed: ${res.status}`));
+  return res.json();
+}
+
+export async function backfillEmbeddings(): Promise<{ status: string; embedded?: number; missing?: number }> {
+  const res = await fetch('/api/v1/memory/embeddings/backfill', { method: 'POST', headers: headers() });
+  if (!res.ok) throw new Error(`Backfill failed: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Whether the Import button may be enabled.  Pure, like exportReadiness.
+ * Nothing to write is a block, not an error: the user should see that the
+ * bundle is already present rather than get a no-op click.
+ */
+export function importReadiness(
+  preview: ImportPreview | null | undefined,
+  stale: boolean = false,
+): ExportReadiness {
+  if (!preview) return { ready: false, reason: 'Choose a bundle file.' };
+  if (stale) return { ready: false, reason: 'Options changed — preview is refreshing.' };
+  const n = preview.counts.to_write || 0;
+  if (n === 0) {
+    const ident = preview.counts.identical || 0;
+    const dup = preview.counts.duplicate_content || 0;
+    if (ident + dup === preview.total && preview.total > 0) {
+      return { ready: false, reason: 'Everything in this bundle is already in your memory.' };
+    }
+    return { ready: false, reason: 'Nothing to import with these options.' };
+  }
+  return { ready: true, reason: null };
+}

@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 
 from app.utils.logging_utils import get_mode_aware_logger
 from app.models.memory import MindMapNode
+from app.utils.memory_export import ExportSelection
+from app.utils.memory_import import ImportOptions
 
 logger = get_mode_aware_logger(__name__)
 router = APIRouter(tags=["memory"])
@@ -449,3 +451,214 @@ def expand_mindmap_node(node_id: str):
         "memories": [m.model_dump() for m in memories],
         "count": len(memories),
     }
+
+
+# -- Export ------------------------------------------------------------------
+
+# The one sanctioned path for memory to leave the machine (design/
+# structured-memory-system.md: "never shared without explicit user action").
+# Selection and sanitization live in app/utils/memory_export.py; this layer
+# adds the bounds check (preview fingerprint must match) and the audit event.
+
+class MemoryExportRequest(BaseModel):
+    selection: ExportSelection
+    fingerprint: str = Field(..., min_length=8, max_length=64,
+                             description="Fingerprint returned by the preview.")
+    acknowledge_warnings: bool = Field(
+        False, description="Required when the preview reported leak warnings.")
+    # Where the server should write the file: a folder or a file path (see
+    # memory_export.resolve_save_path).  None returns a browser download.
+    save_path: Optional[str] = Field(None, max_length=4096)
+    overwrite: bool = Field(False, description="Replace an existing file at save_path.")
+
+
+@router.get("/api/v1/memory/export/options")
+def memory_export_options():
+    """Selectable axes: domain tree, projects, unscoped count, layers,
+    and the folder the save dialog starts in."""
+    from app.storage.memory import get_memory_storage
+    from app.utils.memory_export import default_export_dir, export_options
+    return {**export_options(get_memory_storage()), "default_save_dir": default_export_dir()}
+
+
+@router.post("/api/v1/memory/export/preview")
+def memory_export_preview(selection: ExportSelection):
+    """Resolve a selection without exporting: counts, what was held back
+    and why, leak warnings, and the fingerprint the export call must echo."""
+    from app.storage.memory import get_memory_storage
+    from app.utils.memory_export import export_filename, plan_export
+    plan, sample = plan_export(get_memory_storage(), selection, sample_size=50)
+    return {**plan.model_dump(), "sample": sample,
+            "suggested_filename": export_filename(plan)}
+
+
+@router.post("/api/v1/memory/export")
+def memory_export(data: MemoryExportRequest):
+    """Produce the export bundle.
+
+    With \`\`save_path\`\` the server writes the file there and returns
+    \`\`{path, filename, total, fingerprint}\`\`.  The absolute path is the
+    point: a browser download never tells the page where the file went.
+    Without it the bundle is returned as a JSON download.
+
+    Refuses with 409 when the store no longer matches the previewed
+    fingerprint (a memory was added, archived or re-scoped in between, or
+    the request was not preceded by a preview), with 412 when the preview
+    had warnings the caller has not acknowledged, with 409
+    \`\`{"code": "file_exists"}\`\` when the target exists and \`\`overwrite\`\` is
+    false, and with 422 when the target folder does not exist.
+    """
+    import json as _json
+    import os
+    from fastapi.responses import Response
+    from app.storage.memory import get_memory_storage
+    from app.utils.memory_export import (
+        build_bundle, export_filename, plan_export, resolve_save_path, write_export_file)
+    from app.utils.tool_audit_log import log_security_event
+
+    store = get_memory_storage()
+    plan, _ = plan_export(store, data.selection)
+    if plan.fingerprint != data.fingerprint:
+        log_security_event("memory_export_refused", "memory_export", {
+            "reason": "fingerprint_mismatch", "expected": plan.fingerprint,
+            "got": data.fingerprint, "total": plan.total})
+        raise HTTPException(
+            status_code=409,
+            detail="The memory store changed since the preview. Re-run the "
+                   "preview and check the result before exporting.")
+    if plan.warnings and not data.acknowledge_warnings:
+        raise HTTPException(
+            status_code=412,
+            detail=f"{len(plan.warnings)} warning(s) must be acknowledged "
+                   "before exporting.")
+    try:
+        bundle = build_bundle(store, data.selection, plan,
+                              exported_by=os.environ.get("USER") or None)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    filename = export_filename(plan)
+    content = _json.dumps(bundle, indent=2, ensure_ascii=False)
+    saved_to = None
+    if data.save_path:
+        try:
+            target = resolve_save_path(data.save_path, filename)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        try:
+            write_export_file(target, content, overwrite=data.overwrite)
+        except FileExistsError:
+            raise HTTPException(status_code=409, detail={
+                "code": "file_exists", "path": str(target),
+                "message": f"{target} already exists."})
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Could not write {target}: {e}")
+        saved_to = str(target)
+
+    log_security_event("memory_exported", "memory_export", {
+        "total": plan.total,
+        "fingerprint": plan.fingerprint,
+        "domains": data.selection.domains,
+        "include_projects": data.selection.include_projects,
+        "exclude_projects": data.selection.exclude_projects,
+        "strip_provenance": data.selection.strip_provenance,
+        "anonymize_paths": data.selection.anonymize_paths,
+        "warnings_acknowledged": len(plan.warnings),
+        "saved_to": saved_to,
+    })
+    if saved_to:
+        return {"path": saved_to, "filename": os.path.basename(saved_to),
+                "total": plan.total, "fingerprint": plan.fingerprint}
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Ziya-Export-Fingerprint": plan.fingerprint,
+            "X-Ziya-Export-Count": str(plan.total),
+        },
+    )
+
+
+# -- Import ------------------------------------------------------------------
+
+# Merge another user's bundle into this store.  Same shape as the export:
+# preview (dispositions + two fingerprints), then import echoing both, so
+# the merge can never differ from what the user looked at.  Selection and
+# merge logic live in app/utils/memory_import.py.
+
+class MemoryImportPreviewRequest(BaseModel):
+    bundle: dict
+    options: ImportOptions = Field(default_factory=ImportOptions)
+
+
+class MemoryImportRequest(BaseModel):
+    bundle: dict
+    options: ImportOptions = Field(default_factory=ImportOptions)
+    bundle_fingerprint: str = Field(..., min_length=8, max_length=64)
+    store_fingerprint: str = Field(..., min_length=8, max_length=64)
+    source: Optional[str] = Field(None, max_length=255,
+                                  description="File name, recorded on each memory.")
+
+
+def _load_bundle_or_422(obj: dict) -> dict:
+    from app.utils.memory_import import load_bundle
+    try:
+        return load_bundle(obj)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.post("/api/v1/memory/import/preview")
+def memory_import_preview(data: MemoryImportPreviewRequest):
+    """Classify every memory in the bundle against this store without
+    writing: new / identical / duplicate_content / collision_*, the
+    mind-map nodes that would be created or merged, and the fingerprints
+    the import call must echo."""
+    from app.storage.memory import get_memory_storage
+    from app.utils.memory_import import plan_import, preview_rows
+    bundle = _load_bundle_or_422(data.bundle)
+    plan = plan_import(get_memory_storage(), bundle, data.options)
+    return {
+        **plan.model_dump(exclude={"dispositions", "id_map"}),
+        "total": len(bundle["memories"]),
+        "exported_by": bundle.get("exported_by"),
+        "exported_at": bundle.get("exported_at"),
+        "sample": preview_rows(bundle, plan, limit=50),
+    }
+
+
+@router.post("/api/v1/memory/import")
+def memory_import(data: MemoryImportRequest):
+    """Apply a previewed import.
+
+    409 when the bundle or the store no longer matches the preview's
+    fingerprints; the merge is otherwise exactly the previewed plan.
+    """
+    from app.storage.memory import get_memory_storage
+    from app.utils.memory_import import apply_import, plan_import
+    from app.utils.tool_audit_log import log_security_event
+    bundle = _load_bundle_or_422(data.bundle)
+    store = get_memory_storage()
+    plan = plan_import(store, bundle, data.options)
+    if (plan.bundle_fingerprint != data.bundle_fingerprint
+            or plan.store_fingerprint != data.store_fingerprint):
+        log_security_event("memory_import_refused", "memory_import", {
+            "reason": "fingerprint_mismatch", "total": len(bundle["memories"])})
+        raise HTTPException(
+            status_code=409,
+            detail="The bundle or the memory store changed since the preview. "
+                   "Re-run the preview and check the result before importing.")
+    try:
+        result = apply_import(store, bundle, plan, data.options, source=data.source)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    log_security_event("memory_imported", "memory_import", {
+        "imported": result["imported"],
+        "counts": result["counts"],
+        "exported_by": bundle.get("exported_by"),
+        "bundle_fingerprint": plan.bundle_fingerprint,
+        "on_collision": data.options.on_collision,
+        "source": data.source,
+    })
+    return result

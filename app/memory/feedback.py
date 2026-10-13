@@ -210,8 +210,8 @@ def _resolve_use_threshold(explicit: Optional[float] = None) -> float:
 
 
 def _stats_file():
-    from app.utils.paths import get_ziya_home
-    return get_ziya_home() / "memory" / "feedback_stats.jsonl"
+    from app.utils.paths import get_memory_dir
+    return get_memory_dir() / "feedback_stats.jsonl"
 
 
 def _record_feedback_stats(rows: List[Dict[str, Any]]) -> None:
@@ -221,6 +221,9 @@ def _record_feedback_stats(rows: List[Dict[str, Any]]) -> None:
     memory content.  Best-effort -- never raises into the feedback path.
     """
     if not rows:
+        return
+    from app.utils.paths import memory_writes_allowed
+    if not memory_writes_allowed():
         return
     try:
         path = _stats_file()
