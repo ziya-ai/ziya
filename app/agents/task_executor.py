@@ -25,6 +25,7 @@ Scope handling:
 import logging
 import os
 import time
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 

@@ -328,6 +328,30 @@ class _StdoutSink:
             idx = event.get("index")
             if idx is not None:
                 print(_c("90", f"  ↻ iteration {idx}"))
+        elif etype == "task_hold":
+            # A tool is parked on the consent ledger.  Say so, and where the
+            # request lives, so a blocked run is never mistaken for a hang:
+            # the sweep run cli-695c6e36c9f8 waited four hours on a
+            # ``git commit`` approval with nothing on the terminal.
+            self._break_text()
+            what = f"{event.get('tool') or 'tool'} {event.get('op') or ''}".strip()
+            if event.get("state") == "answered":
+                ans = (event.get("answer") or {}).get("decision") or "answered"
+                print(_c("33", f"    ⏵ approval for {what}: {ans}"))
+            else:
+                print(_c("33", f"    ⏸ waiting for approval: {what}"))
+                print(_c("90", f"      request {event.get('request_id') or '?'} "
+                               f"(ledger: ~/.ziya/consents). Answer it in the GUI "
+                               f"or stop the run; nothing here can approve it."))
+        elif etype in ("ask_opened", "ask_answered"):
+            # The human-in-the-loop Ask block — the same situation, one layer
+            # up: the run is held on a question only a person can answer.
+            self._break_text()
+            if etype == "ask_opened":
+                print(_c("33", f"    ⏸ waiting for an answer: "
+                               f"{(event.get('question') or '')[:120]}"))
+            else:
+                print(_c("33", "    ⏵ answer received"))
 
 
 def _iter_task_blocks(block, ancestors=()):

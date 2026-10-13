@@ -93,12 +93,16 @@ def _seed_stuck_run(storage: TaskRunStorage) -> tuple[str, str, str]:
     run = storage.create(TaskRunCreate(card_id="card-x"))
     storage.update_status(run.id, "running")
     storage.set_block_state(run.id, TaskRunBlockState(
+        # Realistic epoch-ms.  EpochMs treats any value below 1e11 as
+        # seconds and multiplies it on EVERY validation, so tiny fake
+        # values compound once per rewrite and the more-often-rewritten
+        # group would end up "later" than the leaf.
         block_id="b-group", block_type="group", status="running",
-        started_at=1000,
+        started_at=1_790_000_000_000,
     ))
     storage.set_block_state(run.id, TaskRunBlockState(
         block_id="b-leaf", block_type="task", status="running",
-        started_at=2000,
+        started_at=1_790_000_001_000,
     ))
     return run.id, "b-group", "b-leaf"
 
@@ -228,6 +232,11 @@ class TestForceCancelEndpoint:
 class _HangingExecutor:
     """Streams one line of progress, then never yields again.  This is
     the shape of the stuck runs on disk: a model note, then silence."""
+    # Read by execute_task_block for the run UI's model facts; the real
+    # StreamingToolExecutor always has them.
+    model_config = {"name": "fake", "token_limit": 100_000}
+    model_id = "fake-id"
+    endpoint = "fake-not-bedrock"
 
     def __init__(self, *args, **kwargs):
         pass

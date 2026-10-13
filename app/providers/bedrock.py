@@ -518,11 +518,17 @@ class BedrockProvider(LLMProvider):
         # so it is visible, attributable to the service, and retried.
         _parsed_events = 0
         _terminated = False
-        async for event in self._parse_stream(response, config):
-            _parsed_events += 1
-            if isinstance(event, (StreamEnd, ErrorEvent)):
-                _terminated = True
-            yield event
+        # aclosing: when the consumer closes THIS generator (task_executor
+        # and the CLI break on StreamEnd), the parser is closed in the same
+        # task, so its body-closing finally runs now rather than whenever
+        # the asyncgen GC hook schedules it.
+        from contextlib import aclosing as _aclosing
+        async with _aclosing(self._parse_stream(response, config)) as _events:
+            async for event in _events:
+                _parsed_events += 1
+                if isinstance(event, (StreamEnd, ErrorEvent)):
+                    _terminated = True
+                yield event
 
         if not _terminated:
             _req_id = ""
@@ -910,6 +916,46 @@ class BedrockProvider(LLMProvider):
     # ------------------------------------------------------------------
 
     async def _parse_stream(
+        self,
+        response: Any,
+        config: ProviderConfig,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Parse the stream, and close the HTTP body however parsing ends.
+
+        After ``message_stop`` the parser yields StreamEnd and stays
+        suspended inside its read loop (the ``event is None`` exit needs one
+        more read that no consumer makes).  A consumer that stops there and
+        closes the generator throws GeneratorExit at that yield; the frame
+        unwinds with the body still open past the last event, and the
+        botocore/urllib3 iterators are finalized un-drained.  urllib3's
+        ``_error_catcher`` then takes its not-clean-exit branch and calls
+        ``_original_response.close()`` on a response whose socket file is
+        already gone -- printed to stderr as
+        ``Exception ignored in: <generator object HTTPResponse.stream>`` /
+        ``ValueError: I/O operation on closed file``, once per model call,
+        in the middle of the sweep's terminal output.
+
+        Closing the body FIRST marks the http.client response closed, so
+        urllib3's later close is a no-op -- the same ordering the
+        CancelledError branch inside the parser already uses.  Done here, in
+        a wrapper, so the parser's 370-line loop body is not re-indented.
+        """
+        stream_body = response["body"]
+        inner = self._parse_stream_events(response, config)
+        try:
+            async for event in inner:
+                yield event
+        finally:
+            try:
+                stream_body.close()
+            except Exception:  # noqa: BLE001 -- may already be closed
+                pass
+            try:
+                await inner.aclose()
+            except Exception as exc:  # noqa: BLE001 -- cleanup must not mask the stream's outcome
+                logger.debug(f"BedrockProvider: parser aclose raised: {exc}")
+
+    async def _parse_stream_events(
         self,
         response: Any,
         config: ProviderConfig,
