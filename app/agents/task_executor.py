@@ -332,6 +332,32 @@ def is_failure_result(result: object) -> bool:
     return any(marker in result for marker in FAILURE_RESULT_MARKERS)
 
 
+def resolve_model_used(executor: Any) -> Dict[str, Any]:
+    """Model facts a task block actually ran on.
+
+    Emitted on ``task_started`` and recorded on the Artifact and each
+    IterationSummary: a tier resolves per endpoint, and an inheriting
+    block's model is only known here.  ``context_limit`` mirrors the
+    effective_limit computation in StreamingToolExecutor._handle_usage_event
+    so the recorded ceiling is the one context notices were measured against.
+
+    Purely diagnostic: an executor missing any attribute yields None for
+    that field rather than failing the run.
+    """
+    mc = getattr(executor, "model_config", None) or {}
+    base_limit = mc.get("token_limit")
+    model_id = getattr(executor, "model_id", None)
+    return {
+        "model": mc.get("name"),
+        "model_id": str(model_id) if model_id else None,
+        "endpoint": getattr(executor, "endpoint", None),
+        "context_limit": (
+            mc.get("extended_context_limit", base_limit)
+            if mc.get("supports_extended_context") else base_limit
+        ),
+    }
+
+
 async def execute_task_block(
     block: Block,
     project_root: Optional[str] = None,
@@ -723,23 +749,8 @@ async def execute_task_block(
         model_override=(scope_model_name or scope_model_tier) if not scope_model_id_override else None,
         endpoint_override=scope_model_endpoint,
     )
-    # Resolved model facts for this task.  Emitted on ``task_started`` and
-    # recorded on the Artifact so the run UI can show which model a block
-    # actually ran on — a tier resolves per endpoint, and an inheriting
-    # block's model is only known here.  ``context_limit`` mirrors the
-    # effective_limit computation in StreamingToolExecutor._handle_usage_event
-    # so the recorded ceiling is the one context notices were measured against.
-    _mc = executor.model_config or {}
-    _base_limit = _mc.get("token_limit")
-    model_used = {
-        "model": _mc.get("name"),
-        "model_id": str(executor.model_id) if executor.model_id else None,
-        "endpoint": executor.endpoint,
-        "context_limit": (
-            _mc.get("extended_context_limit", _base_limit)
-            if _mc.get("supports_extended_context") else _base_limit
-        ),
-    }
+    # Resolved model facts for this task (see resolve_model_used).
+    model_used = resolve_model_used(executor)
 
     # Resolve which tools this task may call.  We do NOT filter here and
     # hand the result to the executor: ``stream_with_tools`` re-derives its
