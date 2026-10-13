@@ -1370,6 +1370,11 @@ async def execute_task_block(
     self_assessment = None
     assessment_failed = False
     assessment_signature = None
+    # Set by the empty_summary / truncated_summary guards below.  Lets the
+    # contract-satisfied override further down tell "failed only because
+    # the model said partial" from "failed because the response never
+    # reached its end" — the latter must stand even with outputs present.
+    _executor_imposed_failure = False
     try:
         from app.utils.completion_check import (
             parse_self_assessment, is_failure, signature_for,
@@ -1415,6 +1420,7 @@ async def execute_task_block(
         )
         assessment_failed = True
         assessment_signature = assessment_signature or "empty_summary"
+        _executor_imposed_failure = True
     # Narrower sibling of the empty_summary guard above, covering the case
     # that guard cannot see: a NON-empty transcript that stops at a tool
     # boundary because the stream ended before the model delivered a closing
@@ -1444,6 +1450,65 @@ async def execute_task_block(
         )
         assessment_failed = True
         assessment_signature = assessment_signature or "truncated_summary"
+        _executor_imposed_failure = True
+
+    # Required contracted outputs still missing after the correction turn.
+    # Checked against the recorded parts, which hold only parts that passed
+    # emit-time validation.  The block's on_failure then governs, unchanged.
+    _missing_outputs = missing_required(contracts, emitted_outputs) if contracts else []
+    if _missing_outputs:
+        _names = [c.name for c in _missing_outputs]
+        decisions.append(
+            "output_contract: required output(s) not produced after one "
+            f"correction turn: {', '.join(_names)}"
+        )
+        assessment_failed = True
+        assessment_signature = "output_contract:" + ",".join(_names)
+    elif (
+        assessment_failed and not _executor_imposed_failure
+        and (self_assessment or {}).get("objective_met") == "partial"
+        and any(c.required for c in contracts.values())
+    ):
+        # Contract-satisfied overrides ``partial``.  The verdict exists to
+        # catch a task that abandoned its goal mid-run; a required output
+        # contract tests exactly that, directly — a task that abandoned
+        # mid-run does not have every required output present and
+        # validating.  When it does, the self-report is the weaker of the
+        # two pieces of evidence, so the task is recorded ok and the
+        # verdict is kept as a visible warning (decisions, and
+        # ``self_assessment`` on the artifact and task_finished event).
+        # Only ``partial``: a model that says ``false`` with every output
+        # present is contradicting itself, and that stays a failure.
+        # No-contract tasks are unchanged — there the verdict is the only
+        # evidence.
+        _rationale = (self_assessment.get("rationale") or "").strip()
+        decisions.append(
+            "self_assessment: objective_met=partial, but every required "
+            "contracted output is present and valid — recorded as ok; the "
+            "verdict is kept as a warning"
+            + (f" ({_rationale})" if _rationale else "")
+        )
+        logger.info(
+            f"📋 TASK_EXEC: {block.name!r} partial verdict overridden by "
+            f"satisfied output contract"
+        )
+        assessment_failed = False
+        assessment_signature = None
+
+    # Claims this block recorded (tool or shell), as one data part the run
+    # inspector shows alongside emitted outputs.  ``since`` keeps a block
+    # re-run inside a loop from listing an earlier pass's claims.
+    try:
+        from app.utils.evidence.service import claims_recorded
+        _claims = claims_recorded(project_root or "", run_id=run_id or "",
+                                  block_id=block.id or "", since=ledger_since)
+        if _claims:
+            emitted_outputs = list(emitted_outputs) + [{
+                "part_type": "data", "label": "Evidence ledger claims",
+                "data": {"ledger_claims": _claims},
+            }]
+    except Exception as e:  # noqa: BLE001 -- listing claims must never fail a task
+        logger.debug("ledger_claims listing failed: %s", e)
 
     from app.utils.artifact_summary import truncate_summary
     artifact = Artifact(
