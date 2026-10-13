@@ -45,7 +45,7 @@ The skill is saved as a custom skill and can be toggled on immediately.
 
 ### Importing from SKILL.md
 
-Click **Import SKILL.md** to load a skill from an [agentskills.io](https://agentskills.io/specification) format file. The file must have YAML frontmatter with `name` and `description` fields, followed by the prompt body.
+Click **Import SKILL.md** to load a skill from an [agentskills.io](https://agentskills.io/specification) format file. The file must have YAML frontmatter with `name` and `description` fields, followed by the prompt body. Values may span several lines: indented continuation lines, `description: |` (line breaks kept) and `description: >` (lines joined) are all read in full.
 
 Example:
 
