@@ -9,7 +9,7 @@
  * - Health view: stale memories, oversized nodes, orphans, maintenance
  */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Modal, Input, Button, Tag, Tooltip, message, Tabs, Badge, Empty, Popconfirm, Select, Alert } from 'antd';
+import { Modal, Input, Button, Tag, Tooltip, message, Tabs, Badge, Empty, Popconfirm, Select, Alert, Segmented } from 'antd';
 import {
   SearchOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined,
   EditOutlined, ThunderboltOutlined, ReloadOutlined, StarFilled,
@@ -17,6 +17,8 @@ import {
 import { useTheme } from '../context/ThemeContext'; 
 import * as api from '../api/memoryApi';
 import type { MemoryItem, MemoryProposal, MindMapNode, MemoryStatus, ReviewSummary } from '../api/memoryApi';
+import MemoryExportPanel from './MemoryExportPanel';
+import MemoryImportPanel from './MemoryImportPanel';
 import { toLayoutPx } from '../utils/uiScale';
 
 const { LAYER_COLORS, LAYER_LABELS, LAYER_ICONS } = api;
@@ -622,6 +624,7 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
   const [editingMem, setEditingMem] = useState<MemoryItem | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [transferMode, setTransferMode] = useState<'export' | 'import'>('export');
   const [filterProject, setFilterProject] = useState<string | null>(null);
   const [filterSpecial, setFilterSpecial] = useState<'all' | 'synthesis' | 'contested'>('all');
   const [history, setHistory] = useState<api.OrganizeHistoryRecord[]>([]);
@@ -1220,6 +1223,24 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
           )}
         </div>
       ),
+    },
+    {
+      key: 'transfer',
+      label: '📤 Export / Import',
+      // Panels mount only while the tab is active so their preview
+      // requests don't fire for users who never open it.
+      children: activeTab === 'transfer' ? (
+        <div style={{ paddingTop: 8 }}>
+          <Segmented value={transferMode} onChange={v => setTransferMode(v as 'export' | 'import')}
+            options={[
+              { label: '📤 Export for another user', value: 'export' },
+              { label: '📥 Import a bundle', value: 'import' },
+            ]} />
+          {transferMode === 'export'
+            ? <MemoryExportPanel isDarkMode={isDarkMode} />
+            : <MemoryImportPanel isDarkMode={isDarkMode} onImported={loadData} />}
+        </div>
+      ) : null,
     },
   ];
 

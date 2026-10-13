@@ -118,7 +118,7 @@ def ev_save(t, content, project="/w/ziya-app", chat="c-save"):
                          source=f"a:{t}", payload={"content": content, "tags": ["t"], "layer": "domain_context"})
 
 
-def ev_propose(t, content, project="/w/KuiperEAR-x", chat="c-prop"):
+def ev_propose(t, content, project="/w/ProjB-x", chat="c-prop"):
     return E.ReplayEvent(t=t, kind="propose", chat_id=chat, project_id="p", project_path=project,
                          source=f"a:{t}", payload={"content": content, "tags": ["k"], "layer": "lexicon"})
 
@@ -159,7 +159,7 @@ def _transitions(env, runname):
 
 def test_sandbox_redirects_seams_and_replayed_events_reach_sandbox_proposals(env):
     before = S.hash_tree(env["home"] / "memory")
-    evs = [ev_propose(T0, "EAR means Export Administration Regulations in Kuiper docs."),
+    evs = [ev_propose(T0, "SLA means service level agreement in the billing docs."),
            ev_extract(T0 + MIN, REF_HISTORY, chat="c-ref")]
     out = run(cfg(env, "seam", evs))
     assert out["status"] == "done"
@@ -174,7 +174,7 @@ def test_sandbox_redirects_seams_and_replayed_events_reach_sandbox_proposals(env
     # the proposal carries the conversation and project the event came from
     kp = [p for p in props.list_all() if "Export" in p["content"]][0]
     assert kp["conversation_id"] == "c-prop"
-    assert kp["scope"]["project_paths"] == ["/w/KuiperEAR-x"]
+    assert kp["scope"]["project_paths"] == ["/w/ProjB-x"]
 
 
 def test_write_guard_refuses_and_aborts(env):
@@ -303,7 +303,7 @@ def _determinism_events():
     evs += [ev_extract(T0 + 2 * HOUR + i * 10 * MIN, LONG_HISTORY + [{"role": "human", "content": f"turn {i} more detail"}],
                        reply="PostgreSQL 15 is the orders database.", chat=f"c-long-{i % 2}", idx=i)
             for i in range(4)]
-    evs.append(ev_propose(T0 + 3 * HOUR, "qos means quality of service in the Kuiper ground stack.",
+    evs.append(ev_propose(T0 + 3 * HOUR, "qos means quality of service in the billing stack.",
                           project="/w/qos"))
     evs.append(ev_extract(T0 + 9 * HOUR, REF_HISTORY, chat="c-late"))
     return evs
@@ -464,7 +464,7 @@ def test_metrics_scorecard_from_run(env):
     sc = json.loads((env["tmp"] / "runs" / "met" / "scorecard.json").read_text())["final"]
     assert sc["retention"]["ever_active"] >= 6
     assert sc["retention"]["lost_now_by_cause"].get("cleanup_remove", 0) >= 1
-    assert "kuiper" in sc["fairness"]["by_group"] or "ziya" in sc["fairness"]["by_group"]
+    assert "ziya" in sc["fairness"]["by_group"]
     assert sc["structure"]["active"] == sc["retention"]["active"]
     assert sc["volume"]["extract_events"] == 5
     assert (env["tmp"] / "runs" / "met" / "weekly.jsonl").exists()

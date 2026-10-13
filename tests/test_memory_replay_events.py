@@ -48,12 +48,12 @@ def home(tmp_path, monkeypatch):
 def test_audit_events_resolve_conversation_restore_truncation_and_skip_failures(home):
     h, full = home
     st = E.AuditStats()
-    evs = E.audit_events(str(h), E.chat_index(str(h)), {"p1": ("/w/KuiperEAR-a", "Kuiper A")}, stats=st)
+    evs = E.audit_events(str(h), E.chat_index(str(h)), {"p1": ("/w/ProjB-a", "Project B")}, stats=st)
     assert [e.kind for e in evs] == ["propose", "save"]
     assert evs[0].payload["content"] == full                   # restored from the real store
     assert evs[0].payload["tags"] == ["a", "b"]
     assert evs[1].chat_id == "abcdef123456-7890"               # resolved from the 12-char prefix
-    assert evs[1].project_path == "/w/KuiperEAR-a"
+    assert evs[1].project_path == "/w/ProjB-a"
     assert evs[1].payload["tags"] == ["x", "y"]
     assert st.as_dict() == {"seen": 4, "used": 2, "skipped_status": 1, "unresolved_conversation": 1,
                             "truncated": 1, "restored": 1, "unrestored": 0}
@@ -67,18 +67,20 @@ def test_merge_orders_tool_calls_before_the_reply_at_the_same_ms():
     assert [e.kind + e.chat_id for e in E.merge([a], [b, c])] == ["extractd", "proposec", "extractc"]
 
 
-def test_groups_are_reporting_only_buckets():
-    assert metrics.group_of("KuiperEAR-ground") == "kuiper"
-    assert metrics.group_of("qos") == "kuiper"
+def test_groups_are_reporting_only_buckets(monkeypatch):
+    monkeypatch.setenv("ZIYA_REPLAY_GROUPS", "projb=ProjB,tools")
+    assert metrics.group_of("ProjB-ground") == "projb"
+    assert metrics.group_of("tools") == "projb"
     assert metrics.group_of("ziya-0.4.0.1") == "ziya"
     assert metrics.group_of("ZiyaInternal") == "ziya"
     assert metrics.group_of("dotfiles") == "other"
     assert metrics.group_of(None) == "other"
 
 
-def test_structure_snapshot_counts():
+def test_structure_snapshot_counts(monkeypatch):
+    monkeypatch.setenv("ZIYA_REPLAY_GROUPS", "projb=ProjB,tools")
     rows = [{"id": f"m{i}", "status": "active", "layer": "lexicon",
-             "scope": {"project_paths": ["/w/ziya-x" if i < 3 else "/w/qos"]}} for i in range(5)]
+             "scope": {"project_paths": ["/w/ziya-x" if i < 3 else "/w/tools"]}} for i in range(5)]
     rows.append({"id": "m9", "status": "archived", "layer": "lexicon", "scope": {}})
     nodes = {"r": {"id": "r", "parent": None, "tags": ["a", "b", "c"], "memory_refs": ["m0", "m1", "m3"]},
              "c": {"id": "c", "parent": "r", "tags": [], "memory_refs": ["m2"]}}
@@ -86,7 +88,7 @@ def test_structure_snapshot_counts():
     assert (s["active"], s["archived"], s["nodes"], s["roots"], s["max_depth"]) == (5, 1, 2, 1, 2)
     assert s["largest_node_share"] == 3 / 5 and s["max_root_tags"] == 3
     assert s["orphan_rate"] == 1 / 5
-    assert s["active_by_group"] == {"ziya": 3, "kuiper": 2}
+    assert s["active_by_group"] == {"ziya": 3, "projb": 2}
     assert 0.9 < s["node_mix_entropy_mean"] < 0.93                 # 2:1 mix in the root
 
 
@@ -101,6 +103,6 @@ def test_relearn_counts_only_proposals_after_the_loss(tmp_path, monkeypatch):
     log.append({"t": 300, "id": "prop_b", "kind": "proposal", "new": True, "ev": 5,
                 "content": "orders service stores everything in postgresql fifteen (logical replication)"})
     log.append({"t": 400, "id": "prop_c", "kind": "proposal", "new": True, "ev": 6,
-                "content": "kuiper ground stations use ka band"})
+                "content": "projb edge nodes use the fast path"})
     r = metrics.Run(tmp_path).relearn()
     assert r == {"new_proposals": 3, "relearned": 1, "relearn_rate": round(1 / 3, 4), "lost_texts": 1}

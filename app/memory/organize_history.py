@@ -23,8 +23,8 @@ _HISTORY_CAP = 50
 
 
 def _history_file() -> Path:
-    from app.utils.paths import get_ziya_home
-    return get_ziya_home() / "memory" / "organize_history.json"
+    from app.utils.paths import get_memory_dir
+    return get_memory_dir() / "organize_history.json"
 
 
 def append_organize_result(result: Dict[str, Any]) -> None:
@@ -33,6 +33,9 @@ def append_organize_result(result: Dict[str, Any]) -> None:
     Strips heavy / repetitive fields to keep the log compact and useful
     for the UI.  Never raises.
     """
+    from app.utils.paths import memory_writes_allowed
+    if not memory_writes_allowed():
+        return
     try:
         path = _history_file()
         path.parent.mkdir(parents=True, exist_ok=True)

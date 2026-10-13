@@ -335,7 +335,7 @@ async def test_seam_corroboration_raises_confidence_on_fast_track(tmp_path):
     corroboration lands with higher importance than the uncorroborated case."""
     store, proposals = _sandbox(tmp_path)
     p = MemoryProposal(
-        content="The Versal Gen2 NIC exposes VNP4 match-action tables to DPDK.",
+        content="The Gen2 smart NIC exposes match-action tables to DPDK.",
         layer="architecture", tags=["arch"], conversation_id="conv-1",
         quality=0.85,
     )

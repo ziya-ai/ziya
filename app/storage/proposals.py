@@ -77,8 +77,8 @@ class ProposalsStore:
 
     def __init__(self, memory_dir: Optional[Path] = None) -> None:
         if memory_dir is None:
-            from app.utils.paths import get_ziya_home
-            memory_dir = get_ziya_home() / "memory"
+            from app.utils.paths import get_memory_dir
+            memory_dir = get_memory_dir()
         self._dir = Path(memory_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
@@ -109,6 +109,10 @@ class ProposalsStore:
             return []
 
     def _write_lines(self, events: Iterable[Dict[str, Any]]) -> None:
+        from app.utils.paths import memory_writes_allowed
+        if not memory_writes_allowed():
+            self._cache = None
+            return
         plaintext = ("\n".join(json.dumps(e, ensure_ascii=False) for e in events)
                      + "\n").encode("utf-8")
         temp = self._path.with_suffix(".jsonl.tmp")
