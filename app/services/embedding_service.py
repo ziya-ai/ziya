@@ -414,22 +414,37 @@ def remove_embedding(memory_id: str):
 
 async def backfill_embeddings(memory_ids_and_content: List[Tuple[str, str]],
                               progress_callback=None) -> int:
-    """Embed all memories that lack vectors.  Returns count embedded."""
+    """Embed all memories that lack vectors.  Returns count embedded.
+
+    Each ``embed_text`` is a synchronous Bedrock HTTP round-trip.  This
+    coroutine runs on the server's event loop at startup
+    (``_initialize_memory_background``), so calling the provider inline
+    parked the loop in ``ssl.read`` once per missing vector -- thousands of
+    times on a mature install -- and no request was served meanwhile (the
+    startup "limbo": empty sidebar, config dialogs that never open).  Each
+    batch now runs in a worker thread; the loop only does the bookkeeping.
+    """
     import asyncio
-    provider = get_embedding_provider()
+    provider = await asyncio.to_thread(get_embedding_provider)
     if isinstance(provider, NoopProvider):
         return 0
     cache = get_embedding_cache()
     embedded = 0
     total = len(memory_ids_and_content)
-    for i in range(0, total, BACKFILL_BATCH_SIZE):
-        batch = memory_ids_and_content[i:i + BACKFILL_BATCH_SIZE]
+
+    def _embed_batch(batch):
+        n = 0
         for mid, content in batch:
             vec = provider.embed_text(content)
             if vec is not None:
                 cache.put(mid, vec)
-                embedded += 1
+                n += 1
         cache.flush()
+        return n
+
+    for i in range(0, total, BACKFILL_BATCH_SIZE):
+        batch = memory_ids_and_content[i:i + BACKFILL_BATCH_SIZE]
+        embedded += await asyncio.to_thread(_embed_batch, batch)
         if progress_callback:
             progress_callback(min(i + BACKFILL_BATCH_SIZE, total), total)
         if i + BACKFILL_BATCH_SIZE < total:
