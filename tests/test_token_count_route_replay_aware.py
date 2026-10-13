@@ -40,7 +40,9 @@ WITHOUT_IMAGE = f"{PROSE_BEFORE}\n\n{INLINE_IMAGE_NOTE}\n\n{FENCE}\n\n{PROSE_AFT
 
 def _count(messages):
     req = TokenCountRequest(messages=[TokenCountMessage(**m) for m in messages])
-    return asyncio.run(count_tokens(req))["token_count"]
+    # count_tokens is plain ``def`` (runs on Starlette's threadpool; see
+    # test_token_routes_not_event_loop_blocking), so call it directly.
+    return count_tokens(req)["token_count"]
 
 
 def test_assistant_inline_image_is_not_counted_as_text():
