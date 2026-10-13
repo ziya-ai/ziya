@@ -147,6 +147,31 @@ def elide_inline_images(text: str) -> str:
         return text
     return _INLINE_IMAGE_RE.sub(INLINE_IMAGE_NOTE, text)
 
+
+# A Context Size Notice persisted into an assistant message by older builds
+# (the streaming executor used to yield it as visible text).  Its numbers
+# describe one request of one past turn; replayed, the model reads them as
+# the current size and repeats "~86% of the limit" turns later.  The live
+# notice is now model-only and never persisted, so this only cleans history.
+#
+# The iteration-budget warnings were streamed the same way and go stale the
+# same way ("2 iterations remaining" in a reply from three turns ago), so
+# they are stripped too.  Each is a single paragraph on one line.
+_NOTICE_HEADERS = (
+    "Context Size Notice", "Iteration Budget", "Iteration Limit Notice",
+    "Iteration Limit Warning", "FINAL ITERATION",
+)
+_CONTEXT_NOTICE_RE = re.compile(
+    r'\n*(?:⚠️|🚨) \*\*(?:' + "|".join(map(re.escape, _NOTICE_HEADERS))
+    + r'):\*\*[^\n]*(?:\n|$)\n*')
+
+
+def strip_context_notices(text: str) -> str:
+    """Remove persisted budget/size notice paragraphs from assistant text."""
+    if not text or not any(h in text for h in _NOTICE_HEADERS):
+        return text
+    return _CONTEXT_NOTICE_RE.sub("\n\n", text)
+
 # --- Redundancy detection -------------------------------------------------
 
 # Tools whose body is a file's contents and whose header names the path.
@@ -283,7 +308,7 @@ def rewrite_assistant_text(text: str,
     # Inline image bytes go first: the tag sits OUTSIDE the tool block, so
     # block matching never sees it, and it must go whether or not the
     # message has any block at all.
-    text = elide_inline_images(text)
+    text = strip_context_notices(elide_inline_images(text))
     has_blocks = "tool:" in text or "TOOL_BLOCK_START" in text
     if (not has_blocks and "TOOL_MARKER" not in text
             and not _LOOKALIKE_RE.search(text)):
