@@ -4,7 +4,7 @@
  */
 
 import type {
-  TaskCard, TaskCardCreate, TaskCardUpdate,
+  Block, TaskCard, TaskCardCreate, TaskCardUpdate,
 } from '../types/task_card';
 
 const base = (projectId: string): string =>
@@ -63,6 +63,32 @@ export const taskCardApi = {
     const qs = asTemplate ? '?as_template=true' : '';
     return json(await fetch(`${base(projectId)}/${cardId}/duplicate${qs}`, {
       method: 'POST',
+    }));
+  },
+
+  /** Portable export of one card, or of the whole deck when cardIds is
+   *  omitted.  The envelope is what `importCards` accepts; deck-local
+   *  fields (id, run history, version) are stripped server-side. */
+  async exportCards(
+    projectId: string, cardIds?: string[],
+  ): Promise<TaskCardExport> {
+    const qs = cardIds && cardIds.length > 0
+      ? `?ids=${encodeURIComponent(cardIds.join(','))}` : '';
+    return json(await fetch(`${base(projectId)}/export${qs}`));
+  },
+
+  /** Import an export envelope (or a bare card / list of cards) as NEW
+   *  cards.  Block ids are reminted server-side, so imported escalation is
+   *  unsigned until signed in this deck.  Nothing is created if any card
+   *  fails validation.  `warnings` are advisory (name collisions,
+   *  validator findings). */
+  async importCards(
+    projectId: string, payload: unknown,
+  ): Promise<TaskCardImportResult> {
+    return json(await fetch(`${base(projectId)}/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     }));
   },
 
@@ -135,6 +161,71 @@ export const taskCardApi = {
     return json(await fetch(`${base(projectId)}/lessons-summary`));
   },
 };
+
+/** Mirrors app/storage/task_cards.py::build_export. */
+export interface TaskCardExport {
+  format: 'ziya-task-cards';
+  format_version: number;
+  exported_at: number;
+  /** Reader-facing notes on the format (block vocabulary, sibling(), scope). */
+  about: string[];
+  /** `project:` output-contract schemas the cards reference, keyed by id
+   *  and restored into the importing project's `.ziya/schemas/`. */
+  schemas?: Record<string, unknown>;
+  /** TaskCard minus id / draft / source / timestamps / run_count / version,
+   *  with default-valued and null fields omitted — only name and root are
+   *  guaranteed present.  `needs` is an export-only hint derived from the
+   *  tree; `requires` is filled from it when the author declared none. */
+  cards: Array<Partial<Omit<TaskCard, 'id' | 'draft' | 'source' | 'created_at'
+    | 'updated_at' | 'last_run_at' | 'run_count' | 'version'>> & {
+      name: string;
+      root: Block;
+      needs?: {
+        tools?: string[];
+        skills?: string[];
+        mcp_servers?: string[];
+        schemas?: string[];
+        unresolved_schemas?: string[];
+        cwd?: string[];
+      };
+    }>;
+}
+
+export interface TaskCardImportResult {
+  cards: TaskCard[];
+  warnings: string[];
+  count: number;
+}
+
+/** Mirrors app/api/task_cards.py::get_schedule_state. */
+export interface ScheduleSkip {
+  at: number;
+  live_run_id: string;
+  reason: string;
+}
+export interface ScheduleLastRun {
+  run_id: string;
+  status: string;
+  created_at?: number | null;
+  completed_at?: number | null;
+  failed?: boolean | null;
+  failure_reason?: string | null;
+  held_reason?: string | null;
+  error?: string | null;
+}
+export interface ScheduleStateRecord {
+  block_id?: string;
+  next_fire_at?: number | null;
+  last_fire_at?: number | null;
+  fires_so_far?: number;
+  run_ids?: string[];
+  skips_so_far?: number;
+  last_skip_at?: number | null;
+  skips?: ScheduleSkip[];
+  deferred_since?: number | null;
+  deferred_behind_run_id?: string | null;
+  last_run?: ScheduleLastRun | null;
+}
 
 export interface CardScopeBlockStatus {
   blockId: string;

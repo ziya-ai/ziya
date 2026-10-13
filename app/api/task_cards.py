@@ -20,7 +20,7 @@ from ..models.task_card import (
 )
 from ..models.task_run import TaskRun, TaskRunCreate, TaskRunBlockState
 from ..storage.projects import ProjectStorage
-from ..storage.task_cards import TaskCardStorage
+from ..storage.task_cards import TaskCardStorage, build_export
 from ..storage.task_runs import TaskRunStorage
 from ..agents.task_executor import TaskExecutorError
 from ..agents.block_executor import (
@@ -123,12 +123,115 @@ async def get_signature_summary(project_id: str):
     return {"cardsNeedingSignature": cards, "count": len(cards)}
 
 
+def _export_filename(stem: str) -> str:
+    """A download name safe for a Content-Disposition header: one token."""
+    import re
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", stem).strip("-")
+    return f"{safe or 'task-cards'}.ziya-task-cards.json"
+
+
+def _portable_root(project_id: str) -> Optional[str]:
+    """The project directory schemas are read from / restored into.  Same
+    resolution the launch path uses: request header, else the recorded
+    project path when it exists, else None (hints degrade, nothing fails)."""
+    from ..context import get_project_root_or_none
+    from ..utils.launch_root import resolve_launch_root
+    return resolve_launch_root(project_id, get_project_root_or_none())
+
+
+@router.get("/export")
+def export_task_cards(
+    project_id: str,
+    ids: Optional[str] = Query(
+        None, description="Comma-separated card ids; omit for the whole deck"),
+):
+    """The portable export of the deck, or of the listed cards.
+
+    Drafts are excluded from a whole-deck export — they are
+    conversation-only by definition — but an explicitly listed draft id
+    IS exported, since the caller named it.
+
+    MUST be declared before ``get_task_card`` below (declaration-order
+    routing, same as the two summary routes above).
+    """
+    storage = _get_storage(project_id)
+    if ids:
+        wanted = [i.strip() for i in ids.split(",") if i.strip()]
+        cards = []
+        for cid in wanted:
+            card = storage.get(cid)
+            if not card:
+                raise HTTPException(status_code=404,
+                                    detail=f"Task card not found: {cid}")
+            cards.append(card)
+        stem = cards[0].name if len(cards) == 1 else "task-cards"
+    else:
+        cards = storage.list()
+        stem = "task-cards"
+    return JSONResponse(
+        content=build_export(cards, _portable_root(project_id)),
+        headers={"Content-Disposition":
+                 f'attachment; filename="{_export_filename(stem)}"'},
+    )
+
+
+@router.post("/import", status_code=201)
+def import_task_cards(project_id: str, payload: Any = Body(...)):
+    """Create cards from a portable export (or a bare card / list).
+
+    Nothing is written unless every entry validates (400 otherwise).
+    Returns ``{"cards": [...], "warnings": [...]}``; see
+    ``TaskCardStorage.import_cards`` for what warns.  Imported cards
+    carry NO signed approvals — their block ids are new — so an
+    escalating card shows as unsigned in the deck until signed here.
+
+    Each created card is also run through the launch preflight against
+    THIS host (tools, skills, MCP servers named in ``requires`` and every
+    scope), and anything missing is appended to ``warnings``.  The export
+    side fills ``requires`` from the tree when the author wrote none, so
+    this is where "this card wants a Jira server you do not have" is said
+    — at import, not an hour into a run.
+    """
+    project_root = _portable_root(project_id)
+    try:
+        created, warnings = _get_storage(project_id).import_cards(
+            payload, project_root=project_root)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    for card in created:
+        try:
+            from ..utils.task_card_preflight import run_preflight
+            pre = run_preflight(card, project_id=project_id, project_root=project_root)
+            if not pre.ok:
+                warnings.extend(f"{card.name!r}: {m}" for m in pre.messages())
+        except Exception as e:  # noqa: BLE001 — advisory only
+            logger.debug(f"import preflight skipped for {card.id}: {e}")
+    return {
+        "cards": [c.model_dump() for c in created],
+        "warnings": warnings,
+        "count": len(created),
+    }
+
+
 @router.get("/{card_id}", response_model=TaskCard)
-async def get_task_card(project_id: str, card_id: str):
+def get_task_card(project_id: str, card_id: str):
     card = _get_storage(project_id).get(card_id)
     if not card:
         raise HTTPException(status_code=404, detail="Task card not found")
     return card
+
+
+@router.get("/{card_id}/export")
+def export_task_card(project_id: str, card_id: str):
+    """Portable export of one card — same envelope as ``/export``."""
+    card = _get_storage(project_id).get(card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Task card not found")
+    return JSONResponse(
+        content=build_export([card], _portable_root(project_id)),
+        headers={"Content-Disposition":
+                 f'attachment; filename="{_export_filename(card.name)}"'},
+    )
 
 
 def _walk_blocks(block, ancestors=()):
