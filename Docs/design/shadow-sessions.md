@@ -65,7 +65,7 @@ e.g. `a3f21e`):
   "pid": 48213,
   "label": "ssh prod-42",
   "argv": ["ssh", "prod-42"],
-  "cwd": "/Users/dcohn/workspace/ziya",
+  "cwd": "/Users/jdoe/workspace/ziya",
   "meta": {"env": "prod", "notes": "hopped to prod-42 via bastion"},
   "started_at": "2026-06-11T00:41:03Z",
   "socket": "~/.ziya/shadow/sessions/a3f21e.sock",
