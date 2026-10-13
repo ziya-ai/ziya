@@ -80,7 +80,7 @@ def test_project_skill_user_selectable_not_in_catalog(tmp_path, monkeypatch):
     # ...but an explicit by-name lookup via get_skill_details MUST still load
     # it (with full body).  Visibility gates the auto-listed catalog, not a
     # deliberate request — otherwise a user_selectable skill is reachable
-    # only via the UI toggle, which is the atlas-metrics bug.
+    # only via the UI toggle, which is the fleet-metrics bug.
     from app.mcp.tools.skill_tools import GetSkillDetailsTool
     tool = GetSkillDetailsTool()
     result = asyncio.run(tool.execute(skill_name="user-only-skill"))
@@ -115,15 +115,15 @@ def test_project_skill_user_selectable_lookup_by_keyword(tmp_path, monkeypatch):
 
 def test_user_global_skill_user_selectable_loadable(tmp_path, monkeypatch):
     """A user-global (~/.ziya/skills) user_selectable skill — the exact
-    atlas-metrics shape — must be loadable by name via get_skill_details
+    fleet-metrics shape — must be loadable by name via get_skill_details
     even though it never appears in the model catalog."""
     ziya_home = tmp_path / "ziya_home"
-    user_skill_dir = ziya_home / "skills" / "atlas-metrics"
+    user_skill_dir = ziya_home / "skills" / "fleet-metrics"
     user_skill_dir.mkdir(parents=True)
     (user_skill_dir / "SKILL.md").write_text(
         "---\n"
-        "name: atlas-metrics\n"
-        "description: Query Kuiper Atlas telemetry.\n"
+        "name: fleet-metrics\n"
+        "description: Query fleet telemetry.\n"
         "metadata:\n"
         "  ziya-visibility: user_selectable\n"
         "---\n"
@@ -139,16 +139,16 @@ def test_user_global_skill_user_selectable_loadable(tmp_path, monkeypatch):
     from app.services.skill_discovery import discover_user_skills
     from app.services.token_service import TokenService
     user_skills = {s.name: s for s in discover_user_skills(TokenService(), load_body=False)}
-    assert "atlas-metrics" in user_skills, f"discovery missed it: {list(user_skills)}"
-    assert user_skills["atlas-metrics"].visibility == "user_selectable"
+    assert "fleet-metrics" in user_skills, f"discovery missed it: {list(user_skills)}"
+    assert user_skills["fleet-metrics"].visibility == "user_selectable"
 
     # It stays out of the model-facing catalog.
     from app.utils.skill_catalog_prompt import get_skill_catalog_section
-    assert "atlas-metrics" not in get_skill_catalog_section()
+    assert "fleet-metrics" not in get_skill_catalog_section()
 
     # But get_skill_details loads it by name with full body.
     from app.mcp.tools.skill_tools import GetSkillDetailsTool
     tool = GetSkillDetailsTool()
-    result = asyncio.run(tool.execute(skill_name="atlas-metrics"))
+    result = asyncio.run(tool.execute(skill_name="fleet-metrics"))
     assert not result.get("error"), f"user-global lookup failed: {result}"
     assert "User-global body content." in result.get("content", "")

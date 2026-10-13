@@ -207,17 +207,22 @@ def _get_include_dir_prefixes() -> list:
 
 def _get_all_readable_prefixes() -> list:
     """Return the full allowlist of absolute-path prefixes a caller may
-    read from: safe-write paths, active task-granted paths, and
+    read from: safe-write paths, active task-granted paths,
     user-approved external paths (``--include``/``ZIYA_INCLUDE_DIRS``
-    and Project Settings "Add External Path").
+    and Project Settings "Add External Path"), and user-global skill
+    directories (agentskills.io asks clients to allowlist skill dirs so
+    bundled scripts/references are readable; project skills are already
+    inside the project root).
 
     Any read-oriented tool (``file_read``, ``file_list``, the ``pdf_*``
     tools, ``context_add_file``, and future tools) should build its
     ``allowed_absolute_prefixes`` from this single function instead of
-    hand-assembling the three lists, so that a newly recognized path
+    hand-assembling the lists, so that a newly recognized path
     source only needs to be added here once.
     """
-    return _get_safe_write_paths() + _get_task_readable_prefixes() + _get_include_dir_prefixes()
+    from app.utils.skill_resources import readable_skill_dirs
+    return (_get_safe_write_paths() + _get_task_readable_prefixes()
+            + _get_include_dir_prefixes() + readable_skill_dirs())
 
 
 def _check_task_scope_write(relative_path: str, project_root: str) -> bool:

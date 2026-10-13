@@ -45,6 +45,10 @@ class Skill(BaseModel):
     hasScripts: bool = False
     hasReferences: bool = False
     hasAssets: bool = False
+    # agentskills.io bundled-resource manifest (skill directory line plus a
+    # <skill_resources> list), rendered by discovery when the body is loaded.
+    # See app/utils/skill_resources.py.
+    resourceManifest: Optional[str] = None
 
 
 class SkillCreate(BaseModel):

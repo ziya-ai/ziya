@@ -1140,7 +1140,10 @@ class DelegateManager:
                 )
                 skill = skill_storage.get(spec.skill_id)
                 if skill:
-                    skill_prompt = f"[Active Skill: {skill.name}]\n{skill.prompt}"
+                    from app.utils.skill_resources import skill_activation_body
+                    skill_prompt = (
+                        f"[Active Skill: {skill.name}]\n"
+                        f"{skill_activation_body(skill)}")
             except (ImportError, KeyError, AttributeError, OSError) as e:
                 logger.warning(f"Could not resolve skill {spec.skill_id}: {e}")
 

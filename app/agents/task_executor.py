@@ -128,23 +128,25 @@ validate_root_for_slice_c = _validate_task_block
 
 
 def _find_skill_by_name(storage, wanted: str):
-    """Find a skill by its human-readable ``name``.
+    """Find a skill by any of its spellings (app.utils.skill_match).
 
-    Case-insensitive.  ``list()`` returns body-less records for
-    discovered skills, so the match is re-fetched by its real id to
-    load the prompt body.
+    ``code_review`` (the catalog id the model is shown), ``Code Review``
+    (the display name) and ``builtin-code-review`` (the storage id) are
+    one skill; a discovered ``log-sweep`` answers to ``Log Sweep`` too.
+    ``list()`` returns body-less records for discovered skills, so the
+    match is re-fetched by its real id to load the prompt body.
     """
-    target = (wanted or "").strip().lower()
-    if not target:
+    from app.utils.skill_match import find_skill
+    if not (wanted or "").strip():
         return None
     try:
-        for s in storage.list():
-            if (s.name or "").strip().lower() == target:
-                # list() omits the body for discovered skills.
-                return storage.get(s.id) if not getattr(s, "prompt", "") else s
+        s = find_skill(wanted, storage.list())
+        if s is None:
+            return None
+        # list() omits the body for discovered skills.
+        return storage.get(s.id) if not getattr(s, "prompt", "") else s
     except Exception:  # noqa: BLE001 — a bad storage root must not abort
         return None
-    return None
 
 
 def _load_skill_prompts(
@@ -206,7 +208,9 @@ def _load_skill_prompts(
                     f"skills and discovery roots by id and by name)"
                 )
                 continue
-            prompts.append(f"[Active Skill: {skill.name}]\n{skill.prompt}")
+            from app.utils.skill_resources import skill_activation_body
+            prompts.append(
+                f"[Active Skill: {skill.name}]\n{skill_activation_body(skill)}")
     except (ImportError, OSError, AttributeError) as e:
         warnings.append(f"SkillStorage unavailable: {e}")
     return prompts, warnings
