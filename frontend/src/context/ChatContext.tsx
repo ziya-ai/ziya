@@ -503,6 +503,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
     }, []);
 
     const addStreamingConversation = useCallback((id: string) => {
+        // Mirror into the sync ref now rather than at the next commit, so a
+        // removeStreamingConversation issued in the same tick (feedback
+        // recovery, a cross-tab message) sees this add.
+        const eager = new Set(streamingConversationsRef.current);
+        eager.add(id);
+        streamingConversationsRef.current = eager;
         setStreamingConversations(prev => {
             const next = new Set(prev);
             // Update local streaming state
@@ -516,9 +522,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
         projectSync.post('streaming-state', { conversationId: id, state: 'sending' });
     }, [updateProcessingState]);
 
-    const removeStreamingConversation = useCallback((id: string) => {
+    const removeStreamingConversation = useCallback((id: string, opts?: { broadcast?: boolean }) => {
         // CRITICAL: Check if this is the CURRENT conversation
         const isCurrentConv = id === currentConversationId;
+        // false when reacting to another tab's streaming-ended: re-posting
+        // it would echo back to the owner (see handleStreamingEnded).
+        const broadcast = opts?.broadcast !== false;
+
+        // Streamed content is cleared regardless of the set guard below. A
+        // turn whose streaming mark was removed mid-flight otherwise keeps
+        // its full text in the map after completion, which the next
+        // sendPayload reads as a live stream and aborts against.
+        setStreamedContentMap(prev => {
+            if (!prev.has(id)) return prev;
+            const next = new Map(prev);
+            next.delete(id);
+            return next;
+        });
 
         // Idempotency: skip if not currently streaming.  This is the ONLY
         // guard — there used to be a 2s time-based dedup ref ahead of it, a
@@ -533,6 +553,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (!wasStreaming) {
             return;  // Already removed or never was streaming - skip
         }
+        // Same-tick duplicates (the cross-tab echo bursts) must see this
+        // removal before React commits it.
+        const eagerNext = new Set(streamingConversationsRef.current);
+        eagerNext.delete(id);
+        streamingConversationsRef.current = eagerNext;
 
         setStreamingConversations(prev => {
             const next = new Set(prev);
@@ -543,12 +568,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             next.delete(id);
 
-            return next;
-        });
-
-        setStreamedContentMap(prev => {
-            const next = new Map(prev);
-            next.delete(id);
             return next;
         });
 
@@ -566,7 +585,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return next;
         });
         // Relay to other same-project tabs so they can stop showing streaming UI
-        projectSync.post('streaming-ended', { conversationId: id });
+        if (broadcast) projectSync.post('streaming-ended', { conversationId: id });
     }, [currentConversationId]);
 
     // Conversation has a task run in flight.  Drives a distinct
@@ -4332,6 +4351,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // the initial streaming-state event (e.g., tab opened mid-stream).
             // Set.has is O(1); new Set is created only when actually needed.
             remoteStreamingIdsRef.current.add(conversationId);
+            streamingConversationsRef.current = new Set(streamingConversationsRef.current).add(conversationId);
             setStreamingConversations(prev =>
                 prev.has(conversationId) ? prev : new Set(prev).add(conversationId));
 
@@ -4368,13 +4388,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
             updateProcessingState(conversationId, state);
             if (state !== 'idle') {
                 remoteStreamingIdsRef.current.add(conversationId);
+                streamingConversationsRef.current = new Set(streamingConversationsRef.current).add(conversationId);
                 setStreamingConversations(prev => new Set(prev).add(conversationId));
             }
         };
 
         const handleStreamingEnded = (msg: any) => {
-            remoteStreamingIdsRef.current.delete(msg.conversationId);
-            removeStreamingConversation(msg.conversationId);
+            const id = msg.conversationId;
+            // Only a turn this tab is MIRRORING is released here. A turn this
+            // tab owns is ended by its own stream reader; honouring another
+            // tab's streaming-ended for it dropped the owner's streaming mark
+            // mid-turn (no Stop button, needs-response bar on an answered
+            // question, content left in streamedContentMap). The release is
+            // local-only: re-broadcasting echoed the owner's end-of-turn back
+            // to it and ping-ponged between tabs until one of them rendered.
+            if (!remoteStreamingIdsRef.current.has(id)) return;
+            remoteStreamingIdsRef.current.delete(id);
+            removeStreamingConversation(id, { broadcast: false });
         };
 
         // Answer "who is streaming X?" only when THIS tab owns the turn
