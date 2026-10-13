@@ -41,7 +41,9 @@ Age = current_counter - activity_count_at_proposal.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
@@ -423,11 +425,12 @@ def _evict_orphan_vectors(proposals) -> int:
         return 0
 
 
-async def run_lifecycle_pass() -> Dict[str, int]:
+def _run_lifecycle_pass_sync() -> Dict[str, int]:
     """Sweep all open proposals; promote or archive based on accumulated signals.
 
-    Called as a background task after each stream completion.  Returns a
-    summary dict.
+    Blocking: proposal-store I/O, one embedding call (a Bedrock round trip)
+    per promotion, prune and vector eviction.  Never call this on the event
+    loop; use ``run_lifecycle_pass``.  Returns a summary dict.
     """
     counts = {"scanned": 0, "promoted": 0, "archived": 0, "noop": 0,
               "pruned": 0, "evicted": 0}
@@ -500,3 +503,28 @@ async def run_lifecycle_pass() -> Dict[str, int]:
             f"no-op {counts['noop']}"
         )
     return counts
+
+
+# One sweep at a time per process.  While the sweep ran inline on the event
+# loop (no awaits) two passes could never interleave; on worker threads they
+# can, and two passes that both list a proposal as open both save an active
+# memory for it (_promote_proposal saves, then embeds, then marks).  A
+# waiting pass re-reads list_open after the first finishes, so it sees the
+# promotions.  Cross-process exclusion is the scheduler lock's job.
+_PASS_LOCK = threading.Lock()
+
+
+def _run_lifecycle_pass_serialized() -> Dict[str, int]:
+    with _PASS_LOCK:
+        return _run_lifecycle_pass_sync()
+
+
+async def run_lifecycle_pass() -> Dict[str, int]:
+    """Run the lifecycle sweep off the event loop, one pass at a time.
+
+    The sweep used to run inline here, and the stall watchdog caught the
+    loop parked in ``_promote_proposal`` -> ``embed_and_cache`` ->
+    ``invoke_model`` (2026-10-09).
+    tests/test_lifecycle_not_event_loop_blocking.py enforces this.
+    """
+    return await asyncio.to_thread(_run_lifecycle_pass_serialized)
