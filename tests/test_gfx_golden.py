@@ -258,8 +258,8 @@ class TestRebaseline:
         p = tmp_path / "n.png"; p.write_bytes(_diagram(shift=2))
         rec = L.golden_rebaseline(root, "mermaid", "m-1", "light", png_path=p,
                                   reason="label re-hinted after font upgrade", run="r1",
-                                  by="dcohn")
-        assert rec["trust"] == "validated" and rec["source"] == "rebaseline:dcohn"
+                                  by="alice")
+        assert rec["trust"] == "validated" and rec["source"] == "rebaseline:alice"
         assert rec["hash"] == G.pixel_hash(_diagram(shift=2))
         assert rec["history"][-1]["hash"] == G.pixel_hash(_diagram())
 
