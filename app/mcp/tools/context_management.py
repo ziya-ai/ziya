@@ -119,9 +119,17 @@ def _resolve_chat_for_request(_kwargs: Dict[str, Any]) -> Dict[str, Any]:
             return {"ok": False,
                     "error": f"Could not register project for path: {project_root}"}
 
-    storage = ChatStorage(get_project_dir(project.id))
+    # Look past this project first: a global conversation shown here is
+    # stored in its own project, and auto-vivifying a record here for it
+    # created an empty same-id shadow (no projectId) and pointed chat_index
+    # at it.  That shadow is what the 2026-10-02 handoff ran against.
+    from app.utils.chat_home import resolve_chat_home
+    home = resolve_chat_home(project.id, get_project_dir(project.id), conversation_id)
+    if home is not None:
+        _home_pid, storage, chat_data = home
+    else:
+        storage, chat_data = ChatStorage(get_project_dir(project.id)), None
     chat_file = storage._chat_file(conversation_id)
-    chat_data = storage._read_json(chat_file)
     if not chat_data:
         # Auto-vivify a minimal chat record at this exact id.  This is the
         # normal path for CLI sessions (which never call ChatStorage.create()

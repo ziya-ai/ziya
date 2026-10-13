@@ -119,6 +119,10 @@ class ChatUpdate(BaseModel):
     additionalFiles: Optional[List[str]] = None
     additionalPrompt: Optional[str] = None
     messages: Optional[List[Message]] = None
+    # Forward link from a handoff source to its continuation.  Normally
+    # written by the commit endpoint; declared here so a mis-linked source
+    # can be repaired through PUT (update() applies declared fields only).
+    handedOffTo: Optional[str] = None
 
 class ChatSummary(BaseModel):
     """Chat without messages, for list views."""
