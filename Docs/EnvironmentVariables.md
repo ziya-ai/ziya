@@ -219,6 +219,7 @@ unconditional path, a conversation the regex would have skipped.
 | `ZIYA_DISABLE_TOOL_HISTORY_REWRITE` | bool | `false` | Replay rendered tool-result blocks in assistant history verbatim instead of rewriting them into `‹tool_result›` envelopes (see ArchitectureOverview → Tool Results in Replayed History). Diagnostic only: the raw format is what teaches the model to fabricate tool output late in long conversations. Read directly from the environment, not the registry |
 | `ZIYA_DISABLE_THINKING_PASSBACK` | bool | `false` | Stop echoing signed extended-thinking blocks back inside a tool chain. Passback keeps the model's reasoning across tool round-trips instead of making it re-derive the plan each iteration; disable it to isolate a provider or gateway that rejects round-tripped thinking blocks |
 | `ZIYA_DUMP_REQUEST_PARTS` | str | — | Directory to dump the assembled system prompt, tool schemas and request params on the first request |
+| `ZIYA_STALL_DUMP` | int (seconds) | — (off) | When set, a daemon thread pings the event loop once a second; if it fails to run a callback within this threshold, or the `to_thread` executor pool stays saturated that long, one report is logged per stall episode: the trigger, the `to_thread` executor census, and every thread's stack via `sys._current_frames()` (event-loop thread tagged). In-process replacement for `py-spy dump` and `faulthandler`'s all-thread dump, both of which crashed the server on macOS. See `app/utils/stall_watchdog.py` |
 
 ## Operational
 
