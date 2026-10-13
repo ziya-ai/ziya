@@ -118,7 +118,7 @@ class TestLastAccessedEndpoint:
 
         with patch("app.api.projects.get_project_storage") as mock_storage:
             mock_storage.return_value = ProjectStorage(tmp_path)
-            result = await get_last_accessed_project()
+            result = get_last_accessed_project()
 
         assert result.id == "new"
         assert result.name == "New Project"
@@ -134,7 +134,7 @@ class TestLastAccessedEndpoint:
         with patch("app.api.projects.get_project_storage") as mock_storage, \
              patch("os.getcwd", return_value="/tmp/brand_new"):
             mock_storage.return_value = ProjectStorage(tmp_path)
-            result = await get_last_accessed_project()
+            result = get_last_accessed_project()
 
         assert result.path == str(Path("/tmp/brand_new").resolve())
 
@@ -152,7 +152,7 @@ class TestLastAccessedEndpoint:
         before = int(time.time() * 1000)
         with patch("app.api.projects.get_project_storage") as mock_storage:
             mock_storage.return_value = ProjectStorage(tmp_path)
-            result = await get_last_accessed_project()
+            result = get_last_accessed_project()
 
         # touch() should have updated lastAccessedAt to a recent timestamp
         assert result.id == "proj-1"
