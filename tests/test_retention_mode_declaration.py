@@ -14,7 +14,7 @@ importantly, the WIRING — an accessor that is correct but never called by
 app/main.py would leave every Covered Model 400ing at first invocation while
 every unit test passed.
 
-Live-verified facts this file encodes (2026-09-02, profile kuiper-ziya):
+Live-verified facts this file encodes (2026-09-02, profile team-dev):
   * Fable 5's model card reports
     ``allowed_modes: ["aws_review", "provider_data_share"]``, confirming that
     the two modes are alternatives and not a single required value.
