@@ -82,15 +82,15 @@ def test_reauthorize_route_lifts_the_gate_and_recosts(env):
     from app.api.bench import ReauthorizeRequest, post_reauthorize
     from fastapi import HTTPException
     env.refuse = True
-    r = asyncio.run(post_reauthorize(PID, ReauthorizeRequest(server="pippin"), None))
+    r = post_reauthorize(PID, ReauthorizeRequest(server="pippin"), None)
     assert r["result"]["success"] is False and r["result"]["can_force"] is True
     assert "mcp_scan" in r["result"]["blocking_tools"]
     assert r["detail"]["gate"] is not None, "a refusal leaves the gate in place"
-    r = asyncio.run(post_reauthorize(PID, ReauthorizeRequest(server="pippin", force=True), None))
+    r = post_reauthorize(PID, ReauthorizeRequest(server="pippin", force=True), None)
     assert r["result"]["success"] is True and env.calls == [("pippin", False), ("pippin", True)]
     card = next(i for i in r["view"]["items"] if i["key"] == "mcp:pippin")
     assert card["held"] is False and r["detail"]["gate"] is None
     assert r["view"]["weight"]["always"] == sum(i["tokens"] for i in r["view"]["items"] if i["kind"] == "mcp")
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(post_reauthorize(PID, ReauthorizeRequest(server="nope"), None))
+        post_reauthorize(PID, ReauthorizeRequest(server="nope"), None)
     assert ei.value.status_code == 404 and len(env.calls) == 2       # 404 before acting
