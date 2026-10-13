@@ -55,8 +55,12 @@ describe('G-20/D-022: curly/smart quotes in %%{init}%% JSON are repaired (mermai
     const body = initBodyOf(W410);
     expect(body).toContain('\u2018'); // contains a curly single quote
     expect(() => JSON.parse(body)).toThrow();
-    // And the pre-fix lenient repair cannot rescue it either.
-    expect(normalizeInitDirectiveJson(body)).toBe(null);
+    // Without smart-quote normalization the remaining near-miss rewrites
+    // (single->double quotes, bare keys, trailing commas) cannot rescue it:
+    // straight-quoting alone leaves the curly-quoted tokens unparseable.
+    const withoutSmartQuoteFix = body
+      .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_m, inner: string) => `"${inner}"`);
+    expect(() => JSON.parse(withoutSmartQuoteFix)).toThrow();
   });
 
   it('post-pipeline the directive is strict JSON carrying the requested palette', () => {
@@ -68,9 +72,11 @@ describe('G-20/D-022: curly/smart quotes in %%{init}%% JSON are repaired (mermai
     const obj = JSON.parse(body); // throws on unpatched (single-quoted JSON)
     expect(obj.theme).toBe('forest');
     expect(obj.themeVariables.primaryColor).toBe('#ff0000');
-    // The flowchart body survives intact.
-    expect(out).toContain('flowchart TD');
+    // The flowchart body survives intact. An earlier pass normalizes the
+    // `flowchart` header to the equivalent `graph`, so accept either.
+    expect(out).toMatch(/^(?:flowchart|graph) TD$/m);
     expect(out).toContain('A[One]');
+    expect(out).toContain('D[Four]');
   });
 
   it('normalizeInitDirectiveJson now repairs the curly-quoted body directly', () => {
