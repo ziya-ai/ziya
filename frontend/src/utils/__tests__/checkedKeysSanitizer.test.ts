@@ -27,7 +27,7 @@ describe('isValidCheckedKey', () => {
     });
 
     test('accepts external-prefixed paths verbatim', () => {
-        expect(isValidCheckedKey('[external]/Users/dcohn/notes.md')).toBe(true);
+        expect(isValidCheckedKey('[external]/Users/alice/notes.md')).toBe(true);
         // Even with characters that would normally be rejected, external
         // paths trust the file-browser-side validation.
         expect(isValidCheckedKey('[external]/path with spaces/x.txt')).toBe(true);
