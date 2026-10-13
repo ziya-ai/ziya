@@ -194,13 +194,14 @@ class TestShapeAndOrder:
 
     def test_results_sorted_by_match_count_then_recency(self, ziya_home):
         chats = _proj(ziya_home, "p1")
-        _write_chat(chats, "few", title="x", lastAccessedAt=9000,
+        _write_chat(chats, "few", title="x", lastActiveAt=9000,
                     messages=[{"id": "m1", "role": "human", "content": "outlook once"}])
-        _write_chat(chats, "many", title="x", lastAccessedAt=1000,
-                    messages=[{"id": "m1", "role": "human", "content": "outlook outlook outlook"}])
+        _write_chat(chats, "many", title="x", lastActiveAt=1000,
+                    messages=[{"id": "m1", "role": "human", "content": "outlook again"}])
         results = search_chats(ziya_home, "p1", "outlook")
-        # "many" has 3 occurrences but they're in ONE message → 1 match each.
-        # Tie on totalMatches (1) → recency wins → "few" (9000) first.
+        # Identical scores (one occurrence, one opening message each) →
+        # the tie is broken by last activity → "few" (9000) first.  Note
+        # lastActivityAt comes from lastActiveAt, not lastAccessedAt.
         assert results[0]["conversationId"] == "few"
 
     def test_empty_query_returns_empty(self, ziya_home):
