@@ -426,20 +426,41 @@ class ShadowSendTool(BaseMCPTool):
                 return {"ok": False, "error": "no_lease",
                         "message": "no control lease held here; call shadow_control first"}
             lease_id = rec["lease_id"]
-            sent = client.send_line(session, lease_id, line, provenance=_provenance(kwargs))
-            idle = client.wait_idle(session, quiet_ms=int(kwargs.get("quiet_ms", 800)),
-                                    timeout_ms=int(kwargs.get("timeout_ms", 15000)))
+            # Blocking socket calls (send_line waits up to 85 s at a gated
+            # confirm; wait_idle up to timeout_ms) run off the event loop, or
+            # every other request in the process stalls meanwhile.
+            sent = await asyncio.to_thread(client.send_line, session, lease_id, line,
+                                           provenance=_provenance(kwargs))
+            idle = await asyncio.to_thread(client.wait_idle, session,
+                                           quiet_ms=int(kwargs.get("quiet_ms", 800)),
+                                           timeout_ms=int(kwargs.get("timeout_ms", 15000)))
             frm = sent.get("sent_at_seq") or 1
-            page = client.read(session, from_seq=int(frm), max_records=500)
+            page = await asyncio.to_thread(client.read, session, from_seq=int(frm), max_records=500)
             from app.mcp.response_validator import sanitize_text
             transcript = sanitize_text(
                 client.format_records(page["records"],
                                       max_chars=int(kwargs.get("max_chars", 8000))),
                 source_tool="shadow_send")
-            return {"ok": True, "session_id": entry.session_id, "sent": line,
-                    "cmd_seq": sent.get("cmd_seq"), "idle": idle.get("idle"),
-                    "timed_out": idle.get("timed_out", False),
-                    "next_seq": page.get("next_seq"), "transcript": transcript or "(no output)"}
+            out = {"ok": True, "session_id": entry.session_id, "sent": line,
+                   "cmd_seq": sent.get("cmd_seq"), "idle": idle.get("idle"),
+                   "timed_out": idle.get("timed_out", False),
+                   "next_seq": page.get("next_seq"), "transcript": transcript or "(no output)"}
+            if not idle.get("idle"):
+                # Still producing output: say what to do next, so the model
+                # waits on an event instead of sleeping in a local shell.
+                out["still_running"] = True
+                cs = sent.get("cmd_seq")
+                if cs is not None or entry.segmentation == "osc133":
+                    # osc133 assigns cmd_seq at marker C, after send_line
+                    # returns; the next exit is this command's.
+                    cs_arg = f"cmd_seq={cs}, " if cs is not None else ""
+                    out["next"] = (f"shadow_wait(session={entry.session_id!r}, {cs_arg}"
+                                   f"from_seq={page.get('next_seq')}, until=['exit'])")
+                else:
+                    # No command boundaries (raw): no exit will ever arrive.
+                    out["next"] = (f"shadow_wait(session={entry.session_id!r}, "
+                                   f"from_seq={page.get('next_seq')}, until=['quiet'])")
+            return out
         except Exception as e:  # noqa: BLE001
             return _error(e)
 
