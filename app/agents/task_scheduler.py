@@ -433,9 +433,14 @@ async def _fire_one(target: _ScheduledCard) -> None:
             )
             artifact = await execute_block(target.body_root, ctx)
             run_storage.set_artifact(run.id, artifact)
-            run_storage.update_status(
-                run.id, "failed" if artifact.failed else "done",
-            )
+            _final = "failed" if artifact.failed else "done"
+            run_storage.update_status(run.id, _final)
+            # Feed what the run established into probationary memory
+            # (app/agents/run_memory_harvest.py).  Fire-and-forget.
+            from .run_memory_harvest import schedule_harvest
+            schedule_harvest(run_id=run.id, card=card, artifact=artifact,
+                             status=_final,
+                             project_path=getattr(proj, "path", None))
         except BlockExecutionCancelled:
             run_storage.update_status(run.id, "cancelled")
         except TaskExecutorError as e:

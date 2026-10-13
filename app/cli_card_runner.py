@@ -481,9 +481,22 @@ async def run_card(root: str, card_ref: str, stream: bool = True,
         print("\n" + _c("31", f"Card run error: {e}"), file=sys.stderr)
         return 1
     finally:
-        if sink is not None and relay is not None:
+        await relay.disconnect(run_id, tally)
+        if sink is not None:
             await relay.disconnect(run_id, sink)
 
-    _render_artifact(artifact)
+    _render_artifact(artifact, tally)
     logger.debug("CLI card run %s finished in %.1fs", run_id, time.time() - started)
+    # Feed what the run established into probationary memory.  Awaited
+    # (bounded): a one-shot CLI process would kill a background task.
+    try:
+        import asyncio
+        from app.agents.run_memory_harvest import harvest_run_memories
+        await asyncio.wait_for(harvest_run_memories(
+            run_id=run_id, card=card, artifact=artifact,
+            status="failed" if artifact.failed else "done",
+            project_path=root,
+        ), timeout=90)
+    except Exception as e:  # noqa: BLE001 — never fail the run over memory
+        logger.debug("CLI run harvest skipped: %s", e)
     return 1 if artifact.failed else 0
