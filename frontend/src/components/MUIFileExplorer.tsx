@@ -439,7 +439,7 @@ export const MUIFileExplorer = () => {
                     ...(isChecked && total > 0 && { color: isDarkMode ? '#ffffff' : '#000000' })
                   }}
                 >
-                  {total === -1 ? '(*)' : (total > 0 ? `(${formatNumber(total)}${accurateData ? '✓' : ''})` : '(0)')}
+                  {total === -1 ? '(*)' : (total > 0 ? `(${formatNumber(total)}${accurateData && accurateData.count > 0 ? '✓' : ''})` : '(0)')}
                 </Typography>
               );
             })()

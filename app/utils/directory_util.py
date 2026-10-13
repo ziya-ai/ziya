@@ -1296,8 +1296,23 @@ TOKEN_CACHE_MAX_ENTRIES = 16   # typical use is 1-2 per codebase
 _background_thread = None
 _background_thread_lock = threading.Lock()
 
-# Global cache for accurate token counts
-_accurate_token_cache = {}
+# Background accurate token counts, keyed by the normalized directory they
+# were computed for, then by path relative to it.  Was a flat {rel: count}
+# dict overwritten by whichever directory's background pass finished last,
+# so a request for another project could be answered with that project's
+# count for any file sharing a relative path (app/__init__.py, README.md).
+_accurate_token_cache: Dict[str, Dict[str, int]] = {}
+
+
+def _accurate_cache_key(directory: str) -> str:
+    return os.path.realpath(os.path.abspath(directory))
+
+
+def get_cached_accurate_counts(directory: Optional[str]) -> Dict[str, int]:
+    """Background accurate counts for *directory*; empty when none."""
+    if not directory:
+        return {}
+    return _accurate_token_cache.get(_accurate_cache_key(directory), {})
 
 def ensure_background_token_calculation(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int):
     """
@@ -1401,29 +1416,17 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
                         continue
                     
                     try:
-                        content = read_file_content(file_path)
-                        if content:
-                            token_count = len(encoding.encode(content))
-                            if token_count <= 50000:  # skip huge files
-                                # For document files (PDF, DOCX, etc.), read_file_content
-                                # already extracts text, so the token count IS the real
-                                # count — don't apply the file-type multiplier which is
-                                # designed for raw file sizes, not extracted text.
-                                _, ext = os.path.splitext(file_path.lower())
-                                is_doc = ext in {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}
-                                if is_doc:
-                                    adjusted_count = token_count
-                                else:
-                                    multiplier = get_file_type_multiplier(file_path)
-                                    adjusted_count = int(token_count * multiplier)
-                                
-                                # Store relative path
-                                rel_path = os.path.relpath(file_path, directory)
-                                accurate_counts[rel_path] = adjusted_count
-                                files_processed += 1
-                                
-                                if files_processed % 1000 == 0:
-                                    logger.debug(f"🔍 PERF: Background processed {files_processed} files so far")
+                        # Same function the on-demand endpoint uses, so a
+                        # cached count and a computed one always agree (the
+                        # old inline copy skipped files over 50k tokens and
+                        # the per-model calibration).
+                        adjusted_count = get_accurate_token_count(file_path)
+                        if adjusted_count > 0:
+                            rel_path = os.path.relpath(file_path, directory)
+                            accurate_counts[rel_path] = adjusted_count
+                            files_processed += 1
+                            if files_processed % 1000 == 0:
+                                logger.debug(f"🔍 PERF: Background processed {files_processed} files so far")
                     except Exception as e:
                         logger.debug(f"Error processing {file_path}: {e}")
                         continue
@@ -1432,8 +1435,7 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
             logger.debug(f"🔍 PERF: Background calculation complete: {files_processed} files processed")
             # Store accurate counts in a separate cache for API access
             logger.debug(f"🔍 PERF: Storing {len(accurate_counts)} accurate token counts in cache")
-            global _accurate_token_cache
-            _accurate_token_cache = accurate_counts
+            _accurate_token_cache[_accurate_cache_key(directory)] = accurate_counts
             
             # Also update the folder structure cache with accurate counts
             cache_key = f"{directory}:{max_depth}:{hash(str(ignored_patterns))}"

@@ -365,9 +365,16 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     try {
       console.log(`Making API request for accurate token counts: ${filesToUpdate.length} files`, filesToUpdate);
       console.log(`Getting accurate token counts for ${filesToUpdate.length} files (batch)`);
+      // The server resolves these relative paths against the request's
+      // project root.  Without the header it used its launch directory and
+      // answered "File not found" for every file in any other project.
+      const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
       const response = await fetch('/api/accurate-token-count', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(projectPath ? { 'X-Project-Root': projectPath } : {}),
+        },
         body: JSON.stringify({ file_paths: filesToUpdate }),
       });
 
@@ -382,7 +389,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           const updated = { ...prev };
           const counts: Record<string, number> = {};
           Object.entries(data.results).forEach(([path, result]: [string, any]) => {
-            if (result.accurate_count !== undefined) {
+            // An error result ("File not found") is not a count.  Storing
+            // its 0 made folder rollups read 0 while the file row fell
+            // back to the estimate, so the two disagreed.
+            if (result.accurate_count !== undefined && !result.error) {
               updated[path] = {
                 count: result.accurate_count,
                 timestamp: result.timestamp
@@ -1159,9 +1169,13 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       paths,
       accurateTokenCountsRef.current,
       async (batch) => {
+        const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
         const response = await fetch('/api/accurate-token-count', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(projectPath ? { 'X-Project-Root': projectPath } : {}),
+          },
           body: JSON.stringify({ file_paths: batch }),
         });
         if (!response.ok) throw new Error(`accurate-token-count ${response.status}`);
