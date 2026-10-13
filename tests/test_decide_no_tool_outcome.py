@@ -466,6 +466,156 @@ class TestRefusal:
         assert v[0] == 'spend_empty_retry', f"{reason!r} regressed"
 
 
+class TestOversizedOutput:
+    """Output cap hit with nothing delivered must not be a bare retry.
+
+    Live case: max_tokens=4096, two consecutive iterations each returned
+    output_tokens=4096 with text_len=0 and no completed tool call.  The
+    no-text branch treated both as transient empties, re-issued the
+    identical request (deterministically cut at the same cap), and ended
+    the turn silently.  The discriminator is output_tokens at the cap:
+    a max_tokens stop that reports ~0 output is still a plain empty.
+    """
+
+    _CAP = dict(last_stop_reason='max_tokens', output_tokens=4096,
+                max_output_tokens=4096)
+
+    def test_after_user_message_corrects_not_retries(self, decide):
+        v = _call(decide, prev_is_tool_result=False, **self._CAP)
+        assert v[:2] == ('correct_oversized_output', 'oversized_output')
+
+    def test_after_tool_results_corrects_not_nudges(self, decide):
+        # The nudge text ("you did not synthesize an answer") is wrong here.
+        v = _call(decide, prev_is_tool_result=True, textonly_grace_used=0,
+                  **self._CAP)
+        assert v[:2] == ('correct_oversized_output', 'oversized_output')
+
+    def test_length_stop_is_a_cutoff_too(self, decide):
+        v = _call(decide, last_stop_reason='length', output_tokens=8000,
+                  max_output_tokens=8192)
+        assert v[0] == 'correct_oversized_output'
+
+    def test_unknown_cap_with_output_still_corrects(self, decide):
+        v = _call(decide, last_stop_reason='max_tokens', output_tokens=4096,
+                  max_output_tokens=0)
+        assert v[0] == 'correct_oversized_output'
+
+    def test_second_occurrence_ends_visibly(self, decide):
+        v = _call(decide, oversized_output_used=1, **self._CAP)
+        assert v[:2] == ('end', 'oversized_output')
+
+    def test_second_occurrence_ends_even_with_retry_budget_left(self, decide):
+        # Must not fall through to the identical re-issue it replaces.
+        v = _call(decide, oversized_output_used=1,
+                  empty_completion_retry_used=0, **self._CAP)
+        assert v[0] == 'end'
+
+    def test_small_output_under_cap_keeps_retry_ladder(self, decide):
+        # Positive control for the 90% gate: a max_tokens stop far below the
+        # cap is not budget exhaustion.
+        v = _call(decide, last_stop_reason='max_tokens', output_tokens=100,
+                  max_output_tokens=4096, prev_is_tool_result=False)
+        assert v[:2] == ('spend_empty_retry', 'empty_completion_retry')
+
+    def test_zero_output_keeps_retry_ladder(self, decide):
+        v = _call(decide, last_stop_reason='max_tokens', output_tokens=0,
+                  max_output_tokens=4096, prev_is_tool_result=False)
+        assert v[:2] == ('spend_empty_retry', 'empty_completion_retry')
+
+    def test_clean_stop_at_cap_is_not_oversized(self, decide):
+        v = _call(decide, last_stop_reason='end_turn', output_tokens=4096,
+                  max_output_tokens=4096, prev_is_tool_result=False)
+        assert v[0] == 'spend_empty_retry'
+
+    def test_refusal_still_wins(self, decide):
+        v = _call(decide, last_stop_reason='refusal', output_tokens=4096,
+                  max_output_tokens=4096)
+        assert v[:2] == ('end', 'refusal')
+
+    def test_text_present_path_unaffected(self, decide):
+        # With text, max_tokens on a non-prefill model keeps its own branch.
+        v = _call(decide, assistant_text="partial answer", supports_prefill=False,
+                  **self._CAP)
+        assert v[:2] == ('inject_max_tokens', 'max_tokens_continue')
+
+
+class TestOversizedOutputHelpers:
+
+    def test_note_names_the_cap_and_the_remedy(self):
+        note = StreamingToolExecutor._oversized_output_note(4096)
+        assert "4096 tokens" in note
+        assert "smaller tool calls" in note
+
+    def test_note_without_cap(self):
+        note = StreamingToolExecutor._oversized_output_note(0)
+        assert "output token limit" in note and "0 tokens" not in note
+
+    def test_append_to_list_content(self):
+        conv = [{'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'a'}]}]
+        StreamingToolExecutor._append_to_last_user_turn(conv, "NOTE")
+        assert len(conv) == 1
+        assert conv[0]['content'][-1] == {'type': 'text', 'text': 'NOTE'}
+
+    def test_append_to_string_content(self):
+        conv = [{'role': 'user', 'content': 'hello'}]
+        StreamingToolExecutor._append_to_last_user_turn(conv, "NOTE")
+        assert conv == [{'role': 'user', 'content': 'hello\n\nNOTE'}]
+
+    def test_append_after_assistant_adds_user_turn(self):
+        conv = [{'role': 'assistant', 'content': 'x'}]
+        StreamingToolExecutor._append_to_last_user_turn(conv, "NOTE")
+        assert conv[-1] == {'role': 'user', 'content': 'NOTE'}
+
+
+class TestMaxTokensSource:
+    """_build_provider_config records which of skill / env / model_config
+    produced max_output_tokens.  The streaming loop logs it
+    (MAX_TOKENS_SOURCE) and names it in the oversized-output error; before
+    this, a cap set process-wide by the settings route looked identical to
+    the model's own limit in the logs."""
+
+    def _ex(self, **attrs):
+        ex = StreamingToolExecutor.__new__(StreamingToolExecutor)
+        ex.model_config = {"max_output_tokens": 64000}
+        for k, v in attrs.items():
+            setattr(ex, k, v)
+        return ex
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for k in ("ZIYA_MAX_OUTPUT_TOKENS", "ZIYA_MAX_TOKENS"):
+            monkeypatch.delenv(k, raising=False)
+
+    def test_model_config(self):
+        ex = self._ex()
+        assert int(ex._build_provider_config(0).max_output_tokens) == 64000
+        assert ex._max_tokens_source == 'model_config'
+
+    def test_env_wins_over_model_config(self, monkeypatch):
+        monkeypatch.setenv("ZIYA_MAX_OUTPUT_TOKENS", "4096")
+        ex = self._ex()
+        assert int(ex._build_provider_config(0).max_output_tokens) == 4096
+        assert ex._max_tokens_source == 'env'
+
+    def test_skill_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("ZIYA_MAX_OUTPUT_TOKENS", "4096")
+        ex = self._ex(max_tokens_override=12000)
+        assert int(ex._build_provider_config(0).max_output_tokens) == 12000
+        assert ex._max_tokens_source == 'skill'
+
+    @pytest.mark.parametrize('source,needle', [
+        ('env', 'ZIYA_MAX_OUTPUT_TOKENS'),
+        ('skill', 'maxOutputTokens'),
+        ('throttle', 'throttling'),
+        ('model_config', "model's configured limit"),
+    ])
+    def test_hint_names_the_source(self, source, needle):
+        assert needle in StreamingToolExecutor._max_tokens_source_hint(source)
+
+    def test_unknown_source_still_gives_advice(self):
+        assert "smaller pieces" in StreamingToolExecutor._max_tokens_source_hint('?')
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))

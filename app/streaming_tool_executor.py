@@ -770,7 +770,9 @@ class StreamingToolExecutor:
         code_block_open: bool, blocked_tools: int,
         prev_is_tool_result: bool, textonly_grace_used: int,
         empty_completion_retry_used: int, block_continue_stalls: int = 0,
-        intent_stalls: int = 0,
+        intent_stalls: int = 0, output_tokens: int = 0,
+        max_output_tokens: int = 0, oversized_output_used: int = 0,
+        repetition_stopped: bool = False,
     ) -> tuple:
         """Pure decision for an iteration where no tool executed.
 
@@ -788,6 +790,9 @@ class StreamingToolExecutor:
           'nudge'                    — textonly_grace_used += 1; append nudge text
                                        block to conversation[-1]; continue
           'spend_empty_retry'        — empty_completion_retry_used += 1; continue
+          'correct_oversized_output' — output cap hit with nothing delivered;
+                                       oversized_output_used += 1; append a
+                                       "split the work" note; continue
           'judge_intent'             — phrase prefilter matched on a clean,
                                        tool-free, non-question turn end; caller
                                        resolves via intent_judge (yes → same
@@ -3017,6 +3022,11 @@ class StreamingToolExecutor:
         # on the first turn after a normal user message — a transient provider
         # hiccup that otherwise surfaces as an "errored" empty bubble in the UI.
         empty_completion_retry_used = 0
+        # Output-cap hits that delivered nothing (no text, no complete tool
+        # call). Not transient, so not charged to the retry budget above: one
+        # corrective note, then the turn ends visibly. Reset on clean tool
+        # progress, so it bounds CONSECUTIVE oversize failures only.
+        oversized_output_used = 0
         # Refusal-recovery ladder state: 0 = untried, 1 = file context
         # dropped, 2 = older history compacted. Each rung retries once with a
         # smaller payload; see the refusal branch in the iteration loop.
@@ -3927,8 +3937,11 @@ PROBLEM: The JSON arguments were truncated or malformed.
 This usually means:
 - The JSON string is incomplete (missing closing braces)
 - The tool call was cut off during generation
+- The output reached the max output token limit before the arguments were complete
 
-Please retry the tool call with complete, valid JSON parameters."""
+If the arguments are large, do NOT resend the same call: it will be cut off
+again at the same limit. Split the work into several smaller tool calls or
+reduce the payload. Otherwise, retry with complete, valid JSON parameters."""
                                 
                                 tool_results.append({'tool_id': tool_id, 'tool_name': tool_name, 'result': error_result})
                                 # Emit tool_start + tool_display + tool_result_for_model
@@ -4854,6 +4867,12 @@ Please retry the tool call with valid JSON. Ensure:
                     # was a successful recovery, not a strike against the
                     # stream; the next empty completion gets a fresh cap.
                     textonly_grace_used = 0
+                    # Same for the oversized-output correction, but only when
+                    # the tools ran cleanly: an INCOMPLETE_JSON round also sets
+                    # tools_executed, and counting a truncated call as progress
+                    # would let cap-hit → truncated call → cap-hit loop.
+                    if empty_tool_calls_this_iteration == 0:
+                        oversized_output_used = 0
                     # Warn about consecutive empty tool calls but don't break
                     if consecutive_empty_tool_calls >= 5:
                         logger.warning(f"🔍 EMPTY_TOOL_WARNING: {consecutive_empty_tool_calls} consecutive empty tool calls detected")
@@ -5163,6 +5182,9 @@ Please retry the tool call with valid JSON. Ensure:
                             prev_is_tool_result=_prev_is_tool_result,
                             textonly_grace_used=textonly_grace_used,
                             empty_completion_retry_used=empty_completion_retry_used,
+                            output_tokens=iteration_usage.output_tokens or 0,
+                            max_output_tokens=int(provider_config.max_output_tokens or 0),
+                            oversized_output_used=oversized_output_used,
                         )
                         if _probe:
                             _grace_probe(_probe[0], says_continue=_probe[1], decider=_probe[2])
@@ -5292,6 +5314,21 @@ Please retry the tool call with valid JSON. Ensure:
                             yield {'type': 'stream_end'}
                             break
                         # _verdict == 'end' (no_activity or max_iterations)
+                        if _reason == 'oversized_output':
+                            logger.warning(
+                                f"✂️ OVERSIZED_OUTPUT: cap hit again with nothing delivered "
+                                f"(iteration={iteration}, max_tokens={provider_config.max_output_tokens}). "
+                                f"Ending turn."
+                            )
+                            yield {'type': 'error', 'content': (
+                                f'The model reached its output limit '
+                                f'({provider_config.max_output_tokens} tokens) twice in a '
+                                f'row without delivering any text or a complete tool '
+                                f'call, so this turn was stopped. If the limit is set '
+                                f'low, raise max output tokens in Model Settings (or '
+                                f'unset ZIYA_MAX_OUTPUT_TOKENS); otherwise ask for the '
+                                f'work in smaller pieces.'
+                            )}
                         if _reason == 'max_iterations':
                             logger.debug(f"🔍 MAX_ITERATIONS: Reached maximum iterations ({iteration}), ending stream")
                         else:
