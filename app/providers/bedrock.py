@@ -42,7 +42,55 @@ from app.providers.bedrock_region_router import BedrockRegionRouter
 from app.utils import service_tier as _service_tier
 
 from app.config.env_registry import ziya_env
+from app.utils.retention_diagnostics import log_retention_diagnosis, user_summary
 logger = get_mode_aware_logger(__name__)
+
+
+# The classic Bedrock data-retention switch is account/region-wide and shared
+# by every user of the account.  Ziya raises it at model init, but anyone
+# else (an older Ziya that reset it to 'inherit' on start, a manual PUT) can
+# lower it mid-session, after which every call to a Covered Model fails with
+# "data retention mode '...' is not available for this model".  Recover in
+# place: raise it again (raise-only, never a downgrade) and retry once.
+# Throttled per (profile, region) so two parties disagreeing about the
+# switch cannot turn this into a write loop.
+RETENTION_HEAL_INTERVAL_S = 60.0
+_retention_heal_at: Dict[tuple, float] = {}
+
+
+def is_retention_gate_error(error_str: str) -> bool:
+    return "data retention mode" in error_str and "not available for this model" in error_str
+
+
+def required_retention_for(model_config: Dict[str, Any]) -> str:
+    """The mode to raise to.  The error itself proves the model needs one;
+    aws_review is the lowest mode any Covered Model accepts."""
+    from app.config.models_config import get_required_retention_mode
+    return get_required_retention_mode(model_config) or "aws_review"
+
+
+def _claim_retention_heal(profile: Optional[str], region: str) -> bool:
+    key = (profile or "", region)
+    now = time.monotonic()
+    last = _retention_heal_at.get(key)
+    if last is not None and now - last < RETENTION_HEAL_INTERVAL_S:
+        return False
+    _retention_heal_at[key] = now
+    return True
+
+
+def heal_retention_gate(model_config: Dict[str, Any], region: str,
+                        profile: Optional[str]) -> tuple:
+    """Raise the classic account switch for this model.  Returns (ok, err)."""
+    from app.utils.aws_utils import ensure_bedrock_data_retention_mode
+    mode = required_retention_for(model_config)
+    logger.warning(
+        f"BedrockProvider: account data retention switch in {region} was lowered "
+        f"after this session started; raising it back to '{mode}'"
+    )
+    return ensure_bedrock_data_retention_mode(
+        required_mode=mode, region=region, profile_name=profile,
+    )
 
 
 # Dedicated thread pools for Bedrock API calls.  Isolates blocking boto3
@@ -296,13 +344,65 @@ class BedrockProvider(LLMProvider):
                     except Exception as retry_e:
                         error_str = str(retry_e) or f"{type(retry_e).__name__}"
 
+                # Retention switch lowered under us by another user of this
+                # shared account: raise it again and retry once.
+                _heal_err = None
+                if is_retention_gate_error(error_str) and _claim_retention_heal(
+                        self._aws_profile, self._region):
+                    _healed, _heal_err = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: heal_retention_gate(self.model_config, self._region,
+                                                    self._aws_profile),
+                    )
+                    if _healed:
+                        try:
+                            response = await asyncio.wait_for(
+                                asyncio.get_event_loop().run_in_executor(
+                                    _bedrock_connect_executor,
+                                    lambda: self.bedrock.invoke_model_with_response_stream(**api_params),
+                                ),
+                                timeout=connect_timeout,
+                            )
+                            logger.info("BedrockProvider: retention switch restored; call succeeded on retry")
+                            break
+                        except Exception as retry_e:
+                            error_str = str(retry_e) or f"{type(retry_e).__name__}"
+
                 # Augment the error with a remediation hint for the data-retention gate.
-                if "data retention mode" in error_str and "not available for this model" in error_str:
+                if is_retention_gate_error(error_str):
+                    _mode = required_retention_for(self.model_config)
+                    # The provider's own error names neither the region nor the
+                    # account, and the rejected call is logged by CloudTrail only
+                    # in the region it was sent to.  Name both here.
+                    _restore = ("throttled (attempted <60s ago)" if _heal_err is None else
+                                "restored but still rejected" if _heal_err == "" else
+                                f"failed: {_heal_err}")
+                    logger.warning(
+                        f"🔐 RETENTION_GATE: model={self.model_id} region={self._region} "
+                        f"profile={self._aws_profile or 'default'} required>={_mode} "
+                        f"restore={_restore}"
+                    )
+                    try:
+                        _diag = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: log_retention_diagnosis(
+                                self.model_id, self._region, self._aws_profile, _mode),
+                        )
+                    except Exception as _diag_e:  # noqa: BLE001 -- diagnostics only
+                        logger.debug(f"retention diagnosis failed: {_diag_e}")
+                        _diag = {}
                     error_str += (
-                        " — This model requires a Bedrock account-level data retention mode "
-                        "of 'aws_review' or higher (the legacy 'provider_data_share' also "
-                        "qualifies, ranking above it). Restart Ziya with this model selected "
-                        "to apply the setting automatically."
+                        f" — {self.model_id} requires the Bedrock account-level data retention "
+                        f"mode '{_mode}' or higher in {self._region}, the region this call was "
+                        f"sent to. The switch is per account and per region: check that "
+                        f"{self._region} is the session region you expect, and CloudTrail in "
+                        f"{self._region} for PutAccountDataRetention."
+                        + (" Automatic restore was already attempted in the last minute."
+                           if _heal_err is None else
+                           " Automatic restore succeeded but the call was still rejected."
+                           if _heal_err == "" else
+                           f" Automatic restore failed: {_heal_err}.")
+                        + (" " + user_summary(_diag) if _diag and user_summary(_diag) else "")
                     )
 
                 classified = self._classify_error(error_str)
