@@ -33,6 +33,7 @@ Modeled on app/agents/delegate_stream_relay.py.
 
 import asyncio
 import json
+import os
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
@@ -177,6 +178,12 @@ def _journal(run_id: str, event: Dict[str, Any]) -> None:
         return
     try:
         fh.write(json.dumps(event, default=str) + "\n")
+        # Everything written so far is also in this process's history, so
+        # the offset must say so.  Otherwise a client reconnecting after
+        # close_journal (the grace window) starts a tail at byte 0 and
+        # every event lands in history and on the socket a second time.
+        # Line buffering means the size is exact.
+        _tail_offsets[run_id] = os.fstat(fh.fileno()).st_size
     except Exception as exc:  # noqa: BLE001 — never stall the executor
         logger.debug(f"task_run_stream_relay journal write failed: {exc}")
 
@@ -247,6 +254,20 @@ async def _tail_journal(
         _tail_tasks.pop(run_id, None)
 
 
+def _tail_running(run_id: str) -> bool:
+    existing = _tail_tasks.get(run_id)
+    return existing is not None and not existing.done()
+
+
+def _schedule_drop(run_id: str) -> None:
+    existing = _drop_tasks.get(run_id)
+    if existing and not existing.done():
+        existing.cancel()
+    _drop_tasks[run_id] = asyncio.create_task(
+        _drop_after_grace(run_id, _GRACE_PERIOD_SECONDS)
+    )
+
+
 def _maybe_start_tail(
     run_id: str, journal: Optional[Path], alive: Optional[Callable[[], bool]],
 ) -> None:
@@ -255,8 +276,7 @@ def _maybe_start_tail(
     tail is already running."""
     if journal is None or run_id in _journals:
         return
-    existing = _tail_tasks.get(run_id)
-    if existing is not None and not existing.done():
+    if _tail_running(run_id):
         return
     if not journal.exists():
         return
@@ -299,8 +319,33 @@ async def connect(
     The SEND stays outside the lock: ``send_json`` awaits on a slow
     client, and stalling every other connect/disconnect/push behind one
     unresponsive socket would be a worse failure than either race.
+
+    In a process that is not the executor, the journal's existing content
+    is folded into history BEFORE the snapshot, so a late client gets the
+    collapsed replay shape for everything that streamed before it attached
+    and raw deltas after — the same stream it would get from the origin.
+    The tail then carries only what is appended later.
     """
+    backlog: List[Dict[str, Any]] = []
+    start = new_offset = 0
+    if (journal is not None and run_id not in _journals
+            and not _tail_running(run_id) and journal.exists()):
+        start = _tail_offsets.get(run_id, 0)
+        try:
+            backlog, new_offset = _read_journal_from(journal, start)
+        except OSError:
+            backlog = []
+    terminal = False
     async with _lock:
+        # Re-checked under the lock: a concurrent connect may have
+        # ingested the same bytes while this one was reading.
+        if (backlog and _tail_offsets.get(run_id, 0) == start
+                and not _tail_running(run_id)):
+            for event in backlog:
+                _record(run_id, event)
+                if event.get("type") in _TERMINAL_EVENT_TYPES:
+                    terminal = True
+            _tail_offsets[run_id] = new_offset
         if run_id not in _active_connections:
             _active_connections[run_id] = []
         _active_connections[run_id].append(ws)
@@ -313,6 +358,8 @@ async def connect(
             f"({len(_active_connections[run_id])} clients, "
             f"{len(history)} replayed)"
         )
+    if terminal:
+        _schedule_drop(run_id)
     # Errors are swallowed: a closed socket here just means the client
     # gave up before we finished the replay; the live event stream will
     # hit the same failure and get pruned by push().
@@ -325,7 +372,8 @@ async def connect(
     # After registration + replay: anything the tail ingests from here
     # on reaches this socket through the live fanout, and anything already
     # ingested was in the snapshot above.  No gap, no duplication.
-    _maybe_start_tail(run_id, journal, alive)
+    if not terminal:
+        _maybe_start_tail(run_id, journal, alive)
 
 
 async def disconnect(run_id: str, ws: Any) -> None:
@@ -373,12 +421,7 @@ async def push(run_id: str, event: Dict[str, Any]) -> None:
 
     # If this event terminates the run, schedule a delayed drop.
     if event.get("type") in _TERMINAL_EVENT_TYPES:
-        existing = _drop_tasks.get(run_id)
-        if existing and not existing.done():
-            existing.cancel()
-        _drop_tasks[run_id] = asyncio.create_task(
-            _drop_after_grace(run_id, _GRACE_PERIOD_SECONDS)
-        )
+        _schedule_drop(run_id)
 
     if not conns:
         return
