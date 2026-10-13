@@ -23,6 +23,7 @@ import type { TaskCard } from '../../types/task_card';
 import { useProject } from '../../context/ProjectContext';
 import { taskCardApi } from '../../services/taskCardApi';
 import { DragHandle } from './DragContext';
+import { RequiredToggle } from './RequiredToggle';
 import './task-card-editor.css';
 
 interface Props {
@@ -104,6 +105,7 @@ export const CallBlockEditor: React.FC<Props> = ({
           placeholder="Call name"
         />
         <span className="tc-block-label tc-block-label-call">Call</span>
+        {!isRoot && <RequiredToggle block={block} onChange={update} />}
         {onDelete && (
           <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}
