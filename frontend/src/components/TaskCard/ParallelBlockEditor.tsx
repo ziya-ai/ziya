@@ -13,6 +13,7 @@ import { BlockBody } from './BlockBody';
 import { BlockScopeButton } from './BlockScopeButton';
 import { SelfImproveSection } from './SelfImproveSection';
 import { DragHandle } from './DragContext';
+import { RequiredToggle } from './RequiredToggle';
 import './task-card-editor.css';
 
 interface Props {
@@ -37,6 +38,7 @@ export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
           placeholder="Parallel group name"
         />
         <span className="tc-block-label tc-block-label-parallel">Parallel</span>
+        {!isRoot && <RequiredToggle block={block} onChange={update} />}
         {onDelete && (
           <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}

@@ -11,6 +11,7 @@
 import { ModelTierPicker } from './ModelTierPicker';
 import { AutoGrowTextarea } from './AutoGrowTextarea';
 import { DragHandle } from './DragContext';
+import { RequiredToggle } from './RequiredToggle';
 import { normalizeTaskScope, liftBlockModelFields } from '../../utils/taskCardBlocks';
 import './task-card-editor.css';
 
@@ -114,6 +115,7 @@ export const TaskBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, is
           placeholder="Task name"
         />
         <span className="tc-block-label">Task</span>
+        {!isRoot && <RequiredToggle block={repaired} onChange={update} />}
         {onDelete && (
           <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}
