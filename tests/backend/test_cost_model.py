@@ -148,7 +148,7 @@ def test_builtin_catalog_prices_current_claude_bedrock_ids():
     assert cat.lookup("bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0", None, now).long_context
     # Genuinely absent stays unknown — this is the sentinel the other tests use.
     assert cat.lookup("bedrock", "global.anthropic.claude-nonesuch-9", None, now) is None
-    assert cat.version == "builtin:2026-10-01"  # Gemini parity pass (Google pricing page)
+    assert cat.version == "builtin:2026-10-09"  # + 2026-10-09 sweep (Haiku 5.5, Sonnet 5.5 cache read)
 
 
 def test_partial_when_a_dimension_is_unlisted():

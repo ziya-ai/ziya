@@ -38,8 +38,9 @@ class TestZaiEndpointConfig:
         assert "zai" in MODEL_CONFIGS
         assert "zai" in ENDPOINT_DEFAULTS
 
-    def test_zai_default_model_is_glm_52(self):
-        assert DEFAULT_MODELS.get("zai") == "glm-5.2"
+    def test_zai_default_model_is_glm_53(self):
+        # GLM-5.3 is Z.ai's flagship (docs.z.ai, 2026-10-01); same price as 5.2.
+        assert DEFAULT_MODELS.get("zai") == "glm-5.3"
 
     def test_zai_default_model_is_defined(self):
         assert DEFAULT_MODELS["zai"] in MODEL_CONFIGS["zai"]
@@ -56,12 +57,12 @@ class TestZaiEndpointConfig:
                 f"alias '{alias}' -> '{target}' not in MODEL_CONFIGS['zai']"
             )
 
-    def test_glm_alias_points_to_52(self):
-        assert MODEL_ALIASES["zai"]["glm"] == "glm-5.2"
+    def test_glm_alias_points_to_53(self):
+        assert MODEL_ALIASES["zai"]["glm"] == "glm-5.3"
 
 
 class TestZaiModelConfigs:
-    EXPECTED_MODELS = ["glm-5.2", "glm-4.6"]
+    EXPECTED_MODELS = ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-4.6"]
 
     def test_all_expected_models_present(self):
         for name in self.EXPECTED_MODELS:

@@ -62,7 +62,7 @@ class PrecisionPromptSystem:
             
             # Get extended prompt with proper context
             extended_prompt = get_extended_prompt(
-                model_name=model_info.get("model_name", "sonnet4.0"),
+                model_name=model_info.get("model_name", "sonnet4.6"),
                 model_family=model_info.get("model_family", "claude"),
                 endpoint=model_info.get("endpoint", "bedrock"),
                 context=context
@@ -265,7 +265,16 @@ class PrecisionPromptSystem:
                     if stable_mem:
                         messages[0]["content"] += stable_mem
                     if volatile_mem:
-                        volatile_tail.append(volatile_mem)
+                        # The overview is appended to the user's own text, so
+                        # it must be visibly system-supplied: a bare "test"
+                        # followed by an unframed markdown block reads as the
+                        # thing to respond to, and the model echoed it back
+                        # in a CLI session.  The tag is described in the
+                        # stable guidance (_BEHAVIORAL_GUIDANCE).
+                        volatile_tail.append(
+                            "\n\n<MemoryOverview>" + volatile_mem.rstrip("\n")
+                            + "\n</MemoryOverview>"
+                        )
                 except (ImportError, RuntimeError, OSError) as e:
                     logger.debug("Memory prompt section unavailable: %s", e)
 
