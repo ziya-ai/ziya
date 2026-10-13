@@ -149,7 +149,12 @@ def write_patches(root, path, attrib, out_dir):
     ``written`` maps entry_id -> patch path."""
     problems = []
     if not is_tracked(root, path):
-        return {}, [f"{path}: untracked file has no hunks to split; stage it whole"]
+        # A new file has no hunks: it ships whole with exactly one entry.
+        ents = {str(v).strip() for v in attrib.values()}
+        if len(ents) == 1 and "" not in ents:
+            return {}, []
+        return {}, [f"{path}: untracked file has no hunks; map it to exactly one "
+                    f"entry_id (it ships whole) or record a merge"]
     header, hunks = split_hunks(raw_diff(root, path))
     if not hunks:
         return {}, [f"{path}: no hunks in working diff"]
@@ -213,6 +218,8 @@ def do_split(root, path, attrib_path, out_dir, check=True):
     counts = {}
     for i, eid in attrib.items():
         counts[eid] = counts.get(eid, 0) + 1
+    if not problems and not written and not is_tracked(root, path):
+        print(f"whole file: {path} ships with {next(iter(counts))} (untracked, no patch)")
     for eid, target in sorted(written.items()):
         print(f"wrote {target}  ({counts.get(eid, 0)} hunks)")
     for pr in problems:
