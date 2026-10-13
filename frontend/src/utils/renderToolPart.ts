@@ -75,6 +75,47 @@ export function toolPartFromEvent(
   };
 }
 
+/** First line of a show_document body (app/utils/show_document.py). */
+export const DOCUMENT_CAPTION_PREFIX = '<!-- ziya:show_document ';
+
+export interface DocumentCaption {
+  fields: Record<string, string>;
+  /** The markdown after the caption line. */
+  body: string;
+}
+
+/**
+ * Undo MarkdownRenderer's escapeNestedBacktickFences on a show_document body.
+ *
+ * The body travels inside the four-backtick tool fence, so the outer pass
+ * rewrites the leading backtick run of every line in it to HTML entities
+ * (ampersand, "#96;").
+ * Those lines are the document's own fences (```mermaid, ```vega-lite, code),
+ * and left escaped they render as literal text.  Only a column-0 run of three
+ * or more entities is decoded: that is exactly what the pass writes.
+ *
+ * The entity is assembled at runtime rather than written literally: the
+ * diff/apply path decodes HTML entities, which once turned this function
+ * into a backtick-to-backtick no-op.
+ */
+const BACKTICK_ENTITY = '&' + '#96;';
+const LEADING_ENTITY_RUN = new RegExp(`^(?:${BACKTICK_ENTITY}){3,}`, 'gm');
+
+export function unescapeNestedFenceEntities(text: string): string {
+  if (!text.includes(BACKTICK_ENTITY)) return text;
+  return text.replace(LEADING_ENTITY_RUN, (m) => '`'.repeat(m.length / BACKTICK_ENTITY.length));
+}
+
+/** Split a show_document body into its caption fields and markdown. */
+export function parseDocumentCaption(content: string): DocumentCaption {
+  if (!content.startsWith(DOCUMENT_CAPTION_PREFIX)) return { fields: {}, body: content };
+  const nl = content.indexOf('\n');
+  const line = nl === -1 ? content : content.slice(0, nl);
+  const fields: Record<string, string> = {};
+  for (const m of line.matchAll(/(\w+)="([^"]*)"/g)) fields[m[1]] = m[2];
+  return { fields, body: nl === -1 ? '' : unescapeNestedFenceEntities(content.slice(nl + 1)) };
+}
+
 export interface RenderedToolPart {
   /** The markdown block for this tool call, including leading/trailing newlines. */
   display: string;
