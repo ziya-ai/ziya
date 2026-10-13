@@ -35,3 +35,7 @@ maybe('real marked lexer produces code + diff tokens', () => {
 test('spike file loads without breaking the default suite', () => {
     expect(true).toBe(true);
 });
+
+// Module scope: as a script, the top-level `maybe` collided with
+// printKeepHeadingWithNext.test.ts's under tsc.
+export {};

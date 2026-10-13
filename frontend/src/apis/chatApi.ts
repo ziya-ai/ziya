@@ -921,6 +921,16 @@ export const sendPayload = async (
             console.log(`Aborting stream for conversation: ${conversationId}`);
             abortController.abort();
             isAborted = true;
+            // Mark finalized and cancel any scheduled flush. _doFlush only
+            // checks _streamFinalized, so a timer already queued when the
+            // abort arrives would otherwise re-insert this stream's content
+            // into streamedContentMap after removeStreamingConversation
+            // cleared it, making the conversation look permanently active.
+            _streamFinalized = true;
+            if (_streamFallbackId !== null) {
+                clearTimeout(_streamFallbackId);
+                _streamFallbackId = null;
+            }
 
             // Forcefully close the stream reader so reader.read() rejects immediately.
             // This doesn't depend on browser AbortSignal propagation through ReadableStream,
@@ -964,20 +974,24 @@ export const sendPayload = async (
         }
     };
 
-    // Remove any stale listener from a previous sendPayload call for the same conversation
-    if ((window as any)[`abortListener_${conversationId}`]) {
-        document.removeEventListener('abortStream', (window as any)[`abortListener_${conversationId}`]);
-    }
-    document.addEventListener('abortStream', abortListener as unknown as EventListener);
-    (window as any)[`abortListener_${conversationId}`] = abortListener;
-
-    // CRITICAL FIX: Check if there's already an active stream for this conversation
+    // If a stream is already active for this conversation, abort it BEFORE
+    // registering this call's listener. The dispatched event must reach the
+    // previous sendPayload's listener (still keyed on window) and must not
+    // reach ours — otherwise the new AbortController is aborted by its own
+    // dispatch and the request below fails immediately with AbortError.
     if (streamedContentMap.has(conversationId) && streamedContentMap.get(conversationId) !== '') {
         console.warn('🔄 Stream already active for conversation:', conversationId);
         console.warn('Aborting existing stream before starting new one');
         document.dispatchEvent(new CustomEvent('abortStream', { detail: { conversationId } }));
         await new Promise(resolve => setTimeout(resolve, 300));
     }
+
+    // Remove any stale listener from a previous sendPayload call for the same conversation
+    if ((window as any)[`abortListener_${conversationId}`]) {
+        document.removeEventListener('abortStream', (window as any)[`abortListener_${conversationId}`]);
+    }
+    document.addEventListener('abortStream', abortListener as unknown as EventListener);
+    (window as any)[`abortListener_${conversationId}`] = abortListener;
 
     try {
         // Filter out empty messages
@@ -3023,7 +3037,14 @@ export const sendPayload = async (
         // Also drop the window-level reference set when the listener was
         // registered; without this, each sendPayload call leaks a closure
         // that pins streamedContentMap and message arrays for the session.
-        try { delete (window as any)[`abortListener_${conversationId}`]; } catch (_) { }
+        // Only if the slot still points at THIS call's listener: a later
+        // sendPayload for the same conversation may own it by now, and
+        // deleting its entry would orphan that stream's abort handling.
+        try {
+            if ((window as any)[`abortListener_${conversationId}`] === abortListener) {
+                delete (window as any)[`abortListener_${conversationId}`];
+            }
+        } catch (_) { }
         // Release Screen Wake Lock and stop listening for visibility changes
         document.removeEventListener('visibilitychange', _onVisibilityChangeForWakeLock);
         if (_wakeLock) {
