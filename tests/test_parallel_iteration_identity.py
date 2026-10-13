@@ -47,6 +47,11 @@ class _FakeExecutorTextThenTool:
     """Text delta, tool call, second text delta — exercises the
     task_text_delta, task_tool_call and task_progress emission sites in
     one pass."""
+    # Read by execute_task_block for the run UI's model facts; the real
+    # StreamingToolExecutor always has them.
+    model_config = {"name": "fake", "token_limit": 100_000}
+    model_id = "fake-id"
+    endpoint = "bedrock"
 
     def __init__(self, *args, **kwargs):
         pass
