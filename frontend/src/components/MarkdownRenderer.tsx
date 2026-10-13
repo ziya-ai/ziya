@@ -5657,7 +5657,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'table':
                     const tableToken = token as Tokens.Table;
                     return (
-                        <table key={sk} style={{ borderCollapse: 'collapse', width: '100%', marginBottom: '1em' }}>
+                        <DraggableTable key={sk} markdown={tableToken.raw} isDarkMode={isDarkMode}>
+                        <table style={{ borderCollapse: 'collapse', width: '100%', marginBottom: 0 }}>
                             <thead>
                                 <tr>
                                     {tableToken.header.map((cell, cellIndex) => (
@@ -5679,6 +5680,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                 ))}
                             </tbody>
                         </table>
+                        </DraggableTable>
                     );
 
                 case 'html':
