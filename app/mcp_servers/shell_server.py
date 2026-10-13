@@ -967,10 +967,20 @@ class ShellServer:
         checks the actual commands against the allowlist.
         Returns (allowed: bool, denial_reason: str).
         """
+        raw_command = command
         # Split into fine-grained segments by ; \n && || | using the
         # quote-aware splitter. A naive re.split() would tear apart operators
         # that appear *inside* quotes (e.g. grep -E "\|"), leaving a dangling
         # quote char that then fails the allowlist as a bogus command word.
+        #
+        # Heredoc bodies are stripped first: they are stdin data, not shell
+        # syntax.  This route validated the RAW command, so a loop followed
+        # by ``python3 - <<'EOF'`` had every Python line checked as a shell
+        # command (``'import' is not allowed``) while the plain heredoc
+        # route had stripped bodies for a long time.  What the shell DOES
+        # run from an unquoted body -- its ``$(...)``/backtick
+        # substitutions -- is validated separately below.
+        command = _strip_heredoc_bodies(command)
         parts = [seg for _op, seg in self._split_by_shell_operators(command)]
 
         for part in parts:
@@ -1019,6 +1029,12 @@ class ShellServer:
             sub_ok, sub_reason = self.is_command_allowed(sub.strip())
             if not sub_ok:
                 return False, sub_reason
+        # Substitutions the shell expands inside unquoted heredoc bodies
+        # (stripped from ``command`` above, so not yet seen).
+        for sub in _heredoc_body_commands(raw_command):
+            sub_ok, sub_reason = self.is_command_allowed(sub.strip())
+            if not sub_ok:
+                return False, f"(in heredoc substitution) {sub_reason}"
 
         return True, ""
 
@@ -1662,6 +1678,14 @@ class ShellServer:
                 ok, reason = self.is_command_allowed(hd_line)
                 if not ok:
                     return False, reason
+            # An UNQUOTED delimiter means the shell expands ``$(...)`` and
+            # backticks inside the body.  Those are commands the shell runs,
+            # and stripping the body had hidden them from the allowlist:
+            # ``cat <<EOF\n$(cmd)\nEOF`` ran ``cmd`` unvalidated.
+            for sub in _heredoc_body_commands(command):
+                ok, reason = self.is_command_allowed(sub.strip())
+                if not ok:
+                    return False, f"(in heredoc substitution) {reason}"
             return True, ""
 
         # Strip whole-line shell comments, then KEEP every remaining line.
