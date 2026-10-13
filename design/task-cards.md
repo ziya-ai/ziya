@@ -363,8 +363,8 @@ renders.
 Because the contract is by-id, an operation that changes ids must carry
 the references with it.  `TaskCardStorage.duplicate` remints every
 block id (correctly — a shared id would let one card's scope approval
-authorize the other's block), and `create(force_new_ids=True)` returns
-the old→new map so `_rewrite_sibling_refs` can rewrite every
+authorize the other's block), and `create(force_new_ids=True)` records
+the old→new map as it remints so `_rewrite_sibling_refs` can rewrite every
 `sibling("old")` in every string field of the clone.  Ids not in the map
 (a reference to a calling card's block) are left verbatim.  Fill-only
 saves record no map and rewrite nothing.
