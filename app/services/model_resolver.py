@@ -251,19 +251,65 @@ def _unsupported_params_for_model_id(model_id: str) -> set:
     return set()
 
 
+# Service-call Bedrock clients, one per (profile, region).  Separate from
+# app/providers/bedrock_client_cache.py (the interactive clients, keyed per
+# profile/region/model_id and wrapped with CustomBedrockClient): nothing on
+# this path binds a model to the client -- modelId, inferenceConfig and the
+# service tier are per-converse() arguments -- so one client serves every
+# model and conversation on the same profile and region.  boto3 clients are
+# thread-safe; the Session that builds one is not, so each Session is used
+# only under the lock to create its client and is never shared afterwards.
+import threading as _threading
+
+_SERVICE_CLIENTS: Dict[tuple, Any] = {}
+_SERVICE_CLIENTS_LOCK = _threading.Lock()
+
+
+def _service_bedrock_client(profile: str, region: str) -> Any:
+    """Cached bedrock-runtime client for service calls.  Blocking: botocore
+    scans its data directories and reads credential files, so call it via
+    asyncio.to_thread."""
+    key = (profile, region)
+    with _SERVICE_CLIENTS_LOCK:
+        client = _SERVICE_CLIENTS.get(key)
+        if client is None:
+            import boto3
+            from botocore.config import Config as BotoConfig
+            client = boto3.Session(profile_name=profile).client(
+                "bedrock-runtime",
+                region_name=region,
+                # Shared by concurrent service calls; botocore's default pool
+                # of 10 would discard connections under parallel extraction.
+                config=BotoConfig(read_timeout=30, max_pool_connections=25,
+                                  retries={"max_attempts": 2, "mode": "adaptive"}),
+            )
+            _SERVICE_CLIENTS[key] = client
+        return client
+
+
+def _drop_service_bedrock_client(profile: str, region: str, client: Any) -> None:
+    """Evict ``client`` if it is still the cached one (another call may
+    already have replaced it)."""
+    with _SERVICE_CLIENTS_LOCK:
+        if _SERVICE_CLIENTS.get((profile, region)) is client:
+            del _SERVICE_CLIENTS[(profile, region)]
+
+
+def clear_service_client_cache() -> None:
+    with _SERVICE_CLIENTS_LOCK:
+        _SERVICE_CLIENTS.clear()
+
+
 async def _call_bedrock(config, system_prompt, user_message, max_tokens, temperature) -> str:
     """Call via Bedrock Converse API."""
     import asyncio
-    import boto3
-    from botocore.config import Config as BotoConfig
 
     profile = os.environ.get("ZIYA_AWS_PROFILE") or os.environ.get("AWS_PROFILE", "default")
-    session = boto3.Session(profile_name=profile)
-    client = session.client(
-        "bedrock-runtime",
-        region_name=config.get("region", "us-east-1"),
-        config=BotoConfig(read_timeout=30, retries={"max_attempts": 2, "mode": "adaptive"}),
-    )
+    region = config.get("region", "us-east-1")
+
+    # Client construction scans botocore's data directories and reads
+    # credential files; the stall watchdog caught that on the event loop.
+    client = await asyncio.to_thread(_service_bedrock_client, profile, region)
     unsupported = _unsupported_params_for_model_id(config["model_id"])
     inference_config: dict = {"maxTokens": max_tokens}
     if "temperature" not in unsupported:
@@ -277,9 +323,9 @@ async def _call_bedrock(config, system_prompt, user_message, max_tokens, tempera
 
     # Run synchronous boto3 call in a thread to avoid blocking the event loop.
     # Without this, background memory extraction starves all other coroutines.
-    async def _converse(extra):
+    async def _converse(c, extra):
         return await asyncio.to_thread(
-            client.converse,
+            c.converse,
             modelId=config["model_id"],
             system=[{"text": system_prompt}],
             messages=[{"role": "user", "content": [{"text": user_message}]}],
@@ -287,14 +333,29 @@ async def _call_bedrock(config, system_prompt, user_message, max_tokens, tempera
             **extra,
         )
 
+    async def _send(extra):
+        # A cached client keeps the credentials it was built with, so a
+        # refresh written to ~/.aws/credentials (ada) is not seen until it is
+        # rebuilt.  On an auth failure, rebuild once from a fresh Session.
+        nonlocal client
+        try:
+            return await _converse(client, extra)
+        except Exception as e:
+            from app.utils.infra_errors import infra_kind
+            if infra_kind(e) != "authentication_error":
+                raise
+            _drop_service_bedrock_client(profile, region, client)
+            client = await asyncio.to_thread(_service_bedrock_client, profile, region)
+            return await _converse(client, extra)
+
     try:
-        response = await _converse(tier_kwargs)
+        response = await _send(tier_kwargs)
     except Exception as e:
         if not (tier_kwargs and _service_tier.is_service_tier_unsupported_error(str(e))):
             raise
         # Tier rejection is per model: remember it and retry once at standard.
         _service_tier.mark_unsupported(config["model_id"], tier_kwargs["serviceTier"]["type"])
-        response = await _converse({})
+        response = await _send({})
     return _extract_converse_text(response)
 
 
