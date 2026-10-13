@@ -109,7 +109,15 @@ def _view_model(items: List[bench_service.BenchItem], result, conversation_id: O
 
 
 @router.get("")
-async def get_bench(project_id: str, conversation_id: Optional[str] = Query(None)) -> Dict[str, Any]:
+def get_bench(project_id: str, conversation_id: Optional[str] = Query(None)) -> Dict[str, Any]:
+    # Plain ``def`` (Starlette worker pool), like the other handlers here that
+    # await nothing: collect_items reads and decrypts every skill file, and as
+    # a zero-await ``async def`` that ran on the event loop.  The stall
+    # watchdog caught the loop inside SkillStorage.list under this handler
+    # (2026-10-09) while two folder scans held the GIL -- the bench is fetched
+    # on every conversation open, so nothing was served while it waited.
+    # ``get_browse`` / ``put_place`` stay ``async`` because they await.
+    # tests/test_bench_api_not_event_loop_blocking.py enforces this.
     try:
         items = bench_service.collect_items(project_id)
     except HTTPException:
@@ -119,7 +127,7 @@ async def get_bench(project_id: str, conversation_id: Optional[str] = Query(None
 
 
 @router.get("/detail")
-async def get_detail(project_id: str, key: str = Query(...)) -> Dict[str, Any]:
+def get_detail(project_id: str, key: str = Query(...)) -> Dict[str, Any]:
     """Card back: description, body or tools, path.  Loaded when a card turns."""
     try:
         return bench_service.item_detail(project_id, key)
@@ -128,7 +136,7 @@ async def get_detail(project_id: str, key: str = Query(...)) -> Dict[str, Any]:
 
 
 @router.put("/environment")
-async def put_environment(project_id: str, body: EnvironmentRequest,
+def put_environment(project_id: str, body: EnvironmentRequest,
                           conversation_id: Optional[str] = Query(None)) -> Dict[str, Any]:
     """Toggle a builtin tool category (user-wide; environment is not a lens)."""
     try:
@@ -145,7 +153,7 @@ async def put_environment(project_id: str, body: EnvironmentRequest,
 
 
 @router.put("/tool")
-async def put_tool(project_id: str, body: ToolRequest,
+def put_tool(project_id: str, body: ToolRequest,
                    conversation_id: Optional[str] = Query(None)) -> Dict[str, Any]:
     """Enable/disable one tool on an MCP server.
 
@@ -167,7 +175,7 @@ async def put_tool(project_id: str, body: ToolRequest,
 
 
 @router.post("/reauthorize")
-async def post_reauthorize(project_id: str, body: ReauthorizeRequest,
+def post_reauthorize(project_id: str, body: ReauthorizeRequest,
                            conversation_id: Optional[str] = Query(None)) -> Dict[str, Any]:
     """Lift a rug-pull quarantine from the card's drawer.
 
@@ -197,13 +205,13 @@ def _source_dict(s) -> Dict[str, Any]:
 
 
 @router.get("/sources")
-async def get_sources(project_id: str) -> Dict[str, Any]:
+def get_sources(project_id: str) -> Dict[str, Any]:
     from app.services import skill_sources as ss
     return {"sources": [_source_dict(s) for s in ss.list_sources()]}
 
 
 @router.post("/sources")
-async def post_source(project_id: str, body: SourceRequest) -> Dict[str, Any]:
+def post_source(project_id: str, body: SourceRequest) -> Dict[str, Any]:
     from app.services import skill_sources as ss
     try:
         ss.add_source(body.model_dump(exclude_none=True))
@@ -213,7 +221,7 @@ async def post_source(project_id: str, body: SourceRequest) -> Dict[str, Any]:
 
 
 @router.delete("/sources/{source_id}")
-async def delete_source(project_id: str, source_id: str) -> Dict[str, Any]:
+def delete_source(project_id: str, source_id: str) -> Dict[str, Any]:
     from app.services import skill_sources as ss
     ss.remove_source(source_id)
     return {"sources": [_source_dict(s) for s in ss.list_sources()]}
@@ -233,7 +241,7 @@ async def get_browse(project_id: str, q: str = Query(""), source: Optional[str] 
 
 
 @router.post("/install")
-async def post_install(project_id: str, body: InstallRequest) -> Dict[str, Any]:
+def post_install(project_id: str, body: InstallRequest) -> Dict[str, Any]:
     """Fetch + write + (optionally) place in one gesture."""
     from app.services import skill_sources as ss
     if body.layer not in ("user", "project"):
