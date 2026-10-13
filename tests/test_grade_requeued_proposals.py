@@ -33,7 +33,7 @@ def _no_embeddings(monkeypatch):
 
 
 def _add(store, content, layer):
-    return store.add(MemoryProposal(content=content, layer=layer, tags=["kuiper"]),
+    return store.add(MemoryProposal(content=content, layer=layer, tags=["projb"]),
                      activity_count=100)
 
 
@@ -42,7 +42,7 @@ GOOD = {"atomicity": 0.95, "self_containment": 0.9, "durability": 0.9}
 
 def test_graded_record_promotes_through_lifecycle(tmp_path):
     store = ProposalsStore(memory_dir=tmp_path)
-    pid = _add(store, "Kuiper Gen2 GA caps each merlin at 10 spots in 500 MHz mode.",
+    pid = _add(store, "Gen2 GA caps each shard at 10 tenants in high-throughput mode.",
                "decision")
     ctr = 100 + FAST_TRACK_MIN_AGE
     assert _evaluate_promotion(store.get(pid), ctr) is None      # ungraded: no fast track
