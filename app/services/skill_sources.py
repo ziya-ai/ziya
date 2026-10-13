@@ -44,7 +44,7 @@ class SkillListing:
     name: str
     description: str
     version: str
-    requires: List[str] = field(default_factory=list)   # e.g. ["mcp:kuiper-jira-mcp"]
+    requires: List[str] = field(default_factory=list)   # e.g. ["mcp:jira-mcp"]
     support_level: Optional[str] = None                  # a badge on a hit, never a gate (8b)
     matched: List[str] = field(default_factory=list)     # skills in a package that hit a query
 
