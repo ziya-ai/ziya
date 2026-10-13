@@ -1,5 +1,11 @@
 """
 Skill API endpoints.
+
+Handlers here are plain ``def``, not ``async def``: they await nothing and
+do synchronous file I/O (SkillStorage construction, SKILL.md discovery,
+skill-store reads/writes), which as ``async def`` ran on the event loop and
+stalled every other request.  Starlette runs plain ``def`` handlers on its
+worker threadpool.  ``tests/test_skills_not_event_loop_blocking.py`` enforces this.
 """
 from fastapi import APIRouter, HTTPException
 from typing import List
@@ -31,19 +37,19 @@ def get_skill_storage(project_id: str) -> SkillStorage:
     return storage
 
 @router.get("", response_model=List[Skill])
-async def list_skills(project_id: str):
+def list_skills(project_id: str):
     """List all skills for a project (includes built-ins)."""
     storage = get_skill_storage(project_id)
     return storage.list()
 
 @router.post("", response_model=Skill)
-async def create_skill(project_id: str, data: SkillCreate):
+def create_skill(project_id: str, data: SkillCreate):
     """Create a new custom skill."""
     storage = get_skill_storage(project_id)
     return storage.create(data)
 
 @router.get("/{skill_id}", response_model=Skill)
-async def get_skill(project_id: str, skill_id: str):
+def get_skill(project_id: str, skill_id: str):
     """Get a specific skill."""
     storage = get_skill_storage(project_id)
     skill = storage.get(skill_id)
@@ -55,7 +61,7 @@ async def get_skill(project_id: str, skill_id: str):
     return skill
 
 @router.put("/{skill_id}", response_model=Skill)
-async def update_skill(project_id: str, skill_id: str, data: SkillUpdate):
+def update_skill(project_id: str, skill_id: str, data: SkillUpdate):
     """Update a skill (only custom skills, not built-ins)."""
     storage = get_skill_storage(project_id)
     
@@ -69,7 +75,7 @@ async def update_skill(project_id: str, skill_id: str, data: SkillUpdate):
         raise HTTPException(status_code=403, detail=str(e))
 
 @router.delete("/{skill_id}")
-async def delete_skill(project_id: str, skill_id: str):
+def delete_skill(project_id: str, skill_id: str):
     """Delete a skill (only custom skills, not built-ins)."""
     storage = get_skill_storage(project_id)
     
