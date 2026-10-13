@@ -103,6 +103,13 @@ class ExecutionContext:
     # execute_block as the tree is walked.  Root→leaf order.
     scope_stack: List[Optional[TaskScope]] = field(default_factory=list)
     storage: Optional[TaskRunStorage] = None
+    # No human can answer a consent prompt during this run.  Set by the CLI
+    # card runner (``ziya task``), which has a terminal but no approval
+    # panel.  Scheduler fires are detected separately from the persisted
+    # ``TaskRun.launch_context``; this flag covers the run that persists
+    # nothing.  Consulted by execute_task_block to withhold ``ask``-mode
+    # builtins from the tool payload (task_tool_floor.unattended_denied_tools).
+    headless: bool = False
     # Per-block pass-retention counters.  Keyed by block.id.
     pass_counts: Dict[str, int] = field(default_factory=dict)
     # Run-wide count of self-improvement card edits applied, across every

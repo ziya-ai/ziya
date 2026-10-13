@@ -142,6 +142,44 @@ def filter_tools_by_scope(
     return [t for t in tools if tool_is_allowed(getattr(t, "name", ""), allowed)]
 
 
+def unattended_denied_tools(
+    tools: List[Any], project_root: Optional[str] = None,
+) -> List[str]:
+    """Names of tools that cannot be offered to a run with no human on it.
+
+    A builtin that declares ``consent_default = "ask"`` (the ``git`` tool,
+    ``memory_delete``) parks every mutating call in the consent ledger until
+    someone answers, with a 24 h TTL.  A headless run — ``ziya task`` in a
+    terminal, or a scheduler fire — has nobody to answer: the sweep run
+    cli-695c6e36c9f8 (2026-10-12) sat four hours on a ``git commit`` prompt
+    that no surface rendered.  Rather than teach the gate to refuse, the
+    tool is withheld from the payload, so the model never sees a ``git``
+    builtin and uses the shell ``git`` the task instructions prescribe.
+
+    A project that set the tool ``autonomous`` (app/utils/project_tool_modes)
+    has opted into unattended use and keeps it.  Never raises; a tool whose
+    declaration cannot be read is treated as not asking.
+    """
+    denied: List[str] = []
+    for t in tools:
+        inst = getattr(t, "tool_instance", t)
+        try:
+            if getattr(inst, "consent_default", None) != "ask":
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        name = getattr(t, "name", "") or ""
+        try:
+            from app.utils.project_tool_modes import mode_for
+            if mode_for(name, project_root) == "autonomous":
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        if name:
+            denied.append(name)
+    return denied
+
+
 def unmatched_scope_tools(
     tools: List[Any], scope_tools: Optional[Iterable[str]],
 ) -> List[str]:

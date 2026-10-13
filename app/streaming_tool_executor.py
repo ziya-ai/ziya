@@ -1438,7 +1438,8 @@ class StreamingToolExecutor:
         )
 
     async def _load_and_prepare_tools(self, extra_tools=None, tool_allowlist=None,
-                                      messages=None, project_root=None, conversation_id=None):
+                                      messages=None, project_root=None, conversation_id=None,
+                                      tool_denylist=None, unattended=False):
         """Load MCP tools, convert schemas, deduplicate, and prepare for provider.
 
         ``tool_allowlist`` is an optional iterable of tool names (a Task
@@ -1449,6 +1450,11 @@ class StreamingToolExecutor:
         ``create_secure_mcp_tools()``; a caller-side filter (which is what
         task_executor did) was silently discarded, so every task ran with the
         full tool set while its prompt claimed otherwise.
+
+        ``tool_denylist`` is the complement, from the same caller: tools a
+        headless task run must never be offered because their consent gate
+        would wait for a human who is not there (see
+        app/utils/task_tool_floor.py::unattended_denied_tools).
 
         ``messages`` / ``project_root`` feed session-signal gating
         (app/utils/tool_gating.py): builtin categories that cannot succeed
@@ -1493,6 +1499,25 @@ class StreamingToolExecutor:
                 f"🧰 BENCH: withheld {_n_withheld} tool(s) from shelved "
                 f"server(s) {sorted(_withheld)}"
             )
+
+        # Headless denial.  After project modes and before the allowlist, so
+        # a scope that names a denied tool cannot restore it.  Re-derived HERE
+        # from the post-project-modes list when ``unattended`` is set, not
+        # only taken from the caller's names: the git builtin is absent from
+        # create_secure_mcp_tools() and is ADDED by the project-mode step
+        # above (``toolModes: {git: gated}``), so a denylist computed from
+        # the bare registry upstream was empty and the first headless run
+        # after that change still parked on ``git commit``
+        # (cli-3e094857dc39).
+        _deny = set(tool_denylist or ())
+        if unattended:
+            from app.utils.task_tool_floor import unattended_denied_tools
+            _deny |= set(unattended_denied_tools(all_tools, project_root))
+        if _deny:
+            _before = len(all_tools)
+            all_tools = [t for t in all_tools if getattr(t, "name", "") not in _deny]
+            if len(all_tools) != _before:
+                logger.info(f"🔒 TOOL_DENY: headless run withheld {sorted(_deny)}")
 
         # Apply the task-scope allowlist before anything else derives from
         # all_tools (name sets, schemas, the provider payload) so no
@@ -2441,7 +2466,7 @@ class StreamingToolExecutor:
         except (ImportError, KeyError, AttributeError, OSError, ValueError) as calib_error:
             logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
 
-    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
         """Public entry point — wraps _stream_with_tools_impl with refcounted
         cleanup of the shared per-conversation pending-feedback list (see
         app.server.pending_feedback_lists).  Multiple concurrent generators
@@ -2500,7 +2525,7 @@ class StreamingToolExecutor:
                         pending_feedback_lists.pop(conversation_id, None)
                     pending_feedback_refcounts.pop(conversation_id, None)
 
-    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False, _monitor_holder: Optional[List[Optional[asyncio.Task]]] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # Re-assert the request-scoped project root into THIS task's context.
         #
         # An async generator borrows the caller's context on each __anext__ --
@@ -2716,6 +2741,8 @@ class StreamingToolExecutor:
         all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools = await self._load_and_prepare_tools(
             extra_tools, tool_allowlist=tool_allowlist,
             messages=messages, project_root=project_root, conversation_id=conversation_id,
+            tool_denylist=tool_denylist,
+            unattended=unattended,
         )
         from app.mcp.enhanced_tools import DirectMCPTool
         from app.mcp.manager import get_mcp_manager

@@ -335,6 +335,7 @@ async def execute_task_block(
     *,
     pre_authorized_shell_commands: Optional[List[str]] = None,
     pre_authorized_writable: Optional[List[dict]] = None,
+    headless: bool = False,
 ) -> Artifact:
     """Execute a single Task block in a sandboxed model invocation.
 
@@ -729,13 +730,53 @@ async def execute_task_block(
     # the NAMES via ``tool_allowlist`` so enforcement happens where the list
     # is actually built.  The always-available floor (emit_artifact,
     # render_diagram, beads) is unioned in by the shared resolver.
+    #
+    # A run with no human on it (``headless`` from the CLI runner, or a
+    # scheduler fire recorded as ``launch_context="headless"``) also
+    # WITHHOLDS every builtin that would park a call in the consent ledger
+    # waiting for an answer nobody can give — see
+    # task_tool_floor.unattended_denied_tools.  Applied to ``tools`` here
+    # (so the prompt's tool list agrees) and sent as ``tool_denylist`` to
+    # the executor (where the payload is built).  An explicit scope grant
+    # does not override it: the grant names a tool, not an approver.
     tools: List = []
+    tool_denylist: List[str] = []
+    _unattended = headless or (
+        _read_launch_context(_hb_storage, run_id) == "headless"
+    )
     try:
         from ..mcp.enhanced_tools import create_secure_mcp_tools
         from app.utils.task_tool_floor import (
             filter_tools_by_scope, unmatched_scope_tools,
+            unattended_denied_tools,
         )
         all_tools = create_secure_mcp_tools()
+        # Project tool modes add enableable tools the registry omits: this
+        # project's ``toolModes: {git: gated}`` is how the git builtin exists
+        # at all.  The executor applies the same step before its own filter,
+        # so computing the denial from the bare registry missed git entirely
+        # (run cli-3e094857dc39 parked on ``git commit`` with an empty
+        # denylist).  The executor recomputes under ``unattended`` too; this
+        # keeps the decisions note and the prompt's tool list accurate.
+        try:
+            from app.utils.project_tool_modes import apply_to_tools as _apply_modes
+            from ..mcp.enhanced_tools import DirectMCPTool as _Direct
+            all_tools, _, _ = _apply_modes(all_tools, effective_root, wrap=_Direct)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("project tool modes not applied in task executor: %s", e)
+        if _unattended:
+            tool_denylist = unattended_denied_tools(all_tools, effective_root)
+            if tool_denylist:
+                all_tools = [t for t in all_tools
+                             if getattr(t, "name", "") not in tool_denylist]
+                decisions.append(
+                    f"headless run: tools needing approval withheld: "
+                    f"{sorted(tool_denylist)}"
+                )
+                logger.info(
+                    f"📋 TASK_EXEC: {block.name!r} headless — withheld "
+                    f"{sorted(tool_denylist)} (consent would never be answered)"
+                )
         tools = filter_tools_by_scope(all_tools, scope_tools)
         if scope_tools:
             missing = unmatched_scope_tools(all_tools, scope_tools)
