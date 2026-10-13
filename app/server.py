@@ -868,7 +868,8 @@ async def _initialize_memory_background():
                 get_embedding_provider, get_embedding_cache,
                 backfill_embeddings, NoopProvider,
             )
-            provider = get_embedding_provider()
+            # First call in the process probes Bedrock; keep it off the loop.
+            provider = await asyncio.to_thread(get_embedding_provider)
             if not isinstance(provider, NoopProvider):
                 cache = get_embedding_cache()
                 all_ids = [m.id for m in memories]
