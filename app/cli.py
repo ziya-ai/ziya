@@ -4504,7 +4504,8 @@ def cmd_task(args):
         # Full init for actual execution (setup_env already called above).
         _init_and_authenticate(args, skip_setup_env=True)
         rc = asyncio.run(_run_with_mcp(
-            run_card(root, args.card, stream=not args.no_stream)))
+            run_card(root, args.card, stream=not args.no_stream,
+                     strict=True if getattr(args, 'strict', False) else None)))
         sys.exit(rc)
 
     tasks = load_tasks(root)
@@ -4583,7 +4584,8 @@ def cmd_task(args):
         # from the deck tile is already authorized here.
         _init_and_authenticate(args, skip_setup_env=True)
         rc = asyncio.run(_run_with_mcp(
-            run_card(root, task_name, stream=not args.no_stream)))
+            run_card(root, task_name, stream=not args.no_stream,
+                     strict=True if getattr(args, 'strict', False) else None)))
         sys.exit(rc)
 
     task_def = tasks[task_name]
@@ -4996,6 +4998,9 @@ Examples:
                              help='Run a GUI task card by id or name (in-process)')
     task_parser.add_argument('--list-cards', action='store_true',
                              dest='list_cards', help='List available task cards')
+    task_parser.add_argument('--strict', action='store_true',
+                             help='Refuse to run a card whose required skills, tools or MCP '
+                                  'servers are missing (default: warn and run without them)')
     task_parser.add_argument('--show', metavar='TASK',
                              help='Show the prompt for a task')
     task_parser.set_defaults(func=cmd_task)
