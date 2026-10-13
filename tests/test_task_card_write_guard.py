@@ -91,6 +91,26 @@ class TestGuard:
                 "model_id_override": None, "model_endpoint": None}
         assert find_scope_violations(_tree(sparse), _tree(full)) == []
 
+    def test_cwd_change_is_not_a_permissions_change(self):
+        # cwd is not in the signing hash (task_escalation_block keys only
+        # shell_commands and writable paths) and the executor confines
+        # it to the project root; the model may set it per block.  Each
+        # of: add cwd to a scoped block, change it, add a cwd-only scope
+        # to an unscoped block.
+        with_cwd = dict(SHELL_SCOPE, cwd="services/api")
+        assert find_scope_violations(_tree(SHELL_SCOPE), _tree(with_cwd)) == []
+        moved = dict(SHELL_SCOPE, cwd="services/web")
+        assert find_scope_violations(_tree(with_cwd), _tree(moved)) == []
+        assert find_scope_violations(_tree(), _tree({"cwd": "services/api"})) == []
+
+    def test_cwd_change_does_not_mask_a_grant_change(self):
+        # Pairing for the exemption above: dropping cwd from the compare
+        # must not let a shell grant ride along with it.
+        with_cwd = dict(SHELL_SCOPE, cwd="services/api")
+        widened = dict(with_cwd, shell_commands=["pytest", "rm"])
+        found = find_scope_violations(_tree(with_cwd), _tree(widened))
+        assert len(found) == 1 and "differs" in found[0]
+
     def test_structure_edit_without_scope_changes_passes(self):
         stored = _tree(SHELL_SCOPE)
         submitted = _tree(SHELL_SCOPE, extra_child={
