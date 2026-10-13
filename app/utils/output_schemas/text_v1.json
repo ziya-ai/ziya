@@ -1,0 +1,7 @@
+{
+  "$id": "ziya:text/v1",
+  "title": "text",
+  "description": "Non-empty prose (a text part).",
+  "type": "string",
+  "minLength": 1
+}

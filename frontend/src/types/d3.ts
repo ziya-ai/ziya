@@ -32,6 +32,14 @@ export interface D3RenderPlugin {
      * spec width/height is filled from the renderer's props (600x400).
      */
     ownsSpecDimensions?: boolean;
+    /**
+     * The plugin handles its own pointer gestures (pan, zoom, brush, node
+     * drag). D3Renderer then does not make the container a native drag
+     * source for exporting the rendered image, since a native drag would
+     * take over those gestures. Plugins that leave this unset get drag-out:
+     * the rendered diagram can be dragged into Slack, Finder, documents.
+     */
+    pointerInteractive?: boolean;
     canHandle: (spec: any) => boolean;
     isDefinitionComplete?: (definition: string) => boolean;  // Optional method to check if a diagram definition is complete
     render: (container: HTMLElement, d3: any, spec: any, isDarkMode: boolean) => void | (() => void) | Promise<void | (() => void)>;

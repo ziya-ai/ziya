@@ -25,10 +25,12 @@ import struct
 import sys
 import threading
 import time
+from collections import deque
 from typing import Any, Callable, Dict, Optional
 
 from app.shadow import SHADOW_PROTOCOL_VERSION
-from app.shadow.journal import JournalReader, JournalWriter
+from app.shadow.journal import (JournalReader, JournalWriter, compile_search_pattern,
+                                searchable_text)
 from app.shadow.lease import LeaseSlot, HEARTBEAT_TIMEOUT_S as _HEARTBEAT_TIMEOUT_S
 
 MAX_REQUEST_BYTES = 64 * 1024
@@ -668,6 +670,47 @@ class ShadowSocketServer:
             if (now - last_change) >= quiet_s:
                 return {"idle": True, "tail_seq": seq}
         return {"idle": False, "tail_seq": last_seq, "timed_out": True}
+
+    # -- wait (event-driven; design/shadow-wait.md) ----------------------------
+
+    WAIT_CONDITIONS = ("exit", "change", "pattern", "lines", "quiet", "ask")
+    # Per-request cap.  Long waits are the client chaining requests, each a
+    # point where a user stop can take effect (asyncio.to_thread cannot
+    # interrupt a blocked socket read, but a cancelled chain issues no next hop).
+    WAIT_CAP_MS = 60000
+    WAIT_MAX_TAIL_RECORDS = 100
+    _WAIT_DRAIN = 2000   # records read per pass
+
+    def _op_wait(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Block until a journal condition holds; return the new records' tail.
+
+        The condition matcher is shared with the job runner
+        (``app.utils.journal_wait``); this op supplies what is specific to a
+        live shadow session: a journal listener that wakes the waiter per
+        append, the pending human ask, and ``session_ended`` when the host
+        is stopping, which is returned whatever ``until`` says.
+        """
+        from app.utils.journal_wait import parse_wait_request, wait_on_journal
+        spec, err = parse_wait_request(
+            req, cap_ms=self.WAIT_CAP_MS, max_tail_records=self.WAIT_MAX_TAIL_RECORDS,
+            compile_pattern=compile_search_pattern)
+        if err is not None:
+            return _err(*err)
+
+        wake = threading.Event()
+
+        def on_append(_rec: Dict[str, Any]) -> None:
+            wake.set()
+
+        self.journal.add_listener(on_append)
+        try:
+            return wait_on_journal(
+                self.reader, spec, waiter=wake, searchable_text=searchable_text,
+                stopped=lambda: "session_ended" if self._stop.is_set() else None,
+                initial_ask=bool(getattr(self.entry, "pending_ask", False)),
+                drain=self._WAIT_DRAIN, now=_now)
+        finally:
+            self.journal.remove_listener(on_append)
 
     def _op_send_line(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Run one command under an active line-control lease (§6.1a, §6.3).

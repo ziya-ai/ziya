@@ -1601,6 +1601,20 @@ async def export_document_pdf(
     else:
         meta, body = parse_document(markdown)
 
+    # {{claim:…}} citations (design/evidence-ledger.md): substituted before
+    # the generic body pre-processing in split_sections.  A strict document
+    # with unknown / drifted / refuted claims raises CitationError (a
+    # ValueError, so the route answers 400 naming the ids).  Documents
+    # without an evidence: block pass through untouched.
+    evidence_report = None
+    from app.utils.evidence.citations import resolve_claim_citations
+    from app.context import get_project_root
+    body, _report = resolve_claim_citations(
+        body, meta, project_root=get_project_root(), document=name or "inline",
+    )
+    if _report is not None:
+        evidence_report = _report.summary()
+
     sections = split_sections(body)
     doc_title = title or meta.get("title") or (name or "Ziya Document")
     display_date = format_document_date(meta.get("date"))
@@ -1728,5 +1742,6 @@ async def export_document_pdf(
         "pages_before_squeeze": pages_before,
         "float_figures": float_figures,
         "float_applied": float_applied,
+        "evidence": evidence_report,
     }
     return pdf_bytes, out_meta

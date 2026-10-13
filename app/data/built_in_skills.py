@@ -100,6 +100,26 @@ at full fidelity in the PDF.
    headless Chromium; its JSON body states what is missing and whether it
    can be installed here at all. Relay that message verbatim — do not
    substitute an install recipe of your own, and do not probe further.
+6. Numbers come from the evidence ledger, not from your memory. Record each
+   figure you will report with `ledger_record` (observation + claim under a
+   namespace), then cite it in the document instead of typing it:
+     ---
+     evidence:
+       namespace: audit-2026-03
+       policy: warn            # strict refuses drifted/refuted/unknown claims
+     ---
+     The error rate was {{claim:s1.error_rate|fmt=.2%}}; the median host loses
+     {{claim:s1.per_unit.distribution.median|fmt=,.0f|unit}} per day.
+   Export substitutes the current value, appends an Evidence appendix
+   (claim, value, status, population, source hash, as-of) and reports the
+   count of hand-typed numbers in the X-Ziya-Evidence response header.
+   `fmt=` is a Python format spec; `unit` appends the claim's unit, `unit=X`
+   a literal. A citation inside a code fence is left as written.
+   From a shell script, record with `ziya ledger observe --source sql
+   --sql-file q.sql --result out.csv` (prints the observation id) and
+   `ziya ledger claim ns.key VALUE --from OBS_ID --unit U --derivation EXPR`;
+   the shell tool's environment carries the scope token, so provenance is
+   automatic. `ziya ledger verify --prefix ns` exits 1 on a drifted claim.
 
 ## Figures that print well
 The text column is ~673 px (178 mm); a figure's smallest text must stay
@@ -909,9 +929,11 @@ fan-out reading `{{previous_sibling.summary}}` dispatched zero iterations.
 
 ## Scope (what a task can touch)
 
-Each Task block may carry a `scope` object narrowing what that specific
-task is allowed to do — scope does NOT cascade to children, every Task
-sets its own:
+Any block may carry a `scope` object. The PERMISSION fields (`paths`,
+`tools`, `skills`, `shell_commands`) are additive: a container's grants
+flow down to every task beneath it and a Task adds its own. `cwd` and
+the model fields are singular and flow down with the innermost value
+winning (see below).
 - `paths`: list of `{path, is_dir, read, write, context}` entries. `read`
   is advisory; `write` is enforced (file_write is blocked outside granted
   writable paths); `context` preloads that file's content into the
@@ -921,6 +943,17 @@ sets its own:
 - `shell_commands`: per-task shell-command grants (literal first-token
   match, or `"re:<pattern>"` against the full command line). Additive
   over the base shell policy; never unlocks `sudo`/`vi`/etc.
+- `cwd`: OPTIONAL working directory for the task's tools (shell, file
+  reads/writes, relative paths), as a path relative to the project root
+  (an absolute path inside the root also works). Settable on ANY layer —
+  card root, Group, Parallel, Repeat, Until, Schedule, or Task — and
+  flows down: a Task runs in the innermost `cwd` set above or on it, so
+  put `"scope": {"cwd": "services/api"}` on a Group once instead of on
+  each of its tasks. It must stay INSIDE the project root: a `cwd` that
+  escapes (`../x`, or an absolute path elsewhere) is a validation error,
+  and the executor ignores it and runs at the project root. A directory
+  that does not exist yet is a warning, not an error — an earlier stage
+  may create it. Not a privilege: no signature needed.
 - `model_tier`: OPTIONAL portable model rung this task runs on — one of
   `xsmall`, `small`, `medium`, `large`, `frontier` (`medium` is the
   default/average model; `frontier` is the rare, ~20x-cost, throttled
@@ -1012,6 +1045,38 @@ any tools must list `emit_artifact` explicitly, or the task will be told
 to declare artifacts and have no tool to do it with. Tasks that omit
 `scope.tools` entirely get it automatically.
 
+**Output contracts — make required outputs checked, not hoped for.**
+When a later block depends on an output's SHAPE (a finding with
+per-unit stats, a roster), declare it instead of describing it in prose:
+- Task: `"output_contract": [{"name": "finding", "schema": "ziya:finding/v1"}]`.
+  The task's prompt then lists the fields (generated from the schema), an
+  invalid emit is refused with the failing field named, and a task that
+  ends without it gets ONE correction turn, then fails with signature
+  `output_contract:finding`. Shipped schemas: `ziya:finding/v1`,
+  `ziya:distribution/v1`, `ziya:number/v1`, `ziya:per-entity-table/v1`,
+  `ziya:text/v1`; project schemas live in `.ziya/schemas/<name>.json`
+  (usually `{"allOf": [{"$ref": "ziya:finding/v1"}], ...}` plus `required`).
+- One rule for many tasks: put `output_contract_defaults` on a State
+  block; it reaches the tasks after it in the same body. A task opts out
+  with `"output_contract": []`.
+- Containers: `"gather_contract": [{"name": "finding", "schema": ...,
+  "per": "child"}]` on a Parallel/Group (`"per": "iteration"` on a
+  Repeat/Until, `"total"` for the whole container) fails the container
+  naming every child, iteration or roster member short of `min` (default
+  1). A unit holding more than one Task needs `"producer": ["<task id>"]`
+  and that task needs an explicit `id`. `"rerun_missing": 1` on a
+  Parallel or Repeat re-runs short units once, told why.
+- References are type-checked at launch:
+  `{{sibling("lanes").outputs_all.finding.impact.per_unit}}` with a typo in
+  the path is a launch error listing the fields that exist.
+- When a State sets `evidence_namespace`, numbers inside contracted
+  outputs must be ledger claims (`{"claim": "<id>"}`), not literals.
+- Outside a card, `validate_output(schema=..., data=...)` applies the same
+  check to a value in the conversation (omit `data` to list the fields), and
+  `store_output` keeps a passing value in `.ziya/outputs/<family>.jsonl`,
+  where contracted run outputs also land; query both with
+  `analyze(sql=..., inputs={"f": ".ziya/outputs/finding.jsonl"})`.
+
 **Grouping.** Three optional fields relate parts; the viewer picks a
 layout from their SHAPE, so no label text is special-cased:
 - `group` — id linking related parts (`"issue-3"`, `"region-eu"`)
@@ -1073,14 +1138,36 @@ iteration-to-iteration memory that `{{previous}}` cannot be.
 
 ## Long-running commands
 
-If any task runs a command that legitimately takes minutes — a
-production frontend build, a full test sweep — set
-`scope.shell_timeout_secs` on that task (or on a container, since it
-merges as a MAXIMUM). The base ceiling is 300s; a command that exceeds
-it is killed mid-flight and the failure surfaces as an opaque timeout
-that the model will usually retry, burning the same minutes again.
-Declaring the need once in scope is far more reliable than hoping the
-model passes `timeout` on every invocation:
+A command that legitimately takes minutes — a production build, a full
+test sweep, a 24-slice query job — should run as a MANAGED JOB, not a
+shell call. Tell the task so in its instructions:
+
+```
+"Start the build with job_start(command=\"npm run build\",
+outputs=[\".ziya/evidence/build/\"]) and then job_wait(job_id,
+until=[\"exit\",\"pattern\"], pattern=\"ERROR|FAILED\") instead of
+run_shell_command."
+```
+
+`job_start` has no 300 s ceiling (default cap 6 h), is admitted under
+exactly the shell tool's allowlist and write policy, creates the parents
+of every declared `outputs` path before the command's first line runs,
+and on exit records the exit code and the SHA-256 of each output in the
+evidence ledger. `job_wait` blocks on `exit` / `pattern` / `lines` /
+`quiet` like `shadow_wait`; a timeout is a checkpoint with the tail so
+far, not a failure. Backgrounding operators (`&`, `nohup`, `setsid`)
+are refused inside a job command — the runner IS the background.
+
+Ownership: a job dies when the Task block that started it finishes.
+Pass `detach="run"` to let it live until the whole run ends; a later
+block can then `job_wait` on it. `keep_awake=true` holds an OS sleep
+inhibitor for the job's lifetime. A run that is HELD keeps its jobs
+running.
+
+Only when a command must stay synchronous (its exit code gates the next
+step within one tool call) fall back to `scope.shell_timeout_secs` on
+the task or a container (merges as a MAXIMUM). Without it the base
+ceiling is 300 s and the command is killed mid-flight:
 
 ```
 "scope": {"shell_commands": ["npm"], "shell_timeout_secs": 1200}

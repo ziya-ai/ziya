@@ -153,7 +153,26 @@ def set_consent_mode(tool_name: str, mode: str, op: Optional[str] = None) -> Non
     mgr.save_permissions(perms)
 
 
-def op_for_call(tool_instance: Any, args: Dict[str, Any]) -> str:
+def op_for_call(tool_instance: Any, args: Dict[str, Any],
+                conversation_id: Optional[str] = None) -> str:
+    """The consent op for one call.
+
+    A tool whose op depends on state rather than on one argument (e.g.
+    memory_delete: "did THIS conversation save the memory?") declares
+    ``consent_op_for(args, conversation_id) -> str``.  It wins over
+    ``consent_op_key``.  A hook that raises yields "*", which resolves to
+    the tool's declared default, so a broken hook fails to that default
+    rather than to an exempt op.  Callers without a conversation pass
+    None; the hook must treat that as the least-trusted case.
+    """
+    hook = getattr(tool_instance, "consent_op_for", None)
+    if callable(hook):
+        try:
+            op = hook(dict(args or {}), conversation_id)
+            return str(op) if op not in (None, "") else "*"
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"consent_op_for failed: {exc}")
+            return "*"
     key = getattr(tool_instance, "consent_op_key", None)
     if key and isinstance(args, dict):
         val = args.get(key)
@@ -441,7 +460,7 @@ async def consent_gate(
     grant), so callers can tell "approved silently" from "approved by hand".
     """
     inst = _unwrap(tool)
-    op = op_for_call(inst, args)
+    op = op_for_call(inst, args, conversation_id)
 
     # Per-project mode (app/utils/project_tool_modes.py) is the most specific
     # layer and wins over permissions.json.  ``disabled`` refuses outright —

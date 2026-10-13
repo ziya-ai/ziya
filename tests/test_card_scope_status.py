@@ -77,7 +77,7 @@ async def test_escalating_block_unsigned_reported_unauthorized(keyed, monkeypatc
     root = Block(block_type="parallel", id="b-root", name="Root",
                  body=[_esc_block(), _benign_block()])
     _patch_storage(monkeypatch, _card(root))
-    res = await task_cards.get_card_scope_status("p1", "c1")
+    res = task_cards.get_card_scope_status("p1", "c1")
     assert res["anyUnapproved"] is True
     # only the escalating block appears; benign omitted
     assert [b["blockId"] for b in res["blocks"]] == ["b-esc"]
@@ -94,13 +94,13 @@ async def test_signed_block_reported_authorized(keyed, monkeypatch):
     h = sc.task_scope_hash(esc.scope)
     at = int(time.time())
     sa.save_record({
-        "task_id": "b-esc", "scope_hash": h, "approved_by": "dcohn",
+        "task_id": "b-esc", "scope_hash": h, "approved_by": "alice",
         "approved_at": at,
-        "signature": sc.sign_approval_record("b-esc", h, "dcohn", at, private_key=keyed),
+        "signature": sc.sign_approval_record("b-esc", h, "alice", at, private_key=keyed),
     })
     root = Block(block_type="parallel", id="b-root", name="Root", body=[esc])
     _patch_storage(monkeypatch, _card(root))
-    res = await task_cards.get_card_scope_status("p1", "c1")
+    res = task_cards.get_card_scope_status("p1", "c1")
     assert res["anyUnapproved"] is False
     assert res["blocks"][0]["authorized"] is True
 
@@ -110,7 +110,7 @@ async def test_benign_card_has_no_escalation_entries(keyed, monkeypatch):
     root = Block(block_type="task", id="b-only", name="Read",
                  scope=TaskScope(tools=["file_read"]))
     _patch_storage(monkeypatch, _card(root))
-    res = await task_cards.get_card_scope_status("p1", "c1")
+    res = task_cards.get_card_scope_status("p1", "c1")
     assert res["anyUnapproved"] is False
     assert res["blocks"] == []
 
@@ -123,15 +123,15 @@ async def test_editing_scope_voids_prior_approval(keyed, monkeypatch):
     h = sc.task_scope_hash(esc.scope)
     at = int(time.time())
     sa.save_record({
-        "task_id": "b-esc", "scope_hash": h, "approved_by": "dcohn",
+        "task_id": "b-esc", "scope_hash": h, "approved_by": "alice",
         "approved_at": at,
-        "signature": sc.sign_approval_record("b-esc", h, "dcohn", at, private_key=keyed),
+        "signature": sc.sign_approval_record("b-esc", h, "alice", at, private_key=keyed),
     })
     # widen the scope after signing
     widened = Block(block_type="task", id="b-esc", name="Deploy",
                     scope=TaskScope(shell_commands=["npx jest", "rm"],
                                     paths=[ScopeEntry(path="out/", is_dir=True, write=True)]))
     _patch_storage(monkeypatch, _card(widened))
-    res = await task_cards.get_card_scope_status("p1", "c1")
+    res = task_cards.get_card_scope_status("p1", "c1")
     assert res["anyUnapproved"] is True
     assert res["blocks"][0]["authorized"] is False

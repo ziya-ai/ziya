@@ -387,7 +387,7 @@ class Segmenter:
     def _heuristic_enter(self, typed: str) -> Optional[int]:
         tail = self._tail_line()
         if self.state == "output":
-            if not self._looks_like_prompt(tail):
+            if not self._prompt_returned(tail, typed):
                 # Input to a running program (a y/n answer, a REPL line):
                 # it is part of the command's output stream, not a new
                 # command.  Journal the echoed line as output.
@@ -418,11 +418,19 @@ class Segmenter:
         self._drop_tail_line()
         self._flush_output(keep_tail=False)
         if not cmd:
+            self.cmd_seq = None
             self.state = "idle"
             return None
         self.cmd_seq = self.sink.cmd(cmd)
-        self.state = "output"
         self._eat_leading_newline = True
+        if not self._prompt_suffix:
+            # raw: no learned prompt, so nothing will ever say this command
+            # ended.  Group its output under it, but stay "idle" so the next
+            # Enter opens a new group instead of being taken for input to
+            # this one, and return None: a cmd_seq nothing can finish would
+            # send shadow_wait(until=['exit']) to its timeout.
+            return None
+        self.state = "output"
         return self.cmd_seq
 
     def _learn_prompt(self, prompt: str) -> None:
@@ -446,6 +454,16 @@ class Segmenter:
         if line.rstrip() == self._prompt_full.rstrip():
             return True
         return line.endswith(self._prompt_suffix)
+
+    def _prompt_returned(self, tail: str, typed: str) -> bool:
+        """The prompt is back -- possibly with the next command already
+        echoed after it, when that was typed or pasted inside the idle
+        window before tick() saw the bare prompt."""
+        if self._looks_like_prompt(tail):
+            return True
+        t = tail.rstrip()
+        return bool(typed) and t.endswith(typed) and \
+            self._looks_like_prompt(t[: len(t) - len(typed)])
 
     # -- pending output helpers -------------------------------------------------
 
@@ -471,6 +489,13 @@ class Segmenter:
             self.sink.output(text, self.cmd_seq)
 
     def _finish_command(self) -> None:
+        """A command ended without an OSC 133 D: the heuristic saw the
+        prompt return, or osc133 skipped D before the next A.  Journal an
+        exit with an unknown code so a ``shadow_wait(cmd_seq=...)`` wakes
+        instead of sleeping to its timeout.  D clears cmd_seq before this
+        can run, so a real exit is never duplicated."""
+        if self.cmd_seq is not None:
+            self.sink.exit(self.cmd_seq, None)
         self.cmd_seq = None
         self.state = "idle"
 

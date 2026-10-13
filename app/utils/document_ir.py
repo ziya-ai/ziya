@@ -26,7 +26,7 @@ Front-matter schema (all keys optional):
     ziya-doc: 1            # IR version marker (accepted, currently ignored)
     title: "Queue Depth Analysis"
     subtitle: "Capacity headroom, Q3"   # optional second line of the title block
-    author: "dcohn"        # overrides the model/provider default in PDF /Author
+    author: "jdoe"        # overrides the model/provider default in PDF /Author
     date: 2026-09-19       # optional; ISO date or free text; default: today
     layout: report         # report (title block) | titlepage (title block on
                            # its own page) | plain (no chrome at all)
@@ -192,6 +192,16 @@ def normalize_meta(raw: Dict[str, Any]) -> Dict[str, Any]:
         if norm_margin:
             norm_page['margin'] = norm_margin
         meta['page'] = norm_page
+
+    # evidence: {namespace, policy} — citations to the evidence ledger
+    # (design/evidence-ledger.md).  Kept verbatim; validated by
+    # app.utils.evidence.citations.evidence_settings at export time.
+    evidence = raw.get('evidence')
+    if isinstance(evidence, dict):
+        meta['evidence'] = {
+            k: str(v) for k, v in evidence.items()
+            if k in ('namespace', 'policy') and v is not None
+        }
 
     return meta
 

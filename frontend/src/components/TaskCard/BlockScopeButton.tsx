@@ -15,6 +15,7 @@
 import React, { useState } from 'react';
 import type { TaskScope, ScopeEntry } from '../../types/task_card';
 import { PermissionsDialog, PermissionEntry, PermissionsSavePayload } from '../Permissions/PermissionsDialog';
+import { DirectoryBrowserModal } from '../DirectoryBrowserModal';
 import { ModelTierPicker } from './ModelTierPicker';
 import './task-card-editor.css';
 
@@ -34,6 +35,7 @@ interface Props {
 
 export const BlockScopeButton: React.FC<Props> = ({ scope, onChange, title, label, showModel = true }) => {
   const [open, setOpen] = useState(false);
+  const [cwdOpen, setCwdOpen] = useState(false);
   const effective: TaskScope = scope ?? { paths: [], tools: [], skills: [] };
   const entries: PermissionEntry[] = effective.paths ?? [];
 
@@ -74,6 +76,7 @@ export const BlockScopeButton: React.FC<Props> = ({ scope, onChange, title, labe
     if (toolsCount) parts.push(`${toolsCount} tool${toolsCount === 1 ? '' : 's'}`);
     if (skillsCount) parts.push(`${skillsCount} skill${skillsCount === 1 ? '' : 's'}`);
     if (shellCount) parts.push(`${shellCount} shell cmd${shellCount === 1 ? '' : 's'}`);
+    if (effective.cwd) parts.push(`cwd: ${effective.cwd}`);
     return parts.join(' · ');
   })();
 
@@ -93,6 +96,34 @@ export const BlockScopeButton: React.FC<Props> = ({ scope, onChange, title, labe
       {showModel && (
         <ModelTierPicker scope={effective} onChange={onChange} />
       )}
+      {/* Working directory flows down like model_tier (merge_scopes:
+          innermost non-null wins), so it belongs on every layer, not
+          only the leaf.  Same row TaskBlockEditor renders. */}
+      <div className="tc-cwd-row">
+        <span className="tc-cwd-label" title="Working directory for every task beneath this block (a task may override it). Must be inside the project root.">
+          📂 Working directory:
+        </span>
+        <code className="tc-cwd-value" data-testid="tc-scope-cwd" title={effective.cwd || '(inherited / project root)'}>
+          {effective.cwd || '(inherited / project root)'}
+        </code>
+        <button className="tc-chip-add" onClick={() => setCwdOpen(true)} title="Choose a working directory">
+          change…
+        </button>
+        {effective.cwd && (
+          <button className="tc-chip-add" onClick={() => onChange({ ...effective, cwd: null })} title="Inherit from the enclosing block (or project root)">
+            reset
+          </button>
+        )}
+      </div>
+      <DirectoryBrowserModal
+        open={cwdOpen}
+        onClose={() => setCwdOpen(false)}
+        title="Select working directory"
+        subtitle={`Tasks beneath ${title} will run in this folder`}
+        confirmLabel="Use this folder"
+        busyLabel="Setting…"
+        onSelect={async (path) => { onChange({ ...effective, cwd: path }); setCwdOpen(false); }}
+      />
       <PermissionsDialog
         open={open}
         title={`Permissions — ${title}`}

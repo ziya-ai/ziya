@@ -256,7 +256,7 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         if _decision is None and _consent.fails_closed(_gate_tool, ctx.args):
             raise RuntimeError("the consent gate ended without a decision")
         if _decision is not None and not _decision.get("approved", True):
-            _op = _consent.op_for_call(_consent._unwrap(_gate_tool), ctx.args)
+            _op = _consent.op_for_call(_consent._unwrap(_gate_tool), ctx.args, ctx.conversation_id)
             yield {
                 'type': '_tool_result',
                 'tool_id': ctx.tool_id,
@@ -356,6 +356,17 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         # first and produces the descriptive error.
         if _tst:
             TOOL_EXEC_TIMEOUT = max(TOOL_EXEC_TIMEOUT, int(_tst) + 30)
+        # A tool may also declare, from its own arguments, how long this call
+        # legitimately needs (BaseMCPTool.exec_timeout_for) -- shadow_wait's
+        # timeout_ms can be hours.  Same buffering as the shell grant above;
+        # it can only raise the guard.
+        if builtin_tool is not None:
+            try:
+                _own = builtin_tool.tool_instance.exec_timeout_for(dict(ctx.args or {}))
+            except Exception:  # noqa: BLE001 -- a bad declaration keeps the default guard
+                _own = None
+            if _own:
+                TOOL_EXEC_TIMEOUT = max(TOOL_EXEC_TIMEOUT, int(_own) + 30)
 
         if builtin_tool:
             logger.info(f"🔧 Calling builtin tool directly: {ctx.actual_tool_name}")

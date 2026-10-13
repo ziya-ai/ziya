@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, CSSProperties, useCallback } from 'react';
 import { useTheme } from '../context/ThemeContext';
-import { Spin, Modal } from 'antd';
+import { Spin, Modal, message } from 'antd';
 import { D3RenderPlugin } from '../types/d3';
 import { findPluginForSpec, loadPlugin, getAvailablePlugins } from '../plugins/d3/registry';
 import { isDiagramDefinitionComplete, stripToolCallArtifacts } from '../utils/diagramUtils';
@@ -9,6 +9,7 @@ import { isSafari } from '../utils/browserUtils';
 import { parseD3Spec } from '../utils/d3SpecParser';
 import { unwrapDiagramEnvelope } from '../utils/d3EnvelopeUnwrap';
 import { pluginDimensionProps, resolveContainerDimensions, resolveFixedContainerWidth, resolveRenderContainerBox } from '../utils/pluginDimensions';
+import { attachDiagramDrag } from '../utils/diagramDrag';
 
 type RenderType = 'auto' | 'vega-lite' | 'd3';
 
@@ -178,6 +179,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const lastThemeRef = useRef<boolean>(isDarkMode);
     const [hasSuccessfulRender, setHasSuccessfulRender] = useState<boolean>(false);
     const [renderedContentHeight, setRenderedContentHeight] = useState<number | null>(null);
+    // Drag-out handle for pointer-interactive plugins, revealed on hover.
+    const dragHandleRef = useRef<HTMLDivElement>(null);
+    const [isHovered, setIsHovered] = useState<boolean>(false);
+    const showDragHandle = !!plugin?.pointerInteractive && hasSuccessfulRender && !showRawContent;
     const isDarkModeRef = useRef<boolean>(isDarkMode);
     // initializeVisualization is a useCallback with EMPTY deps (see its
     // definition below), so every prop it closes over is frozen at first
@@ -1121,6 +1126,33 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         return type === 'd3' || (typeof spec === 'object' && (spec?.renderer === 'd3' || !!plugin));
     }, [type, spec]);
 
+    // Drag-out: the rendered diagram can be dragged into other applications
+    // as a PNG. The whole container is the drag source for a static diagram;
+    // a plugin that owns pointer gestures (pointerInteractive) gets a small
+    // handle instead, so dragging the diagram itself still pans/zooms/brushes.
+    // Such a plugin may expose __vizExportPng on its render root when its
+    // SVG alone is not the picture (Plotly's WebGL traces are on a canvas).
+    useEffect(() => {
+        const container = d3ContainerRef.current;
+        if (!container || !plugin) return;
+        const handle = dragHandleRef.current ?? undefined;
+        if (plugin.pointerInteractive && !handle) return;
+        return attachDiagramDrag(container, {
+            // Static diagrams drag from anywhere; interactive ones only from the handle.
+            dragSource: plugin.pointerInteractive ? handle : undefined,
+            copySource: handle,
+            exportPng: () => {
+                const exporter = (container.firstElementChild as any)?.__vizExportPng;
+                return typeof exporter === 'function' ? exporter() : null;
+            },
+            onCopied: (ok) => (ok
+                ? message.success('Diagram copied as image — paste it into Slack or a document')
+                : message.error('Could not copy the diagram to the clipboard')),
+        });
+        // d3ContainerRef.current exists only on the isD3Render branch.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [plugin, isD3Render, showDragHandle]);
+
     // Get container styles from plugin config or use defaults
     const containerStyles = useMemo(() => {
         if (plugin?.sizingConfig?.containerStyles) {
@@ -1422,6 +1454,8 @@ ${svgData}`;
                     : spec?.definition ?? JSON.stringify(spec)).trim();
                 return `${src.length}:${src.substring(0, 64)}`;
             })()}
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
         >
             {/* Show raw content during streaming */}
             {showRawContent && rawContent ? (
@@ -1495,6 +1529,37 @@ ${svgData}`;
                             maxHeight: containerStyles.maxHeight
                         }}
                     />
+                    {showDragHandle && (
+                        <div
+                            ref={dragHandleRef}
+                            role="button"
+                            aria-label="Copy as image, or drag to export"
+                            title="Click to copy the diagram as an image (paste into Slack). Drag to export it into another application."
+                            data-diagram-drag-handle="true"
+                            style={{
+                                position: 'absolute',
+                                left: 8,
+                                bottom: 8,
+                                zIndex: 1000,
+                                width: 28,
+                                height: 28,
+                                borderRadius: 6,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: 15,
+                                lineHeight: 1,
+                                cursor: 'grab',
+                                userSelect: 'none',
+                                background: isDarkMode ? 'rgba(40, 40, 40, 0.92)' : 'rgba(255, 255, 255, 0.92)',
+                                border: `1px solid ${isDarkMode ? '#555' : '#ccc'}`,
+                                color: isDarkMode ? '#ddd' : '#333',
+                                opacity: isHovered ? 1 : 0,
+                                pointerEvents: isHovered ? 'auto' : 'none',
+                                transition: 'opacity 0.2s'
+                            }}
+                        >🖼</div>
+                    )}
                     {/* Error display for d3/plugin render path (mirrors vegaContainerRef branch) */}
                     {renderError && !isStreaming && isMarkdownBlockClosed && !hasSuccessfulRender && (
                         <pre style={{

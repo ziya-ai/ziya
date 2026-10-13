@@ -133,6 +133,34 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "datasets": {
+        "name": "Datasets",
+        "description": "Tabular data by reference (dataset_*) and read-only SQL analysis over it (analyze; needs ziya-install-extras --data)",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
+    "output_contracts": {
+        "name": "Output Schemas",
+        "description": "Check a structured result against a schema in any conversation (validate_output) and keep it where analyze can query it (store_output; .ziya/outputs/<family>.jsonl), the same check Task Card output contracts apply",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
+    "evidence": {
+        "name": "Evidence Ledger",
+        "description": "Record where reported numbers came from, look them up, and re-check them (ledger_record / ledger_query / ledger_verify)",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
+    "jobs": {
+        "name": "Managed Jobs",
+        "description": "Run long commands as tracked background jobs under the shell tool's policy: start, wait by condition, read the journal, kill the process tree (job_start / job_wait / job_status / job_read / job_kill)",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -265,9 +293,12 @@ def get_memory_tools() -> List[Type[BaseMCPTool]]:
     try:
         from app.mcp.tools.memory_tools import (
             MemorySearchTool, MemorySaveTool, MemoryProposeTool,
-            MemoryContextTool, MemoryExpandTool, MemoryRetractProposalTool
+            MemoryContextTool, MemoryExpandTool, MemoryRetractProposalTool,
+            MemoryDeleteTool,
         )
-        return [MemorySearchTool, MemorySaveTool, MemoryProposeTool, MemoryContextTool, MemoryExpandTool, MemoryRetractProposalTool]
+        return [MemorySearchTool, MemorySaveTool, MemoryProposeTool,
+                MemoryContextTool, MemoryExpandTool, MemoryRetractProposalTool,
+                MemoryDeleteTool]
     except ImportError as e:
         logger.warning(f"Could not import memory tools: {e}")
         return []
@@ -324,8 +355,10 @@ def get_task_card_tools() -> List[Type[BaseMCPTool]]:
         )
         from app.mcp.tools.task_card_stage import TaskCardStageTool
         from app.mcp.tools.task_card_launch import TaskCardLaunchTool
+        from app.mcp.tools.task_run_read import TaskRunReadTool
         return [TaskCardStageTool, TaskCardListTool, TaskCardReadTool,
-                TaskCardWriteTool, TaskCardValidateTool, TaskCardLaunchTool]
+                TaskCardWriteTool, TaskCardValidateTool, TaskCardLaunchTool,
+                TaskRunReadTool]
     except ImportError as e:
         logger.warning(f"Could not import task card tools: {e}")
         return []
@@ -349,12 +382,12 @@ def get_shadow_tools() -> List[Type[BaseMCPTool]]:
             ShadowListTool, ShadowReadTool, ShadowCommentTool, ShadowSetMetaTool,
             ShadowAttachTool, ShadowDetachTool,
             ShadowControlTool, ShadowSendTool, ShadowReleaseTool,
-            ShadowSpawnTool, ShadowKillTool,
+            ShadowSpawnTool, ShadowKillTool, ShadowWaitTool,
         )
         return [ShadowListTool, ShadowReadTool, ShadowCommentTool, ShadowSetMetaTool,
                 ShadowAttachTool, ShadowDetachTool,
                 ShadowControlTool, ShadowSendTool, ShadowReleaseTool,
-                ShadowSpawnTool, ShadowKillTool]
+                ShadowSpawnTool, ShadowKillTool, ShadowWaitTool]
     except ImportError as e:
         logger.warning(f"Could not import shadow tools: {e}")
         return []
@@ -367,6 +400,52 @@ def get_mcp_diagnostics_tools() -> List[Type[BaseMCPTool]]:
         return [McpServerStatusTool]
     except ImportError as e:
         logger.warning(f"Could not import mcp diagnostics tools: {e}")
+        return []
+
+
+def get_dataset_tools() -> List[Type[BaseMCPTool]]:
+    """Get dataset store and analytics tools (design/dataset-store.md, local-analytics.md)."""
+    try:
+        from app.mcp.tools.dataset_tools import (
+            DatasetRegisterTool, DatasetDescribeTool, DatasetPreviewTool,
+            DatasetListTool, AnalyzeTool,
+        )
+        return [DatasetRegisterTool, DatasetDescribeTool, DatasetPreviewTool,
+                DatasetListTool, AnalyzeTool]
+    except ImportError as e:
+        logger.warning(f"Could not import dataset tools: {e}")
+        return []
+
+
+def get_evidence_tools() -> List[Type[BaseMCPTool]]:
+    """Get evidence-ledger tools (design/evidence-ledger.md)."""
+    try:
+        from app.mcp.tools.ledger_tools import LedgerRecordTool, LedgerQueryTool, LedgerVerifyTool
+        return [LedgerRecordTool, LedgerQueryTool, LedgerVerifyTool]
+    except ImportError as e:
+        logger.warning(f"Could not import ledger tools: {e}")
+        return []
+
+
+def get_job_tools() -> List[Type[BaseMCPTool]]:
+    """Get managed-job tools (design/job-runner.md)."""
+    try:
+        from app.mcp.tools.job_tools import (
+            JobStartTool, JobWaitTool, JobStatusTool, JobReadTool, JobKillTool,
+        )
+        return [JobStartTool, JobWaitTool, JobStatusTool, JobReadTool, JobKillTool]
+    except ImportError as e:
+        logger.warning(f"Could not import job tools: {e}")
+        return []
+
+
+def get_output_contract_tools() -> List[Type[BaseMCPTool]]:
+    """Get the plain-chat output-schema check (design/typed-findings.md)."""
+    try:
+        from app.mcp.tools.output_tools import StoreOutputTool, ValidateOutputTool
+        return [ValidateOutputTool, StoreOutputTool]
+    except ImportError as e:
+        logger.warning(f"Could not import output-schema tools: {e}")
         return []
 
 
@@ -400,6 +479,10 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "shadow": get_shadow_tools,
         "mcp_diagnostics": get_mcp_diagnostics_tools,
         "git": get_git_tools,
+        "datasets": get_dataset_tools,
+        "evidence": get_evidence_tools,
+        "output_contracts": get_output_contract_tools,
+        "jobs": get_job_tools,
     }
 
     getter = tool_getters.get(category)

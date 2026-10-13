@@ -144,6 +144,7 @@ Retention can be scoped to a Bedrock *project* instead of the account, but **not
 | `ZIYA_WHISPER_MODEL` | str | `base` | — | Local faster-whisper model used for voice transcription |
 | `ZIYA_WHISPER_DEVICE` | str | `cpu` | — | Voice-transcription device: `cpu`, `cuda`, or `auto` |
 | `ZIYA_WHISPER_COMPUTE_TYPE` | str | `int8` | — | CTranslate2 compute type used for voice transcription |
+| `ZIYA_NATIVE_DRAG` | str | unset | — | Set to `0` to not spawn the macOS native drag helper (`ziya-install-extras --drag`), which rewrites the drag pasteboard so a diagram or table dragged out of the chat drops into Slack desktop as a PNG file |
 
 ## Memory (post-conversation extraction)
 

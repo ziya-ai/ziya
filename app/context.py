@@ -262,14 +262,19 @@ def set_task_iteration_context(
     Pass ``None`` for both to clear.  ``fanout`` is set only for an
     iteration of a PARALLEL loop (see app/utils/fanout_notice.py).
     """
+    parent = _task_iteration_context.get() or {}
     if fanout is None and block_id is not None:
         # A loop nested INSIDE a parallel iteration (the common shape:
         # parallel Repeat -> Until -> Task) still works on that
         # iteration's item.  Re-stamping without inheriting dropped the
         # descriptor for every task under the inner loop.
-        fanout = (_task_iteration_context.get() or {}).get("fanout")
+        fanout = parent.get("fanout")
     value = (
-        {"block_id": block_id, "index": int(index)}
+        {"block_id": block_id, "index": int(index),
+         # Every enclosing iteration, outermost first: what lets an outer
+         # loop credit a part emitted inside a nested one
+         # (design/typed-findings.md, iteration_path).
+         "path": [*(parent.get("path") or []), [block_id, int(index)]]}
         if block_id is not None and index is not None
         else None
     )
@@ -308,3 +313,46 @@ def reset_usage_attribution(token: contextvars.Token) -> None:
 def get_usage_attribution() -> Optional[dict]:
     """Return ``{'source', 'run_id', 'block_id'}`` if set, else None."""
     return _usage_attribution.get()
+
+
+# Default evidence-ledger namespace for claims recorded in this context
+# (design/evidence-ledger.md, Task Card integration).  Set by the block
+# executor around a task when a State block declares ``evidence_namespace``;
+# read by the ledger tools and baked into the shell scope token.
+_evidence_namespace: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    'evidence_namespace', default=None
+)
+
+
+def set_evidence_namespace(namespace: Optional[str]) -> contextvars.Token:
+    return _evidence_namespace.set(namespace or None)
+
+
+def reset_evidence_namespace(token: contextvars.Token) -> None:
+    _evidence_namespace.reset(token)
+
+
+def get_evidence_namespace() -> Optional[str]:
+    return _evidence_namespace.get()
+
+
+# Project root whose ``.ziya/ledger/`` evidence is recorded into.  Set by the
+# task executor to the CARD's project root: a task whose scope sets ``cwd``
+# runs its tools with that subdirectory as their workspace, and without this
+# its claims would land in ``<cwd>/.ziya/ledger/`` -- a second, orphaned
+# ledger that the run's artifact, documents and verification never read.
+_ledger_root: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    'ledger_root', default=None
+)
+
+
+def set_ledger_root(root: Optional[str]) -> contextvars.Token:
+    return _ledger_root.set(root or None)
+
+
+def reset_ledger_root(token: contextvars.Token) -> None:
+    _ledger_root.reset(token)
+
+
+def get_ledger_root() -> Optional[str]:
+    return _ledger_root.get()

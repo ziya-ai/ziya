@@ -167,7 +167,9 @@ class JournalWriter:
             }))
         return seqs
 
-    def exit(self, cmd_seq: int, code: int) -> int:
+    def exit(self, cmd_seq: int, code: Optional[int]) -> int:
+        """``code`` is None when the segmentation mode gives no exit status
+        (prompt-heuristic): the command finished, its code is unknown."""
         return self._append({"t": "exit", "cmd_seq": cmd_seq, "code": code})
 
     def meta(self, event: str, data: Optional[Dict] = None) -> int:
@@ -272,7 +274,8 @@ def searchable_text(rec: Dict) -> str:
     if t in ("cmd", "output"):
         return rec.get("text", "") or ""
     if t == "exit":
-        return f"exit {rec.get('code')}"
+        code = rec.get("code")
+        return f"exit {code}" if code is not None else "exit unknown"
     if t == "meta":
         parts = [str(rec.get("event") or "")]
         data = rec.get("data")

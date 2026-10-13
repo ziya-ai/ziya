@@ -1621,17 +1621,22 @@ class MCPManager:
                         )
                         # Advisory warnings (e.g. unusually long description) are
                         # review-only heuristics, not a detected injection — log
-                        # them but keep the tool. Only a concrete pattern match
-                        # blocks.
+                        # them at debug and keep the tool. The user cannot act on
+                        # them (a server's description length is not theirs to
+                        # change), so they must not surface on every launch.
+                        # Only a concrete pattern match blocks.
                         if _adv:
-                            logger.warning(
+                            logger.debug(
                                 f"⚠️  Advisory (tool kept) '{tool.name}' from "
                                 f"server '{server_name}': " + "; ".join(_adv)
                             )
                         if _blk and _force_kept:
                             # Human accepted this exact fingerprint via
-                            # force-reauthorization; honor it durably.
-                            logger.warning(
+                            # force-reauthorization; honor it durably. This is the
+                            # system respecting a recorded decision, not a new
+                            # finding, so it is informational. A fingerprint
+                            # mismatch takes the blocking branch below instead.
+                            logger.info(
                                 f"🔏 Force-kept '{tool.name}' from server "
                                 f"'{server_name}' despite blocking warning "
                                 f"(persistent force-accept, fingerprint match): "
@@ -2532,6 +2537,7 @@ class MCPManager:
         # Strip routing metadata so MCP servers only see real tool parameters.
         # This is what makes the approach universal: external servers never
         # receive keys they don't understand.
+        caller_conversation_id = arguments.get('conversation_id') if isinstance(arguments, dict) else None
         if isinstance(arguments, dict):
             arguments = {k: v for k, v in arguments.items()
                          if k not in ('_workspace_path', 'conversation_id', '_task_scope')}
@@ -2563,6 +2569,18 @@ class MCPManager:
         # would reject unknown keys via JSON-Schema validation.
         if target_server_name == "shell" and task_scope is not None and isinstance(arguments, dict):
             arguments = {**arguments, "_task_scope": task_scope}
+
+        # Evidence-ledger scope (design/evidence-ledger.md, Write paths):
+        # the shell server puts ZIYA_LEDGER_URL / ZIYA_LEDGER_SCOPE into
+        # each child's environment, so a script can record claims with
+        # this call's conversation / run / block as provenance.  Built
+        # here, in the one place every shell dispatch passes, for the
+        # same reason as the task-scope envelope above.
+        if target_server_name == "shell" and isinstance(arguments, dict):
+            from app.utils.evidence.scope import build_envelope as _ledger_envelope
+            _ls = _ledger_envelope(workspace_path, caller_conversation_id)
+            if _ls:
+                arguments = {**arguments, "_ledger_scope": _ls}
         
         # If this is a workspace-scoped server and we have a workspace path, route to workspace-specific instance
         if target_server_name and self._is_workspace_scoped(target_server_name) and workspace_path:

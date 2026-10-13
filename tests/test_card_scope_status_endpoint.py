@@ -92,7 +92,7 @@ def _status(card, project_id="proj1", deck_scope=None):
 
     with patch.object(tc, "_get_storage", lambda _pid: _Storage()), \
          patch.object(tc, "ProjectStorage", _ProjectStorage):
-        return asyncio.run(tc.get_card_scope_status(project_id, card.id))
+        return tc.get_card_scope_status(project_id, card.id)
 
 
 def _effective_scope(card, block_id, deck_scope=None):

@@ -138,8 +138,13 @@ The model has access to tools it can call autonomously when they would help answ
 | Tool | What it does |
 |---|---|
 | `file_read` | Read files from your project |
-| `file_write` | Write files to approved locations |
+| `file_write` | Write files to approved locations; a write elsewhere in the project asks you first, with a diff |
 | `file_list` | List directory contents |
+| `show_document` | Show a file (or one section or line range of it) to you, rendered in the chat. The model gets only a summary, never the text, so it can't retype or alter what you see. Up to 512 KB per call |
+| `dataset_register` / `dataset_describe` / `dataset_preview` / `dataset_list` | Load a CSV, TSV, Excel or JSON file (or inline rows) into a dataset store outside the prompt. The model gets the schema and a short head, and charts point at the dataset instead of copying rows |
+| `validate_output` / `store_output` | Check a structured result (a finding, a distribution, a per-entity table, or anything a project schema in `.ziya/schemas/` describes) against its schema, with field-level errors and evidence-ledger claim resolution; `store_output` also appends a passing value to `.ziya/outputs/<family>.jsonl`, where Task Card runs' contracted outputs land too, for `analyze` to query |
+| `analyze` | One read-only SQL query (DuckDB) over datasets and data files. The result is stored as a new dataset recording its query and the checksum of each input. Built-in macros handle telemetry pitfalls: gaps counted as unknown rather than zero, counter resets, overlapping intervals counted once, and per-entity distributions alongside fleet totals. Needs `ziya-install-extras --data` |
+| `ledger_record` / `ledger_query` / `ledger_verify` | The evidence ledger: record where a reported number came from (the query, file or command and its result's hash, plus the value and how it was derived), look it up, and re-check it later. Records are signed and append-only under `.ziya/ledger/`; documents cite them as `{{claim:key}}` (see [Document Authoring](DocumentAuthoring.md)) |
 | `nova_web_search` | Search the web with citations (requires `bedrock:InvokeTool` IAM permission) |
 | Architecture shapes | Browse and search diagram component catalogs for DrawIO, Mermaid, and Graphviz |
 

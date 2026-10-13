@@ -1,0 +1,46 @@
+{
+  "$id": "ziya:distribution/v1",
+  "title": "distribution",
+  "description": "A per-unit distribution. Either one ledger claim that records a distribution ({claim, field: \"distribution\"}), or its statistics field by field.",
+  "oneOf": [
+    {
+      "type": "object",
+      "title": "claim reference",
+      "properties": {
+        "claim": {"type": "string", "minLength": 1, "description": "ledger claim id whose distribution is cited"},
+        "field": {"type": "string", "description": "normally \"distribution\""}
+      },
+      "required": ["claim"]
+    },
+    {
+      "type": "object",
+      "title": "statistics",
+      "properties": {
+        "n": {"$ref": "ziya:number/v1", "description": "number of units measured"},
+        "mean": {"$ref": "ziya:number/v1", "description": "mean per unit"},
+        "median": {"$ref": "ziya:number/v1", "description": "median per unit"},
+        "p10": {"$ref": "ziya:number/v1", "description": "10th percentile per unit"},
+        "p90": {"$ref": "ziya:number/v1", "description": "90th percentile per unit"},
+        "min": {"$ref": "ziya:number/v1", "description": "minimum per unit"},
+        "max": {"$ref": "ziya:number/v1", "description": "maximum per unit"},
+        "sd": {"$ref": "ziya:number/v1", "description": "standard deviation per unit"},
+        "unit": {"type": "string", "description": "unit of the per-unit values"},
+        "population": {
+          "type": "object",
+          "description": "what was measured",
+          "properties": {
+            "description": {"type": "string", "description": "the population in words"},
+            "n_total": {"$ref": "ziya:number/v1", "description": "size of the whole population"},
+            "definition": {"type": "string", "description": "how a unit is selected into the population"}
+          }
+        }
+      },
+      "required": ["n", "mean", "median", "p10", "p90", "sd", "unit"]
+    }
+  ],
+  "x-ziya-checks": [
+    {"ordered": ["min", "p10", "median", "p90", "max"]},
+    {"range": {"path": "sd", "min": 0}},
+    {"subset": {"part": "n", "of": "population/n_total"}}
+  ]
+}

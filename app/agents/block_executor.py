@@ -29,7 +29,7 @@ import re
 import traceback
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..models.task_card import (
     Artifact, ArtifactPart, Block, TaskScope, TemplateResolution, merge_scopes,
@@ -182,6 +182,28 @@ class ExecutionContext:
     # Last-write-wins: a block re-executed inside a loop body overwrites
     # its own entry, so the lookup sees that block's most recent result.
     artifact_registry: Dict[str, Artifact] = field(default_factory=dict)
+
+    # Output-contract defaults from State blocks (design/typed-findings.md,
+    # step 5): part name -> OutputContract entry, merged into every Task
+    # that does not declare one of the same name.  Lexically scoped, unlike
+    # ``variables``: a State's defaults reach its later siblings and their
+    # subtrees only.  _execute_block_dispatch restores this after every
+    # block except a State, so no container leaks the defaults its body
+    # set.  Replaced, never mutated, so a saved reference stays valid.
+    contract_defaults: Dict[str, Any] = field(default_factory=dict)
+    # Gather-contract defaults from State blocks (same lexical scoping as
+    # ``contract_defaults``), and the push-down of every gathered container
+    # enclosing the current block: {"required": {task_id: [entry]},
+    # "optional": [entry]}.  Both replaced, never mutated.
+    gather_defaults: Dict[str, Any] = field(default_factory=dict)
+    gather_pushdown: Dict[str, Any] = field(default_factory=dict)
+    # Run-scoped (shared, keyed by container id): each gathered container's
+    # effective entries, recorded at dispatch so the container's executor
+    # can run its ``rerun_missing`` pass without recomputing them under
+    # State changes made by its own body; and which units it re-ran,
+    # read by the container-end check for ``rerun_attempted``.
+    gather_entries_by_block: Dict[str, List[Any]] = field(default_factory=dict)
+    gather_reruns: Dict[str, List[str]] = field(default_factory=dict)
 
     # Canonical keys of the Call targets currently on the stack, outermost
     # first.  Two jobs: bound nesting at MAX_CALL_DEPTH, and reject a cycle
@@ -417,6 +439,7 @@ class ExecutionContext:
 # other field stays shared, because the run is genuinely one run.
 _ITERATION_PRIVATE = (
     "binding_stack", "sibling_stack", "artifact_registry", "scope_stack",
+    "contract_defaults", "gather_defaults", "gather_pushdown",
 )
 
 
@@ -721,7 +744,19 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
     invocations see it already set and leave it alone, so every run root
     (API launch, scheduler fire, CLI runner) gets the tier from this one
     seam.  Providers read it via ``app.utils.service_tier``.
+
+    The run's output-contract schemas are pinned here too, at the same
+    outermost call: from the snapshot recorded on the run at launch when
+    there is one, else resolved now (design/typed-findings.md).
     """
+    from ..utils.output_contracts import pinned_for_run
+    with pinned_for_run(block, project_root=ctx.project_root,
+                        run_id=ctx.run_id, storage=ctx.storage):
+        return await _execute_block_tiered(block, ctx)
+
+
+async def _execute_block_tiered(block: Block, ctx: ExecutionContext) -> Artifact:
+    """Body of :func:`execute_block`: request the run's service tier."""
     if get_task_service_tier() is not None:
         return await _execute_block_dispatch(block, ctx)
     from ..utils.service_tier import (
@@ -830,12 +865,21 @@ async def _execute_block_dispatch(block: Block, ctx: ExecutionContext) -> Artifa
             merged_scope = ctx.effective_scope()
             if merged_scope is not effective.scope:
                 effective = effective.model_copy(update={"scope": merged_scope})
-            artifact = await execute_task_block(
-                effective,
-                project_root=ctx.project_root,
-                project_id=ctx.project_id,
-                run_id=ctx.run_id,
-            )
+            from ..utils.output_contracts import effective_task_contract
+            merged_contract = effective_task_contract(
+                effective.output_contract, block.id, ctx.gather_pushdown,
+                ctx.contract_defaults)
+            if merged_contract is not effective.output_contract:
+                effective = effective.model_copy(
+                    update={"output_contract": merged_contract})
+            with _evidence_namespace_scope(ctx):
+                artifact = await execute_task_block(
+                    effective,
+                    project_root=ctx.project_root,
+                    project_id=ctx.project_id,
+                    run_id=ctx.run_id,
+                    headless=ctx.headless,
+                )
             # The task's own record.  Inside a loop the iteration
             # artifact is re-stamped with every body task's resolution
             # once the body completes (see _attach_resolutions).
@@ -859,6 +903,9 @@ async def _execute_block_dispatch(block: Block, ctx: ExecutionContext) -> Artifa
             artifact = await _maybe_self_improve(block, ctx, _execute_group)
         else:
             raise TaskExecutorError(f"Unknown block_type: {block.block_type!r}")
+        if gather_entries:
+            artifact = await _check_gather(
+                block, ctx, artifact, gather_entries, gather_started_ms)
     except BlockExecutionCancelled:
         await _mark_block_status(ctx, block, "cancelled")
         raise
@@ -876,6 +923,12 @@ async def _execute_block_dispatch(block: Block, ctx: ExecutionContext) -> Artifa
         raise
     finally:
         ctx.scope_stack.pop()
+        # A State's contract defaults outlive it (they apply to its later
+        # siblings); every other block's are confined to its own subtree.
+        if block.block_type != "state":
+            ctx.contract_defaults = saved_contract_defaults
+            ctx.gather_defaults = saved_gather_defaults
+        ctx.gather_pushdown = saved_gather_pushdown
     # Terminal status: an artifact that reports failure marks the block
     # failed even though no exception escaped (a failed leaf task, or a
     # stopped sequence whose failure propagated up).
@@ -889,6 +942,173 @@ async def _execute_block_dispatch(block: Block, ctx: ExecutionContext) -> Artifa
     if block.id:
         ctx.artifact_registry[block.id] = artifact
     return artifact
+
+
+# Containers that may carry a gather contract (schedule is a trigger, not
+# a container of work, and never executes its body as a unit).
+_GATHER_CONTAINERS = frozenset({"parallel", "group", "repeat", "until"})
+
+
+def _combine_pushdown(outer: Optional[Dict[str, Any]],
+                      inner: Dict[str, Any]) -> Dict[str, Any]:
+    """Nest a container's push-down inside an enclosing one's.
+
+    A new dict, never a mutation, so the dispatcher's saved reference for
+    the enclosing block is restored intact.
+    """
+    outer = outer or {}
+    req: Dict[str, List[Any]] = {k: list(v) for k, v in (outer.get("required") or {}).items()}
+    for k, v in (inner.get("required") or {}).items():
+        req.setdefault(k, []).extend(v)
+    return {"required": req,
+            "optional": [*(inner.get("optional") or []), *(outer.get("optional") or [])]}
+
+
+async def _check_gather(block: Block, ctx: ExecutionContext, artifact: Artifact,
+                        entries: List[Any], started_ms: int) -> Artifact:
+    """Judge a container's gathered outputs against its gather contracts.
+
+    Units: each direct child (``per: child``, from the child's own
+    artifact), each executed iteration (``per: iteration``, by the parts'
+    ``iteration_path``), or the whole container (``per: total``).  A unit
+    with fewer than ``min`` or more than ``max`` valid parts is a
+    shortfall; any shortfall fails the container with signature
+    ``gather_contract:<names>`` and emits ``contract_shortfall``.
+    """
+    from ..utils.output_contracts import count_valid_parts, part_in_iteration
+    claims = _gather_claims(ctx)
+    failed_names: List[str] = []
+    decisions: List[str] = []
+    rerun_units = set(ctx.gather_reruns.get(block.id or "") or [])
+    for g in entries:
+        contract, per, lo, hi = _gather_terms(ctx, g)
+        units: List[Tuple[str, List[Any]]] = []
+        if per == "child":
+            for i, child in enumerate(block.body or []):
+                got = ctx.artifact_registry.get(child.id) if child.id else None
+                if got is not None and (got.created_at or 0) < started_ms:
+                    got = None          # a stale result from an earlier pass
+                units.append((child.name or child.id or f"child {i}",
+                              list(got.outputs or []) if got else []))
+        elif per == "iteration":
+            for st in artifact.stages or []:
+                idx = st.get("index")
+                if idx is None:
+                    continue
+                units.append((st.get("label") or f"#{idx}",
+                              [p for p in artifact.outputs or []
+                               if part_in_iteration(p, block.id, idx)]))
+        else:
+            units.append(("total", list(artifact.outputs or [])))
+        short = []
+        for label, parts in units:
+            n = count_valid_parts(contract, parts, claims=claims)
+            if n < lo or (hi is not None and n > int(hi)):
+                short.append({"unit": label, "count": n})
+        if not short:
+            continue
+        failed_names.append(contract.name)
+        bound = f"{lo}" + (f"-{hi}" if hi is not None else "+")
+        shown = ", ".join(f"{s['unit']} ({s['count']})" for s in short[:50])
+        more = f" (+{len(short) - 50} more)" if len(short) > 50 else ""
+        decisions.append(
+            f"gather_contract: {len(short)} of {len(units)} unit(s) of "
+            f"{block.name or block.id!r} short of {bound} valid "
+            f"{contract.name!r} part(s) (per {per}): {shown}{more}")
+        await _emit(ctx, {
+            "type": "contract_shortfall", "block_id": block.id,
+            "contract": contract.name, "per": per, "min": lo, "max": hi,
+            "units": short[:50], "total_units": len(units),
+            "rerun_attempted": any(u["unit"] in rerun_units for u in short),
+            "at": time.time(),
+        })
+    if not failed_names:
+        return artifact
+    return artifact.model_copy(update={
+        "failed": True,
+        "signature": "gather_contract:" + ",".join(failed_names),
+        "decisions": [*(artifact.decisions or []), *decisions],
+    })
+
+
+def _gather_claims(ctx: ExecutionContext):
+    from ..utils.output_contracts import ledger_claim_lookup
+    ns = {**(ctx.variables or {}), **(ctx.overrides or {})}.get(EVIDENCE_NAMESPACE_VAR)
+    return ledger_claim_lookup(ctx.project_root, str(ns) if ns else None)
+
+
+def _gather_terms(ctx: ExecutionContext, g: Any):
+    """``(contract, per, min, max)`` for one gather entry, bound to the run's pins."""
+    from ..utils.output_contracts import contracts_for_block, gather_as_output_entry
+    entry = gather_as_output_entry(g, required=True)
+    with _evidence_namespace_scope(ctx):
+        contract = contracts_for_block(
+            None, project_root=ctx.project_root, entries=[entry])[entry["name"]]
+
+    def _f(k):
+        return g.get(k) if isinstance(g, dict) else getattr(g, k, None)
+    lo = _f("min")
+    return contract, (_f("per") or "child"), (1 if lo is None else int(lo)), _f("max")
+
+
+def _rerun_targets(
+    block: Block, ctx: ExecutionContext, per: str,
+    units: List[Tuple[int, str, Optional[Artifact], Optional[str]]],
+) -> List[Tuple[int, str, str]]:
+    """Units a ``rerun_missing: 1`` pass should re-dispatch, with the reason.
+
+    ``units`` is ``[(index, label, artifact or None, status)]``.  A unit is
+    re-run when it holds fewer valid parts than ``min`` for some gather
+    entry with ``rerun_missing`` and the matching ``per``.  Never re-run: a
+    unit above ``max`` (more output cannot fix too much) or one recorded
+    ``cancelled`` (the environment stopped it, not the work).  Returns
+    ``[(index, label, rerun note)]`` in unit order.
+    """
+    from ..utils.output_contracts import count_valid_parts
+    entries = [g for g in (ctx.gather_entries_by_block.get(block.id or "") or [])
+               if (g.get("rerun_missing") if isinstance(g, dict)
+                   else getattr(g, "rerun_missing", 0))]
+    if not entries:
+        return []
+    claims = _gather_claims(ctx)
+    reasons: Dict[int, List[str]] = {}
+    for g in entries:
+        contract, g_per, lo, _hi = _gather_terms(ctx, g)
+        if g_per != per:
+            continue
+        for idx, label, art, status in units:
+            if status == "cancelled":
+                continue
+            n = count_valid_parts(contract, (art.outputs if art else []) or [], claims=claims)
+            if n >= lo:
+                continue
+            what = (f"produced no valid `{contract.name}`" if n == 0
+                    else f"produced {n} valid `{contract.name}` part(s), {lo} required")
+            if art is None:
+                what += " and raised before finishing"
+            elif art.failed:
+                what += f" and failed ({art.signature or 'no signature'})"
+            reasons.setdefault(idx, []).append(what)
+    out = []
+    for idx, label, _art, _st in units:
+        if idx in reasons:
+            out.append((idx, label, (
+                f"[Re-run of {label!r}: the previous attempt "
+                + "; ".join(reasons[idx])
+                + ". Emit the required output(s) this time.]")))
+    return out
+
+
+async def _announce_rerun(block: Block, ctx: ExecutionContext,
+                          targets: List[Tuple[int, str, str]]) -> None:
+    labels = [label for _, label, _ in targets]
+    ctx.gather_reruns[block.id or ""] = labels
+    logger.info(f"🔁 GATHER: {block.id} re-running {len(labels)} short unit(s): {labels[:10]}")
+    await _emit(ctx, {
+        "type": "unit_rerun", "block_id": block.id,
+        "units": labels[:50], "reasons": [note for _, _, note in targets][:50],
+        "at": time.time(),
+    })
 
 
 def _call_failure(summary: str) -> Artifact:
@@ -1138,6 +1358,13 @@ async def _execute_call(block: Block, ctx: ExecutionContext) -> Artifact:
     saved_card_scope = ctx.card_scope
     ctx.scope_stack = []
     ctx.card_scope = resolved.card_scope
+    # Contract defaults are the caller card's definitions; the callee's own
+    # State blocks set its defaults.  Restored by the dispatcher on return.
+    ctx.contract_defaults = {}
+    # Gather contracts stop at a Call too: the callee's tasks get no
+    # push-down (the caller checks the callee's returned outputs instead).
+    ctx.gather_defaults = {}
+    ctx.gather_pushdown = {}
     ctx.call_stack.append(resolved.key)
     # Display counterpart of the key stack (see ExecutionContext.call_labels).
     # Pushed and popped in lockstep so the two can never disagree about depth.
@@ -1172,14 +1399,38 @@ async def _run_callee(resolved, ctx: ExecutionContext) -> Artifact:
     """
     if not resolved.shell_grants and not resolved.writable_grants:
         return await execute_block(resolved.root, ctx)
-    return await execute_task_block(
-        resolved.root,
-        project_root=ctx.project_root,
-        project_id=ctx.project_id,
-        run_id=ctx.run_id,
-        pre_authorized_shell_commands=resolved.shell_grants,
-        pre_authorized_writable=resolved.writable_grants,
-    )
+    with _evidence_namespace_scope(ctx):
+        return await execute_task_block(
+            resolved.root,
+            project_root=ctx.project_root,
+            project_id=ctx.project_id,
+            run_id=ctx.run_id,
+            pre_authorized_shell_commands=resolved.shell_grants,
+            pre_authorized_writable=resolved.writable_grants,
+            headless=ctx.headless,
+        )
+
+
+EVIDENCE_NAMESPACE_VAR = "evidence_namespace"
+
+
+@contextlib.contextmanager
+def _evidence_namespace_scope(ctx: "ExecutionContext"):
+    """Expose a State block's ``evidence_namespace`` to the task being run.
+
+    Declared as an ordinary State variable (``state_variables:
+    {evidence_namespace: …}``), so it follows State's placement and override
+    rules: launch-time overrides win, and the innermost declaration seen so
+    far applies.  The ledger tools and the shell scope token read it as the
+    default namespace for claims (design/evidence-ledger.md).
+    """
+    from app.context import set_evidence_namespace, reset_evidence_namespace
+    ns = {**(ctx.variables or {}), **(ctx.overrides or {})}.get(EVIDENCE_NAMESPACE_VAR)
+    token = set_evidence_namespace(str(ns).strip() if ns not in (None, "") else None)
+    try:
+        yield
+    finally:
+        reset_evidence_namespace(token)
 
 
 def _subtree_contains(block: Block, target_id: Optional[str]) -> bool:
@@ -1602,7 +1853,14 @@ def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
     neither applies or nothing changed."""
     if not block.instructions:
         return block
+    # A gather contract's re-run of this unit says why (rerun_missing):
+    # without it a deterministic omission would simply repeat.
+    from ..utils.output_contracts import current_rerun_note
+    _rerun = current_rerun_note()
     if not _templating_active(block, ctx):
+        if _rerun:
+            return block.model_copy(
+                update={"instructions": f"{_rerun}\n\n{block.instructions}"})
         return block
     bindings = _task_bindings(ctx)
     rendered = task_templating.render(block.instructions, bindings)
@@ -1612,7 +1870,7 @@ def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
     # but prose is rendered against the same bindings as the
     # instructions, so a {{var.X}} given resolves rather than reaching
     # the agent as literal braces.
-    preambles: List[str] = []
+    preambles: List[str] = [_rerun] if _rerun else []
     state_ctx = _build_state_context(ctx, bindings)
     if state_ctx:
         preambles.append(state_ctx)
@@ -1821,24 +2079,68 @@ async def _execute_parallel(
                 f"({getattr(result, 'infra_kind', '')}) in one child"
             )
             raise result
+    # Gather contract re-run pass (rerun_missing: 1): children short of a
+    # per-child gather contract run once more, concurrently, through the
+    # same gate, told why.  Their new artifacts replace the first attempt's
+    # in ``children``, so the composition below uses them throughout.
+    children = list(children)
+    rerun_attempts: Dict[int, int] = {}
+    _targets = _rerun_targets(block, ctx, "child", [
+        (i, (c.name or c.id or f"child {i}"),
+         children[i] if isinstance(children[i], Artifact) else None,
+         "cancelled" if isinstance(children[i], asyncio.CancelledError) else None)
+        for i, c in enumerate(block.body)
+    ])
+    if _targets:
+        from ..utils.output_contracts import rerun_note
+        await _announce_rerun(block, ctx, _targets)
+
+        async def _again(i: int, note: str) -> Artifact:
+            with rerun_note(note):
+                return await _gated(block.body[i])
+        again = await asyncio.gather(
+            *[_again(i, n) for i, _, n in _targets], return_exceptions=True)
+        for (i, _, _), r in zip(_targets, again):
+            if isinstance(r, BaseException) and getattr(r, "infra_kind", ""):
+                raise r
+            children[i] = r
+            rerun_attempts[i] = 2
     outputs: List[ArtifactPart] = []
     decisions: List[str] = []
     any_failed = False
     stages: List[Dict[str, Any]] = []
     for idx, result in enumerate(children):
         label = block.body[idx].name or block.body[idx].id or "child"
+        # A child marked ``required: false`` may fail without failing the
+        # Parallel.  Recorded, never silent: the decision names the lane
+        # so a failed optional lane is visible at the level above even
+        # though it does not propagate as a failure there.
+        optional = not getattr(block.body[idx], "required", True)
         if isinstance(result, BaseException):
-            any_failed = True
-            decisions.append(f"child[{idx}] failed: {result}")
+            if optional:
+                decisions.append(
+                    f"optional child[{idx}] ({label}) failed: {result} — "
+                    f"not counted against the parallel (required=false)")
+            else:
+                any_failed = True
+                decisions.append(f"child[{idx}] failed: {result}")
             stages.append(stage_evidence(
                 label, Artifact(summary=f"raised {result}"), index=idx,
                 status="failed"))
             continue
         if result.failed:
-            any_failed = True
+            if optional:
+                decisions.append(
+                    f"optional child[{idx}] ({label}) failed — not counted "
+                    f"against the parallel (required=false)"
+                    + (f": {result.signature}" if result.signature else ""))
+            else:
+                any_failed = True
         outputs.extend(result.outputs)
         decisions.extend(result.decisions)
         stages.append(stage_evidence(label, result, index=idx))
+        if rerun_attempts.get(idx):
+            stages[-1]["attempt"] = rerun_attempts[idx]
     elapsed_ms = int((time.time() - start) * 1000)
     summary = f"Parallel of {len(block.body)} child block(s)"
     return Artifact(
@@ -1910,6 +2212,9 @@ async def _execute_repeat(
     # the two can never disagree.  Emitted in index order as the
     # block artifact's ``stages``.
     iter_stages: Dict[int, Dict[str, Any]] = {}
+    # Each iteration's artifact by index (executed, banked or replayed):
+    # what the rerun_missing pass judges, and what it replaces.
+    iter_artifacts: Dict[int, Artifact] = {}
 
     def _iter_label(i: int) -> str:
         if 0 <= i < len(iterations):
@@ -1990,7 +2295,8 @@ async def _execute_repeat(
     async def _run_one(index: int, item: Any = None,
                         previous: Optional[Artifact] = None,
                         all_prior: Optional[List[str]] = None,
-                        item_key: Optional[str] = None) -> Artifact:
+                        item_key: Optional[str] = None,
+                        attempt: int = 1) -> Artifact:
         await _emit(ctx, {
             "type": "iteration_started",
             "block_id": block.id, "index": index,
@@ -2059,10 +2365,14 @@ async def _execute_repeat(
         if not artifact.duration_ms:
             artifact.duration_ms = int((time.time() - iter_start) * 1000)
         _attach_resolutions(artifact, bindings)
-        await _record_iteration(block, ctx, index, artifact, item_key=item_key)
+        await _record_iteration(block, ctx, index, artifact, item_key=item_key,
+                                **({"attempt": attempt} if attempt > 1 else {}))
         iter_outcomes[index] = "failed" if artifact.failed else "passed"
+        iter_artifacts[index] = artifact
         iter_stages[index] = stage_evidence(
             _iter_label(index), artifact, index=index)
+        if attempt > 1:
+            iter_stages[index]["attempt"] = attempt
         await _emit(ctx, {
             "type": "iteration_completed",
             "block_id": block.id, "index": index,
@@ -2098,6 +2408,7 @@ async def _execute_repeat(
         for _i in sorted(_banked):
             _art = _banked[_i]
             iter_outcomes[_i] = "passed"
+            iter_artifacts[_i] = _art
             iter_stages[_i] = stage_evidence(
                 _iter_label(_i), _art, index=_i, status="passed")
             last_artifact = _art
@@ -2269,6 +2580,7 @@ async def _execute_repeat(
                     "tokens": 0,
                 })
                 last_artifact = synth
+                iter_artifacts[idx] = synth
                 iter_stages[idx] = stage_evidence(
                     _iter_label(idx), synth, index=idx, status=_iter_status)
         # Now that every iteration is on record, re-raise so the run holds
@@ -2302,6 +2614,7 @@ async def _execute_repeat(
                     index=i, status="passed")
                 if replayed is not None:
                     last_artifact = replayed
+                    iter_artifacts[i] = replayed
                     outputs.extend(replayed.outputs)
                     if propagate == "all":
                         prior_summaries.append(replayed.summary or "")
@@ -2347,6 +2660,73 @@ async def _execute_repeat(
                 prior_summaries.append(artifact.summary or "")
             if block.repeat_mode == "until" and _until_condition_met(block, artifact):
                 break
+
+    # Gather contract re-run pass (rerun_missing: 1).  Iterations short of
+    # a per-iteration gather contract run ONCE more with their original
+    # index, item, item_key and {{previous}}, told why; their parts replace
+    # the first attempt's.  Before the roster check, so coverage is judged
+    # on the re-run.  Iteration i+1 is not re-run after a re-run of i.
+    _targets = _rerun_targets(block, ctx, "iteration", [
+        (i, _iter_label(i), iter_artifacts.get(i), iter_outcomes.get(i))
+        for i in sorted(iter_stages)
+    ])
+    if _targets:
+        from ..utils.output_contracts import rerun_note
+        await _announce_rerun(block, ctx, _targets)
+        _before = {i: iter_artifacts.get(i) for i, _, _ in _targets}
+
+        async def _again(i: int, note: str) -> Artifact:
+            with rerun_note(note):
+                prev = None
+                if not block.repeat_parallel and propagate != "none":
+                    prev = iter_artifacts.get(i - 1)
+                return await _run_one(
+                    i, item=iterations[i].get("item"),
+                    item_key=iterations[i].get("item_key"),
+                    previous=prev,
+                    all_prior=(prior_summaries[:i]
+                               if not block.repeat_parallel and propagate == "all" else None),
+                    attempt=2,
+                )
+
+        if block.repeat_parallel:
+            _rgate = _concurrency_gate(
+                _resolve_concurrency(block.repeat_max_concurrency, len(_targets)),
+                len(_targets))
+
+            async def _again_gated(i: int, note: str) -> Artifact:
+                async with _rgate:
+                    return await _again(i, note)
+            _again_results = await asyncio.gather(
+                *[_again_gated(i, n) for i, _, n in _targets], return_exceptions=True)
+        else:
+            _again_results = []
+            for i, _, n in _targets:
+                if ctx.cancel_requested():
+                    raise BlockExecutionCancelled()
+                try:
+                    _again_results.append(await _again(i, n))
+                except Exception as exc:  # noqa: BLE001 -- judged below
+                    _again_results.append(exc)
+        for (i, _, _), r in zip(_targets, _again_results):
+            if isinstance(r, BaseException):
+                if getattr(r, "infra_kind", "") or isinstance(r, asyncio.CancelledError):
+                    raise r
+                r = Artifact(summary=f"Iteration {i} re-run raised {type(r).__name__}",
+                             decisions=[str(r)], created_at=now_ms(), failed=True)
+                r.signature = _derive_signature(r)
+                await _record_iteration(block, ctx, i, r,
+                                        item_key=iterations[i].get("item_key"), attempt=2)
+                iter_outcomes[i] = "failed"
+                iter_artifacts[i] = r
+                iter_stages[i] = {**stage_evidence(_iter_label(i), r, index=i), "attempt": 2}
+            old = _before.get(i)
+            if old is not None:
+                _old_ids = {id(p) for p in (old.outputs or [])}
+                outputs[:] = [p for p in outputs if id(p) not in _old_ids]
+            outputs.extend(r.outputs or [])
+            if iter_stages and i == max(iter_stages):
+                last_artifact = r
 
     elapsed_ms = int((time.time() - start) * 1000)
     await _emit(ctx, {
@@ -2792,8 +3172,13 @@ def _plan_iterations(
 async def _record_iteration(
     block: Block, ctx: ExecutionContext, index: int, artifact: Artifact,
     item_key: Optional[str] = None,
+    attempt: int = 1,
 ) -> None:
-    """Persist summary + (optionally) full artifact for one iteration."""
+    """Persist summary + (optionally) full artifact for one iteration.
+
+    ``attempt`` > 1 is a gather-contract re-run: a second summary for the
+    same index and its own artifact file, so attempt 1 stays on record.
+    """
     if ctx.storage is None or not block.id:
         return
     # Three outcomes, not two.  A gate-cancelled peer is not failed (the
@@ -2815,8 +3200,11 @@ async def _record_iteration(
         keep_full = prev < PASS_ARTIFACT_RETENTION_CAP
         ctx.pass_counts[block.id] = prev + 1
     if keep_full:
+        # ``attempt`` only when > 1, so storage doubles written before
+        # re-runs existed keep working.
         ctx.storage.write_iteration_artifact(
             ctx.run_id, block.id, index, artifact, pass_key=pass_key,
+            **({"attempt": attempt} if attempt > 1 else {}),
         )
     from ..utils.self_improve import stage_digest
     # Lifted onto the summary so it outlives the artifact (see
@@ -2838,6 +3226,7 @@ async def _record_iteration(
         model=artifact.model,
         stages=stage_digest(getattr(artifact, "stages", None)),
         resolved_name=resolved_name,
+        attempt=attempt,
     )
     ctx.storage.append_iteration_summary(ctx.run_id, block.id, summary)
 
@@ -3284,6 +3673,19 @@ async def _execute_state(block: Block, ctx: ExecutionContext) -> Artifact:
     declared = block.state_variables or {}
     if declared:
         ctx.variables.update(declared)
+    # Output-contract defaults: merged by name, later State wins.  A new
+    # dict, so the dispatcher's saved reference for an enclosing block is
+    # untouched (see ExecutionContext.contract_defaults).
+    if block.output_contract_defaults:
+        ctx.contract_defaults = {
+            **ctx.contract_defaults,
+            **{e.name: e for e in block.output_contract_defaults},
+        }
+    if block.gather_contract_defaults:
+        ctx.gather_defaults = {
+            **ctx.gather_defaults,
+            **{e.name: e for e in block.gather_contract_defaults},
+        }
     # Prose givens — the conversational baseline.  Keyed by block id so
     # a State block re-executing in a loop overwrites its own note
     # rather than duplicating (idempotent, matching the variables reset

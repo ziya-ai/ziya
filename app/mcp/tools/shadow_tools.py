@@ -14,6 +14,8 @@ These are same-process builtin tools, not MCP.  They never write to a
 session's PTY: exec and control leases are later phases and the socket
 refuses those requests in this build.
 """
+import asyncio
+import time
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -560,6 +562,122 @@ class ShadowSpawnTool(BaseMCPTool):
             return {"ok": True, "session_id": sid, "label": entry.label, "restriction": resp["restriction"],
                     "policy": resp["policy"], "granted": resp["granted"],
                     "note": "Headless session running; use shadow_send to drive it and shadow_kill to end it."}
+        except Exception as e:  # noqa: BLE001
+            return _error(e)
+
+
+class ShadowWaitInput(BaseModel):
+    """Input schema for shadow_wait."""
+    session: str = Field(..., description="Session id, label, or label:id")
+    until: Optional[List[str]] = Field(
+        None, description=("Conditions; returns when ANY fires: 'exit' (command cmd_seq "
+                           "finished; carries exit_code, null when the shell reports none), "
+                           "'change' (any new journal record), "
+                           "'pattern' (new output matches pattern), 'lines' (lines new output "
+                           "lines), 'quiet' (no output for quiet_ms), 'ask' (the human asked the "
+                           "chat something). Default: ['exit'] if cmd_seq is given, else ['change']."))
+    cmd_seq: Optional[int] = Field(None, description="cmd_seq from shadow_send: wait for that command's exit.")
+    from_seq: Optional[int] = Field(None, description=("Watch from this journal seq; pass shadow_send's "
+                                                       "next_seq so nothing in the gap is missed. Default: now."))
+    pattern: Optional[str] = Field(None, description="Regex for until=['pattern'], e.g. 'error|FAIL|BUILD SUCCESSFUL'.")
+    lines: int = Field(5, ge=1, le=10000, description="Line count for until=['lines'].")
+    quiet_ms: int = Field(800, ge=50, le=5000, description="Silence that counts as 'quiet'.")
+    timeout_ms: int = Field(240000, ge=0, le=86_400_000,
+                            description=("Give up after this long (default 4 min; up to 24 h). "
+                                         "A timeout is a checkpoint with the tail so far, not a failure."))
+    tail_lines: int = Field(20, ge=1, le=500, description="Lines of new output returned (the most recent).")
+    max_chars: int = Field(4000, ge=200, le=40000, description="Cap on the returned tail.")
+
+
+class ShadowWaitTool(BaseMCPTool):
+    name: str = "shadow_wait"
+    description: str = (
+        "[DIRECT] Wait on a `ziya shadow` session until something HAPPENS -- the "
+        "command exits (with its code), new output appears, a regex matches, N new "
+        "lines arrive, output goes quiet, or the human asks a question -- and return "
+        "a bounded tail of what arrived. Use this instead of sleeping and re-reading: "
+        "after shadow_send reports still_running, call shadow_wait(cmd_seq=..., "
+        "from_seq=next_seq) and you wake the moment the build finishes or crashes. "
+        "Waits may be hours; a timeout just hands control back with the tail so far. "
+        "Read-only, needs no lease; any conversation may wait on a session. Follow "
+        "with shadow_read(from_seq=...) if you want more than the tail. " + _UNTRUSTED_NOTE
+    )
+    InputSchema = ShadowWaitInput
+
+    def exec_timeout_for(self, args: Dict[str, Any]) -> Optional[float]:
+        try:
+            return int(args.get("timeout_ms", 240000)) / 1000.0
+        except (TypeError, ValueError):
+            return None
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        session = str(kwargs.get("session", "")).strip()
+        if not session:
+            return {"ok": False, "error": "bad_request", "message": "session is required"}
+        until = kwargs.get("until")
+        if isinstance(until, str):
+            until = [until]
+        try:
+            from app.shadow import client
+            entry = client.resolve_one(session)
+            want = set(until) if until else (
+                {"exit"} if kwargs.get("cmd_seq") is not None else {"change"})
+            if want == {"exit"} and entry.segmentation == "raw":
+                return {"ok": False, "error": "no_exit_signal", "session_id": entry.session_id,
+                        "message": ("This session is in raw segmentation: it never records "
+                                    "when a command finishes, so an exit-only wait could only "
+                                    "time out. Use until=['quiet'] (output settled) or "
+                                    "until=['pattern'] with a line the command prints when done.")}
+            budget_ms = int(kwargs.get("timeout_ms", 240000))
+            from_seq = kwargs.get("from_seq")
+            started = time.monotonic()
+            # Chain hops of <= client.WAIT_CHUNK_MS, each off the event loop.
+            # A user stop cancels between hops, so a long wait never pins the
+            # process to a socket read it cannot interrupt.
+            while True:
+                remaining = max(0, budget_ms - int((time.monotonic() - started) * 1000))
+                resp = await asyncio.to_thread(
+                    client.wait, session, until=until, cmd_seq=kwargs.get("cmd_seq"),
+                    from_seq=from_seq, pattern=kwargs.get("pattern"),
+                    lines=int(kwargs.get("lines", 5)), quiet_ms=int(kwargs.get("quiet_ms", 800)),
+                    timeout_ms=min(remaining, client.WAIT_CHUNK_MS), max_tail_records=100)
+                from_seq = resp.get("from_seq", from_seq)
+                if resp.get("reason") != "timeout" or remaining <= client.WAIT_CHUNK_MS:
+                    break
+            tail_lines = int(kwargs.get("tail_lines", 20))
+            max_chars = int(kwargs.get("max_chars", 4000))
+            text = client.format_records(resp.get("records") or [], max_chars=10_000_000)
+            lines = text.split("\n") if text else []
+            cut = len(lines) > tail_lines
+            if cut:
+                lines = lines[-tail_lines:]
+            text = "\n".join(lines)
+            if len(text) > max_chars:
+                text, cut = "…" + text[-max_chars:], True
+            from app.mcp.response_validator import sanitize_text
+            out: Dict[str, Any] = {
+                "ok": True, "session_id": entry.session_id, "reason": resp.get("reason"),
+                "still_running": bool(resp.get("still_running")),
+                "new_records": resp.get("new_records", 0),
+                "output_lines": resp.get("output_lines", 0),
+                "from_seq": resp.get("from_seq"), "next_seq": resp.get("next_seq"),
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "tail": sanitize_text(text, source_tool="shadow_wait") or "(no new output)",
+                "tail_truncated": bool(cut or resp.get("tail_truncated")),
+            }
+            for k in ("exit_code", "exit_seq", "matched"):
+                if k in resp:
+                    out[k] = resp[k]
+            hints = []
+            if out["still_running"]:
+                hints.append(f"shadow_wait(session={entry.session_id!r}, cmd_seq={kwargs.get('cmd_seq')}, "
+                             f"from_seq={out['next_seq']}) to keep waiting")
+            if out["tail_truncated"]:
+                hints.append(f"shadow_read(session={entry.session_id!r}, from_seq={out['from_seq']}) "
+                             "for everything")
+            if hints:
+                out["next"] = "; ".join(hints)
+            return out
         except Exception as e:  # noqa: BLE001
             return _error(e)
 

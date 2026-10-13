@@ -12,8 +12,8 @@ The one invariant: a task's conversation never leaves its task.
 Only instructions flow down and artifacts flow up.
 """
 
-from pydantic import BaseModel, Field
-from typing import Optional, List, Literal, Dict, Any
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Optional, List, Literal, Dict, Any, Union
 from ..utils.run_time import EpochMs
 
 
@@ -342,6 +342,52 @@ class Artifact(BaseModel):
     template_resolutions: List[TemplateResolution] = []
 
 
+# ── Output contracts (design/typed-findings.md) ────────────
+
+class OutputContract(BaseModel):
+    """One output a Task must (or may) emit, by part name and schema.
+
+    ``schema`` is a registry reference (``ziya:<name>/v<n>``,
+    ``project:<name>``) or an inline JSON Schema object; resolution,
+    validation and pinning live in app/utils/output_contracts.py.  The
+    Python attribute is ``schema_`` because ``schema`` shadows a BaseModel
+    attribute; the wire name stays ``schema``.
+    """
+    model_config = ConfigDict(extra="allow", populate_by_name=True,
+                              serialize_by_alias=True)
+
+    name: str
+    schema_: Union[str, Dict[str, Any]] = Field(alias="schema")
+    required: bool = True
+    max_count: int = 1
+    # None: on exactly when an evidence namespace is in scope.
+    require_claims: Optional[bool] = None
+
+
+class GatherContract(BaseModel):
+    """A container's contract over its children or iterations.
+
+    ``per`` picks the unit: each direct child (Parallel, Group), each
+    executed iteration (Repeat, Until), or the container as a whole.
+    ``producer`` names the Task(s) inside a unit that must emit; required
+    when a unit holds more than one Task.  ``container`` is used only in
+    ``gather_contract_defaults`` to say which container types a default
+    applies to.
+    """
+    model_config = ConfigDict(extra="allow", populate_by_name=True,
+                              serialize_by_alias=True)
+
+    name: str
+    schema_: Union[str, Dict[str, Any]] = Field(alias="schema")
+    per: Literal["child", "iteration", "total"] = "child"
+    min: int = 1
+    max: Optional[int] = None
+    producer: Optional[List[str]] = None
+    rerun_missing: Literal[0, 1] = 0
+    require_claims: Optional[bool] = None
+    container: Literal["parallel", "repeat", "until", "group", "any"] = "any"
+
+
 # ── The recursive Block type ──────────────────────────────
 
 class Block(BaseModel):
@@ -516,6 +562,12 @@ class Block(BaseModel):
     # for values you want to reference by name; this prose field is the
     # baseline most cards use.  Same placement-is-reset-policy as vars.
     state_context: Optional[str] = None
+
+    # State-only: contracts merged, by name, into every Task (and, for
+    # gather defaults, every matching container) in this State's scope
+    # that does not declare one of the same name.
+    output_contract_defaults: Optional[List[OutputContract]] = None
+    gather_contract_defaults: Optional[List[GatherContract]] = None
 
     # ---- Ask-only fields (human-in-the-loop checkpoint) ----
     # The question put to the operator.  Required for an ask block: without
