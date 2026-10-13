@@ -1,7 +1,7 @@
 /**
  * Static wiring guards for how MCPRegistryModal reports a failed or
  * warning-laden registry install (follow-up to the 2026-09-17
- * kuiper-minerva-mcp install).
+ * registry MCP install).
  *
  * The registry CLI printed a clear, multi-line diagnosis; the modal showed
  * `message.error(\`Installation failed: ${...}\`)` — a toast that truncates
