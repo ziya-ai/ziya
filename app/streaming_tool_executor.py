@@ -5447,7 +5447,35 @@ Please retry the tool call with valid JSON. Ensure:
         """Update code block tracking state based on text content."""
         if not text:
             return
-            
+
+        # A chunk boundary can fall inside a line.  The content optimizer
+        # splits on whitespace, so a diff context line " ```bash" reaches
+        # this method as "\n " and then "```bash"; measured on its own, the
+        # second fragment is a column-0 fence and the diff-body guard below
+        # (indent > 0 is content) cannot see it.  Each call still reads its
+        # trailing unterminated line at once -- single-call users depend on
+        # that -- but records the line and the state it was read from; the
+        # next call rewinds to that state and re-reads the whole line.  The
+        # rewind is skipped when the state moved in between (an external
+        # reset, e.g. the hallucination path, must win).
+        _STATE_KEYS = ('in_block', 'block_type', 'backtick_count',
+                       'fence_indent', 'accumulated_content',
+                       'fence_transitions')
+
+        def _snap():
+            return {k: tracker[k] for k in _STATE_KEYS if k in tracker}
+
+        _partial = tracker.pop('_partial_line', '')
+        _before = tracker.pop('_partial_before', None)
+        _after = tracker.pop('_partial_after', None)
+        if _partial and _before is not None and _snap() == _after:
+            for k in _STATE_KEYS:
+                if k in _before:
+                    tracker[k] = _before[k]
+                else:
+                    tracker.pop(k, None)
+            text = _partial + text
+
         # Debug logging to track state changes
         was_in_block = tracker.get('in_block', False)
         was_block_type = tracker.get('block_type')
@@ -5469,7 +5497,12 @@ Please retry the tool call with valid JSON. Ensure:
         )
         _LANG_TAG_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+#_\-]{0,30}$')
         lines = text.split('\n')
-        for line in lines:
+        # State just before the trailing unterminated line is read, kept so
+        # the next call can rewind and re-read that line whole (see above).
+        _tail_before = None
+        for _idx, line in enumerate(lines):
+            if _idx == len(lines) - 1 and line:
+                _tail_before = _snap()
             # CommonMark allows at most 3 spaces of indent on a fence, and a
             # fence line inside a DIFF body always carries a '+'/'-'/' '
             # prefix. line.strip() erased that prefix, so a context line
@@ -5602,7 +5635,12 @@ Please retry the tool call with valid JSON. Ensure:
                         f"🔍 TRACKER: Opened untyped bare fence "
                         f"({backtick_count} backticks)"
                     )
-        
+
+        if _tail_before is not None:
+            tracker['_partial_line'] = lines[-1]
+            tracker['_partial_before'] = _tail_before
+            tracker['_partial_after'] = _snap()
+
         # Log state changes for debugging
         if was_in_block != tracker.get('in_block') or was_block_type != tracker.get('block_type'):
             logger.debug(f"🔍 TRACKER_STATE_CHANGE: {was_block_type or 'none'}[{was_in_block}] → {tracker.get('block_type') or 'none'}[{tracker.get('in_block')}]")
@@ -5661,10 +5699,21 @@ Please retry the tool call with valid JSON. Ensure:
             return not has_unmatched_run(
                 last_paragraph(prefix + m.string[:m.start(fence_group)]))
 
+        def _indented_line_start(m: re.Match) -> bool:
+            # Only whitespace between the start of the line and the fence:
+            # " ```bash" is already a valid indented fence, or a diff context
+            # line holding one -- nothing is glued to it.  The line may have
+            # begun in an earlier chunk, so when this chunk has no newline
+            # before the match the tail of ``preceding`` supplies the head.
+            before = m.string[:m.start(2)]
+            nl = before.rfind('\n')
+            head = before[nl + 1:] if nl >= 0 else prefix.rsplit('\n', 1)[-1] + before
+            return head.strip() == ''
+
         # Case 1: non-newline character directly before fence opening
         normalized = self._FENCE_GLUED_RE.sub(
             lambda m: (m.group(1) + '\n\n' + m.group(2))
-            if _outside_span(m, 2) else m.group(0),
+            if _outside_span(m, 2) and not _indented_line_start(m) else m.group(0),
             text)
         # Case 2: single newline before fence opening (promote to blank line)
         normalized = self._FENCE_SINGLE_NL_RE.sub(
