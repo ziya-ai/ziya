@@ -116,7 +116,7 @@ describe('mergeServerChat: bodyless placeholder version stamping', () => {
 
     it('does NOT claim the server version when it carries no body the server says exists', () => {
         // local absent, full fetch deferred -> shell placeholder with messages: []
-        const d = mergeServerChat(summary(), undefined, undefined, ctx()) as any;
+        const d = mergeServerChat(summary(), undefined, ctx()) as any;
         expect(d.action).toBe('set');
         expect(d.record.messages).toEqual([]);
         expect(d.record._isShell).toBe(true);
@@ -127,7 +127,7 @@ describe('mergeServerChat: bodyless placeholder version stamping', () => {
     it('still stamps the server version when the server reports no messages', () => {
         // Nothing is being misrepresented here: empty record, empty server.
         const d = mergeServerChat(
-            summary({ messageCount: 0, title: 'Sidebar Only' }), undefined, undefined, ctx()
+            summary({ messageCount: 0, title: 'Sidebar Only' }), undefined, ctx()
         ) as any;
         expect(d.action).toBe('set');
         expect(d.record._version).toBe(1787697560970);
@@ -136,7 +136,7 @@ describe('mergeServerChat: bodyless placeholder version stamping', () => {
     it('stamps the server version when messageCount is absent (older server summary)', () => {
         const s = summary({ title: 'No Count' });
         delete (s as any).messageCount;
-        const d = mergeServerChat(s, undefined, undefined, ctx()) as any;
+        const d = mergeServerChat(s, undefined, ctx()) as any;
         expect(d.record._version).toBe(1787697560970);
     });
 
@@ -144,7 +144,7 @@ describe('mergeServerChat: bodyless placeholder version stamping', () => {
     // never displace a fuller in-memory copy, which is what a serverVersion
     // stamp enabled (canReusePrevConversation compares _version first).
     it('a bodyless placeholder never displaces the rendered in-memory record', () => {
-        const d = mergeServerChat(summary(), undefined, undefined, ctx()) as any;
+        const d = mergeServerChat(summary(), undefined, ctx()) as any;
         const inMemory = {
             ...d.record,
             messages: Array.from({ length: 31 }, (_, i) => ({ role: 'human', content: `m${i}` })),
