@@ -60,26 +60,26 @@ const mergeHydrated = (
     });
 
 describe('ProjectContext skill hydration', () => {
-    const ATLAS_BODY = '# Atlas Metrics Skill\n\nQuery Kuiper Atlas telemetry...';
+    const ATLAS_BODY = '# Fleet Metrics Skill\n\nQuery fleet telemetry...';
 
     describe('activeSkillPrompts assembly (bug surface)', () => {
         it('produces an empty-body prompt when an active skill has no prompt (the bug)', () => {
             const skills: TestSkill[] = [
-                { id: 'user-atlas-metrics-abc', name: 'atlas-metrics', prompt: '' },
+                { id: 'user-fleet-metrics-abc', name: 'fleet-metrics', prompt: '' },
             ];
-            const result = buildActiveSkillPrompts(['user-atlas-metrics-abc'], skills, null);
+            const result = buildActiveSkillPrompts(['user-fleet-metrics-abc'], skills, null);
             // This is exactly the broken output: header + newline + nothing.
-            expect(result).toBe('[Active Skill: atlas-metrics]\n');
-            expect(result).not.toContain('Query Kuiper Atlas');
+            expect(result).toBe('[Active Skill: fleet-metrics]\n');
+            expect(result).not.toContain('Query fleet');
         });
 
         it('produces the full prompt once the body is hydrated (the fix)', () => {
             const skills: TestSkill[] = [
-                { id: 'user-atlas-metrics-abc', name: 'atlas-metrics', prompt: ATLAS_BODY },
+                { id: 'user-fleet-metrics-abc', name: 'fleet-metrics', prompt: ATLAS_BODY },
             ];
-            const result = buildActiveSkillPrompts(['user-atlas-metrics-abc'], skills, null);
-            expect(result).toBe(`[Active Skill: atlas-metrics]\n${ATLAS_BODY}`);
-            expect(result).toContain('Query Kuiper Atlas telemetry');
+            const result = buildActiveSkillPrompts(['user-fleet-metrics-abc'], skills, null);
+            expect(result).toBe(`[Active Skill: fleet-metrics]\n${ATLAS_BODY}`);
+            expect(result).toContain('Query fleet telemetry');
         });
 
         it('built-in skills (body always present) are unaffected', () => {
@@ -124,11 +124,11 @@ describe('ProjectContext skill hydration', () => {
     describe('merge-patch + no-loop guarantee', () => {
         it('patches the hydrated body into the matching skill only', () => {
             const skills: TestSkill[] = [
-                { id: 'a', name: 'atlas-metrics', prompt: '' },
+                { id: 'a', name: 'fleet-metrics', prompt: '' },
                 { id: 'b', name: 'other', prompt: 'untouched' },
             ];
             const merged = mergeHydrated(skills, [
-                { id: 'a', full: { id: 'a', name: 'atlas-metrics', prompt: ATLAS_BODY } },
+                { id: 'a', full: { id: 'a', name: 'fleet-metrics', prompt: ATLAS_BODY } },
             ]);
             expect(merged.find(s => s.id === 'a')!.prompt).toBe(ATLAS_BODY);
             expect(merged.find(s => s.id === 'b')!.prompt).toBe('untouched');
@@ -136,24 +136,24 @@ describe('ProjectContext skill hydration', () => {
 
         it('does not re-trigger hydration after a successful patch (no infinite loop)', () => {
             const skills: TestSkill[] = [
-                { id: 'a', name: 'atlas-metrics', prompt: '' },
+                { id: 'a', name: 'fleet-metrics', prompt: '' },
             ];
             // First pass: hydration needed.
             expect(computeNeedHydration(['a'], skills)).toEqual(['a']);
             // After merge, the effect re-runs (skills changed) — but the
             // now-hydrated skill must NOT be selected again.
             const merged = mergeHydrated(skills, [
-                { id: 'a', full: { id: 'a', name: 'atlas-metrics', prompt: ATLAS_BODY } },
+                { id: 'a', full: { id: 'a', name: 'fleet-metrics', prompt: ATLAS_BODY } },
             ]);
             expect(computeNeedHydration(['a'], merged)).toEqual([]);
         });
 
         it('preserves contextIds and other fields when spreading the hydrated skill', () => {
             const skills: TestSkill[] = [
-                { id: 'a', name: 'atlas-metrics', prompt: '', contextIds: ['ctx-1'] },
+                { id: 'a', name: 'fleet-metrics', prompt: '', contextIds: ['ctx-1'] },
             ];
             const merged = mergeHydrated(skills, [
-                { id: 'a', full: { id: 'a', name: 'atlas-metrics', prompt: ATLAS_BODY, contextIds: ['ctx-1', 'ctx-2'] } },
+                { id: 'a', full: { id: 'a', name: 'fleet-metrics', prompt: ATLAS_BODY, contextIds: ['ctx-1', 'ctx-2'] } },
             ]);
             expect(merged[0].prompt).toBe(ATLAS_BODY);
             expect(merged[0].contextIds).toEqual(['ctx-1', 'ctx-2']);
