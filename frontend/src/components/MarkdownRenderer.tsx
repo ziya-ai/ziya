@@ -964,33 +964,14 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
         }
     }, [hasSyntaxHighlighting, contentLanguage, cleanContent]);
 
-    // Check if this is a security error from shell command blocking
-    let isSecurityError = content.includes('🚫 SECURITY' + ' BLOCK') ||
-        content.includes('🚫 WRITE' + ' BLOCKED') ||
-        content.includes('Command' + ' not allowed');
-
-    let securityErrorMessage = content;
-
-    // Check if content is a JSON error object from MCP server
-    if (content.includes("'error': True") && content.includes('SECURITY' + ' BLOCK')) {
-        try {
-            // Extract the message from the JSON-like string
-            const messageMatch = content.match(/'message': "([^"]+)"/);
-            if (messageMatch) {
-                let message = messageMatch[1].replace(/\\n/g, '\n');
-                // Remove the redundant security error prefix since we show it in the title
-                message = message.replace(new RegExp('^🚫 SECURITY' + ' BLOCK:\\s*'), '');
-                securityErrorMessage = message;
-                isSecurityError = true;
-            }
-        } catch (e) {
-            // If parsing fails, use original content
-        }
-    }
+    // A shell-policy refusal (anchored at the start of the message): a result
+    // that merely QUOTES the sentinel, such as a file_write echoing a test
+    // fixture, is an ordinary result.  See utils/blockedCommand.ts.
+    const isSecurityError = looksLikeBlockedCommand(content);
+    const securityErrorMessage = isSecurityError ? blockedCommandMessage(content) : content;
 
     // Check if this is an MCP tool error
-    const isMCPError = content.includes('MCP Tool Error') ||
-        content.includes('MCP Resource Error');
+    const isMCPError = looksLikeMcpError(content);
 
     // If this is a security error, render it with special styling
     if (isSecurityError) {
@@ -5450,21 +5431,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         toolContent = fenceMatch[1];
                     }
 
-                    // Check for security errors in tool output and render them prominently
-                    const isSecurityError = toolContent && (
-                        toolContent.includes('🚫 SECURITY' + ' BLOCK') ||
-                        toolContent.includes('🚫 WRITE' + ' BLOCKED') ||
-                        toolContent.includes('Command' + ' not allowed') ||
-                        (toolContent.includes("'error': True") && toolContent.includes('SECURITY' + ' BLOCK'))
-                    );
+                    // A shell-policy refusal, rendered prominently.  Anchored:
+                    // output that merely quotes the sentinel is not a block.
+                    const isSecurityError = looksLikeBlockedCommand(toolContent);
 
                     if (isSecurityError) {
-                        // Extract the actual message from Python dict format
-                        let errorMessage = toolContent;
-                        const pythonDictMatch = toolContent.match(/\{'error': True, 'message': "([^"]*(?:\\.[^"]*)*)"/);
-                        if (pythonDictMatch) {
-                            errorMessage = pythonDictMatch[1].replace(/\\n/g, '\n').replace(new RegExp('^🚫 SECURITY' + ' BLOCK:\\s*'), '');
-                        }
+                        const errorMessage = blockedCommandMessage(toolContent);
                         return (
                             <Alert key={sk} message="🚫 Command Blocked" description={makeShellConfigLinkClickable(errorMessage, onOpenShellConfig)} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }} />
                         );
