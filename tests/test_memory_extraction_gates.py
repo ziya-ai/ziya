@@ -31,7 +31,7 @@ class TestRefactoringGate:
         assert quality_gate(candidates) == []
 
     def test_allows_non_refactoring(self):
-        candidates = [{"content": "FRED routing path preference order: PER > TTC > Umbilical with dynamic mode handling", "tags": ["fred", "routing"]}]
+        candidates = [{"content": "Gateway routing path preference order: primary > secondary > maintenance with dynamic mode handling", "tags": ["gateway", "routing"]}]
         result = quality_gate(candidates)
         assert len(result) == 1
 
@@ -52,7 +52,7 @@ class TestCodeDescriptionGate:
         assert quality_gate(candidates) == []
 
     def test_allows_domain_architecture(self):
-        candidates = [{"content": "Every Kuiper satellite has Aldrin switches with full traffic management engines sitting completely idle", "tags": ["kuiper", "aldrin"]}]
+        candidates = [{"content": "Every edge node has programmable switches with full traffic management engines sitting completely idle", "tags": ["edge", "switching"]}]
         result = quality_gate(candidates)
         assert len(result) == 1
 
@@ -77,7 +77,7 @@ class TestCareerNarrativeGate:
         assert quality_gate(candidates) == []
 
     def test_allows_domain_decision(self):
-        candidates = [{"content": "Business chose 500 MHz merlin mode for peak throughput and Hugo support, limiting to 10 spots per merlin", "tags": ["kuiper", "merlin"]}]
+        candidates = [{"content": "Business chose the high-throughput shard mode for peak throughput and plugin support, limiting to 10 tenants per shard", "tags": ["billing", "shards"]}]
         result = quality_gate(candidates)
         assert len(result) == 1
 
@@ -88,8 +88,8 @@ class TestCombinedGates:
     def test_mixed_batch_filters_correctly(self):
         candidates = [
             # Should pass
-            {"content": "SDN quantum = 4.8112s, SDN slot = 3 x SDN quantum = 14.4s for timing calculations", "tags": ["sdn", "timing"]},
-            {"content": "Safety_inhibit ALWAYS overrides persistence in real flight mode operation", "tags": ["fred", "safety"]},
+            {"content": "Batch window = 4.8112s, flush slot = 3 x batch window = 14.4s for timing calculations", "tags": ["batching", "timing"]},
+            {"content": "Safety_inhibit ALWAYS overrides persistence in real production mode operation", "tags": ["gateway", "safety"]},
             # Should be rejected (refactoring)
             {"content": "The _handle_usage_event method was extracted from the streaming tool executor module", "tags": ["refactoring"]},
             # Should be rejected (code description)
@@ -102,7 +102,7 @@ class TestCombinedGates:
         result = quality_gate(candidates)
         assert len(result) == 2
         contents = [c["content"] for c in result]
-        assert any("SDN quantum" in c for c in contents)
+        assert any("Batch window" in c for c in contents)
         assert any("Safety_inhibit" in c for c in contents)
 
 
@@ -133,8 +133,8 @@ class TestIntraBatchDedup:
 
     def test_keeps_distinct_memories(self):
         candidates = [
-            {"content": "FRED traffic control uses HTB qdiscs on the ttc0 interface with 16 priority classes", "tags": ["fred"]},
-            {"content": "SDN quantum = 4.8112s, SDN slot = 3 x SDN quantum = 14.4s", "tags": ["sdn"]},
+            {"content": "Gateway traffic control uses HTB qdiscs on the mgmt0 interface with 16 priority classes", "tags": ["gateway"]},
+            {"content": "Batch window = 4.8112s, flush slot = 3 x batch window = 14.4s", "tags": ["batching"]},
         ]
         result = _deduplicate_within_batch(candidates)
         assert len(result) == 2
