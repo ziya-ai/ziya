@@ -437,11 +437,11 @@ class TestIncludeDirPrefixes:
         monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
         monkeypatch.setattr(
             "app.services.folder_service._explicit_external_paths",
-            {"/Users/dcohn/Documents/Vendor Docs/Marvell Switching"},
+            {"/Users/alice/Documents/Vendor Docs/Switch Datasheets"},
             raising=False,
         )
         prefixes = _get_include_dir_prefixes()
-        assert "/Users/dcohn/Documents/Vendor Docs/Marvell Switching" in prefixes
+        assert "/Users/alice/Documents/Vendor Docs/Switch Datasheets" in prefixes
 
     def test_combines_both_sources(self, monkeypatch):
         from app.mcp.tools.fileio import _get_include_dir_prefixes
