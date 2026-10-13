@@ -228,13 +228,13 @@ async def call_service_model(
 
 
 def _unsupported_params_for_model_id(model_id: str) -> set:
-    """Look up which inference parameters a Bedrock model rejects.
+    """Look up which inference parameters a model rejects, by model id.
 
     Some models (e.g. Opus 4.7) reject sampling parameters with a 400
     ValidationException.  The list is declared on the per-model entry
     in MODEL_CONFIGS as ``unsupported_parameters``.  Walk the config
     looking for an entry whose ``model_id`` matches (handling both
-    bare-string and {us,eu} dict forms).
+    bare-string and {us,eu} dict forms).  Used by every service path.
     """
     try:
         from app.config.models_config import MODEL_CONFIGS
@@ -422,6 +422,17 @@ async def _call_openai_compatible(config, system_prompt, user_message, max_token
                 extra_kwargs["extra_body"] = envelope
         else:
             client = OpenAI()  # Uses OPENAI_API_KEY / ANTHROPIC_API_KEY from env
+        # Mirror _call_bedrock: never send temperature to a model that
+        # declares it unsupported.  Without this every OpenAI service call
+        # (memory extraction, intent judge) 400s on gpt-5.5 / 6.x.
+        if "temperature" not in _unsupported_params_for_model_id(config["model_id"]):
+            extra_kwargs["temperature"] = temperature
+        # GPT-5.x / 6.x reject `max_tokens`; the openai endpoint declares the
+        # name it wants (ENDPOINT_DEFAULTS["openai"]["max_tokens_param"]).
+        from app.config.models_config import ENDPOINT_DEFAULTS
+        max_tokens_key = (ENDPOINT_DEFAULTS.get(config.get("endpoint"), {})
+                          .get("max_tokens_param") or "max_tokens")
+        extra_kwargs[max_tokens_key] = max_tokens
         response = await asyncio.to_thread(
             client.chat.completions.create,
             model=config["model_id"],
@@ -429,8 +440,6 @@ async def _call_openai_compatible(config, system_prompt, user_message, max_token
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
-            max_tokens=max_tokens,
-            temperature=temperature,
             **extra_kwargs,
         )
         return response.choices[0].message.content or ""

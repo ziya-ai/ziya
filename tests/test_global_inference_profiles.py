@@ -170,11 +170,12 @@ class TestConfigIntegrity:
         """Every Anthropic model from sonnet4.0+ should have a global profile."""
         from app.config.models_config import MODEL_CONFIGS
         bedrock = MODEL_CONFIGS.get("bedrock", {})
-        # opus4.1 dropped 2026-08-19: Bedrock never published a global.
-        # inference profile for Opus 4.1, and the model entry was removed in
-        # favour of opus4.5.
+        # opus4.1 never had a global. profile (verified 2026-08-19) and the
+        # entry was removed 2026-10-01 along with sonnet4.0 (Bedrock EOL
+        # 2026-10-14); both now resolve as aliases.  sonnet5.5 is from the
+        # Bedrock model card, which lists us./eu./global. profiles.
         models_requiring_global = [
-            "sonnet4.0", "sonnet4.5", "sonnet4.6",
+            "sonnet4.5", "sonnet4.6", "sonnet5", "sonnet5.5",
             "opus4.6", "opus4.7", "opus4.8",
             "haiku-4.5",
         ]

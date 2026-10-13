@@ -32,7 +32,7 @@ def init_model(endpoint, model):
     os.environ["ZIYA_ENDPOINT"] = endpoint
     os.environ["ZIYA_MODEL"] = model
     if endpoint == "bedrock":
-        # Respect an externally supplied profile (e.g. kuiper-ziya for
+        # Respect an externally supplied profile (e.g. team-dev for
         # mantle-served models); fall back to the default "ziya" profile.
         _profile = os.environ.get("ZIYA_AWS_PROFILE") or "ziya"
         os.environ["ZIYA_AWS_PROFILE"] = _profile
