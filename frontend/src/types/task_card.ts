@@ -112,6 +112,24 @@ export interface ArtifactPart {
   /** Hierarchy stamps: which block/iteration emitted this part. */
   block_id?: string | null;
   iteration?: number | null;
+  /**
+   * Output-contract stamps (app/utils/output_contracts.py::check_part),
+   * present only on a part that passed its contract at emit time.
+   * `schema_lineage` is the schema id followed by every registry schema it
+   * extends, so a project schema built on `ziya:finding/v1` still renders
+   * as a finding card.
+   */
+  contract?: string | null;
+  schema_id?: string | null;
+  schema_sha256?: string | null;
+  schema_lineage?: string[] | null;
+  /** Ledger claims the part cites, resolved at emit, keyed by JSON pointer. */
+  resolved_claims?: Array<{
+    pointer: string; ref?: string; field?: string | null; claim_id: string;
+    version?: number | null; status?: string | null; value?: unknown; unit?: string | null;
+  }> | null;
+  /** JSON pointers of literal (not claimed) numbers. */
+  unverified_numbers?: string[] | null;
 }
 
 /**
