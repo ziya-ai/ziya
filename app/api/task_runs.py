@@ -941,9 +941,11 @@ async def resume_run_from_iteration(
     from ..utils.resume_targets import (
         resolve_iteration_resume, resume_call_chain,
     )
+    # Highest attempt per iteration (see app/utils/iteration_attempts.py).
+    from ..utils.iteration_attempts import latest_attempts as _latest_attempts
     start, err = resolve_iteration_resume(
         root, block_id, index,
-        [s.model_dump() for s in (state.iteration_summaries or [])],
+        [s.model_dump() for s in _latest_attempts(state.iteration_summaries or [])],
         mode,
         inherited=inherited,
         # A loop inside a CALLED card is invisible to the caller's tree, so
@@ -988,7 +990,7 @@ async def resume_run_from_iteration(
     iteration_artifacts = {
         int(k): v for k, v in inherited.items() if int(k) < start
     }
-    for summary in (state.iteration_summaries or []):
+    for summary in _latest_attempts(state.iteration_summaries or []):
         if summary.index >= start:
             continue
         if not summary.has_artifact:
@@ -1010,7 +1012,7 @@ async def resume_run_from_iteration(
     # attempt's failure green.  ``replayed=True`` is what keeps these
     # out of every progress aggregate.
     recorded_prefix = {
-        s.index: s for s in (state.iteration_summaries or [])
+        s.index: s for s in _latest_attempts(state.iteration_summaries or [])
         if s.index < start
     }
     resume_iteration_summaries = []
