@@ -1909,7 +1909,11 @@ class ConversationDB implements DB {
 
         const { caseSensitive = false, maxSnippetLength = 150, projectId,
             sort = 'relevance' } = options;
-        const searchTerm = caseSensitive ? query : query.toLowerCase();
+        // Whitespace-tolerant pattern shared with the server scan and the
+        // highlighters (see utils/searchPattern.ts).
+        const { buildSearchPattern } = await import('./searchPattern');
+        const pattern = buildSearchPattern(query, { caseSensitive });
+        if (!pattern) return [];
 
         // Mirrors app/storage/chat_search._relevance_score.  The two paths must
         // agree, or results silently reorder whenever the server is briefly
@@ -1963,28 +1967,23 @@ class ConversationDB implements DB {
 
                 // Search through conversation title
                 const titleStr = typeof conv.title === 'string' ? conv.title : '';
-                const titleToSearch = caseSensitive ? titleStr : titleStr.toLowerCase();
-                const titleMatches = titleToSearch.includes(searchTerm);
+                pattern.lastIndex = 0;
+                const titleMatches = pattern.test(titleStr);
 
                 // Search through messages
                 conv.messages.forEach((msg, index) => {
                     const contentStr = toSearchableText(msg.content);
-                    const contentToSearch = caseSensitive ? contentStr : contentStr.toLowerCase();
 
-                    if (contentToSearch.includes(searchTerm)) {
-                        // Find all occurrences in this message
+                    pattern.lastIndex = 0;
+                    if (pattern.test(contentStr)) {
+                        // Find all occurrences in this message. Each carries
+                        // its own length: a whitespace-tolerant hit can span
+                        // more characters than the query.
                         const occurrences: Array<{ start: number; length: number }> = [];
-                        let pos = 0;
-
-                        while (pos < contentToSearch.length) {
-                            const foundPos = contentToSearch.indexOf(searchTerm, pos);
-                            if (foundPos === -1) break;
-
-                            occurrences.push({
-                                start: foundPos,
-                                length: searchTerm.length
-                            });
-                            pos = foundPos + searchTerm.length;
+                        pattern.lastIndex = 0;
+                        for (const m of contentStr.matchAll(pattern)) {
+                            if (m[0].length === 0) continue;
+                            occurrences.push({ start: m.index ?? 0, length: m[0].length });
                         }
 
                         if (occurrences.length > 0) {
@@ -1993,7 +1992,7 @@ class ConversationDB implements DB {
                             const snippetStart = Math.max(0, firstOccurrence.start - 50);
                             const snippetEnd = Math.min(
                                 contentStr.length,
-                                firstOccurrence.start + searchTerm.length + 100
+                                firstOccurrence.start + firstOccurrence.length + 100
                             );
 
                             let snippet = contentStr.substring(snippetStart, snippetEnd);
