@@ -201,6 +201,7 @@ class DiffValidationHook:
             return None
 
         self.last_rejected = []
+        self.phantom_reference = None
         feedback_parts: List[str] = []
         for diff_info in self.detect_completed_diffs(content):
             # Two byte-identical fences share a key; the second is a no-op.
@@ -209,7 +210,32 @@ class DiffValidationHook:
             feedback = self._validate_one(diff_info, model_messages, send_event)
             if feedback:
                 feedback_parts.append(feedback)
-        return "\n\n".join(feedback_parts) if feedback_parts else None
+        if feedback_parts:
+            return "\n\n".join(feedback_parts)
+
+        # No fence failed -- but was a fence CITED and never written?  The
+        # response says "the diff above" / "apply the diff" while carrying
+        # no ```diff at all: the change was decided in reasoning and the
+        # next output was a tool call.  Same feedback-and-restart path as a
+        # failed fence, so the model is asked for it before the turn ends
+        # instead of the user asking "did you apply it?" next turn.  See
+        # app/utils/phantom_diff.py for why this recurs.
+        from app.utils.phantom_diff import (
+            find_phantom_diff_reference, phantom_diff_feedback,
+        )
+        phrase = find_phantom_diff_reference(content)
+        if phrase:
+            self.phantom_reference = phrase
+            logger.warning(
+                f"👻 PHANTOM_DIFF: response cites a diff ({phrase!r}) but "
+                f"contains no diff fence; requesting it"
+            )
+            if send_event:
+                send_event("diff_validation_status", {
+                    "status": "phantom_reference", "phrase": phrase,
+                })
+            return phantom_diff_feedback(phrase)
+        return None
 
     def _validate_one(
         self,
