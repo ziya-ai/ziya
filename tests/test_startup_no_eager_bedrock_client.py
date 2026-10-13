@@ -3,13 +3,13 @@ Startup must not build a provider client before --profile has been applied.
 
 Observed on a fresh Internal Edition install:
 
-    ziya --profile kuiper-ziya
+    ziya --profile team-dev
     ...
     Initializing Bedrock model
     Using default AWS credentials
     ❌ AWS Profile Error: The profile 'default' could not be found.
     ...
-    Using AWS profile: kuiper-ziya        <-- applied AFTER the failure
+    Using AWS profile: team-dev        <-- applied AFTER the failure
 
 The chain was: parse_arguments() -> add_common_arguments() initialised the
 plugin system to enrich --help text -> an edition's register() imported
@@ -54,7 +54,7 @@ class TestArgparseDoesNotInitPlugins:
         return calls
 
     def test_profile_start_does_not_init_plugins(self, monkeypatch):
-        calls = self._parse(["--profile", "kuiper-ziya"], monkeypatch)
+        calls = self._parse(["--profile", "team-dev"], monkeypatch)
         assert calls == [], (
             "REGRESSION: add_common_arguments() initialised the plugin system "
             "during a normal start, before --profile could be applied"
@@ -124,11 +124,11 @@ def test_bedrock_init_honours_explicit_profile(monkeypatch):
     # Positive control for (3): a real profile IS exported.
     from app.agents import models as m
     monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.setenv("ZIYA_AWS_PROFILE", "kuiper-ziya")
+    monkeypatch.setenv("ZIYA_AWS_PROFILE", "team-dev")
     sentinel = RuntimeError("stop after profile branch")
     monkeypatch.setattr(m.ModelManager,
                         "_get_region_specific_model_id_with_region_update",
                         classmethod(lambda cls, *a, **k: (_ for _ in ()).throw(sentinel)))
     with pytest.raises(RuntimeError):
         m.ModelManager._initialize_bedrock_model({"model_id": "x"}, "x")
-    assert os.environ.get("AWS_PROFILE") == "kuiper-ziya"
+    assert os.environ.get("AWS_PROFILE") == "team-dev"
