@@ -112,6 +112,12 @@ export const taskCardApi = {
     return json(await fetch(`${base(projectId)}/${cardId}/scope-status`));
   },
 
+  /** The scheduler's fire/skip history for a card; {} if never fired.
+   *  Includes last_run (status + failure_reason) when a listed run exists. */
+  async scheduleState(projectId: string, cardId: string): Promise<ScheduleStateRecord> {
+    return json(await fetch(`${base(projectId)}/${cardId}/schedule-state`));
+  },
+
   // Escalation preview for an UNSAVED spec (an AI-authored proposal, or a
   // draft not yet created).  Server-side rather than computed here because
   // the floor subtraction — a card writing only inside `.ziya/` is NOT an

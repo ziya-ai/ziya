@@ -1214,12 +1214,19 @@ def get_schedule_state(project_id: str, card_id: str) -> dict:
           "next_fire_at":  <epoch ms or null>,
           "last_fire_at":  <epoch ms or null>,
           "fires_so_far":  <int>,
-          "run_ids":       ["<run_id>", ...]   # most-recent first, capped
+          "run_ids":       ["<run_id>", ...],  # most-recent first, capped
+          "skips_so_far" / "last_skip_at" / "skips": [...],   # concurrency gate
+          "deferred_since" / "deferred_behind_run_id",       # queue policy
+          "last_run": {"run_id", "status", "failed", "failure_reason",
+                       "held_reason", "error", ...} | absent
         }
 
-    Drives the "next fire in 2h 14m / fired 47 times so far" surface
-    in the schedule editor.  Read-only; the scheduler owns writes via
-    its internal `_write_state` path.
+    Drives the schedule editor's status line ("fired 47 times · last
+    22h ago: failed — <reason> · skipped 1 slot · next in 2h").
+    ``last_run`` is resolved here from the newest run in ``run_ids`` that
+    still exists, so the editor can say WHY the last fire failed without
+    fetching run records.  Otherwise read-only; the scheduler owns writes
+    via its internal `_write_state` path.
     """
     storage = _get_storage(project_id)
     if not storage.get(card_id):
@@ -1229,4 +1236,14 @@ def get_schedule_state(project_id: str, card_id: str) -> dict:
     # module load).
     from ..agents.task_scheduler import _read_state
     state = _read_state(project_id)
-    return state.get(card_id) or {}
+    rec = state.get(card_id) or {}
+    if rec.get("run_ids"):
+        try:
+            from ..utils.task_run_read import last_run_summary
+            last = last_run_summary(TaskRunStorage(get_project_dir(project_id)),
+                                    list(rec.get("run_ids") or []))
+            if last is not None:
+                rec = {**rec, "last_run": last}
+        except Exception as e:  # noqa: BLE001 — enrichment must not break the read
+            logger.warning(f"schedule-state: last_run enrichment failed: {e}")
+    return rec
