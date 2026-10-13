@@ -39,6 +39,9 @@ export interface Skill {
   hasScripts?: boolean;
   hasReferences?: boolean;
   hasAssets?: boolean;
+  /** agentskills.io skill directory + <skill_resources> list, rendered by the
+   *  server when the body is loaded (GET /skills/{id}). */
+  resourceManifest?: string;
 }
 
 /** True if this skill carries more than just a prompt. */

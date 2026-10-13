@@ -155,8 +155,11 @@ class TestDiscoverProjectSkills:
         self._create_skill_dir(tmp_path, "lazy-skill", body="Full instructions here.")
         skills = discover_project_skills(str(tmp_path), TokenService(), load_body=False)
         assert len(skills) == 1
+        # Progressive disclosure withholds the prompt text, but the weight is
+        # still reported (c9434722): the bench shows every skill's size, not
+        # only the loaded ones', and the body was already read for frontmatter.
         assert skills[0].prompt == ""
-        assert skills[0].tokenCount == 0
+        assert skills[0].tokenCount > 0
 
     def test_detects_subdirectories(self, tmp_path):
         skill_dir = self._create_skill_dir(tmp_path, "rich-skill")

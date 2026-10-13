@@ -13,6 +13,7 @@
 import { Project, ProjectListItem, ProjectUpdate, StartupInfo } from '../types/project';
 import { Context, ContextCreate, ContextUpdate } from '../types/context';
 import { Skill, SkillCreate, SkillUpdate } from '../types/skill';
+import { formatActiveSkillPrompt } from '../utils/skillPrompt';
 import { TokenCalculationResponse } from '../types/token';
 import * as projectApi from '../api/projectApi';
 import * as contextApi from '../api/contextApi';
@@ -491,7 +492,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     for (const skillId of effectiveActiveSkillIds) {
       const skill = skills.find(s => s.id === skillId);
       if (skill) {
-        prompts.push(`[Active Skill: ${skill.name}]\n${skill.prompt}`);
+        prompts.push(formatActiveSkillPrompt(skill));
       }
     }
     
@@ -853,7 +854,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // cheap catalog (progressive disclosure stage 1).  So skill.prompt is ""
     // until hydrated.  Activating one and relying on that empty prompt injects
     // "[Active Skill: <name>]\n" with no instructions, which is why the
-    // atlas-metrics skill appeared active but was unusable.  Fetch the full
+    // a file-backed metrics skill appeared active but was unusable.  Fetch the full
     // skill (GET /skills/{id} → storage.get → load_body=True) and patch the
     // body into local state so activeSkillPrompts produces the real prompt.
     const skill = skills.find(s => s.id === skillId);
