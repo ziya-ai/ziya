@@ -6,7 +6,7 @@ import { useProject } from '../context/ProjectContext';
 import { Folders } from '../utils/types';
 import { debounce } from 'lodash';
 import { message } from 'antd';
-import { convertToTreeData, fileExplorerViewState } from '../utils/folderUtil';
+import { convertToTreeData, fileExplorerViewState, lazyExternalKeysToLoad, subtreeHasLazy } from '../utils/folderUtil';
 import Tooltip from '@mui/material/Tooltip';
 import { getFileIcon, getFolderIcon } from '../utils/fileIcons';
 
@@ -52,6 +52,8 @@ interface TreeNodeData {
   title: string;
   children?: TreeNodeData[];
   loggedAccurate?: boolean;
+  // [external] folder not (fully) listed yet; fetched when expanded
+  lazy?: boolean;
 }
 
 interface BrowseEntry {
@@ -101,7 +103,8 @@ export const MUIFileExplorer = () => {
     getFolderTokenCount,
     accurateTokenCounts,
     autoAddedFiles,
-    removeAutoAddedFiles
+    removeAutoAddedFiles,
+    loadExternalDir
   } = useFolderContext();
 
   const { isDarkMode } = useTheme();
@@ -202,6 +205,9 @@ export const MUIFileExplorer = () => {
 
     // But use node for rendering decisions
     const hasChildren = nodeHasChildren(node);
+    // A lazy [external] folder renders as a folder before it has children.
+    const isLazy = !!node.lazy;
+    const isDir = hasChildren || isLazy;
     const isExpanded = expandedKeys.includes(String(node.key));
 
     // Get accurate token count if available
@@ -304,14 +310,14 @@ export const MUIFileExplorer = () => {
     }, [hasChildren, isChecked, node, hasSelectedDescendants, areAllChildrenSelected]);
 
     const handleToggle = useCallback(() => {
-      if (hasChildren) {
+      if (isDir) {
         setExpandedKeys(prev =>
           isExpanded
             ? prev.filter(key => key !== String(node.key))
             : [...prev, String(node.key)]
         );
       }
-    }, [hasChildren, isExpanded, node.key]);
+    }, [isDir, isExpanded, node.key]);
 
     const handleCheck = useCallback((event) => {
       event.stopPropagation();
@@ -346,10 +352,10 @@ export const MUIFileExplorer = () => {
               p: 0.25,
               position: 'absolute',
               left: level * 14 - 10,
-              visibility: hasChildren ? 'visible' : 'hidden'
+              visibility: isDir ? 'visible' : 'hidden'
             }}
           >
-            {hasChildren && (isExpanded ? <ArrowDropDownIcon fontSize="small" /> : <ArrowRightIcon fontSize="small" />)}
+            {isDir && (isExpanded ? <ArrowDropDownIcon fontSize="small" /> : <ArrowRightIcon fontSize="small" />)}
           </IconButton>
 
           {/* Checkbox */}
@@ -390,7 +396,7 @@ export const MUIFileExplorer = () => {
           </span>
 
           {/* Icon */}
-          {hasChildren ?
+          {isDir ?
             getFolderIcon(isExpanded) :
             getFileIcon(cleanLabel)}
 
@@ -399,7 +405,7 @@ export const MUIFileExplorer = () => {
             variant="body2"
             sx={{
               flexGrow: 1,
-              fontWeight: hasChildren ? 'bold' : (isChecked && nodeTokenTotal > 0 ? 'bold' : 'normal'),
+              fontWeight: isDir ? 'bold' : (isChecked && nodeTokenTotal > 0 ? 'bold' : 'normal'),
               color: isChecked && !hasChildren && nodeTokenTotal > 0 ? (isDarkMode ? '#ffffff' : '#000000') : (isDarkMode ? 'text.primary' : 'inherit')
             }}
           >
@@ -407,7 +413,7 @@ export const MUIFileExplorer = () => {
           </Typography>
 
           {/* Token count - only show if calculated */}
-          {!hasChildren && (
+          {!isDir && (
             (() => {
               let nodeTokens = 0;
               let total = 0;
@@ -714,6 +720,23 @@ export const MUIFileExplorer = () => {
     }
   }, [treeData, checkedKeys]); // Run when tree data or selections change
 
+  // List lazy [external] folders the user has opened, and those on the path
+  // to a checked file (after a restart nothing below an external root is
+  // listed).  One request at a time.
+  useEffect(() => {
+    const keys = lazyExternalKeysToLoad(treeData as any[], expandedKeys.map(String), checkedKeys.map(String))
+      .filter(k => !lazyLoadingRef.current.has(k) && !lazyFailedRef.current.has(k));
+    if (keys.length === 0) return;
+    keys.forEach(k => lazyLoadingRef.current.add(k));
+    (async () => {
+      for (const k of keys) {
+        const res = await loadExternalDir(k);
+        lazyLoadingRef.current.delete(k);
+        if (!res) lazyFailedRef.current.add(k);
+      }
+    })();
+  }, [treeData, expandedKeys, checkedKeys, loadExternalDir]);
+
   // Debounced search function
   const debouncedSearch = useCallback(
     debounce((value) => {
@@ -795,6 +818,7 @@ export const MUIFileExplorer = () => {
   // Refresh folders
   const refreshFolders = async () => {
     setIsRefreshing(true);
+    lazyFailedRef.current.clear();
     try {
       const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
       const params = new URLSearchParams({ refresh: 'true' });
@@ -1057,6 +1081,27 @@ export const MUIFileExplorer = () => {
     if (!clickedNode) {
       console.warn('Could not find clicked node:', nodeId);
       return;
+    }
+
+    // Part of this [external] folder has not been listed.  Fetch its whole
+    // (bounded) subtree so checking it selects every file in it, not only
+    // those already on screen.
+    if (checked && subtreeHasLazy(clickedNode)) {
+      loadExternalDir(String(nodeId), { recursive: true }).then(res => {
+        if (!res) {
+          message.error("Could not read the folder's contents");
+          return;
+        }
+        if (!res.complete) {
+          message.warning('This folder is too large to read in full; some subfolders were not selected');
+        }
+        const keys = [String(nodeId), ...getAllDescendantKeys(res.node)];
+        suppressAutoExpandUntilRef.current = Date.now() + 500;
+        // Skip if the folder was unchecked while loading.
+        setCheckedKeys(prev => prev.map(String).includes(String(nodeId))
+          ? Array.from(new Set([...prev.map(String), ...keys]))
+          : prev);
+      });
     }
 
     // Use setTimeout to batch the full hierarchy update after immediate feedback

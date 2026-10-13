@@ -260,125 +260,142 @@ def remove_file_from_folder_cache(rel_path: str, base_dir: str = None) -> bool:
     return False
 
 
-def add_external_path_to_cache(full_path: str) -> bool:
-    """Add an external file or directory (outside workspace) to the folder cache."""
+def is_under_external_path(path: str) -> bool:
+    """True if path is an added external path or inside one (project root excluded)."""
+    for external in _explicit_external_paths:
+        if path == external or path.startswith(external + os.sep):
+            return True
+    return False
+
+
+def _external_root(user_codebase_dir: str) -> dict:
+    """The project's [external] root node, created if needed.  Caller holds _cache_lock."""
+    entry = _folder_cache.setdefault(user_codebase_dir, {'timestamp': 0, 'data': None})
+    if entry['data'] is None:
+        entry['data'] = {}
+        entry['timestamp'] = time.time()
+        logger.info("Initialized empty folder cache for external path addition")
+    return entry['data'].setdefault('[external]', {'children': {}, 'token_count': 0})
+
+
+def add_external_path_to_cache(full_path: str, mode: str = 'shallow') -> bool:
+    """Add an external file or directory (outside workspace) to the folder cache.
+
+    External trees can be huge, so a directory is not walked unless asked
+    (see app/utils/external_tree.py).  mode sets how much is read now:
+
+    - 'lazy': nothing; the directory is listed when the user expands it.
+      Used when restoring saved paths at startup.
+    - 'shallow': its own entries, with subdirectories left lazy.  Used when
+      the user adds a folder.
+    - 'recursive': a bounded full walk.  Used when the folder is added
+      straight into context, which needs every file in the tree.
+    """
     from app.context import get_project_root
+    from app.utils import external_tree as xt
     user_codebase_dir = os.path.abspath(get_project_root())
     real_codebase = os.path.realpath(user_codebase_dir)
-
-    with _cache_lock:
-        if user_codebase_dir not in _folder_cache:
-            _folder_cache[user_codebase_dir] = {'timestamp': 0, 'data': None}
-        if _folder_cache[user_codebase_dir]['data'] is None:
-            _folder_cache[user_codebase_dir]['data'] = {}
-            _folder_cache[user_codebase_dir]['timestamp'] = time.time()
-            logger.info("Initialized empty folder cache for external path addition")
 
     try:
         from app.utils.directory_util import estimate_tokens_fast
 
-        if os.path.isdir(full_path):
-            _ext_entry_count = 0
-            _EXT_MAX_ENTRIES = 10_000
-            _ext_visited: set = set()
-            _ext_deadline = time.time() + 15.0
-
-            def scan_directory(dir_path, max_depth=10, current_depth=0, symlink_hops=0):
-                nonlocal _ext_entry_count
-                if (current_depth >= max_depth
-                        or _ext_entry_count >= _EXT_MAX_ENTRIES
-                        or time.time() > _ext_deadline):
-                    return {'children': {}, 'token_count': 0}
-                try:
-                    real_dir = os.path.realpath(dir_path)
-                except (OSError, ValueError):
-                    return {'children': {}, 'token_count': 0}
-                if real_dir.startswith(real_codebase + os.sep) or real_dir == real_codebase:
-                    logger.info(f"Skipping '{dir_path}' — resolves into project root")
-                    return {'children': {}, 'token_count': 0}
-                # Guard against symlink-induced re-traversal in build trees.
-                if real_dir in _ext_visited:
-                    return {'children': {}, 'token_count': 0}
-                _ext_visited.add(real_dir)
-                result = {'children': {}, 'token_count': 0}
-                total_tokens = 0
-                try:
-                    scanner = os.scandir(dir_path)
-                except (PermissionError, OSError):
-                    return result
-                try:
-                    for de in scanner:
-                        entry_name = de.name
-                        if entry_name.startswith('.'):
-                            continue
-                        # Symlink hop budget: follow up to MAX_SYMLINK_HOPS
-                        # (matches directory_util policy). Each symlink
-                        # encountered costs one hop; nested symlinks in a
-                        # shared-asset tree are refused past the budget.
-                        try:
-                            is_symlink = de.is_symlink()
-                        except OSError:
-                            continue
-                        entry_hops = symlink_hops
-                        if is_symlink:
-                            entry_hops = symlink_hops + 1
-                            if entry_hops > MAX_SYMLINK_HOPS:
-                                continue
-                        _ext_entry_count += 1
-                        if _ext_entry_count >= _EXT_MAX_ENTRIES:
-                            logger.warning(f"External path scan hit {_EXT_MAX_ENTRIES} entry limit at {dir_path}")
-                            break
-                        entry_path = de.path
-                        try:
-                            is_dir = de.is_dir(follow_symlinks=is_symlink)
-                            is_file = de.is_file(follow_symlinks=False) if not is_dir else False
-                        except OSError:
-                            continue
-                        try:
-                            if is_file:
-                                tc = estimate_tokens_fast(entry_path)
-                                result['children'][entry_name] = {'token_count': tc}
-                                total_tokens += tc
-                            elif is_dir:
-                                sub = scan_directory(entry_path, max_depth, current_depth + 1, entry_hops)
-                                result['children'][entry_name] = sub
-                                total_tokens += sub.get('token_count', 0)
-                        except (PermissionError, OSError):
-                            continue
-                finally:
-                    scanner.close()
-                result['token_count'] = total_tokens
-                return result
-
-            dir_structure = scan_directory(full_path)
-            token_count = dir_structure.get('token_count', 0)
-        else:
-            token_count = estimate_tokens_fast(full_path)
-            dir_structure = None
+        is_dir = os.path.isdir(full_path)
+        new = None
+        if not is_dir:
+            new = {'token_count': estimate_tokens_fast(full_path)}
+        elif mode == 'recursive':
+            new, complete = xt.scan_tree(full_path, real_codebase, estimate_tokens_fast)
+            if not complete:
+                logger.warning(f"External path {full_path} is too large to read in full; "
+                               f"unread folders are listed when expanded")
+        elif mode == 'shallow':
+            new = xt.list_dir(full_path, real_codebase, estimate_tokens_fast)
 
         with _cache_lock:
-            if '[external]' not in _folder_cache[user_codebase_dir]['data']:
-                _folder_cache[user_codebase_dir]['data']['[external]'] = {'children': {}, 'token_count': 0}
-            path_parts = full_path.strip('/').split('/')
-            current_level = _folder_cache[user_codebase_dir]['data']['[external]']['children']
-            for part in path_parts[:-1]:
-                if part not in current_level:
-                    current_level[part] = {'children': {}, 'token_count': 0}
-                if 'children' not in current_level[part]:
-                    current_level[part]['children'] = {}
-                current_level = current_level[part]['children']
-            filename = path_parts[-1]
-            if dir_structure:
-                current_level[filename] = dir_structure
+            ext = _external_root(user_codebase_dir)
+            old = xt.get_node(ext, full_path)
+            if new is None:
+                # Keep what is cached below it (placeholders leading to other
+                # added paths), but have all of it re-listed when expanded.
+                node = old if xt.is_dir_node(old) else xt.lazy_dir_node()
+                xt.mark_unverified(node)
+            elif mode == 'shallow' and is_dir:
+                node = xt.merge_listing(old, new, distrust_existing=True)
             else:
-                current_level[filename] = {'token_count': token_count}
-            logger.info(f"Added external path to cache: {full_path} ({token_count} tokens)")
+                node = new
+            xt.set_node(ext, full_path, node, listable=is_under_external_path)
+            token_count = node.get('token_count', 0)
+            logger.info(f"Added external path to cache: {full_path} "
+                        f"({mode if is_dir else 'file'}, {token_count} tokens)")
             _schedule_broadcast('file_added', f"[external]{full_path}", token_count)
             return True
 
     except Exception as e:
         logger.error(f"Failed to add external path to cache: {full_path}, error: {e}")
         return False
+
+
+def load_external_dir(full_path: str, recursive: bool = False) -> Tuple[dict, bool]:
+    """List an added external directory into the cache, for GET /api/external-dir.
+
+    One level by default; with recursive, a bounded full walk.  Returns a
+    copy of the directory's merged node and whether the listing is complete.
+    Raises OSError if the directory cannot be read.  Does not broadcast:
+    the requesting tab merges the returned node itself.
+    """
+    import copy
+    from app.context import get_project_root
+    from app.utils import external_tree as xt
+    from app.utils.directory_util import estimate_tokens_fast
+    user_codebase_dir = os.path.abspath(get_project_root())
+    real_codebase = os.path.realpath(user_codebase_dir)
+    if recursive:
+        new, complete = xt.scan_tree(full_path, real_codebase, estimate_tokens_fast)
+    else:
+        new, complete = xt.list_dir(full_path, real_codebase, estimate_tokens_fast), True
+    with _cache_lock:
+        ext = _external_root(user_codebase_dir)
+        node = new if recursive else xt.merge_listing(xt.get_node(ext, full_path), new)
+        xt.set_node(ext, full_path, node, listable=is_under_external_path)
+        return copy.deepcopy(node), complete
+
+
+def refresh_external_listings(project_root: str) -> int:
+    """Re-list, one level each, the external directories whose listing is cached.
+
+    Called on Refresh.  Only folders the user has opened are read again, so
+    a Refresh costs what was expanded, not the size of the tree; lazy
+    folders stay unread.  Returns the number of directories re-listed.
+    """
+    from app.utils import external_tree as xt
+    from app.utils.directory_util import estimate_tokens_fast
+    root = os.path.abspath(project_root)
+    real_codebase = os.path.realpath(root)
+    with _cache_lock:
+        entry = _folder_cache.get(root)
+        ext = (entry.get('data') or {}).get('[external]') if entry else None
+        paths = xt.loaded_dir_paths(ext) if ext else []
+    listings = []
+    for path in paths:
+        if not is_under_external_path(path):
+            continue
+        try:
+            listings.append((path, xt.list_dir(path, real_codebase, estimate_tokens_fast)))
+        except OSError:
+            continue
+    if not listings:
+        return 0
+    with _cache_lock:
+        entry = _folder_cache.get(root)
+        ext = (entry.get('data') or {}).get('[external]') if entry else None
+        if not ext:
+            return 0
+        for path, new in listings:
+            old = xt.get_node(ext, path)
+            if xt.is_dir_node(old):
+                xt.set_node(ext, path, xt.merge_listing(old, new), listable=is_under_external_path)
+    logger.info(f"Re-listed {len(listings)} open external folder(s) for {root}")
+    return len(listings)
 
 
 def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_workspace: bool) -> bool:
@@ -727,13 +744,18 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
 
 
 def restore_external_paths_for_project(project_root: str) -> None:
-    """Re-populate server-side external path caches from persisted project data."""
+    """Re-populate server-side external path caches from persisted project data.
+
+    Runs once per project per process and reads no directory: each saved
+    folder goes back on the allowlist and into the tree as a lazy node, to
+    be listed when the user expands it.  (It used to walk and token-count
+    every saved tree, which held up the first /api/folders after a restart
+    for minutes.)  Refresh re-lists opened folders via
+    refresh_external_listings.
+    """
     global _explicit_external_paths
     abs_root = os.path.abspath(project_root)
-    # This now runs on a worker thread (see folder_routes.api_get_folders), so
-    # concurrent /api/folders requests can reach here at the same time.  Make
-    # the check-then-add atomic or both callers would redo the full token-count
-    # walk of every persisted external path.
+    # Concurrent /api/folders requests can reach here at the same time.
     with _restored_projects_lock:
         if abs_root in _restored_projects:
             return
@@ -748,10 +770,11 @@ def restore_external_paths_for_project(project_root: str) -> None:
             return
         restored = 0
         for ext_path in project.settings.externalPaths:
-            if os.path.exists(ext_path) and ext_path not in _explicit_external_paths:
-                _explicit_external_paths.add(ext_path)
-                add_external_path_to_cache(ext_path)
-                restored += 1
+            if not os.path.exists(ext_path) or ext_path in _explicit_external_paths:
+                continue
+            _explicit_external_paths.add(ext_path)
+            add_external_path_to_cache(ext_path, mode='lazy')
+            restored += 1
         if restored:
             logger.info(f"Restored {restored} persisted external path(s) for project {project.id}")
     except Exception as e:

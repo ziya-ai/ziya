@@ -300,6 +300,8 @@ External paths (outside the project root) can be added via `POST /api/add-explic
 
 The `[external]` data is stored in the same `_folder_cache` entry that `/api/folders` reads from. The cache key is resolved via `get_project_root()` (request-scoped ContextVar → `ZIYA_USER_CODEBASE_DIR` → cwd), so `POST /api/add-explicit-paths` requests must include the `X-Project-Root` header to ensure the write targets the correct cache entry. On the frontend, WebSocket `file_added` events for `[external]` paths trigger a full `fetchFolders` refetch rather than incremental tree insertion, because the flat broadcast path format doesn't match the nested `{children}` structure the server builds for external directories.
 
+External directories are listed on demand (`app/utils/external_tree.py`). A directory node whose listing is missing or incomplete carries `_lazy: true`; the frontend renders it as an expandable folder and fetches it with `GET /api/external-dir?path=…` (one level, or `recursive=true` for a bounded whole-folder walk when the user checks it). Startup restore (`restore_external_paths_for_project`) only re-registers saved paths as lazy nodes, and `/api/folders?refresh=true` calls `refresh_external_listings`, which re-lists only directories already listed. `/api/external-dir` serves only paths at or under an added external path and outside the project root.
+
 ---
 
 ## Diff Application Pipeline

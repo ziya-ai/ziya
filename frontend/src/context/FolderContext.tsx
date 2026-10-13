@@ -1,7 +1,7 @@
 import React, { createContext, ReactNode, useContext, useCallback, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
 import { Folders } from "../utils/types";
 import { message } from 'antd';
-import { convertToTreeData, insertIntoFolders, updateTokenInFolders, removeFromFolders, sanitizeCheckedKeys, collectAllTreePaths, scanEventTargetsProject, nextScanRefetchInterval, SCAN_REFETCH_INITIAL_TICK } from "../utils/folderUtil";
+import { convertToTreeData, insertIntoFolders, updateTokenInFolders, removeFromFolders, sanitizeCheckedKeys, collectAllTreePaths, scanEventTargetsProject, nextScanRefetchInterval, SCAN_REFETCH_INITIAL_TICK, externalKeyToPath, mergeExternalNode, treeNodeAtKey } from "../utils/folderUtil";
 import { TreeDataNode } from "antd";
 import { debounce } from "../utils/debounce";
 import { useConfig } from "./ConfigContext";
@@ -98,6 +98,10 @@ export interface FolderContextType {
   addFilesToContext: (filePaths: string[], options?: { isAutoAdd?: boolean }) => Promise<string[]>;
   autoAddedFiles: Set<string>;
   removeAutoAddedFiles: () => { removedCount: number; tokensRecovered: number };
+  // List an [external] folder on demand (one level, or recursive) and merge
+  // it into the tree.  Resolves to the merged folder as a tree node, or null.
+  loadExternalDir: (key: string, opts?: { recursive?: boolean }) =>
+    Promise<{ node: TreeDataNode; complete: boolean } | null>;
 }
 
 const FolderContext = createContext<FolderContextType | undefined>(undefined);
@@ -1430,6 +1434,39 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     });
   }, [checkedKeys]);
 
+  // [external] folders are listed on demand (app/utils/external_tree.py).
+  const loadExternalDir = useCallback(async (
+    key: string, opts?: { recursive?: boolean },
+  ): Promise<{ node: TreeDataNode; complete: boolean } | null> => {
+    const absPath = externalKeyToPath(key);
+    if (!absPath) return null;
+    const projectPath = currentProjectRef.current?.path;
+    const params = new URLSearchParams({ path: absPath });
+    if (opts?.recursive) params.set('recursive', 'true');
+    const headers: Record<string, string> = {};
+    if (projectPath) headers['X-Project-Root'] = projectPath;
+    try {
+      const res = await fetch(`/api/external-dir?${params.toString()}`, { headers });
+      if (!res.ok) {
+        console.warn(`📂 External folder ${absPath} could not be listed: ${res.status}`);
+        return null;
+      }
+      const data = await res.json();
+      if (!data?.node) return null;
+      // A reply for a project we have since left must not land in this tree.
+      if (currentProjectRef.current?.path !== projectPath) return null;
+      setFolders(prev => {
+        const merged = mergeExternalNode(prev || {}, absPath, data.node);
+        setTreeData(convertToTreeData(merged));
+        return merged;
+      });
+      return { node: treeNodeAtKey(key, data.node), complete: data.complete !== false };
+    } catch (e) {
+      console.warn(`📂 External folder ${absPath} could not be listed:`, e);
+      return null;
+    }
+  }, []);
+
   const contextValue = useMemo(() => ({
     folders,
     getFolderTokenCount,
@@ -1449,9 +1486,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     addFilesToContext,
     autoAddedFiles,
     removeAutoAddedFiles,
+    loadExternalDir,
     // Remove forceRefreshCounter from dependencies to prevent unnecessary re-renders
   }), [folders, treeData, checkedKeys, searchValue, expandedKeys, isScanning,
-    scanProgress, scanError, isSwitchingProject, accurateTokenCounts, addFilesToContext, autoAddedFiles, removeAutoAddedFiles]);
+    scanProgress, scanError, isSwitchingProject, accurateTokenCounts, addFilesToContext, autoAddedFiles, removeAutoAddedFiles, loadExternalDir]);
 
   return (
     <FolderContext.Provider value={contextValue}>
@@ -1487,6 +1525,7 @@ export const useFolderContext = () => {
       addFilesToContext: async () => [],
       autoAddedFiles: new Set<string>(),
       removeAutoAddedFiles: () => ({ removedCount: 0, tokensRecovered: 0 }),
+      loadExternalDir: async () => null,
     };
   }
   return context;
