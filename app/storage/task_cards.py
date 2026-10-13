@@ -11,7 +11,7 @@ import time
 import uuid
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .base import BaseStorage, contained_path
 from ..models.task_card import Block, TaskCard, TaskCardCreate, TaskCardUpdate
@@ -24,6 +24,170 @@ logger = logging.getLogger(__name__)
 # the opening quote and group 2 the id, so a rewrite replaces only the id
 # and keeps the author's quoting.
 _SIBLING_REF_RE = re.compile(r"sibling\(\s*(['\"])([^'\"]+)['\"]\s*\)")
+
+
+# ── Portable (export/import) format ────────────────────────────────
+
+PORTABLE_FORMAT = "ziya-task-cards"
+PORTABLE_FORMAT_VERSION = 1
+
+# Fields that identify a card in THIS deck or record its history here.
+# None of them means anything in another project: ``id`` is minted on
+# create, ``version`` counts this deck's edits, ``run_count`` /
+# ``last_run_at`` are this deck's runs, ``draft`` / ``source`` describe how
+# the card got here.  Block ids inside ``root`` ARE exported: ``sibling()``
+# references point at them, and import remints them (see ``import_cards``).
+NON_PORTABLE_CARD_FIELDS = frozenset({
+    "id", "draft", "source", "created_at", "updated_at",
+    "last_run_at", "run_count", "version",
+})
+
+# Export-only hints written beside the definition and dropped on import.
+# ``needs`` is derived from the tree (app.utils.task_card_portable); it is
+# documentation for the reader, not part of what the card IS.
+PORTABLE_HINT_FIELDS = frozenset({"needs"})
+
+
+# Shipped inside every export so a reader with no Ziya knowledge — a person,
+# or another tasking agent handed the file — can interpret the parts that
+# are not self-evident from the tree.  Deliberately short: the authored
+# ``instructions`` are the portable payload; this only covers what the
+# control-flow vocabulary and ``scope`` leave implicit.
+PORTABLE_ABOUT = [
+    "Each card is a tree of blocks. 'body' holds a block's children, run "
+    "top-to-bottom unless the parent's block_type is 'parallel'.",
+    "block_type: task = one model turn following 'instructions'; group = "
+    "run children once; repeat = loop (count / until substring / for_each "
+    "over a JSON array, binding {{item}}); until = loop until a model judges "
+    "'until_condition' true; parallel = run children concurrently; state = "
+    "givens for later blocks ({{var.NAME}} and 'state_context' prose); "
+    "ask = pause for a human answer; call = run another card by name; "
+    "schedule = recurring trigger for its body.",
+    "{{sibling(\"ID\")}} in instructions refers to another block's 'id' in "
+    "this card and reads that block's result.",
+    "'scope' is a REQUEST for privileges (shell commands, writable paths, "
+    "tools, skills, model choice), additive from card to leaf. It grants "
+    "nothing by itself: the importing installation must approve it.",
+    "Each card's 'needs' lists what the tree depends on: tools, skills, MCP "
+    "servers, output-contract schemas ('project:NAME', bundled under the "
+    "top-level 'schemas' and restored on import), and absolute 'cwd' paths "
+    "from the exporting machine. 'requires' is the author's declaration of "
+    "the same; when the author wrote none it is filled from 'needs' "
+    "(non-strict) so the importing installation can warn before a run.",
+    "Fields at their default value are omitted; a missing 'on_failure' "
+    "means continue past a failed child, a missing 'required' means true.",
+    "Docs: https://github.com/ziya-ai/ziya/blob/main/Docs/FeatureInventory.md#2a-task-cards",
+]
+
+
+def card_to_portable(
+    card: TaskCard, project_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The definition of ``card`` with every deck-local field removed.
+
+    Defaults and nulls are dropped too.  ``Block`` carries every block
+    type's fields, so a plain dump of a 4-block card was ~8 KB with ~190
+    ``null`` entries, and a *task* block showed ``schedule_enabled: true``
+    and ``repeat_propagate: "last"`` — fields that mean nothing on it and
+    invite a reader to think otherwise.  Import is unaffected: pydantic
+    refills every default.  ``name`` is kept even when empty because
+    ``TaskCardCreate`` requires it.
+
+    Adds the ``needs`` hint and, for a card without ``requires``, a derived
+    non-strict one — see app.utils.task_card_portable.  Both are
+    best-effort: a derivation fault yields a card without them.
+    """
+    portable = {
+        k: v for k, v in card.model_dump(
+            exclude_none=True, exclude_defaults=True,
+        ).items()
+        if k not in NON_PORTABLE_CARD_FIELDS
+    }
+    portable.setdefault("name", card.name)
+    try:
+        from ..utils.task_card_portable import card_needs, derived_requires
+        needs = card_needs(card, project_root)
+        if needs:
+            portable["needs"] = needs
+            req = derived_requires(card, needs)
+            if req:
+                portable["requires"] = req
+    except Exception as e:  # noqa: BLE001 — hints never fail an export
+        logger.warning(f"export hints skipped for card {card.id}: {e}")
+    return portable
+
+
+def build_export(
+    cards: List[TaskCard], project_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Wrap ``cards`` in the portable envelope ``import_cards`` accepts.
+
+    With a ``project_root`` the ``project:`` schemas the cards' contracts
+    reference are bundled under ``schemas`` (transitively over ``$ref``).
+    Without one they cannot be read and each card's ``needs`` lists them
+    as unresolved instead.
+    """
+    env: Dict[str, Any] = {
+        "format": PORTABLE_FORMAT,
+        "format_version": PORTABLE_FORMAT_VERSION,
+        "exported_at": int(time.time() * 1000),
+        "about": list(PORTABLE_ABOUT),
+        "cards": [card_to_portable(c, project_root) for c in cards],
+    }
+    try:
+        from ..utils.task_card_portable import bundle_schemas, collect_schema_refs
+        refs: List[str] = []
+        for c in cards:
+            for r in collect_schema_refs(c):
+                if r not in refs:
+                    refs.append(r)
+        bundled, _unresolved = bundle_schemas(refs, project_root)
+        if bundled:
+            env["schemas"] = bundled
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"export schema bundle skipped: {e}")
+    return env
+
+
+def portable_cards_from_payload(payload: Any) -> List[Dict[str, Any]]:
+    """Accept the envelope, a bare card dict, or a list of card dicts.
+
+    Lenient on the outer shape so a card pasted out of a deck file, or a
+    hand-written one, imports as readily as an export.  Strict on the
+    envelope's ``format``: a file claiming to be some other format is
+    refused rather than mined for anything card-shaped.  Raises
+    ``ValueError`` with an operator-readable reason.
+    """
+    if isinstance(payload, dict) and "cards" in payload:
+        fmt = payload.get("format")
+        if fmt is not None and fmt != PORTABLE_FORMAT:
+            raise ValueError(
+                f"not a task card export (format={fmt!r}, "
+                f"expected {PORTABLE_FORMAT!r})")
+        fv = payload.get("format_version", PORTABLE_FORMAT_VERSION)
+        if not isinstance(fv, int) or fv > PORTABLE_FORMAT_VERSION:
+            raise ValueError(
+                f"task card export format_version {fv!r} is newer than this "
+                f"version of Ziya understands ({PORTABLE_FORMAT_VERSION})")
+        cards = payload["cards"]
+    elif isinstance(payload, dict) and "root" in payload:
+        cards = [payload]
+    elif isinstance(payload, list):
+        cards = payload
+    else:
+        raise ValueError(
+            "expected a task card export ({\"format\": \"ziya-task-cards\", "
+            "\"cards\": [...]}), a single card object, or a list of cards")
+    if not isinstance(cards, list):
+        raise ValueError("\"cards\" must be a list")
+    if not cards:
+        raise ValueError("the export contains no cards")
+    out: List[Dict[str, Any]] = []
+    for i, c in enumerate(cards):
+        if not isinstance(c, dict) or "root" not in c:
+            raise ValueError(f"card #{i + 1} is not a card object (no \"root\")")
+        out.append(c)
+    return out
 
 
 def _assign_block_ids(
@@ -172,6 +336,7 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             # dropped on save (and on every duplicate(), which forwards it).
             # scope-status then graded a scope the run would not request.
             scope=data.scope,
+            requires=data.requires,
             tags=data.tags,
             is_template=data.is_template,
             draft=data.draft,
@@ -285,6 +450,91 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             tags=card.tags,
             is_template=as_template,
         ), force_new_ids=True)
+
+    def import_cards(
+        self, payload: Any, project_root: Optional[str] = None,
+    ) -> Tuple[List[TaskCard], List[str]]:
+        """Create one card per entry of a portable payload.
+
+        Returns ``(created, warnings)``.  Every entry is validated BEFORE
+        the first write, so a bad fifth card leaves no partial import
+        behind; a validation failure raises ``ValueError`` naming the
+        entry.
+
+        Every block id is reminted (``force_new_ids``), for the same
+        reason ``duplicate()`` remints: approvals in the scope ledger key
+        on block id alone, and a block state file keys on it too.  An
+        imported card's escalation is therefore unsigned by construction,
+        which is the right property — a signature made on another machine
+        must not authorize anything here.  ``sibling()`` references are
+        carried across the remint.
+
+        Warnings, none of which block the import:
+          - a name already in this deck (case-insensitive) or repeated
+            within the payload: a ``call`` block addressing the card by
+            name resolves the FIRST match, so a collision is ambiguous;
+          - launch-validator findings on the created card (a ``call``
+            whose target card lives only in the source deck, a stale
+            ``sibling()`` id, ...), so the author learns before launch.
+          - a bundled schema that already exists under ``project_root``
+            with different content (kept, not overwritten).
+
+        ``project_root`` is where the envelope's ``schemas`` are restored
+        (``<root>/.ziya/schemas/``) and lets the validator resolve the
+        cards' ``project:`` references.  Without it schemas are reported
+        rather than written.
+        """
+        entries = portable_cards_from_payload(payload)
+        creates: List[TaskCardCreate] = []
+        for i, entry in enumerate(entries):
+            clean = {k: v for k, v in entry.items()
+                     if k not in NON_PORTABLE_CARD_FIELDS | PORTABLE_HINT_FIELDS}
+            try:
+                creates.append(TaskCardCreate(**clean))
+            except (ValueError, TypeError) as e:
+                label = entry.get("name") or f"#{i + 1}"
+                raise ValueError(f"card {label!r} is not valid: {e}") from e
+
+        warnings: List[str] = []
+        existing = {c.name.lower() for c in self.list(include_drafts=True)}
+        seen_in_payload: set = set()
+        for req in creates:
+            key = req.name.lower()
+            if key in existing:
+                warnings.append(
+                    f"a card named {req.name!r} already exists in this deck; "
+                    f"a call block addressing it by name will resolve the "
+                    f"first match")
+            elif key in seen_in_payload:
+                warnings.append(
+                    f"the export contains more than one card named {req.name!r}")
+            seen_in_payload.add(key)
+
+        # Schemas first: the validator below resolves ``project:`` refs
+        # against the root, so a card whose schema arrived in this very
+        # envelope must not be reported as referencing a missing one.
+        bundled = payload.get("schemas") if isinstance(payload, dict) else None
+        if bundled:
+            try:
+                from ..utils.task_card_portable import restore_schemas
+                _restored, schema_warnings = restore_schemas(bundled, project_root)
+                warnings.extend(schema_warnings)
+            except Exception as e:  # noqa: BLE001 — advisory only
+                warnings.append(f"bundled schemas were not restored: {e}")
+
+        created: List[TaskCard] = []
+        for req in creates:
+            card = self.create(req, source="imported", force_new_ids=True)
+            created.append(card)
+            try:
+                from ..utils.task_card_validation import validate_card_tree
+                res = validate_card_tree(card.root, project_root=project_root)
+                summary = res.summary()
+                if summary:
+                    warnings.append(f"{card.name!r}: {summary}")
+            except Exception as e:  # noqa: BLE001 — advisory only
+                logger.warning(f"post-import validation failed for {card.id}: {e}")
+        return created, warnings
 
     def record_run(self, card_id: str) -> Optional[TaskCard]:
         """Bump run_count and last_run_at for a card."""

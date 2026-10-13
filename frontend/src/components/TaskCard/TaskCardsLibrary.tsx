@@ -14,6 +14,7 @@ import {
   PlusOutlined, DeleteOutlined, CopyOutlined, SearchOutlined,
   PlayCircleOutlined, StopOutlined, ReloadOutlined, InboxOutlined,
   MoreOutlined, PushpinOutlined, FolderOutlined, FolderAddOutlined,
+  DownloadOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
 import { useChatContext } from '../../context/ChatContext';
@@ -21,6 +22,7 @@ import { shouldSeedTitleFromTaskCard } from '../../utils/conversationTitle';
 import type { TaskCard, Block, TaskScope } from '../../types/task_card';
 import type { TaskRun } from '../../types/task_run';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
+import { TASK_CARD_SAVED_EVENT } from '../../hooks/useTaskBindings';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { cancelTaskRun, listTaskRuns } from '../../services/taskRunApi';
 import { createBinding } from '../../services/taskBindingApi';
@@ -127,6 +129,22 @@ const folderTagFromName = (name: string): string => `${FOLDER_TAG_PREFIX}${name}
 // plain tag, not a `folder:` one, so it does not consume the card's single
 // folder slot — a proposal can still be filed into a folder.
 const isProposed = (c: TaskCard): boolean => c.tags.includes(PROPOSED_TAG);
+
+// Save a JSON document through the browser's download path.  The server
+// sets Content-Disposition too, but a fetch() response is not a navigation,
+// so the file name has to be applied here.
+function downloadJson(data: unknown, filename: string): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const exportFilename = (stem: string): string =>
+  `${(stem.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'task-cards')}.ziya-task-cards.json`;
 
 interface Props {
   visible: boolean;
@@ -465,6 +483,9 @@ export const TaskCardsLibrary: React.FC<Props> = ({
         name: draft.name, description: draft.description,
         root: draft.root, tags: draft.tags,
       });
+      window.dispatchEvent(new CustomEvent(TASK_CARD_SAVED_EVENT, {
+        detail: { cardId: draft.id },
+      }));
       await reload();
       message.success('Saved');
     } catch (e) {
@@ -485,6 +506,9 @@ export const TaskCardsLibrary: React.FC<Props> = ({
         root: draft.root, tags: draft.tags, draft: false,
       });
       setDraft(updated);
+      window.dispatchEvent(new CustomEvent(TASK_CARD_SAVED_EVENT, {
+        detail: { cardId: draft.id },
+      }));
       await reload();
       message.success('Added to deck');
     } catch (e) {
@@ -515,6 +539,59 @@ export const TaskCardsLibrary: React.FC<Props> = ({
       message.error(`Delete failed: ${String(e)}`);
     }
   }, [projectId, selectedId, reload]);
+
+  // Export: one card, or the whole deck.  Portable form only (no id, run
+  // history or version), so the file imports cleanly into another project.
+  const handleExport = useCallback(async (ids?: string[]) => {
+    if (!projectId) return;
+    try {
+      const data = await taskCardApi.exportCards(projectId, ids);
+      const stem = data.cards.length === 1 ? (data.cards[0].name || 'task-card') : 'task-cards';
+      downloadJson(data, exportFilename(stem));
+      message.success(data.cards.length === 1
+        ? 'Card exported' : `${data.cards.length} cards exported`);
+    } catch (e) {
+      message.error(`Export failed: ${String(e)}`);
+    }
+  }, [projectId]);
+
+  // Import: a hidden <input type=file> is the whole picker.  Imported
+  // cards get fresh block ids, so an escalating card arrives unsigned —
+  // the deck badge and the editor banner carry the ziya-approve command.
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const handleImportFile = useCallback(async (file: File | undefined) => {
+    if (!projectId || !file) return;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      message.error(`${file.name} is not valid JSON`);
+      return;
+    }
+    try {
+      const result = await taskCardApi.importCards(projectId, payload);
+      await reload();
+      if (result.cards.length === 1) loadCard(result.cards[0].id);
+      message.success(result.count === 1
+        ? `Imported "${result.cards[0].name || 'Untitled'}"`
+        : `Imported ${result.count} cards`);
+      if (result.warnings.length > 0) {
+        Modal.warning({
+          title: 'Imported with warnings',
+          width: 560,
+          content: (
+            <ul style={{ paddingLeft: 18, fontSize: 12, maxHeight: 300, overflow: 'auto' }}>
+              {result.warnings.map((w, i) => (
+                <li key={i} style={{ whiteSpace: 'pre-wrap' }}>{w}</li>
+              ))}
+            </ul>
+          ),
+        });
+      }
+    } catch (e) {
+      message.error(`Import failed: ${String(e)}`);
+    }
+  }, [projectId, reload, loadCard]);
 
   // "Folders" are just tags prefixed with FOLDER_TAG_PREFIX (see note near
   // the constant above) — no dedicated backend model, so these mutate a
@@ -808,6 +885,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     return {
       items: [
         { key: 'duplicate', label: 'Duplicate', icon: <CopyOutlined /> },
+        { key: 'export', label: 'Export…', icon: <DownloadOutlined /> },
         {
           key: 'pin',
           label: pinnedIds.has(c.id) ? 'Unpin' : 'Pin',
@@ -821,6 +899,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
         const { key } = info;
         info.domEvent.stopPropagation();
         if (key === 'duplicate') { handleDuplicate(c.id); return; }
+        if (key === 'export') { handleExport([c.id]); return; }
         if (key === 'pin') { togglePinCard(c.id); return; }
         if (key === 'delete') {
           Modal.confirm({
@@ -835,7 +914,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
         if (key.startsWith('folder:')) { setCardFolder(c.id, key.slice('folder:'.length)); return; }
       },
     };
-  }, [allFolderNames, folderOfCard, pinnedIds, handleDuplicate, handleDelete, togglePinCard, setCardFolder]);
+  }, [allFolderNames, folderOfCard, pinnedIds, handleDuplicate, handleExport, handleDelete, togglePinCard, setCardFolder]);
 
   const renderCardRow = useCallback((c: TaskCard) => (
     <div
@@ -1011,6 +1090,21 @@ export const TaskCardsLibrary: React.FC<Props> = ({
             />
             <Tooltip title="New card"><Button size="small" icon={<PlusOutlined />} onClick={handleNew} /></Tooltip>
             <Tooltip title="Refresh"><Button size="small" icon={<ReloadOutlined />} onClick={reload} loading={loading} /></Tooltip>
+            <Tooltip title="Import cards from a file">
+              <Button size="small" icon={<UploadOutlined />} onClick={() => importInputRef.current?.click()} />
+            </Tooltip>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              style={{ display: 'none' }}
+              data-testid="task-card-import-input"
+              onChange={(e) => {
+                void handleImportFile(e.target.files?.[0]);
+                e.target.value = '';
+              }}
+            />
+            <Tooltip title="Export all cards"><Button size="small" icon={<DownloadOutlined />} onClick={() => handleExport()} disabled={cards.length === 0} /></Tooltip>
           </div>
           <div style={{ overflowY: 'auto', flex: 1, border: '1px solid rgba(128,128,128,0.2)', borderRadius: 4 }}>
             {filtered.length === 0 ? <Empty description="No cards" style={{ marginTop: 40 }} /> : (
@@ -1112,6 +1206,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                   </Tooltip>
                 )}
                 <Tooltip title="Duplicate"><Button icon={<CopyOutlined />} onClick={() => handleDuplicate(draft.id)} /></Tooltip>
+                <Tooltip title="Export this card"><Button icon={<DownloadOutlined />} onClick={() => handleExport([draft.id])} /></Tooltip>
                 <Popconfirm title={`Delete "${draft.name}"?`} onConfirm={() => handleDelete(draft.id)}>
                   <Button danger icon={<DeleteOutlined />} />
                 </Popconfirm>
