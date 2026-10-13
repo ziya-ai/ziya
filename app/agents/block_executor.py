@@ -1632,6 +1632,9 @@ async def _execute_sequence(
     # set explicitly on the returned artifact so a nested loop's
     # iterations do not leak upward through the last-wins model_copy.
     stages: List[Dict[str, Any]] = []
+    # Whether the most recently completed child failed while marked
+    # ``required: false``; consulted when folding the result below.
+    last_optional_failed = False
     ctx.sibling_stack.append(None)
     try:
         for i, child in enumerate(blocks):
@@ -1686,7 +1689,20 @@ async def _execute_sequence(
                 _block_label(child, ctx), last, index=i))
             # Make this sibling's result visible to the next sibling.
             ctx.sibling_stack[-1] = last
-            if on_failure == "stop" and last.failed and i < len(blocks) - 1:
+            # A child marked ``required: false`` may fail without failing
+            # the sequence: it neither trips ``stop`` nor, if it is the
+            # last child, fails the sequence's own artifact.  Recorded in
+            # decisions so the failure is visible, not silent.  The next
+            # sibling still sees the failed artifact as {{previous_sibling}}.
+            last_optional_failed = last.failed and not getattr(child, "required", True)
+            if last_optional_failed:
+                acc_decisions.append(
+                    f"optional step {i + 1}/{len(blocks)} "
+                    f"({_block_label(child, ctx)}) failed — not counted "
+                    f"against the sequence (required=false)"
+                    + (f": {last.signature}" if last.signature else ""))
+            if (on_failure == "stop" and last.failed
+                    and not last_optional_failed and i < len(blocks) - 1):
                 skipped = len(blocks) - 1 - i
                 label = _block_label(child, ctx)
                 acc_decisions.append(
@@ -1710,12 +1726,18 @@ async def _execute_sequence(
         ctx.sibling_stack.pop()
     assert last is not None
     # Fold the accumulated deliverables onto the last sibling's
-    # artifact.  ``summary``/``failed``/``signature`` stay last-wins.
-    return last.model_copy(update={
+    # artifact.  ``summary``/``failed``/``signature`` stay last-wins —
+    # unless the last sibling was an optional child that failed, in which
+    # case its failure is not the sequence's.
+    update: Dict[str, Any] = {
         "outputs": acc_outputs,
         "decisions": acc_decisions,
         "stages": stages,
-    })
+    }
+    if last_optional_failed:
+        update["failed"] = False
+        update["signature"] = None
+    return last.model_copy(update=update)
 
 
 async def _execute_parallel(
