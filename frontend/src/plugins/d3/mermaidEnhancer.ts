@@ -1274,10 +1274,10 @@ export function remediateInitThemeVariableContrast(
  * then hangs the render for the full 30s timeout with zero SVG rather than
  * reporting the imbalance. Closing the gap is pure counting: `end` is a keyword
  * that must sit on its own line, so we count `^subgraph` opens vs `^end$`
- * closes and append the missing `end`s at the tail (which closes the OUTER
- * subgraph last, preserving the intended nesting). Only ever ADDS `end`s when
- * opens > closes; a balanced or over-closed definition is returned unchanged so
- * a correct diagram is never touched.
+ * closes. Each missing `end` is inserted where its subgraph's body dedents
+ * (D-426, below), falling back to the tail when the body never dedents. Only
+ * ever ADDS `end`s when opens > closes; a balanced or over-closed definition is
+ * returned unchanged so a correct diagram is never touched.
  */
 export function balanceSubgraphEnds(definition: string): string {
   if (!definition) return definition;
