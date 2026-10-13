@@ -35,6 +35,7 @@ class TestShellReadOnly:
         "cat app/foo.py | grep -n def",
         "grep -rn 'x' app/ --include=*.py | head -20",
         "git log --oneline -5 && git status",
+        "git check-ignore -v node_modules",
         "find . -name '*.md' -type f",
         "sed -n 10,20p file.py",
         "wc -l a.py b.py 2>/dev/null",
