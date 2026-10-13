@@ -1,5 +1,14 @@
 """
 Task run API endpoints.
+
+Read/write handlers here are plain ``def``, not ``async def``, for the same
+reason as app/api/chats.py: they do synchronous file I/O (TaskRunStorage
+reads, decrypts and parses every run record) and await nothing.  As
+``async def`` that work ran on the event loop and nothing else was served
+meanwhile; the stall watchdog caught the loop inside ``TaskRunStorage.list``
+under ``list_task_runs`` (2026-10-09).  Only handlers that genuinely await
+(cancel, resume-from-block, resume-from-iteration) stay ``async``.
+``tests/test_task_runs_api_not_event_loop_blocking.py`` enforces this.
 """
 
 from fastapi import APIRouter, HTTPException, Query
@@ -34,7 +43,7 @@ def _get_storage(project_id: str) -> TaskRunStorage:
 
 
 @router.get("", response_model=List[TaskRun])
-async def list_task_runs(
+def list_task_runs(
     project_id: str,
     card_id: Optional[str] = Query(None),
 ):
@@ -43,7 +52,7 @@ async def list_task_runs(
 
 
 @router.get("/status-index")
-async def get_run_status_index(project_id: str) -> Dict[str, Any]:
+def get_run_status_index(project_id: str) -> Dict[str, Any]:
     """Per-conversation run-status counts for the whole project.
 
     Exists because the sidebar's gear cluster was fed by the open chat's
@@ -81,7 +90,7 @@ async def get_run_status_index(project_id: str) -> Dict[str, Any]:
 
 
 @router.get("/callee-context/{card_id}", response_model=List[Dict[str, Any]])
-async def get_callee_context(project_id: str, card_id: str):
+def get_callee_context(project_id: str, card_id: str):
     """Runs that invoked ``card_id`` as a Call target and are still live or held.
 
     ``list_task_runs(card_id=...)`` above filters on ``run.card_id``, which
@@ -107,7 +116,7 @@ async def get_callee_context(project_id: str, card_id: str):
 
 
 @router.get("/{run_id}/lineage", response_model=List[TaskRun])
-async def get_run_lineage(project_id: str, run_id: str):
+def get_run_lineage(project_id: str, run_id: str):
     """Every attempt in this run's lineage, oldest attempt first.
 
     A resume creates a new run and leaves the source intact, so a card
@@ -127,7 +136,7 @@ async def get_run_lineage(project_id: str, run_id: str):
 
 
 @router.get("/{run_id}", response_model=TaskRun)
-async def get_task_run(project_id: str, run_id: str):
+def get_task_run(project_id: str, run_id: str):
     run = _get_storage(project_id).get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Task run not found")
@@ -135,7 +144,7 @@ async def get_task_run(project_id: str, run_id: str):
 
 
 @router.delete("/{run_id}", status_code=204)
-async def delete_task_run(project_id: str, run_id: str):
+def delete_task_run(project_id: str, run_id: str):
     """Delete a completed run record.  Does not cancel running runs —
     use POST /cancel to stop a running run first."""
     storage = _get_storage(project_id)
@@ -226,7 +235,7 @@ async def cancel_task_run(
 
 
 @router.post("/{run_id}/pause", response_model=TaskRun)
-async def pause_task_run(project_id: str, run_id: str):
+def pause_task_run(project_id: str, run_id: str):
     """Request a soft pause on a running task run.
 
     Sets ``pause_requested`` on the run file; the executor observes it
@@ -254,7 +263,7 @@ async def pause_task_run(project_id: str, run_id: str):
 
 
 @router.post("/{run_id}/resume", response_model=TaskRun)
-async def resume_task_run(project_id: str, run_id: str):
+def resume_task_run(project_id: str, run_id: str):
     """Clear a run's pause flag so its executor's wait-loop resumes.
 
     The executor restores status to ``running`` at its next poll.
@@ -277,7 +286,7 @@ class AskAnswer(BaseModel):
 
 
 @router.post("/{run_id}/ask/{block_id}", response_model=TaskRun)
-async def answer_task_run_ask(
+def answer_task_run_ask(
     project_id: str, run_id: str, block_id: str, body: AskAnswer,
 ):
     """Answer the Ask block a run is holding at.
@@ -335,7 +344,7 @@ async def answer_task_run_ask(
 
 
 @router.post("/{run_id}/step", response_model=TaskRun)
-async def step_task_run(project_id: str, run_id: str, count: int = 1):
+def step_task_run(project_id: str, run_id: str, count: int = 1):
     """Advance a held run by ``count`` boundaries, then hold again.
 
     Grants step credits and leaves ``pause_requested`` SET, which is the
@@ -374,7 +383,7 @@ async def step_task_run(project_id: str, run_id: str, count: int = 1):
         )
     return storage.request_step(run_id, count)
 @router.get("/{run_id}/iterations")
-async def list_iterations(
+def list_iterations(
     project_id: str, run_id: str,
     block_id: Optional[str] = Query(None),
     status: Optional[IterationStatus] = Query(None),
@@ -427,7 +436,7 @@ async def list_iterations(
 
 
 @router.get("/{run_id}/artifacts/{filename}")
-async def get_artifact_blob(project_id: str, run_id: str, filename: str):
+def get_artifact_blob(project_id: str, run_id: str, filename: str):
     """Serve one frozen artifact blob for a run.
 
     Reads through ``read_artifact_blob`` so at-rest-encrypted bytes are
@@ -1047,7 +1056,7 @@ async def resume_run_from_iteration(
         )
     return ResumeFromResponse(run=new_run, binding=binding)
 @router.get("/{run_id}/iterations/{block_id}/{index}", response_model=Artifact)
-async def get_iteration_artifact(
+def get_iteration_artifact(
     project_id: str, run_id: str, block_id: str, index: int,
     pass_key: Optional[str] = Query(
         None, description="Enclosing-loop pass for a nested loop's iteration "
