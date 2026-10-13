@@ -554,9 +554,14 @@ appends every raw event to `task_runs/<run_id>/events.jsonl`
 `mark_active`, closed in the executor's `finally`).  The WS endpoint
 takes `?project_id=` to locate that journal; when the connecting
 server's relay is not the executor (`run_id` not in `_journals`) it
-starts a tail that feeds the file through its own `push`, so deltas
-fold, the local buffer fills for later connectors, and the socket sees
-the same stream it would on the origin.  The tail ends on
+first folds the journal's existing content into its own history, before
+taking the replay snapshot, then starts a tail that feeds later appends
+through its own `push`.  The socket therefore sees the same stream it
+would on the origin: the collapsed replay for everything that streamed
+before it attached, raw deltas after.  `_tail_offsets[run_id]` means
+"journal bytes already reflected in this process's history"; the writer
+advances it on every line, so the executor that closed its journal but
+still holds history (the grace window) never re-reads from byte 0.  The tail ends on
 `run_completed`, when the last local observer disconnects (byte offset
 retained — a restart never re-ingests), or when `executor_alive` is
 false and the file has gone quiet (crash with no terminal event; the
