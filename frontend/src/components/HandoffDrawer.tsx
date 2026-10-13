@@ -154,6 +154,12 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
       open={open}
       onClose={onClose}
       width={640}
+      // The body is a flex column so the document editor (the one section
+      // that can grow) takes every pixel the viewport offers.  With a fixed
+      // autoSize row cap the textarea scrolled internally at ~24 lines and
+      // left the lower half of a tall screen blank.  minHeight: 0 lets the
+      // editor shrink below its content so the drawer itself never scrolls.
+      styles={{ body: { display: 'flex', flexDirection: 'column', minHeight: 0 } }}
       title={
         <Space direction="vertical" size={0}>
           <span>Hand off: {state?.title || '…'}</span>
@@ -198,7 +204,7 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
         />
       )}
 
-      <Section label="Handoff document" hint="markdown · the model maintains this via handoff_write; edit freely">
+      <Section label="Handoff document" hint="markdown · the model maintains this via handoff_write; edit freely" grow>
         {busy === 'draft' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <Spin size="small" />
@@ -218,9 +224,13 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
         <Input.TextArea
           value={doc}
           onChange={e => setDoc(e.target.value)}
-          autoSize={{ minRows: 10, maxRows: 24 }}
           placeholder="## Objective&#10;…&#10;&#10;## State&#10;…&#10;&#10;## Decisions&#10;…"
-          style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 }}
+          // Fills the growing section instead of a fixed row count; the
+          // 10-row floor keeps the editor usable on a short viewport.
+          style={{
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12,
+            flex: '1 1 auto', minHeight: 'calc(10 * 1.5em + 10px)', resize: 'none',
+          }}
           disabled={loading || busy === 'draft'}
         />
       </Section>
@@ -261,8 +271,13 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
   );
 };
 
-const Section: React.FC<{ label: string; hint?: string; children: React.ReactNode }> = ({ label, hint, children }) => (
-  <div style={{ marginBottom: 16 }}>
+const Section: React.FC<{ label: string; hint?: string; grow?: boolean; children: React.ReactNode }> = ({ label, hint, grow, children }) => (
+  // \`grow\` marks the one section that absorbs spare drawer height.  It is a
+  // flex column itself so its textarea can stretch, and minHeight: 0 lets it
+  // yield to the fixed-size sections below rather than overflowing the body.
+  <div style={grow
+    ? { marginBottom: 16, flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column' }
+    : { marginBottom: 16, flexShrink: 0 }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
       <Text style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.04em' }} type="secondary">{label}</Text>
       {hint && <Text type="secondary" style={{ fontSize: 11 }}>{hint}</Text>}
