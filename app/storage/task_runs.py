@@ -539,7 +539,9 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             return None
         run.status = "held"  # type: ignore[assignment]
         run.held_reason = reason or None
-        run.held_at_block_id = block_id or None
+        # A branch of a parallel is never a resume point (body-order
+        # replay); the hold names the parallel the resume will target.
+        run.held_at_block_id = self._resumable_hold_block(run, block_id or None)
         if faults:
             run.held_faults = faults
         if gate_reason:
@@ -930,15 +932,64 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         block with the LATEST started_at.  A group and the leaf it is
         executing are both "running"; the leaf started later, and it is
         the leaf a resume should target so the banner can name where
-        a mid-loop resume lands."""
+        a mid-loop resume lands.
+
+        That rule assumes one line of execution.  Under a parallel
+        fan-out several leaves are running at once and "latest started"
+        names one arbitrary sibling, whose retry replays the others as
+        empty markers.  When the card snapshot shows more than one
+        in-flight leaf, the hold is placed at the block whose retry
+        covers all of them (see resume_targets.concurrent_resume_block).
+        """
         best_id, best_t = None, -1.0
+        running: List[str] = []
         for bid, st in (run.block_states or {}).items():
             if st.status != "running":
                 continue
+            running.append(bid)
             t = st.started_at or 0.0
             if t >= best_t:
                 best_id, best_t = bid, t
-        return best_id
+        root = (run.card_snapshot or {}).get("root")
+        if root and len(running) > 1:
+            try:
+                from ..utils.resume_targets import concurrent_resume_block
+                fanout = concurrent_resume_block(root, running)
+            except Exception as exc:  # noqa: BLE001 — fall back, never fail the hold
+                logger.debug(f"concurrent_resume_block failed: {exc}")
+                fanout = None
+            if fanout:
+                return fanout
+        return TaskRunStorage._resumable_hold_block(run, best_id)
+
+    @staticmethod
+    def _resumable_hold_block(
+        run: TaskRun, block_id: Optional[str],
+    ) -> Optional[str]:
+        """``block_id``, raised out of any enclosing ``parallel``.
+
+        The resume path never targets inside a parallel: it resumes the
+        outermost one and replays its finished branches
+        (resume_targets.banked_parallel_children).  Holding at a branch
+        would make the banner offer "Retry <branch>" for an action that
+        actually resumes the parallel.  The faulting branch stays on
+        record in ``held_faults``.  Unchanged without a card snapshot, and
+        for a callee block, which is not in this run's own tree.
+        """
+        root = (run.card_snapshot or {}).get("root")
+        if not root or not block_id:
+            return block_id
+        try:
+            from ..utils.resume_targets import (
+                find_resume_target, outermost_parallel_ancestor,
+            )
+            outer = outermost_parallel_ancestor(root, block_id)
+        except Exception as exc:  # noqa: BLE001 — never fail a hold
+            logger.debug(f"_resumable_hold_block failed: {exc}")
+            return block_id
+        if not outer:
+            return block_id
+        return find_resume_target(root, outer) or outer
 
     def append_iteration_summary(
         self, run_id: str, block_id: str, summary: IterationSummary,
@@ -1020,9 +1071,24 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
 
+    def _attempt_file(self, base: Path, attempt: int) -> Path:
+        """Attempt 1 keeps the historical name; a re-run gets ``_a<N>``."""
+        if attempt and attempt > 1:
+            return base.with_name(f"{base.stem}_a{int(attempt)}{base.suffix}")
+        return base
+
+    def _latest_attempt_file(self, base: Path) -> Path:
+        """The highest-attempt file for an iteration (attempt 1 if none)."""
+        best, best_n = base, 1
+        for p in base.parent.glob(f"{base.stem}_a*{base.suffix}"):
+            tail = p.stem[len(base.stem) + 2:]
+            if tail.isdigit() and int(tail) > best_n:
+                best, best_n = p, int(tail)
+        return best
+
     def write_iteration_artifact(
         self, run_id: str, block_id: str, index: int, artifact: Artifact,
-        pass_key: Optional[str] = None,
+        pass_key: Optional[str] = None, attempt: int = 1,
     ) -> None:
         """Persist the full Artifact for a single iteration to disk.
         Each iteration file is small (~10KB typical), scales linearly
@@ -1033,15 +1099,24 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         other TaskRunStorage write) so iteration artifacts fall under
         the "session_data" ALE category instead of being written as
         plaintext JSON [PenPal #43, CWE-311]."""
-        path = self._iteration_file(run_id, block_id, index, pass_key)
+        path = self._attempt_file(
+            self._iteration_file(run_id, block_id, index, pass_key), attempt)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._write_json(path, artifact.model_dump(mode="json"))
 
     def read_iteration_artifact(
         self, run_id: str, block_id: str, index: int,
-        pass_key: Optional[str] = None,
+        pass_key: Optional[str] = None, attempt: Optional[int] = None,
     ) -> Optional[Artifact]:
-        path = self._iteration_file(run_id, block_id, index, pass_key)
+        """An iteration's artifact; the HIGHEST attempt unless one is named.
+
+        Highest by default because every caller asks "what was this
+        iteration's result" (resume banking, the run inspector), and a
+        re-run that passed supersedes the first attempt that came up short.
+        """
+        base = self._iteration_file(run_id, block_id, index, pass_key)
+        path = (self._latest_attempt_file(base) if attempt is None
+                else self._attempt_file(base, attempt))
         try:
             data = self._read_json(path)
             if data is None:
