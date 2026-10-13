@@ -46,7 +46,7 @@ def recorder(monkeypatch):
 
     async def _stub(block, project_root=None, project_id=None, run_id=None,
                     pre_authorized_shell_commands=None,
-                    pre_authorized_writable=None):
+                    pre_authorized_writable=None, **_kw):
         seen.append({
             "id": block.id,
             "scope": block.scope,
