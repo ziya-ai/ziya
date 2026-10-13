@@ -272,6 +272,64 @@ async def test_tool_edits_narrow_a_grant_and_report_resign(env):
 
 
 @pytest.mark.asyncio
+async def test_tool_edits_set_scope_skills_on_one_block(env):
+    """Attribution (2026-10-13): a model needed to add document_authoring
+    to two stages of a ~114 KB card, read the tool description as
+    "scope.cwd only", and concluded it had to reserialize the whole root
+    it could not even read in full.  skills is not in the signing hash."""
+    from app.mcp.tools.task_card_tools import TaskCardWriteTool
+    storage, card = _make_card(env)
+    out = await TaskCardWriteTool().execute(card_id=card.id, edits=[
+        {"block_id": "t2", "set": {"scope.skills": ["document_authoring"]}},
+    ])
+    assert out.get("success") is True, out
+    reloaded = storage.get(card.id).root
+    assert reloaded.body[2].scope.skills == ["document_authoring"]
+    # Neighbouring block and its grant are untouched.
+    assert reloaded.body[1].scope.shell_commands == ["pytest"]
+    assert not reloaded.body[1].scope.skills
+
+
+def test_tool_description_does_not_claim_scope_is_cwd_only():
+    """The stale 'other scope fields are not editable' text is what the
+    model obeyed; the description must advertise scope.<field>."""
+    from app.mcp.tools.task_card_tools import TaskCardWriteInput, TaskCardWriteTool
+    edits_doc = TaskCardWriteInput.model_fields["edits"].description
+    assert "not editable" not in edits_doc
+    assert "scope.<field>" in edits_doc and "skills" in edits_doc
+    assert "scope.<field>" in TaskCardWriteTool().description
+
+
+@pytest.mark.asyncio
+async def test_read_block_id_returns_only_that_subtree(env):
+    from app.mcp.tools.task_card_tools import TaskCardReadTool
+    _, card = _make_card(env)
+    out = await TaskCardReadTool().execute(card_id=card.id, block_id="t1")
+    assert out.get("success") is True, out
+    assert out["block"]["id"] == "t1"
+    assert out["block"]["instructions"] == "do one"
+    assert "card" not in out          # the whole tree is not returned
+    missing = await TaskCardReadTool().execute(card_id=card.id, block_id="nope")
+    assert missing.get("error") is True and "nope" in missing["message"]
+
+
+@pytest.mark.asyncio
+async def test_read_outline_lists_ids_without_bodies_of_text(env):
+    from app.mcp.tools.task_card_tools import TaskCardReadTool
+    _, card = _make_card(env)
+    out = await TaskCardReadTool().execute(card_id=card.id, outline=True)
+    assert out.get("success") is True, out
+    tree = out["outline"]
+    assert tree["id"] == "g"
+    ids = [c["id"] for c in tree["children"]]
+    assert ids == ["s", "t1", "t2"]
+    t1 = tree["children"][1]
+    assert t1["scope"] == {"shell_commands": ["pytest"]}
+    assert "instructions" not in t1   # only a short preview
+    assert t1["preview"] == "do one"
+
+
+@pytest.mark.asyncio
 async def test_tool_refuses_root_and_edits_together(env):
     from app.mcp.tools.task_card_tools import TaskCardWriteTool
     _, card = _make_card(env)
