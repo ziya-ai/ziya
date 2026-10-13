@@ -431,6 +431,70 @@ def _find_substitution_spans(command: str) -> list:
     return spans
 
 
+def _subst_context(segment: str, start: int, spans: list) -> tuple:
+    """Classify where the substitution starting at *start* sits in *segment*.
+
+    Returns ``(in_double_quotes, in_assignment)``.  ``in_assignment`` is
+    true when the token lies in the value of a leading ``NAME=value`` word
+    (``LB=$(...)``, ``A=1 LB=pre$(...)``).  Earlier substitution spans are
+    masked out before scanning so quotes inside their bodies (which the
+    span finder tracked separately) cannot skew the outer quote state.
+    """
+    masked = list(segment)
+    for s, e, _body, _kind in spans:
+        if e <= start:
+            masked[s:e] = 'x' * (e - s)
+    masked = ''.join(masked)
+
+    in_sq = in_dq = False
+    i = 0
+    while i < start:
+        ch = masked[i]
+        if ch == '\\' and not in_sq:
+            i += 2
+            continue
+        if ch == "'" and not in_dq:
+            in_sq = not in_sq
+        elif ch == '"' and not in_sq:
+            in_dq = not in_dq
+        i += 1
+
+    in_assign = False
+    pos = len(masked) - len(masked.lstrip())
+    while pos < len(masked):
+        word = _consume_raw_word(masked[pos:])
+        if not word or not _ENV_ASSIGN_RE.match(word):
+            break
+        if pos <= start < pos + len(word):
+            in_assign = True
+            break
+        pos += len(word)
+        pos += len(masked[pos:]) - len(masked[pos:].lstrip())
+    return in_dq, in_assign
+
+
+def _quote_subst_output(output: str, in_dq: bool, in_assign: bool) -> str:
+    """Re-quote a substitution's stdout for splicing back into the segment.
+
+    The resolved segment is re-tokenized by ``shlex``, re-scanned for
+    redirections and peeled for ``NAME=value`` prefixes, so raw output
+    containing whitespace, quotes or ``>`` was re-parsed as shell syntax.
+    Bash never does that: an assignment RHS and a ``"$(...)"`` are one
+    word regardless of content.  Those two contexts get the output in
+    single quotes (``'`` itself as ``'\\''``); inside double quotes the
+    enclosing quote is closed first and reopened after, which the
+    tokenizer concatenates into one word.  An unquoted argument position
+    is left as-is: there bash does word-split, and splicing the raw text
+    already approximates that.
+    """
+    if not (in_dq or in_assign):
+        return output
+    quoted = "'" + output.replace("'", "'\\''") + "'"
+    if in_dq:
+        return '"' + quoted + '"'
+    return quoted
+
+
 def _extract_command_substitutions(command: str) -> list:
     """Return the *outermost* command substitutions found in *command*.
 
@@ -1073,7 +1137,9 @@ class ShellServer:
         prev = 0
         for start, end, body, _kind in spans:
             out.append(cmd_segment[prev:start])
-            out.append(_run_substitution(body))
+            in_dq, in_assign = _subst_context(cmd_segment, start, spans)
+            out.append(_quote_subst_output(
+                _run_substitution(body), in_dq, in_assign))
             prev = end
         out.append(cmd_segment[prev:])
         return "".join(out)
