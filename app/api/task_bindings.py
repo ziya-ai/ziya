@@ -9,6 +9,12 @@ Routes:
   - POST   /chats/{chat_id}/task-bindings       (binds; launches unless staged)
   - DELETE /chats/{chat_id}/task-bindings/{binding_id}
   - POST   /chats/{chat_id}/task-bindings/{binding_id}/launch
+
+Handlers that await nothing (list, delete) are plain ``def``, not
+``async def``: they do synchronous binding/run-record file I/O, which as a
+zero-await coroutine ran ON the event loop and stalled every request.
+Create and launch-staged genuinely await ``_launch_run_for_card`` and stay
+``async``.  ``tests/test_task_bindings_not_event_loop_blocking.py`` enforces this.
 """
 
 from fastapi import APIRouter, HTTPException
@@ -77,7 +83,7 @@ class TaskBindingCreateResponse(BaseModel):
 
 
 @router.get("", response_model=List[TaskBinding])
-async def list_task_bindings(project_id: str, chat_id: str) -> List[TaskBinding]:
+def list_task_bindings(project_id: str, chat_id: str) -> List[TaskBinding]:
     """List all bindings attached to a chat.  Returns [] if chat has
     no bindings.  Does not validate that the chat exists — bindings
     for a deleted chat can still be listed (and would be empty).
@@ -233,7 +239,7 @@ async def create_task_binding(
 
 
 @router.delete("/{binding_id}", status_code=204)
-async def delete_task_binding(
+def delete_task_binding(
     project_id: str, chat_id: str, binding_id: str,
 ) -> None:
     """Remove a binding.  Does NOT delete the underlying run or card —
