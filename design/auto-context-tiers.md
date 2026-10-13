@@ -1,6 +1,6 @@
 # Automatic context tiers: auto-include, decay, and handles
 
-Status: proposed (2026-09-24). Owner: dcohn.
+Status: proposed (2026-09-24). Owner: maintainers.
 
 ## Problem
 
