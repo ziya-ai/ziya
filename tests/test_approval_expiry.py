@@ -43,7 +43,7 @@ def signing_keys(tmp_path, monkeypatch):
     return priv_path, pub_path
 
 
-def _record(task_id="b-test", scope_hash="a" * 64, approved_by="dcohn",
+def _record(task_id="b-test", scope_hash="a" * 64, approved_by="alice",
             approved_at=None, expires_at=None):
     if approved_at is None:
         approved_at = int(time.time())
