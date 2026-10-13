@@ -15,7 +15,7 @@ import * as path from 'path';
 
 import {
   costEmphasis, costQualifier, fetchConversationCost, fetchUsageRollup,
-  formatCost, formatTokens, RollupGroup,
+  formatCost, formatTokens, modelGroupLabel, RollupGroup,
 } from '../usageApi';
 
 function group(over: Partial<RollupGroup> = {}): RollupGroup {
@@ -88,7 +88,18 @@ describe('fetch helpers', () => {
     await fetchUsageRollup('model', { since: '2026-09-01', project_id: 'p 1' });
     await fetchConversationCost('c/1');
     expect(calls[0]).toBe('/api/usage/rollup?by=model&since=2026-09-01&project_id=p%201');
-    expect(calls[1]).toBe('/api/usage/rollup?by=status&conversation_id=c%2F1');
+    // Grouped by MODEL, not status: a conversation that switched models
+    // mid-way must show each model's share, not one figure beside the
+    // current model's name.  The estimate/actual split comes from totals.
+    expect(calls[1]).toBe('/api/usage/rollup?by=model&conversation_id=c%2F1');
+  });
+
+  it('modelGroupLabel strips the provider prefix from a by-model key', () => {
+    expect(modelGroupLabel({ key: 'bedrock/global.anthropic.claude-opus-5-5', provider: 'bedrock' }))
+      .toBe('global.anthropic.claude-opus-5-5');
+    // No provider on the group, or a key not under it: shown as-is.
+    expect(modelGroupLabel({ key: 'bedrock/x' })).toBe('bedrock/x');
+    expect(modelGroupLabel({ key: 'other/x', provider: 'bedrock' })).toBe('other/x');
   });
 
   it('surfaces the server detail on a non-2xx', async () => {
@@ -114,6 +125,11 @@ describe('wiring', () => {
     const src = read('components/ConversationInfoModal.tsx');
     expect(src).toMatch(/fetchConversationCost\(conversationId\)/);
     expect(src).toMatch(/<CostCell g=\{cost\.totals\}/);
+    // The seam for the per-model breakdown: the by-model groups are mapped
+    // to a CostCell each, labelled through the shared helper.
+    expect(src).toMatch(/cost\.groups\.map\(g =>/);
+    expect(src).toMatch(/modelGroupLabel\(g\)/);
+    expect(src).toMatch(/<CostCell g=\{g\}/);
   });
 
   it('UsageCostModal renders the emphasis rule through the shared helpers', () => {
