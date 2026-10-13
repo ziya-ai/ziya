@@ -105,6 +105,6 @@ class TestStageIsReportedToTheGui:
         mgr.server_configs = {"srv": {}}
 
         with patch("app.routes.mcp_routes.get_mcp_manager", return_value=mgr):
-            result = await get_mcp_server_details("srv")
+            result = get_mcp_server_details("srv")
 
         assert result["startup_stage"] == "handshake"
