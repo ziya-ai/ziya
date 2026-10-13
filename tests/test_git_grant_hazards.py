@@ -202,7 +202,7 @@ class TestApi:
     @pytest.mark.asyncio
     async def test_hazards_endpoint(self):
         from app.routes import mcp_routes
-        out = await mcp_routes.git_grant_hazards(
+        out = mcp_routes.git_grant_hazards(
             mcp_routes.GitGrantHazardsRequest(commands=["ls", "git push", "git status", "git"]))
         grants = [h["grant"] for h in out["hazards"]]
         assert grants == ["git push", "git"]
