@@ -149,7 +149,10 @@ async def test_observer_receives_events_appended_after_attach(tmp_path: Path, fa
     writer.flush()
     await _settle()
 
-    assert _types(ws) == ["run_started", "block_started", "task_text_delta_run"]
+    # Appended AFTER attach, so it arrives raw, exactly as a live push does
+    # on the origin.  Only content that streamed before attach is folded
+    # (the contract in useTaskRunStream and design/task-cards.md).
+    assert _types(ws) == ["run_started", "block_started", "task_text_delta"]
 
     writer.write(json.dumps({"type": "run_completed", "run_id": "run-A", "status": "passed"}) + "\n")
     writer.flush()
@@ -238,6 +241,42 @@ async def test_executor_process_does_not_tail_its_own_journal(tmp_path: Path, fa
 
     assert "run-A" not in relay._tail_tasks
     assert _types(ws) == ["run_started"]  # once, from memory
+
+
+@pytest.mark.asyncio
+async def test_origin_reconnect_after_close_does_not_reingest(tmp_path: Path, fast_tail):
+    """The executor closed its journal but still holds history (the grace
+    window).  A client reconnecting there with ``journal=`` must not
+    trigger a re-read from byte 0: every event would land twice."""
+    journal = tmp_path / "run-A" / "events.jsonl"
+    relay.open_journal("run-A", journal)
+    await relay.push("run-A", {"type": "run_started", "run_id": "run-A"})
+    await relay.push("run-A", {"type": "block_started", "block_id": "b1"})
+    relay.close_journal("run-A")          # no _reset: same process
+
+    ws = FakeWS()
+    await relay.connect("run-A", ws, journal=journal, alive=lambda: False)
+    await _settle()
+
+    assert _types(ws) == ["run_started", "block_started"]
+    assert len(relay._history["run-A"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_finished_run_backlog_starts_no_tail(tmp_path: Path, fast_tail):
+    journal = tmp_path / "run-A" / "events.jsonl"
+    relay.open_journal("run-A", journal)
+    await relay.push("run-A", {"type": "run_started", "run_id": "run-A"})
+    await relay.push("run-A", {"type": "run_completed", "run_id": "run-A", "status": "done"})
+    relay.close_journal("run-A")
+    _reset()
+
+    ws = FakeWS()
+    await relay.connect("run-A", ws, journal=journal, alive=lambda: True)
+    assert _types(ws) == ["run_started", "run_completed"]
+    assert "run-A" not in relay._tail_tasks
+    # History still gets the grace-window drop a live terminal would.
+    assert "run-A" in relay._drop_tasks
 
 
 @pytest.mark.asyncio
