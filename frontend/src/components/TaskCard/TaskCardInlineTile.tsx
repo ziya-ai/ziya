@@ -50,6 +50,8 @@ import { formatLastActivity, HUNG_AFTER_S, isHung } from './liveActivity';
 import { awaitsUser, decideAutoCollapse } from './autoCollapse';
 import { TaskMarkdown } from './TaskMarkdown';
 import { countUnsigned, useCardSignatureStatus } from './useCardSignatureStatus';
+import { deriveChipProgress, publishProgress } from './taskProgress';
+import './task-card-editor.css';
 import './task-card-inline-tile.css';
 
 interface Props {
@@ -1060,6 +1062,15 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
     () => (run ? analyzeFailures(run.block_states) : null),
     [run?.updated_at],
   );
+
+  // Publish this binding's progress for the task rail's chip.  Only for
+  // the binding's own run: the attempt rail can switch the tile to an
+  // older attempt, whose counts must not overwrite the live one.  A
+  // finished run clears it (the rail no longer shows it anyway).
+  useEffect(() => {
+    if (!run || run.id !== binding.run_id) return;
+    publishProgress(binding.id, isTerminal ? null : deriveChipProgress(run, progressNote));
+  }, [binding.id, binding.run_id, run, progressNote, isTerminal]);
 
   // At-tail fallback: once the run is terminal, render nothing so a
   // finished ghost tile doesn't linger below the last message.

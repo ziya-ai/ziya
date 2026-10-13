@@ -1055,6 +1055,13 @@ export const StreamedContent: React.FC<{}> = () => {
                         </div>
                     )}
                 </>)}
+            {/* Portal target for task tiles staged DURING this turn.
+                Conversation.tsx renders them here so they land after the
+                streaming reply rather than between the prompt and it;
+                when the reply persists they move into the thread.  Kept
+                empty by this component — React reconciles only the portal
+                children. */}
+            <div className="tc-inflight-slot" />
         </div>
     );
 };
