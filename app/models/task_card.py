@@ -395,11 +395,30 @@ class Block(BaseModel):
                         "state", "group", "call", "ask"]
     id: str = ""
     name: str = ""
+    # Whether this block's failure counts against its ENCLOSING container.
+    # Meaningful on any child of a Parallel / Group / Repeat / Until body;
+    # ignored on a root.  ``False`` lets a lane fail without failing the
+    # container: it does not trip an enclosing ``on_failure="stop"``, does
+    # not make a Parallel report failed, and as the last child of a
+    # sequence does not fail the sequence's own artifact.  The failure is
+    # still recorded in the container's decisions ("optional child …
+    # failed") and in the child's own stage evidence — allowed, not
+    # hidden.  Per-child rather than per-container so a Parallel of
+    # {baseline, known-issues} can require the first and not the second.
+    # See block_executor._execute_parallel / _execute_sequence.
+    required: bool = True
 
     # Task-only fields
     instructions: Optional[str] = None
     scope: Optional[TaskScope] = None
     emoji: Optional[str] = None
+    # Outputs this task must produce (design/typed-findings.md).  None:
+    # no contract of its own (State defaults may still apply).  An
+    # explicit [] opts out of inherited defaults.
+    output_contract: Optional[List[OutputContract]] = None
+    # Container-only: a contract over the container's children or
+    # iterations, pushed down to their producer tasks.
+    gather_contract: Optional[List[GatherContract]] = None
 
     # Call-only fields.  ``call_target`` names a task card (by id, or by
     # name case-insensitively) or a file task (by name in the merged
