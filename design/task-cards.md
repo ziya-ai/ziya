@@ -1019,6 +1019,49 @@ the blocks themselves: iteration dots on Repeats, streaming glow
 on active Tasks, green checkmarks on completed blocks, error states
 on failed ones. No modal, no hijacked layout, no sidebar entry.
 
+#### Where a model-staged tile lands
+
+A tile created by `task_card_stage` / `task_card_launch` has no anchor
+message; it is placed by `created_at`, at the **end of the turn that
+built it** — after the assistant reply, before the next prompt. The
+naive rule ("after the last message at or before `created_at`") put it
+between the prompt and the reply, because the prompt is timestamped
+before the tool call and the reply only when the stream finishes. The
+rule is shared by `frontend/src/utils/taskBindingPlacement.ts` (the
+tile) and `app/utils/binding_placement.py` (the model-facing status
+line `_inject_task_results` splices into history), so the user and the
+model see the card at the same point. While the reply is still
+streaming the tile renders after the live stream, then moves into the
+thread when the reply persists.
+
+#### Bringing a task back out of a long thread
+
+A tile auto-collapses to a one-line receipt and scrolls away with its
+turn; in a long conversation that is indistinguishable from any other
+line. Two surfaces bring it back, both derived from the chat's bindings
+and the run-status event the tile already announces — the tile itself
+stays where it was:
+
+- **Task rail** (`TaskRail.tsx`): a sticky strip under the chat header,
+  one chip per task of *this* conversation that is live (queued /
+  running / paused) or waiting on the user (`awaiting_input`, `held`,
+  or any run with an open Ask). Attention chips sort first. Clicking a
+  chip scrolls to the tile and flashes it. Finished runs are never
+  shown here; the rail disappears when nothing is in flight.
+  Collapsible, remembered in `localStorage`.
+- **Task update feed** (`TaskUpdateFeed.tsx`): when a bound run moves
+  into done / partial / failed / cancelled / held / awaiting_input
+  *while the user is in the conversation*, an update card is posted at
+  the bottom of the thread with the status hint and **Go to task**.
+  One card per run, newest state wins; a run going live again
+  (resumed, answered) withdraws its card. Nothing is posted for the
+  first status observed on load, for runs of other conversations, or
+  for a tile already sitting at the bottom. Not persisted and not a
+  chat message: the model already gets a synthetic status line.
+
+Policy for both is in `taskSurfacing.ts`; every tile mount is wrapped
+in a `data-task-binding-id` slot that is the scroll target.
+
 ### Sub-task detail
 
 When a task spawns a sub-task, the sub-task renders inline under

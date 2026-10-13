@@ -274,14 +274,14 @@ def _inject_task_results(processed_chat_history: List, conversation_id: str) -> 
         if binding.anchor_message_id and binding.anchor_message_id in id_to_idx:
             idx = id_to_idx[binding.anchor_message_id] + 1
         else:
-            # Chronological splice based on created_at.
-            ca = binding.created_at or 0
-            best = -1
-            for i, m in enumerate(processed_chat_history):
-                ts = m.get('_timestamp') if isinstance(m, dict) else None
-                if isinstance(ts, (int, float)) and ts <= ca:
-                    best = i
-            idx = (best + 1) if best >= 0 else 0
+            # Chronological splice: the END of the turn that created the
+            # binding.  A model-staged binding is timestamped between the
+            # prompt and the reply that staged it, so "last message at or
+            # before created_at" put it at the start of the turn.  Same
+            # rule as the frontend's taskBindingPlacement.ts.
+            from app.utils.binding_placement import unanchored_insert_index
+            idx = unanchored_insert_index(
+                processed_chat_history, binding.created_at or 0)
         inserts.append((idx, synth))
 
     # Apply inserts in descending index order so earlier insertions
