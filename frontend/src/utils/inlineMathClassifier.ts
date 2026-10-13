@@ -265,7 +265,13 @@ function replaceMathSpans(scope: string): string {
         // swallowed whole and the real (unescaped) `$` closes the span. Without
         // this, `$x = \$5$` truncated to `$x = \$` (lone trailing backslash =>
         // red KaTeX error) and leaked `5$` as literal text.
-        /\$(?=\S)((?:\\.|[^$\n])+?)(?<=\S)\$/g,
+        //
+        // The fallback class excludes the backslash so that only the `\\.`
+        // alternative can consume one. If both alternatives can match a
+        // backslash, an unclosed span backtracks over every escape in the
+        // line (2^n paths) — a pasted JSON line of shell output with a lone
+        // `$` and dozens of `\"` escapes froze the tab for minutes.
+        /\$(?=\S)((?:\\.|[^$\\\n])+?)(?<=\S)\$/g,
         (match, p1) => (
             isInlineMathContent(p1, match)
                 ? encodeInlineMathMarker(p1.trim())
@@ -357,7 +363,13 @@ export function createMathPlaceholderStore(): MathPlaceholderStore {
                 // escaped literal dollar (`\$`) is lifted out whole rather than
                 // being split at the escape — otherwise the trailing remainder
                 // would be exposed to escapeNestedBacktickFences.
-                /(?<!\$)\$(?!\$)((?:\\.|(?!\$).)+?)\$(?!\$)/g,
+                //
+                // The fallback class is `[^$\\\n]`, not `(?!\$).`: a backslash
+                // must be consumable ONLY by `\\.`. With both alternatives able
+                // to take it, a `$` with no closing partner on the same line
+                // made the engine try 2^(backslashes) ways to fail, which hung
+                // the browser on pasted tool output containing `"$ cd ...\"..."`.
+                /(?<!\$)\$(?!\$)((?:\\.|[^$\\\n])+?)\$(?!\$)/g,
                 match => {
                     const placeholder = `__MATH_INLINE_${storeId}_${counter}__`;
                     blocks.push({ placeholder, content: match });
