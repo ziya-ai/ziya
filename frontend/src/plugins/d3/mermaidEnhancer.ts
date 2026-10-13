@@ -619,12 +619,17 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
  *   - a trailing comma before `}` / `]`
  *   - bare (unquoted) object keys        -> `theme:`      => `"theme":`
  *   - single-quoted strings              -> `'base'`      => `"base"`
+ *   - curly/smart quotes (G-20 / D-022)  -> `‘theme’`     => `"theme"`
  * Returns compact strict JSON, or `null` when the body still cannot be parsed
  * after the lenient rewrites (callers must then leave the directive untouched
  * rather than emit something worse).
  */
 export function normalizeInitDirectiveJson(text: string): string | null {
   let t = text;
+  // Smart quotes first, so the single-quote pass below sees them. The unicode
+  // pass (priority 490) runs after this repair (820) and is too late to help.
+  t = t.replace(/[\u2018\u2019\u201A\u201B]/g, "'");
+  t = t.replace(/[\u201C\u201D\u201E\u201F]/g, '"');
   // single-quoted strings -> double-quoted (escape any inner double quote)
   t = t.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_m, inner: string) =>
     '"' + inner.replace(/"/g, '\\"') + '"');
@@ -5271,8 +5276,13 @@ export function enhanceMermaid(mermaid: any): void {
       }
 
       console.log('🔍 FALLBACK: Using original render method');
-      // Call the original render with processed definition
-      const result = await originalRender.call(this, id, processedDef, ...args);
+      // Call the original render with processed definition, inside the same
+      // zoom-neutral measure host as the bypass path (an explicit container is
+      // honoured). Without it, labels measured here are short by the body zoom.
+      // Explicit <any>: originalRender is untyped, so T would otherwise infer
+      // as unknown and the `.svg` check below fails to type-check.
+      const result = await renderIn<any>((container) =>
+        originalRender.call(this, id, processedDef, container, ...args.slice(1)));
 
       console.log('🔍 RENDER-RESULT: Mermaid render completed, result type:', typeof result);
 
