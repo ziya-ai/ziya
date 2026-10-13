@@ -203,7 +203,7 @@ class TestLessonsApiExposesJudgeErrors:
         ledger.record({"card_id": "c1", "block_id": "b",
                        "verdict": si.JUDGE_ERROR_VERDICT, "error": "transport"})
         ledger.record({"card_id": "c1", "block_id": "b", "verdict": "accept"})
-        body = _run(api.get_card_lessons("p1", "c1", limit=200))
+        body = api.get_card_lessons("p1", "c1", limit=200)
         assert body["count"] == 2
         assert body["edits_applied"] == 0
         assert body["judge_errors"] == 1
