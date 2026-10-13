@@ -1,11 +1,18 @@
 /*
- * Neutral palette for diffs inside tool-result blocks (ToolDiffPreview).
+ * Palette for diffs inside tool-result blocks (ToolDiffPreview).
  *
  * An inline chat diff is a PROPOSAL: red/green, with an Apply button.  A
  * diff inside a file_write tool block is a RECORD of a change already made.
- * Rendering both in the same colours invites the reader to look for an
- * Apply button that is not there, or to assume the change is pending.
- * Removed lines are muted grey, added lines a pale slate; no red, no green.
+ * The caption and the missing Apply button say "already applied"; colour
+ * still has to say removed-vs-added.  A neutral grey/slate pair was tried
+ * first and failed: the two backgrounds were indistinguishable, and the
+ * preview renders with gutterType="none", so there were no +/- markers.
+ *
+ * Removed and added lines therefore differ four ways, so the distinction
+ * survives poor colour discrimination: a red/green tint softer than a
+ * proposal's, a full-strength 4px inset bar, a -/+ marker drawn with
+ * ::before (there is no gutter column to carry one), and a strikethrough
+ * on removed lines, which also reads as "this is gone".
  *
  * Overrides index.css's .diff-code-* rules; the dark-mode token colours
  * there are !important, so these are too.
@@ -21,18 +28,50 @@
 
 .tool-diff-applied .diff-code-delete,
 .tool-diff-applied .diff-gutter-delete {
-    background-color: #f1f2f4;
-    color: #6b7280;
+    background-color: #fbe4e6;
+    color: #82303a;
 }
 
 .tool-diff-applied .diff-code-insert,
 .tool-diff-applied .diff-gutter-insert {
-    background-color: #e9eef6;
-    color: #24292e;
+    background-color: #dcf2e1;
+    color: #1f2328;
+}
+
+/* Bar on the code cell only, so a gutter (if one is ever enabled) does not
+   draw a second bar. */
+.tool-diff-applied .diff-code-delete {
+    box-shadow: inset 4px 0 0 #cf222e;
+    text-decoration: line-through;
+    text-decoration-color: rgba(130, 48, 58, 0.55);
+}
+
+.tool-diff-applied .diff-code-insert {
+    box-shadow: inset 4px 0 0 #1a7f37;
+}
+
+/* inline-block: text-decoration does not propagate into an atomic inline,
+   so the removed line's strikethrough does not run through its marker. */
+.tool-diff-applied .diff-code-delete::before,
+.tool-diff-applied .diff-code-insert::before {
+    display: inline-block;
+    width: 1.2em;
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.tool-diff-applied .diff-code-delete::before {
+    content: '\2212';
+    color: #cf222e;
+}
+
+.tool-diff-applied .diff-code-insert::before {
+    content: '+';
+    color: #1a7f37;
 }
 
 .tool-diff-applied .diff-code-delete .token {
-    color: #6b7280 !important;
+    color: #82303a !important;
     background: inherit !important;
 }
 
@@ -43,22 +82,34 @@
 
 .dark .tool-diff-applied .diff-code-delete,
 .dark .tool-diff-applied .diff-gutter-delete {
-    background-color: #26282c;
-    color: #8b949e;
+    background-color: #3d1f22;
+    color: #e8a9a9;
 }
 
 .dark .tool-diff-applied .diff-code-insert,
 .dark .tool-diff-applied .diff-gutter-insert {
-    background-color: #1f2837;
-    color: #c9d1d9;
+    background-color: #16331f;
+    color: #d2f0d8;
 }
 
+.dark .tool-diff-applied .diff-code-delete {
+    box-shadow: inset 4px 0 0 #f85149;
+    text-decoration-color: rgba(232, 169, 169, 0.5);
+}
+
+.dark .tool-diff-applied .diff-code-insert {
+    box-shadow: inset 4px 0 0 #3fb950;
+}
+
+.dark .tool-diff-applied .diff-code-delete::before { color: #f85149; }
+.dark .tool-diff-applied .diff-code-insert::before { color: #3fb950; }
+
 .dark .tool-diff-applied .diff-code-delete .token {
-    color: #8b949e !important;
+    color: #e8a9a9 !important;
     background: inherit !important;
 }
 
 .dark .tool-diff-applied .diff-code-insert .token {
-    color: #c9d1d9 !important;
+    color: #d2f0d8 !important;
     background: inherit !important;
 }
