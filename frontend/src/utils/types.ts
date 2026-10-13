@@ -6,6 +6,8 @@ export interface Folders {
     [key: string]: {
         token_count: number;
         children?: Folders;
+        // [external] folder whose listing is missing or incomplete
+        _lazy?: boolean;
     };
 }
 

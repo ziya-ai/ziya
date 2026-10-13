@@ -64,7 +64,7 @@ class TestAddExternalPathToCache:
         assert path_parts[-1] in current, "File should be at leaf of external path"
 
     def test_adds_external_directory_to_cache(self, tmp_path):
-        """An external directory should be recursively scanned into the cache."""
+        """An external directory is listed one level deep, or in full with mode='recursive'."""
         import app.server as srv
 
         project_dir = str(tmp_path / "project")
@@ -94,10 +94,21 @@ class TestAddExternalPathToCache:
             assert part in current, f"Expected '{part}' in path"
             current = current[part].get('children', {})
 
-        # Verify children were scanned
+        # The default ('shallow') lists one level; subfolders are listed when
+        # expanded (app/utils/external_tree.py), so src is lazy and unread.
         assert 'src' in current, "Expected 'src' subdirectory"
         assert 'README.md' in current, "Expected 'README.md' file"
+        assert current['src'].get('_lazy') is True
+        assert current['src']['children'] == {}
+
+        # 'recursive' (a folder added straight into context) walks it all.
+        with patch('app.context.get_project_root', return_value=project_dir):
+            assert srv.add_external_path_to_cache(str(ext_dir), mode='recursive')
+        current = srv._folder_cache[project_dir]['data']['[external]']['children']
+        for part in path_parts:
+            current = current[part].get('children', {})
         assert 'main.py' in current['src'].get('children', {}), "Expected 'main.py' in src/"
+        assert '_lazy' not in current['src']
 
     def test_cache_key_matches_api_get_folders_key(self, tmp_path):
         """Cache key used by add_external_path_to_cache must match the
