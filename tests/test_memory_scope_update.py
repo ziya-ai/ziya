@@ -79,7 +79,7 @@ class TestUpdateMemoryEndpoint:
 
         with patch("app.storage.memory.get_memory_storage", return_value=mock_store):
             from app.api.memory import update_memory
-            result = await update_memory(
+            result = update_memory(
                 mem.id,
                 MemoryUpdateRequest(scope={"project_paths": ["/new/path"]}),
             )
@@ -102,7 +102,7 @@ class TestUpdateMemoryEndpoint:
 
         with patch("app.storage.memory.get_memory_storage", return_value=mock_store):
             from app.api.memory import update_memory
-            result = await update_memory(
+            result = update_memory(
                 mem.id,
                 MemoryUpdateRequest(
                     content="new content",
@@ -127,7 +127,7 @@ class TestUpdateMemoryEndpoint:
 
         with patch("app.storage.memory.get_memory_storage", return_value=mock_store):
             from app.api.memory import update_memory
-            result = await update_memory(
+            result = update_memory(
                 mem.id,
                 MemoryUpdateRequest(content="updated content"),
             )
