@@ -32,6 +32,8 @@ from app.services.folder_service import (
     add_file_to_folder_cache, update_file_in_folder_cache,
     remove_file_from_folder_cache, add_external_path_to_cache,
     add_directory_to_folder_cache,
+    is_under_external_path, load_external_dir,
+    refresh_external_listings,
     collect_leaf_file_keys as _collect_leaf_file_keys,
     collect_documentation_file_keys as _collect_documentation_file_keys,
     restore_external_paths_for_project as _restore_external_paths_for_project,
@@ -396,8 +398,35 @@ def api_browse_directory(path: str = '~'):
             content={"detail": f"Error browsing directory: {str(e)}"}
         )
 
+@router.get('/api/external-dir')
+async def api_external_dir(path: str, recursive: bool = False):
+    """
+    List one level of an added [external] folder, or with recursive its whole
+    subtree within the scan limits, and merge it into the folder cache.
+
+    The file browser calls this when the user expands a lazy external folder,
+    or checks one whose contents are not all loaded.  Only paths at or under
+    an added external path, and outside the project, are served.
+    """
+    full_path = os.path.abspath(os.path.expanduser(path))
+    real = os.path.realpath(full_path)
+    real_root = os.path.realpath(get_project_root())
+    if (not is_under_external_path(full_path)
+            or real == real_root or real.startswith(real_root + os.sep)):
+        return JSONResponse(status_code=403,
+                            content={"detail": f"Not an added external path: {full_path}"})
+    if not os.path.isdir(full_path):
+        return JSONResponse(status_code=404,
+                            content={"detail": f"Not a directory: {full_path}"})
+    try:
+        node, complete = await asyncio.to_thread(load_external_dir, full_path, recursive)
+    except OSError as e:
+        return JSONResponse(status_code=403,
+                            content={"detail": f"Cannot read {full_path}: {e}"})
+    return {"path": full_path, "node": node, "complete": complete}
+
 @router.post('/api/add-explicit-paths')
-async def api_add_explicit_paths(request: AddExplicitPathsRequest):
+def api_add_explicit_paths(request: AddExplicitPathsRequest):
     """
     Add explicit file/directory paths to the folder browser tree.
     Paths outside the workspace root will be shown with their full path prefix.
@@ -451,7 +480,14 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
                         _explicit_external_paths.add(path)
                     added_paths.append(path)
             elif os.path.isdir(path):
-                success = add_directory_to_folder_cache(rel_path, path, is_inside_workspace)
+                if is_inside_workspace:
+                    success = add_directory_to_folder_cache(rel_path, path, True)
+                else:
+                    # External trees can be huge: list one level now and the
+                    # rest as the user expands it.  A folder going straight
+                    # into context needs its files in the tree, so walk it.
+                    success = add_external_path_to_cache(
+                        path, mode='recursive' if request.add_to_context else 'shallow')
                 if success:
                     if not is_inside_workspace:
                         _explicit_external_paths.add(path)
@@ -462,7 +498,11 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
                         context_keys.extend(file_keys)
                     # Always auto-select AGENTS.md / README.md files found
                     # in the imported hierarchy so the model sees project guidance.
-                    doc_keys = _collect_documentation_file_keys(path, is_inside_workspace, user_codebase_dir)
+                    # For an external folder only its own level is searched;
+                    # walking it ten levels deep was a hidden full scan.
+                    doc_keys = _collect_documentation_file_keys(
+                        path, is_inside_workspace, user_codebase_dir,
+                        **({} if is_inside_workspace else {'max_depth': 1}))
                     for dk in doc_keys:
                         if dk not in context_keys:
                             context_keys.append(dk)
@@ -688,14 +728,15 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
             logger.error(f"Codebase path is not a directory: {user_codebase_dir}")
             return {"error": f"Path is not a directory: {user_codebase_dir}"}
 
-        # Restore persisted external paths into server-side caches
-        # Run on a worker thread: restoring persisted external paths calls
-        # add_external_path_to_cache() per entry, which walks and token-counts
-        # the tree (15s deadline per directory, plus PDF/document extraction).
-        # This endpoint is async def, so calling it inline blocks the event
-        # loop — stalling every unrelated request, including the
-        # project-switch conversation list fetch, until all paths are counted.
+        # Restore persisted external paths onto the allowlist and into the
+        # tree as lazy nodes; no directory is read (folders are listed when
+        # expanded, see app/utils/external_tree.py).  Still on a worker
+        # thread, since it reads project storage.
         await asyncio.to_thread(_restore_external_paths_for_project, user_codebase_dir)
+        if refresh:
+            # Re-list the external folders the user has opened, one level
+            # each, so files added on disk since appear.
+            await asyncio.to_thread(refresh_external_listings, user_codebase_dir)
             
         # Test basic access
         try:

@@ -241,18 +241,83 @@ export const convertToTreeData = (folders: Folders, parentKey = ''): TreeDataNod
         const currentKey = parentKey ? `${parentKey}/${key}` : key;
         const tokenCount = (value?.token_count ?? 0);
         const title = key;  // Just use the filename without token count
-        const node: TreeDataNode = {
+        // An [external] folder not yet listed is still an expandable folder.
+        const isLazy = !!value?._lazy;
+        const node: TreeDataNode & { lazy?: boolean } = {
             title,
             key: currentKey,
             // All folders are collapsed by default
-            isLeaf: !value.children || Object.keys(value.children).length === 0,
+            isLeaf: !isLazy && (!value.children || Object.keys(value.children).length === 0),
         };
+        if (isLazy) node.lazy = true;
 
         if (value.children) {
             node.children = convertToTreeData(value.children, currentKey);
         }
         return node;
     });
+};
+
+export const EXTERNAL_ROOT_KEY = '[external]';
+
+/** Absolute filesystem path for an [external] tree key, or null. */
+export const externalKeyToPath = (key: string): string | null => {
+    if (!key.startsWith(EXTERNAL_ROOT_KEY + '/')) return null;
+    const path = key.slice(EXTERNAL_ROOT_KEY.length);
+    return path.length > 1 ? path : null;
+};
+
+/**
+ * Copy of folders with node placed at absPath under [external].  Only the
+ * nodes on the path are copied; everything else is shared.
+ */
+export const mergeExternalNode = (folders: Folders, absPath: string, node: Folders[string]): Folders => {
+    const parts = absPath.split('/').filter(Boolean);
+    if (parts.length === 0) return folders;
+    const place = (level: Folders | undefined, i: number): Folders => {
+        const copy: Folders = { ...(level || {}) };
+        if (i === parts.length - 1) {
+            copy[parts[i]] = node;
+            return copy;
+        }
+        const existing = copy[parts[i]];
+        copy[parts[i]] = { ...(existing || { token_count: 0 }), children: place(existing?.children, i + 1) };
+        return copy;
+    };
+    const root = folders[EXTERNAL_ROOT_KEY] || { token_count: 0, children: {} };
+    return { ...folders, [EXTERNAL_ROOT_KEY]: { ...root, children: place(root.children, 0) } };
+};
+
+/** Tree node for a folder-cache node that lives at tree key "key". */
+export const treeNodeAtKey = (key: string, value: Folders[string]): TreeDataNode => {
+    const cut = key.lastIndexOf('/');
+    return convertToTreeData({ [key.slice(cut + 1)]: value }, key.slice(0, cut))[0];
+};
+
+/** True if node or anything below it is a lazy (not fully listed) folder. */
+export const subtreeHasLazy = (node: any): boolean =>
+    !!node && (!!node.lazy || (node.children || []).some(subtreeHasLazy));
+
+/**
+ * Lazy [external] folders to fetch: those the user has expanded, and those
+ * on the path to a checked file.  A checked lazy folder itself is not
+ * listed here (checking a folder loads its whole subtree separately).
+ */
+export const lazyExternalKeysToLoad = (treeData: any[], expanded: string[], checked: string[]): string[] => {
+    const ext = (treeData || []).find(n => String(n.key) === EXTERNAL_ROOT_KEY);
+    if (!ext) return [];
+    const open = new Set(expanded);
+    const checkedExt = checked.filter(k => k.startsWith(EXTERNAL_ROOT_KEY + '/'));
+    const out: string[] = [];
+    const walk = (nodes: any[] | undefined) => {
+        for (const n of nodes || []) {
+            const k = String(n.key);
+            if (n.lazy && (open.has(k) || checkedExt.some(c => c.startsWith(k + '/')))) out.push(k);
+            if (n.children && n.children.length) walk(n.children);
+        }
+    };
+    walk(ext.children);
+    return out;
 };
 
 /**
