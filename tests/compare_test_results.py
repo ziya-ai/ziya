@@ -11,7 +11,7 @@ def run_tests_and_get_results():
             ['python', 'tests/run_diff_tests.py', '--quiet'],
             capture_output=True,
             text=True,
-            cwd='/Users/dcohn/workplace/ziya-release-debug'
+            cwd='/Users/alice/workplace/ziya-release-debug'
         )
         
         output = result.stdout
@@ -49,12 +49,12 @@ def main():
     
     print("Stashing changes and getting baseline...")
     subprocess.run(['git', 'stash', 'push', '-m', 'temp_comparison', 'app/utils/diff_utils/application/patch_apply.py'], 
-                  cwd='/Users/dcohn/workplace/ziya-release-debug')
+                  cwd='/Users/alice/workplace/ziya-release-debug')
     
     baseline_results = run_tests_and_get_results()
     
     print("Restoring changes...")
-    subprocess.run(['git', 'stash', 'pop'], cwd='/Users/dcohn/workplace/ziya-release-debug')
+    subprocess.run(['git', 'stash', 'pop'], cwd='/Users/alice/workplace/ziya-release-debug')
     
     # Compare results
     print("\n" + "="*80)
