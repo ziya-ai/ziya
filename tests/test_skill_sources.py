@@ -120,7 +120,7 @@ def test_browse_and_install_routes(env, monkeypatch):
         raise RuntimeError("no registry here")
     monkeypatch.setattr(rm, "get_registry_manager", no_registry)
 
-    assert [s["id"] for s in asyncio.run(get_sources(PID))["sources"]] == ["local"]
+    assert [s["id"] for s in get_sources(PID)["sources"]] == ["local"]
     # a query answers per source; an unavailable MCP registry is no column at all
     cols = {c["source"]: c for c in asyncio.run(get_browse(PID, "BETA", None, 8))["per_source"]}
     assert set(cols) == {"local"}
@@ -130,7 +130,7 @@ def test_browse_and_install_routes(env, monkeypatch):
     col = asyncio.run(get_browse(PID, "a", "local", 1))["per_source"][0]
     assert col["total"] == 2 and len(col["hits"]) == 1                         # top-n; the total says the rest
 
-    r = asyncio.run(post_install(PID, InstallRequest(source="local", id="alpha", layer="user", state="always")))
+    r = post_install(PID, InstallRequest(source="local", id="alpha", layer="user", state="always"))
     assert r["installed"]["name"] == "alpha" and r["missing_requires"] == []
     item = next(i for i in r["view"]["items"] if i["key"] == "skill:alpha")
     assert item["placements"]["user"] == "always" and item["effective"] == "always"
@@ -138,12 +138,12 @@ def test_browse_and_install_routes(env, monkeypatch):
     assert {h["id"]: h["installed"] for h in hits} == {"alpha": True}
 
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(post_install(PID, InstallRequest(source="nope", id="alpha")))
+        post_install(PID, InstallRequest(source="nope", id="alpha"))
     assert ei.value.status_code == 404
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(post_source(PID, SourceRequest(id="bad", kind="git")))     # no url
+        post_source(PID, SourceRequest(id="bad", kind="git"))     # no url
     assert ei.value.status_code == 400
-    asyncio.run(post_source(PID, SourceRequest(id="f2", kind="folder", path="/nonexistent")))
+    post_source(PID, SourceRequest(id="f2", kind="folder", path="/nonexistent"))
     assert asyncio.run(get_browse(PID, "x", "f2", 8))["per_source"] == [
         {"source": "f2", "name": "f2", "kind": "folder", "total": 0, "hits": []}]   # empty, not an error
 
