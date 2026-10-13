@@ -14,12 +14,12 @@
 3. Skills are edited and displayed in one 660-line surface; MCP has two toolbar entry points; skills live in a third (Contexts tab); Shell Configuration is a fourth button.
 4. No provenance for installed skills → no update detection, no external skill sources.
 5. Builtin `[DIRECT]` tools render as a fake "builtin" MCP server row.
-6. On-demand skills are invisible when the model uses them; on-demand does not exist for MCP servers (41K tokens/turn for `kuiper-jira-mcp`).
+6. On-demand skills are invisible when the model uses them; on-demand does not exist for MCP servers (41K tokens/turn for `jira-mcp`).
 
 ## Model
 
 - **Tier**: `placeable` (skills, MCP servers) or `environment` (`BUILTIN_TOOL_CATEGORIES` + MCP servers with `builtin: true`). Server-decided; users cannot move items across tiers.
-- **Key**: placements are keyed `kind:name` (`skill:kuiper-conventions`, `mcp:kuiper-jira-mcp`), **never** `Skill.id`. `skill_discovery._stable_id` hashes the install path, so a reinstall to another tier or a registry update changes the id and would orphan every placement. Name is already the tier-shadowing key, so a placement follows the winning copy. The kind prefix prevents `skill:shell`/`mcp:shell` collisions.
+- **Key**: placements are keyed `kind:name` (`skill:team-conventions`, `mcp:jira-mcp`), **never** `Skill.id`. `skill_discovery._stable_id` hashes the install path, so a reinstall to another tier or a registry update changes the id and would orphan every placement. Name is already the tier-shadowing key, so a placement follows the winning copy. The kind prefix prevents `skill:shell`/`mcp:shell` collisions.
 - **Placement**: `always | ondemand | off | null(inherit)` per layer.
 - **Layers**, first-set-wins: `conversation → project → user → default`. Default: discoverable skill ⇒ `ondemand`; user-selectable ⇒ `off`; MCP ⇒ `always`.
 - **Conversation layer homes**: the chat record when one exists; client tab state for ephemeral chats. The resolver drops keys not installed in the current project; the view-model reports them as *not installed here* (a made-global chat must not silently lose a skill).
