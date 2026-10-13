@@ -14,27 +14,50 @@
 
 ---
 
-Ziya is a **self-hosted, local-first AI harness for technical work** — an open-source, bring-your-own-model workbench for coding, systems analysis, architecture, operations, and research. You bring the model — AWS Bedrock, Anthropic Claude, OpenAI, Google Gemini, z.ai GLM, or local models via Ollama and any OpenAI-compatible endpoint — and Ziya points it at your *real* material: your files, your documents, packet captures, and live systems through MCP tools. It turns what comes back into things you can use and keep — validated code diffs you apply with a click, editable diagrams and data visualizations rendered inline, and conversations that persist and stay searchable instead of evaporating. Everything runs on your own machine: no account, no telemetry, no data leaving your control. MIT licensed.
+**At a glance**
 
-This is a first-class harness, not a wrapper and not a toy. It's the product of several thousand engineering hours over two years, used every day by hundreds of engineers at a major technology company. Behind the click-to-apply diffs is a patch-application engine hardened against years of real-world model output. Behind the tool calls is a security model that assumes the model will occasionally lie to you — MCP tool results are cryptographically signed and verified, and fabricated tool output is detected and rejected before it can poison a session. Memory and session data can be encrypted at rest through a pluggable enterprise security layer. Ziya is mature, heavily exercised, stable, and secure — built to be trusted with your actual work, in environments that take that word seriously. For the workflows it targets, nothing else does the job as well.
+- **Run ten things at once and lose none of them.** Keep many conversations and background jobs going in parallel. Ziya tells you when one is ready for input, and switching back costs nothing because each thread keeps its own files, model and history.
+- **Point it at a repo and ask for a change.** You get validated diffs to review, apply with a click, and undo if they're wrong. Your editor stays your editor.
+- **Ask a structural question, get a picture.** Dependency graphs, sequence and state diagrams, charts, typeset math and packet layouts render inline, and broken diagram syntax from the model is repaired before you see it.
+- **Drop in the real material.** PDFs (including very large ones), Word, Excel, PowerPoint, images and packet captures go straight into context.
+- **Keep the conversation.** Threads persist, fork and resume weeks later, and Ziya tells the model what changed in the project while you were away.
+- **Use any model, and switch mid-thread.** Bedrock, Anthropic, OpenAI, Gemini, z.ai, or a local model through Ollama or LM Studio with no cloud account at all.
+- **Trust what the tools report.** Tool results are signed and fabricated tool output is rejected. Safe work runs without prompts, and anything riskier needs a signed approval the model can't produce.
 
-**Why it's unlike anything you'll compare it to.** Local AI tools split into two camps, and neither can do the other's job. Chat UIs (Open WebUI, LibreChat, Jan, Msty) give you a browser interface and bring-your-own-model — but treat your machine as read-only: you upload files and chat about them, and they can show you a change but can't make one. Coding agents (Aider, Cline, Cursor) genuinely edit files and undo via git — but they live inside a terminal or an editor, one thread at a time, with no shared visual workspace and no memory once you move on. **Ziya does both jobs at once:** a browser *and* CLI workspace that acts on your real material, keeps everything you do, and runs many parallel threads you can set down and pick back up weeks later. Everything you expect from a first-class chat interface and everything you expect from a capable coding agent, in one local harness.
+`pip install ziya`, then run `ziya` in your project and open `localhost:6969`. [Quick start](#quick-start) · [Coming from another tool?](#coming-from-another-tool) · [Design Philosophy](Docs/DesignPhilosophy.md)
 
-Ziya began as a way to put a usable frontend on AWS Bedrock and stop fighting the AI tools of the time — ones that auto-compacted context that mattered, made copy-pasting diffs the primary interaction, and treated visual output as a niche concern. Two years of development later, it is something more particular: a substrate for working out how agents, tasks, memory, and context curation should actually feel from the user's side. (Contributors are listed in [CONTRIBUTORS.md](CONTRIBUTORS.md).)
+---
 
-It does a particularly good job at technical visualization — questions that want a dependency graph, a queueing chart, a typeset derivation, a packet frame layout, or a state machine come back rendered inline rather than described in prose. And it scales to large amounts of retained state, so conversation histories don't have to be discarded: they can be back-referenced, searched over, and re-included contextually at whatever scope makes sense. Most chat-with-AI tools assume the conversation is ephemeral; here it is the durable artifact.
+## Why Ziya
 
-Ziya has its own UX paradigm, refined over two years toward internal consistency rather than assembled from other tools' conventions. Because it doesn't imitate an IDE plugin, a chat window, or a wizard-led plan/act flow, it leaves room to reason about how an interaction *should* feel rather than how an existing UI has trained you to expect it to feel — which also makes it a low-friction platform for experimentation. Using it as a substrate for your own experiments is a first-class use case.
+Most AI tools make you pick one of two halves. A chat UI gives you a comfortable browser window and any model you like, but it only sees the files you upload, and it can show you a change without being able to make it. A coding agent can edit your files, but it lives in one terminal or one editor sidebar, runs one thread at a time, and forgets everything when you close it.
 
-The interaction model is built for multitasking. Multiple windows can connect to the same session with different files in context or different models loaded; conversations can move between project scopes, share global context, or stay strictly local; background tasks spawn easily, so tributary thoughts can be pursued in the moment instead of cached and lost. None of it is imposed — Ziya supports users who build deep project, folder, and context hierarchies and run it like a knowledge-management system just as comfortably as users juggling many windows and several unfinished threads at once.
+**Ziya is both halves in one local tool.** It reads your project straight from disk, proposes changes as diffs you apply with a click, runs shell tools, draws the answer as a diagram when a diagram is the answer, and keeps every conversation so you can pick it back up next month. It runs on your machine with your model and your credentials. No account, no telemetry, MIT licensed.
 
-Because it is an entirely local client, real care has gone into cache efficiency and handling long cycle times — much of which only becomes visible at scale: thousands of long conversations retained across dozens of projects, very deep directory trees, 10,000-page PDFs, or large packet captures in play.
+**It's built for how you actually work: on many things at once.** If your day is a dozen threads in flight, a migration in one, a production investigation in another and a design doc in a third, Ziya is organised around that instead of fighting it. Background work tells you when it's ready, nothing you set aside gets lost, and a thread you haven't touched in months picks up where it left off. See [Working on a dozen things at once](#working-on-a-dozen-things-at-once).
 
-You point it at your material — a codebase, a stack of documents, a live system — it runs locally, and you talk to it in a browser or a terminal. It is not an editor and has no plans to become one; you keep whatever editor you already have. Think of it as the surface next to your editor where analysis, architecture work, diff review, visual debugging, and multi-agent work happen — the parts of working with AI that don't fit cleanly inside an IDE.
+**It has been used hard.** Two years and several thousand hours of development, and hundreds of engineers at a large technology company use it every day. The diff engine is hardened against the patches models actually write, including miscounted hunk headers, drifted context and half-applied changes, so click-to-apply works on real output and not just on tidy examples. The tool layer assumes the model will sometimes make things up: every tool result is cryptographically signed, and when the model pretends it ran a tool, Ziya catches it and rejects the output before it can poison the rest of the session.
 
-Self-hosted, MIT licensed, no telemetry, no account. `pip install ziya` and set credentials for AWS Bedrock, Anthropic, OpenAI, Google Gemini, z.ai, or any OpenAI-compatible or local (Ollama) endpoint.
+**It's built for big, long, messy work.** A 10,000-page PDF, a very deep repository or a large packet capture is normal input. Open several windows on the same conversation, each with its own files in context or its own model answering. Send a long job to the background, keep working, and get notified when it's done. Mute a turn that went nowhere and it stops costing tokens without disappearing. A hundred-turn session stays coherent because nothing is summarised away behind your back.
 
-For the reasoning behind the choices the project makes, [Design Philosophy](Docs/DesignPhilosophy.md) is more useful than the feature list below for deciding whether Ziya matches how you think. Much of what it does carefully today is scaffolding around things future models will eventually do on their own — the *On the Bitter Lesson* section covers why building that scaffolding is still worthwhile in the meantime.
+**It stays out of your way.** It isn't an editor and doesn't want to be one. Keep the editor you have, and use Ziya next to it for the work that doesn't fit in a sidebar: architecture, long investigations, reviewing diffs, visual debugging, and reading the documents and captures that explain the code. Safe operations run without prompting, so the few approval requests you do see are worth reading.
+
+**It's a good base for experiments.** The interface wasn't copied from an IDE plugin, a chat window or a plan/act wizard. It was designed for this kind of work over two years. That makes Ziya a practical base for trying your own ideas about agents, memory and context curation. Providers, MCP servers, skills and plugins all plug in without forking the core.
+
+If you want to know whether Ziya fits the way you think, [Design Philosophy](Docs/DesignPhilosophy.md) will tell you more than the feature list. It also explains why this scaffolding is worth building even though future models will absorb some of it (*On the Bitter Lesson*). Ziya started as a usable front end for AWS Bedrock. Contributors are listed in [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
+
+---
+
+## Working on a dozen things at once
+
+Ziya doesn't make you choose one way to organise parallel work. Open a new browser window for each project, or for each thread inside a project. Run a separate server per project if you want them fully apart. Or keep everything in one view: the thread you're working in up front, with your other active threads and background tasks visible beside it, so you always know what's still running and what you can go back to.
+
+So you can follow a thought as far as it goes. When a second idea pulls you in another direction, start that one too, and then a third, and keep stacking them. Each runs on its own. You get a green check mark when one finishes or needs more input from you, and the mark stays until you look at it. Leave a side task running, forget about the whole project for two months, and when you come back the marks are still there: here's what Ziya finished for you since your last input, and here's what's waiting for a decision.
+
+Nobody follows every branch, and Ziya doesn't expect you to. It keeps track of the roads you don't take. When a conversation forks into sub-tasks, or you set something aside, it records that branch in a background task tree, so you have a backlog to go back through and pick up the things you forgot about.
+
+Coming back months later works because Ziya tracks the files each conversation works with: the ones in its context, plus every file it writes. A small file the conversation changes joins its context automatically; a large one is tracked without its content, and the model is told when it changes on disk. Reopen an old thread and the model is told how long it's been, which of those files you've changed in the meantime, and so whether the changes you talked about were applied, without rewriting any of the conversation. (A file the conversation neither holds nor wrote isn't tracked; add it to context if you want the model to notice what happens to it.) It can also search your other conversations and your persistent memory, so if you worked out a better version of an idea somewhere else and it never made it into this code, that work is still within reach.
 
 ---
 
@@ -86,6 +109,14 @@ The full capability reference, if you want it, is in [Feature Inventory](Docs/Fe
 ## What it deliberately isn't
 Ziya makes deliberate choices, and they aren't the choices everyone would make. It doesn't follow the dominant UX patterns — IDE plugin, chat-with-tools, wizard-led plan/act — because the frontend is part of the research, not a thin shell over the backend. It rewards power users: the depth is there, but the UI trusts you to reach for it rather than walking you through a guided onboarding, and some of the strongest capabilities (the multi-agent system, the full visualization range) reveal themselves as you use them rather than announcing themselves cold. If you want a locked-down, hand-holding consumer experience, that is not what this is, on purpose.
 
+In concrete terms:
+
+- **Not an editor or IDE plugin.** There's no inline autocomplete and no in-editor editing. Changes arrive as diffs you review, next to whatever editor you already use.
+- **One user, on your own machine.** There are no accounts, roles or shared workspaces. The local API trusts the process that runs it, and access control is left to plugins.
+- **No automatic context compaction.** You decide what leaves context by muting turns, forking, or dropping files. Nothing gets summarised away without you.
+- **No kernel sandbox.** Shell commands run as you, under process-level guards (an injection-resistant allowlist, a write-policy gate, signed escalation), not OS-level isolation.
+- **No approval prompts for safe work.** That's deliberate, for the reasons given above.
+
 The project keeps an honest running account of what's still being actively refined — cross-session memory and the autonomous-vs-guided balance chief among them — in the [What I'd Do Differently](Docs/DesignPhilosophy.md#what-id-do-differently) section of the philosophy doc. It's there because a mature project can afford to be candid about its own edges, not because the edges are load-bearing.
 
 ---
@@ -127,6 +158,13 @@ export ANTHROPIC_API_KEY=...
 > documents to the model. Opt in only by naming it explicitly:
 > `--model muse-spark-1.2-contributor`.
 
+**No cloud account?** Run a model locally with Ollama, LM Studio or llama.cpp. Ziya finds any server on the usual loopback ports and lists its models in the picker:
+
+```bash
+ollama pull qwen2.5-coder:7b
+ziya --endpoint local
+```
+
 Then point it at a project and start it:
 
 ```bash
@@ -150,3 +188,16 @@ git diff main | ziya review            # pipe anything for review
 ```
 
 For more detail (model selection, configuration, troubleshooting), see [Getting Started](Docs/NewUser.md).
+
+---
+
+## Coming from another tool?
+
+This table only describes Ziya. It isn't a claim about what other tools lack.
+
+| If you use… | You'll recognise | What works differently in Ziya |
+|---|---|---|
+| **A self-hosted chat UI** (Open WebUI, LibreChat, Jan) | Browser chat, bring-your-own-model, MCP tools, file attachments | Ziya reads your project straight from disk instead of uploads, changes it through reviewable diffs, runs shell tools under an allowlist, and draws diagrams inline |
+| **A terminal coding agent** (Claude Code, Aider, Codex CLI) | `ziya chat`, `ziya ask`, stdin piping, `ziya review --staged` | The same backend also has a browser workspace. Many conversations run at once, you mute individual turns instead of relying on auto-compaction, and history stays searchable indefinitely |
+| **An IDE agent** (Cursor, Cline) | Agentic multi-file edits, diff review before apply | Ziya isn't an editor and has no autocomplete. Use it next to your editor for work that doesn't fit in a sidebar: architecture, long investigations, documents, packet captures, visual debugging |
+| **A hosted assistant** (ChatGPT, Claude.ai) | Rendered artifacts, projects, long threads | Ziya runs locally against your real files with your own credentials, with no account and no telemetry, and any provider or local model can answer the next turn |
