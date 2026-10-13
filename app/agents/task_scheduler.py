@@ -307,6 +307,49 @@ async def _fire_one(target: _ScheduledCard) -> None:
             _seed(child)
     _seed(target.body_root)
 
+    # Record what this fire executes, the same way the interactive launch
+    # path does (app/api/task_cards.py).  The scheduler re-reads the card
+    # on every tick, so a fire always runs the CURRENT definition — but
+    # without a snapshot nothing on the run says which definition that
+    # was, and an operator diagnosing a bad night cannot tell whether the
+    # card they are reading is the one that ran.  The snapshot is also
+    # what resume-from-block walks (TaskRunStorage reads
+    # ``card_snapshot.root``), so its absence made every scheduled run
+    # un-resumable.  ``body_root``, not ``card.root``: block_states were
+    # seeded from the resolved body above, and the snapshot must describe
+    # the same tree those ids belong to.
+    try:
+        run_storage.set_card_snapshot(run.id, {
+            "name": card.name if card is not None else target.card_name,
+            "description": getattr(card, "description", "") or "",
+            "version": getattr(card, "version", None) if card is not None else None,
+            "root": target.body_root.model_dump(),
+            # Marks the tree as the schedule's resolved body so a reader
+            # comparing it against the stored card knows why the schedule
+            # block itself is absent.
+            "schedule_block_id": target.block.id,
+        })
+    except Exception as e:  # noqa: BLE001 — audit record must never block a fire
+        logger.warning(f"⏰ Scheduler: card_snapshot capture failed: {e}")
+    try:
+        from ..utils.permissions_snapshot import build_permissions_snapshot
+        from ..storage.projects import ProjectStorage as _PS
+        _proj = _PS(get_ziya_home()).get(target.project_id)
+        _deck = getattr(_proj.settings, "taskScope", None) if _proj else None
+        from ..models.task_card import merge_scopes
+        run_storage.set_permissions_snapshot(run.id, build_permissions_snapshot(
+            # project_root=None mirrors the ExecutionContext built in _go()
+            # below; the snapshot records what the run was actually granted.
+            root_block=target.body_root, project_root=None,
+            deck_scope=_deck,
+            # The schedule block is not in body_root, but _go() seeds its
+            # scope onto the stack, so it IS an ancestor layer at run time.
+            # Fold it into the card layer so the snapshot matches the grant.
+            card_scope=merge_scopes(card_scope, target.block.scope),
+        ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"⏰ Scheduler: permissions_snapshot capture failed: {e}")
+
     # Update schedule_state.json: bump fires_so_far, append run_id,
     # write the next_fire_at projected from "now".
     state = _read_state(target.project_id)
