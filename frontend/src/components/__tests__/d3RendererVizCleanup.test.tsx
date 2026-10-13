@@ -24,14 +24,23 @@ import { render, waitFor } from '@testing-library/react';
 import { D3Renderer } from '../D3Renderer';
 
 const plotlyMock: any = {
-    newPlot: jest.fn().mockImplementation(async (div: HTMLElement) => {
-        div.appendChild(document.createElement('canvas'));
-    }),
+    newPlot: jest.fn(),
     purge: jest.fn(),
-    relayout: jest.fn().mockResolvedValue(undefined),
-    Plots: { resize: jest.fn().mockResolvedValue(undefined) },
-    toImage: jest.fn().mockResolvedValue('data:image/png;base64,'),
+    relayout: jest.fn(),
+    Plots: { resize: jest.fn() },
+    toImage: jest.fn(),
 };
+
+// CRA's jest config has resetMocks: true, which strips implementations from
+// module-level jest.fn()s before every test, so they are (re)installed here.
+beforeEach(() => {
+    plotlyMock.newPlot.mockImplementation(async (div: HTMLElement) => {
+        div.appendChild(document.createElement('canvas'));
+    });
+    plotlyMock.relayout.mockResolvedValue(undefined);
+    plotlyMock.Plots.resize.mockResolvedValue(undefined);
+    plotlyMock.toImage.mockResolvedValue('data:image/png;base64,');
+});
 
 beforeAll(() => {
     (global as any).ResizeObserver = class {
