@@ -11,6 +11,7 @@
  * inside the lane.
  */
 import React, { useState } from 'react';
+import { theme } from 'antd';
 import type { BenchItemView } from '../../hooks/useBench';
 import { DRAG_MIME, DropIntent, moveOptions } from './laneDnd';
 import { DeltaChip } from './DeltaChip';
@@ -30,6 +31,11 @@ export interface CapabilityCardProps {
 
 export const CapabilityCard: React.FC<CapabilityCardProps> = ({ item, onIntent, selected = false, onSelect, pickedUp = false, delta }) => {
     const [menuOpen, setMenuOpen] = useState(false);
+    // The menu floats over other cards, so it needs an opaque surface.  Taken
+    // from antd's tokens (they follow the ConfigProvider algorithm): the old
+    // 'var(--ant-color-bg-elevated, Canvas)' was never defined (no cssVar), and
+    // 'Canvas' stays white without a document color-scheme -- white on white.
+    const { token } = theme.useToken();
     const v = item.atLens;
     // Permanent: an MCP server with some tools withheld says so on its face.
     const total = Number(item.health?.tool_count ?? 0);
@@ -127,8 +133,9 @@ export const CapabilityCard: React.FC<CapabilityCardProps> = ({ item, onIntent, 
                     style={{
                         position: 'absolute', right: 4, top: '100%', zIndex: 10, marginTop: 2,
                         display: 'flex', flexDirection: 'column', minWidth: 170,
-                        border: '1px solid var(--mockup-border, rgba(127,127,127,0.35))',
-                        borderRadius: 6, padding: 4, background: 'var(--ant-color-bg-elevated, Canvas)',
+                        border: '1px solid ' + token.colorBorderSecondary,
+                        borderRadius: 6, padding: 4, background: token.colorBgElevated,
+                        color: token.colorText, boxShadow: token.boxShadowSecondary,
                     }}
                 >
                     {moveOptions(item).map(o => (
