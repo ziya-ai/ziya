@@ -349,10 +349,11 @@ class ShadowControlTool(BaseMCPTool):
     description: str = (
         "[DIRECT] Acquire a line-control lease on a `ziya shadow` session so you can "
         "run commands in it with shadow_send. Line mode only: one command at a "
-        "time, output read from the journal. On an interactive session the human "
-        "must grant the lease with a keystroke at the terminal (the response says "
-        "pending_grant=true until they do); a headless (spawned) session grants "
-        "implicitly. The lease is kept alive automatically until you shadow_release "
+        "time, output read from the journal. The lease is granted on acquire when "
+        "the session was started with --allow-control (its ceiling is the human's "
+        "grant; the terminal announces that you took control and the human can "
+        "revoke it); a session with no ceiling refuses with control_disabled. "
+        "The lease is kept alive automatically until you shadow_release "
         "or this process ends. Default restriction 'gated' — opt into 'unrestricted' "
         "only when you truly need it. " + _UNTRUSTED_NOTE
     )
@@ -379,9 +380,7 @@ class ShadowControlTool(BaseMCPTool):
                 _LEASES[key] = {"lease_id": resp["lease_id"], "keepalive": ka,
                                 "session_id": entry.session_id}
             return {"ok": True, "session_id": entry.session_id, **resp,
-                    "note": ("The human must grant this at the terminal before "
-                             "shadow_send will work." if resp.get("pending_grant")
-                             else "Lease active — use shadow_send to run commands.")}
+                    "note": "Lease active — use shadow_send to run commands."}
         except Exception as e:  # noqa: BLE001
             return _error(e)
 

@@ -24,7 +24,7 @@ def _acquire_and_grant(core, fe):
     from app.shadow import client
     resp = client.control_acquire(core.entry.session_id, "conv-1", restriction="gated",
                                   policy="builtin")
-    fe.handle_keys(b"g")
+    assert resp["granted"] is True   # the ceiling is the grant; no keystroke
     return resp["lease_id"]
 
 

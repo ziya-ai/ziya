@@ -67,10 +67,9 @@ def test_tint_set_on_start_deepened_on_grant_reset_on_exit(tmp_path):
         from app.shadow import client, registry
         sid = registry.list_sessions()[0].session_id
         client.control_acquire(sid, "conv-tint", restriction="gated", policy="builtin")
-        _read_until(fd, b"[g] allow it")
-        os.write(fd, b"g")
-        out = _read_until(fd, pty_host.tint_sequence(True))
-        assert pty_host.tint_sequence(True) in out           # deeper tint + cursor on grant
+        out = _read_until(fd, b"now has control")             # announced, not asked
+        out += _read_until(fd, pty_host.tint_sequence(True), 3.0)
+        assert pty_host.tint_sequence(True) in out           # deeper tint + cursor on lease
 
         os.write(fd, b"\x18\x1ar")                           # menu → revoke
         out = _read_until(fd, b"control lease ended")

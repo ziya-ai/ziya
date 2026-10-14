@@ -1,8 +1,9 @@
 """Chat-side line-control tools driving a real headless session end to end.
 
-A headless session grants the lease implicitly (§6.2), so the whole
-shadow_control -> shadow_send -> shadow_release loop is exercisable without
-a live terminal grant.  These run a real ``sh`` child in a PTY.
+Every session grants the lease on acquire — the session's control ceiling
+is the human's grant (§6.1) — so the whole shadow_control -> shadow_send ->
+shadow_release loop needs no terminal keystroke.  These run a real ``sh``
+child in a PTY.
 """
 import asyncio
 import os
@@ -72,14 +73,15 @@ def test_control_send_release_loop(spawned):
     assert out2["ok"] is False and out2["error"] == "no_lease"
 
 
-def test_pending_grant_steers_model_away_from_shadow_wait(home):
-    """Interactive session, nobody presses g: shadow_control's note and
-    shadow_send's lease_pending error must both name the terminal and tell
-    the model NOT to shadow_wait for a grant (the d2f846 wedge)."""
+def test_interactive_session_grants_on_acquire(home):
+    """An interactive session started with --allow-control: the ceiling is
+    the grant, so shadow_control is active at once (no pending state for the
+    model to wait on) and shadow_send runs without anyone pressing a key."""
     import threading
     from app.shadow.pty_host import ShadowCore
     from app.mcp.tools import shadow_tools
-    core = ShadowCore(["sh", "-c", "read x"], label="iv", control_ceiling="gated")
+    core = ShadowCore(["sh", "-c", "while read l; do eval \"$l\"; done"],
+                      label="iv", control_ceiling="gated")
     core.spawn()
     t = threading.Thread(target=core.run, kwargs={"stdin_fd": None}, daemon=True)
     t.start()
@@ -88,16 +90,12 @@ def test_pending_grant_steers_model_away_from_shadow_wait(home):
         ctl, send, _ = _tools()
         sid = core.entry.session_id
         acq = _run(ctl.execute(session=sid, restriction="gated", conversation_id=CONV))
-        assert acq["ok"] and acq["pending_grant"] is True
-        assert acq["terminal"]["started_at"] == core.entry.started_at
-        assert "do NOT shadow_wait" in acq["note"] and sid in acq["note"]
-        out = _run(send.execute(session=sid, line="ls", conversation_id=CONV))
-        assert out["ok"] is False and out["error"] == "lease_pending"
-        assert core.entry.started_at in out["message"]
-        assert "do NOT shadow_wait" in out["next"] and "shadow_list" in out["next"]
-        lst = _run(shadow_tools.ShadowListTool().execute())
-        row = next(r for r in lst["sessions"] if r["session_id"] == sid)
-        assert row["lease"]["granted"] is False and "terminal" in row
+        assert acq["ok"] and acq["granted"] is True
+        assert "pending_grant" not in acq
+        assert acq["note"] == "Lease active — use shadow_send to run commands."
+        out = _run(send.execute(session=sid, line="echo no-keystroke-needed", conversation_id=CONV))
+        assert out["ok"], out
+        assert "no-keystroke-needed" in out["transcript"]
     finally:
         core.terminate_child()
         t.join(timeout=5)
@@ -114,7 +112,7 @@ def test_send_without_control_is_refused(spawned):
 def test_gated_lease_refuses_mutating_until_confirmed(spawned, home):
     """Under a gated lease with a real (named) policy, a read-only command
     flows but a mutating one (redirection, off-list) is refused with
-    confirm_required — the terminal-grant path is phase 4, so here it must
+    confirm_required — a headless session has nobody to ask, so here it must
     refuse rather than run.  (gated + policy 'none' is degenerate: 'none'
     allows everything, so nothing is ever classified mutating — §6.3.)"""
     import json

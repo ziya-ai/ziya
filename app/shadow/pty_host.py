@@ -464,9 +464,8 @@ class InteractiveFrontend:
         self._mode = None
         self._compose_purpose = ""
         self._compose_buf: List[str] = []
-        # What the last grant / confirm banner named, so the keystroke that
-        # answers it cannot be redirected to a request that arrived later.
-        self._grant_lease_id: Optional[str] = None
+        # What the last confirm banner named, so the keystroke that answers
+        # it cannot be redirected to a command that arrived later.
         self._confirm_id: Optional[str] = None
         core.frontend = self
         self.titles = TitleRewriter(self._title_prefix())
@@ -524,9 +523,9 @@ class InteractiveFrontend:
     # -- input ------------------------------------------------------------------
 
     def handle_keys(self, data: bytes) -> None:
-        if self._mode in ("grant", "confirm"):
-            mode, self._mode = self._mode, None
-            (self._grant_key if mode == "grant" else self._confirm_key)(data[:1])
+        if self._mode == "confirm":
+            self._mode = None
+            self._confirm_key(data[:1])
             if len(data) > 1:
                 self.handle_keys(data[1:])
             return
@@ -572,8 +571,7 @@ class InteractiveFrontend:
         bound = f"chat {str(conv)[:8]}" if conv else "no chat attached"
         lease = self.core.server.current_lease() if self.core.server else None
         if lease is not None:
-            state = ("active, approve-all" if lease.granted and lease.auto_approve
-                     else "active" if lease.granted else "pending grant")
+            state = "active, approve-all" if lease.auto_approve else "active"
             ctl = (f"control: chat {lease.conversation_id[:8]} ({lease.restriction}, "
                    f"{lease.policy_set}, {state}) · [r] revoke control · ")
         else:
@@ -611,8 +609,8 @@ class InteractiveFrontend:
                        and self.core.server.revoke_lease())
             self.overlay(f"control ceiling: {e.control_ceiling}"
                          + (" — live lease revoked" if revoked else "")
-                         + ("  (a chat may now request control with shadow_control; "
-                            "you grant with [g])" if e.control_ceiling != "none" else ""))
+                         + ("  (a chat may now take control with shadow_control; "
+                            "you will be told when one does)" if e.control_ceiling != "none" else ""))
             self.refresh_title()
         elif key == b"p" and self._shell_kind and not prompt_marker.is_installed(self._shell_kind):
             try:
@@ -635,33 +633,22 @@ class InteractiveFrontend:
     # -- control grant / gated confirm (§6.1, §6.3) ----------------------------------
 
     def control_event(self, lease) -> None:
-        """Server callback: a lease was requested (pending) or ended (None)."""
+        """Server callback: a lease was taken (announce it) or ended (None).
+
+        No keystroke is asked for.  The session's control ceiling is the
+        grant (see ShadowSocketServer._op_control_acquire); the human is
+        told who took control and how to take it back.
+        """
         if lease is None:
             self.overlay("control lease ended")
             self.refresh_tint()
             return
-        if lease.granted:
-            return  # implicit grant (headless) never reaches a frontend
         from app.shadow.sock_server import ShadowSocketServer
-        self.overlay(f"chat {lease.conversation_id[:8]} wants to type commands into this "
-                     f"terminal ({lease.restriction}: "
+        self.overlay(f"chat {lease.conversation_id[:8]} now has control of this terminal "
+                     f"({lease.restriction}: "
                      f"{ShadowSocketServer.describe_restriction(lease.restriction)}; "
-                     f"allowlist: {lease.policy_set})")
-        self.overlay("  [g] allow it   [n] refuse   — you can revoke any time: C-x C-z, r")
-        self._grant_lease_id = lease.lease_id
-        self._mode = "grant"
-
-    def _grant_key(self, key: bytes) -> None:
-        srv = self.core.server
-        expected, self._grant_lease_id = self._grant_lease_id, None
-        if key == b"g" and srv is not None and srv.grant_active_lease(expected):
-            self.overlay("control granted — this chat can now run commands here "
-                         "(C-x C-z, r to revoke)")
-            self.refresh_tint()
-        else:
-            if srv is not None:
-                srv.revoke_lease()
-            self.overlay("control request denied")
+                     f"allowlist: {lease.policy_set}) — C-x C-z, r to revoke")
+        self.refresh_tint()
 
     def confirm_request(self, text: str, reason: str, conversation_id: str,
                         confirm_id: Optional[str] = None) -> None:

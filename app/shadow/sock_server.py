@@ -439,11 +439,15 @@ class ShadowSocketServer:
     def _op_control_acquire(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Request a control lease (§6.1).  Line mode only in this build.
 
-        The lease is granted immediately for a headless session (the
-        spawning conversation is the authority, §6.2); for an interactive
-        session it is created *pending* and the human grants it with a
-        keystroke at the terminal (a later phase wires that key).  Screen
-        mode is refused until phase 4.
+        The lease is granted on acquire.  The session's control ceiling is
+        the human's grant: it is set by the person at this terminal
+        (``--allow-control`` at startup, or the [c] menu key), and a
+        ceiling of ``none`` refuses every request below.  A separate
+        per-lease keystroke used to follow; it asked the same human the
+        same question a second time, and under ``gated`` each off-list
+        command then asked a third.  The frontend announces the new lease
+        instead (control_event) and [r] revokes it.  Screen mode is
+        refused until phase 4.
         """
         if self.entry.control_ceiling == "none":
             return _err("control_disabled", "session was not started with --allow-control")
@@ -490,7 +494,7 @@ class ShadowSocketServer:
         with self._lease_lock:
             lease, err = self._leases.acquire(
                 conv, "line", restriction, policy_set, self.entry.control_ceiling,
-                implicit_grant=bool(self.entry.headless))
+                implicit_grant=True)
             if err is not None:
                 return _err(err, {
                     "lease_held": "another conversation holds the control lease",
@@ -507,8 +511,7 @@ class ShadowSocketServer:
                 pass
         return {"lease_id": lease.lease_id, "restriction": lease.restriction,
                 "mode": "line", "policy": policy_set, "granted": lease.granted,
-                "heartbeat_timeout_s": _HEARTBEAT_TIMEOUT_S,
-                "pending_grant": (not lease.granted)}
+                "heartbeat_timeout_s": _HEARTBEAT_TIMEOUT_S}
 
     def _op_control_heartbeat(self, req: Dict[str, Any]) -> Dict[str, Any]:
         lease_id = req.get("lease_id")
@@ -554,28 +557,6 @@ class ShadowSocketServer:
                           "mode": ls.mode, "restriction": ls.restriction,
                           "policy": ls.policy_set, "granted": ls.granted,
                           "paused": ls.paused}}
-
-    def grant_active_lease(self, expected_lease_id: Optional[str] = None) -> Optional[str]:
-        """Human grant at the terminal (called by the frontend keystroke).
-
-        Returns the granted lease_id, or None if there is nothing pending.
-        Kept as a method (not a socket op) so a lease can only be granted
-        from the physical terminal, never over the socket (§6.1 authority).
-
-        ``expected_lease_id`` is the lease the banner named; a re-acquire
-        (possibly looser) that superseded it between banner and keystroke
-        is not what the human granted, so it stays pending.
-        """
-        with self._lease_lock:
-            ls = self._leases.current(_now())
-            if ls is None:
-                return None
-            if expected_lease_id is not None and ls.lease_id != expected_lease_id:
-                return None
-            self._leases.grant(ls.lease_id)
-        self.journal.meta("control_grant", {"lease_ref": _lease_ref(ls.lease_id),
-                                             "conversation_id": ls.conversation_id})
-        return ls.lease_id
 
     def revoke_lease(self) -> bool:
         """Shadow-side revoke (menu key)."""
