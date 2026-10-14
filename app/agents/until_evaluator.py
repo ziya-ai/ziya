@@ -34,6 +34,7 @@ from ..utils.self_improve import (
     render_data_parts_for_judge,
     render_outputs_for_judge,
     render_stages_for_judge,
+    render_text_parts_for_judge,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,8 +65,9 @@ class UntilVerdict:
 _SYSTEM_PROMPT = """\
 You are a binary classifier.  You will receive a CONDITION and evidence
 about one pass of work: the agent's SUMMARY, the per-stage outcomes
-(STAGES), the structured DATA the pass emitted, and the OUTPUT files it
-named.  Decide whether the condition is true.
+(STAGES), the structured DATA the pass emitted, the TEXT PARTS it
+emitted as deliverables, and the OUTPUT files it named.  Decide whether
+the condition is true.
 
 Rules of evidence:
 - The SUMMARY is the agent's CLAIM about what happened, not a
@@ -73,8 +75,14 @@ Rules of evidence:
   condition names something checkable.
 - A stage marked NO TOOL CALLS executed nothing; a claim of building,
   running, rendering or verifying in such a stage is unsupported.
-- If the condition refers to a count, a status, a report or a file, it
-  is true only if DATA or OUTPUTS shows it.  Absent evidence means no.
+- If the condition refers to a count, a status, a report, a list or a
+  file, it is true only if DATA, TEXT PARTS or OUTPUTS shows it.  Absent
+  evidence means no.  A list or report the condition asks for may arrive
+  as a TEXT PART; judge its content, do not require it to be DATA.
+- A condition phrased as a STATE ("is committed", "is listed", "exists")
+  is about the state at the end of the pass, not about what the pass
+  did.  A pass that changed nothing satisfies it if the evidence shows
+  the state already holds.
 
 Reply format, exactly two lines:
   line 1: the single token "yes" or "no".  No punctuation.
@@ -99,6 +107,7 @@ def _build_user_message(condition: str, artifact: Artifact) -> str:
         f"KEY DECISIONS:\n{decisions or '(none)'}\n\n"
         f"STAGES:\n{render_stages_for_judge(stages)}\n\n"
         f"DATA (emitted by the pass):\n{render_data_parts_for_judge(outputs)}\n\n"
+        f"TEXT PARTS (emitted by the pass):\n{render_text_parts_for_judge(outputs)}\n\n"
         f"OUTPUTS:\n{render_outputs_for_judge(outputs)}\n\n"
         f"Reply yes or no on the first line, then one sentence of reason."
     )
