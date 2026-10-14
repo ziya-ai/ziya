@@ -29,8 +29,16 @@ Layout:
 
 Not offered at any permission level (design/git-tool.md §Op set): reset,
 restore of the worktree, clean, rm, mv, rebase, merge, cherry-pick, branch or
-tag deletion, force push.  Those destroy uncommitted work or rewrite history;
-they stay behind the shell's signed bare-``git`` grant.
+tag deletion.  Those destroy uncommitted work or rewrite history; they stay
+behind the shell's signed bare-``git`` grant.
+
+Added 2026-10-13: ``commit`` with ``amend`` and ``push`` with ``force``.  Both
+rewrite history, so the tool gives them their own consent ops
+(``commit_amend`` / ``push_force``) that always ask a human, every call
+(``consent_human_only_ops``).  A forced push is a lease
+(``--force-with-lease=<ref>:<sha the plan showed>``), never a bare
+``--force``: if the remote moved since the last fetch, git refuses.  Forcing
+the remote's default branch is refused outright.
 
 ``checkout`` (added 2026-10-01) is the one consented op that CAN discard
 uncommitted work: ``checkout`` with ``paths`` rewrites those files from the
@@ -624,13 +632,32 @@ def with_provenance(message: str, model: Optional[str], enabled: bool = True) ->
     return msg + sep + line + "\n"
 
 
+def truthy(value: Any) -> bool:
+    """A boolean argument as models send it (``true``, ``"true"``, ``1``).
+
+    Shared by dispatch and the tool's consent-op hook, so the op a human is
+    asked about and the op that runs can never disagree on ``amend`` /
+    ``force``: ``bool("false")`` is True, which would ask about a plain
+    commit and then amend.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return False
+
+
 def plan_commit(
     repo: Repo, message: Any, paths: Any,
-    *, model: Optional[str] = None, provenance: bool = True,
+    *, model: Optional[str] = None, provenance: bool = True, amend: bool = False,
 ) -> Dict[str, Any]:
     # Like add, commit records existing content; the human approves the file
     # list, so the write policy is not consulted (design/scope-consent.md).
     msg = str(message or "").strip()
+    if amend:
+        return _plan_amend(repo, msg, paths, model=model, provenance=provenance)
     if not msg:
         raise GitOpError("message is required and must not be empty")
     plan: Dict[str, Any] = {"op": "commit", "branch": _current_branch(repo)}
@@ -662,9 +689,61 @@ def _commit_files(repo: Repo, paths: Any) -> Dict[str, Any]:
     }
 
 
+def _plan_amend(
+    repo: Repo, msg: str, paths: Any, *, model: Optional[str], provenance: bool,
+) -> Dict[str, Any]:
+    """``commit --amend``: replace HEAD with HEAD + the staged changes (or
+    exactly ``paths``), under ``msg`` or, when empty, HEAD's own message.
+
+    The plan names the commit being replaced and the remote branches it is
+    already on: replacing a published commit is allowed, but publishing the
+    result then needs ``push`` with ``force``, and the warning says so.
+    """
+    if not _has_head(repo):
+        raise GitOpError("nothing to amend: the repository has no commits yet")
+    meta = _run(["log", "-1", "--format=%H%x00%h%x00%P%x00%B", "HEAD"], repo.root).stdout
+    sha, short, parents, old_msg = (meta.split("\x00", 3) + ["", "", "", ""])[:4]
+    old_msg = old_msg.strip()
+    plan: Dict[str, Any] = {
+        "op": "commit", "amend": True, "branch": _current_branch(repo),
+        "replaces": {"commit": sha, "short": short,
+                     "subject": old_msg.splitlines()[0] if old_msg else ""},
+    }
+    if paths:
+        plan.update(_commit_files(repo, paths))
+    else:
+        # Nothing staged is fine: that is a message-only amend.
+        staged = [e for e in _entries(repo) if e.staged]
+        plan["files"] = _cap([e.rel or "(outside project)" for e in staged])
+        plan["partially_committed"] = _cap([e.rel for e in staged
+                                            if e.rel and e.unstaged and not e.untracked])
+    base = msg or old_msg
+    if not base:
+        raise GitOpError("message is required: the commit being amended has no message")
+    plan["message"] = with_provenance(base, model, provenance)
+    plan["message_reused"] = not msg
+    plan["trailer_added"] = plan["message"].rstrip() != base
+    if not plan["files"] and plan["message"].rstrip() == old_msg:
+        raise GitOpError("nothing to amend: nothing is staged and the message is unchanged")
+    warnings: List[str] = []
+    published = _published_on(repo, sha)
+    if published:
+        plan["replaces_published_on"] = _cap(published)
+        warnings.append(
+            f"the commit being replaced ({short}) is already on {', '.join(published[:5])}: "
+            "publishing the amended commit needs op=push with force=true")
+    if len(parents.split()) > 1:
+        warnings.append("HEAD is a merge commit; the amended commit keeps both parents")
+    if warnings:
+        plan["warning"] = "; ".join(warnings)
+    return plan
+
+
 def _record_commit(repo: Repo, plan: Dict[str, Any]) -> Dict[str, Any]:
     """Run ``git commit`` with the plan's message and file selection."""
     args = ["commit", "-F", "-", "--cleanup=strip"]
+    if plan.get("amend"):
+        args.append("--amend")
     only = plan.pop("_paths", None)
     if only:
         if len(only) > _ARG_CHUNK:
@@ -679,10 +758,10 @@ def _record_commit(repo: Repo, plan: Dict[str, Any]) -> Dict[str, Any]:
 
 def op_commit(
     repo: Repo, message: Any, paths: Any,
-    *, model: Optional[str] = None, provenance: bool = True,
+    *, model: Optional[str] = None, provenance: bool = True, amend: bool = False,
 ) -> Dict[str, Any]:
-    return _record_commit(repo, plan_commit(repo, message, paths,
-                                            model=model, provenance=provenance))
+    return _record_commit(repo, plan_commit(repo, message, paths, model=model,
+                                            provenance=provenance, amend=amend))
 
 
 # ── fixup ─────────────────────────────────────────────────────────────────
@@ -997,7 +1076,55 @@ def _valid_branch(repo: Repo, name: Any, what: str = "branch") -> str:
 
 # ── push ──────────────────────────────────────────────────────────────────
 
-def plan_push(repo: Repo, remote: Any, branch: Any, set_upstream: bool = False) -> Dict[str, Any]:
+# Fallback when the remote's HEAD is unknown locally (``origin/HEAD`` is set
+# by clone, not by ``remote add``): force push to these names is refused.
+_PROTECTED_BRANCHES = ("main", "master", "mainline", "trunk", "develop")
+
+
+def _remote_default_branch(repo: Repo, remote: str) -> Optional[str]:
+    p = _run(["symbolic-ref", "-q", "--short", f"refs/remotes/{remote}/HEAD"],
+             repo.root, check=False)
+    name = (p.stdout or "").strip()
+    prefix = remote + "/"
+    return name[len(prefix):] if name.startswith(prefix) else None
+
+
+def _plan_force(repo: Repo, plan: Dict[str, Any], tracking: str, exists: bool) -> None:
+    """Fill the force-push half of a push plan, or refuse.
+
+    The lease is the remote-tracking sha the human is shown.  git compares it
+    with the remote at push time, so a remote that moved since the last fetch
+    is a refusal, not an overwrite of commits nobody saw.
+    """
+    r, b = plan["remote"], plan["branch"]
+    plan["force"] = True
+    if not exists:
+        plan["force_needed"] = False
+        plan["force_note"] = (f"{r}/{b} is not known locally (a new branch, or never "
+                              "fetched); pushed without force.  If git rejects it, run "
+                              "op=fetch and review before forcing")
+        return
+    default = _remote_default_branch(repo, r)
+    if b == default or (default is None and b in _PROTECTED_BRANCHES):
+        raise GitOpError(f"force push to {r}/{b} refused: it is the remote's default branch")
+    lease = _run(["rev-parse", "--verify", tracking], repo.root).stdout.strip()
+    dropped = _run(["log", "--oneline", "-n", "50", f"HEAD..{tracking}"],
+                   repo.root, check=False).stdout
+    dropped_list = [ln for ln in dropped.splitlines() if ln.strip()]
+    n = int(_run(["rev-list", "--count", f"HEAD..{tracking}"], repo.root).stdout.strip() or 0)
+    plan["lease"] = {"ref": f"{r}/{b}", "expect": lease}
+    plan["discards_remote_commits"] = _cap(dropped_list)
+    plan["counts"] = {"discards_remote_commits": n}
+    plan["force_needed"] = n > 0
+    plan["_lease"] = lease
+    if n:
+        msg = (f"{n} commit(s) on {r}/{b} are not in HEAD and will be removed from the "
+               "remote")
+        plan["warning"] = f"{plan['warning']}; {msg}" if plan.get("warning") else msg
+
+
+def plan_push(repo: Repo, remote: Any, branch: Any, set_upstream: bool = False,
+              force: bool = False) -> Dict[str, Any]:
     r = str(remote or "").strip()
     remotes = _run(["remote"], repo.root).stdout.split()
     if not r:
@@ -1026,18 +1153,32 @@ def plan_push(repo: Repo, remote: Any, branch: Any, set_upstream: bool = False) 
         plan["warning"] = ("the working tree has uncommitted tracked changes that will "
                            "NOT be pushed")
         plan["uncommitted"] = _cap(dirty)
+    if force:
+        _plan_force(repo, plan, tracking, exists)
     return plan
 
 
-def op_push(repo: Repo, remote: Any, branch: Any, set_upstream: bool = False) -> Dict[str, Any]:
-    plan = plan_push(repo, remote, branch, set_upstream)
+def op_push(repo: Repo, remote: Any, branch: Any, set_upstream: bool = False,
+            force: bool = False) -> Dict[str, Any]:
+    plan = plan_push(repo, remote, branch, set_upstream, force)
     b = plan["branch"]
+    lease = plan.pop("_lease", None)
     args = ["push"]
     if plan["set_upstream"]:
         args.append("--set-upstream")
-    # Explicit refspec without '+': a non-fast-forward is rejected by git.
+    if lease:
+        # A lease on the exact sha the plan showed, never a bare --force.
+        args.append(f"--force-with-lease=refs/heads/{b}:{lease}")
+    # Explicit refspec without '+': without a lease a non-fast-forward is
+    # rejected by git.
     args += ["--", plan["remote"], f"refs/heads/{b}:refs/heads/{b}"]
-    proc = _run(args, repo.root, timeout=PUSH_TIMEOUT)
+    try:
+        proc = _run(args, repo.root, timeout=PUSH_TIMEOUT)
+    except GitOpError as exc:
+        if lease and "stale info" in exc.message:
+            exc.message += (f"  The remote moved since {plan['remote']}/{b} was last "
+                            "fetched; run op=fetch and review what would be overwritten.")
+        raise
     plan["pushed_commits"] = plan.pop("commits")
     plan["output"] = _tail(proc.stderr or proc.stdout, 800)
     return plan
@@ -1300,7 +1441,8 @@ def run_op(
             return _public(op_unstage(repo, a.get("paths")))
         if name == "commit":
             return _public(op_commit(repo, a.get("message"), a.get("paths"),
-                                     model=model, provenance=provenance))
+                                     model=model, provenance=provenance,
+                                     amend=truthy(a.get("amend"))))
         if name == "fixup":
             return _public(op_fixup(repo, a.get("target"), a.get("message"), a.get("paths"),
                                     model=model, provenance=provenance))
@@ -1312,7 +1454,7 @@ def run_op(
             return _public(op_fetch(repo, a.get("remote")))
         if name == "push":
             return _public(op_push(repo, a.get("remote"), a.get("branch"),
-                                   bool(a.get("set_upstream"))))
+                                   bool(a.get("set_upstream")), truthy(a.get("force"))))
         if name == "switch":
             return _public(op_switch(repo, a.get("branch"), bool(a.get("create"))))
         raise GitOpError(f"op {name!r} has no dispatch")  # OPS and dispatch out of step
@@ -1351,7 +1493,8 @@ def preflight(
             plan = plan_unstage(repo, a.get("paths"))
         elif name == "commit":
             plan = plan_commit(repo, a.get("message"), a.get("paths"),
-                               model=model, provenance=provenance)
+                               model=model, provenance=provenance,
+                               amend=truthy(a.get("amend")))
         elif name == "fixup":
             plan = plan_fixup(repo, a.get("target"), a.get("message"), a.get("paths"),
                               model=model, provenance=provenance)
@@ -1362,7 +1505,8 @@ def preflight(
         elif name == "fetch":
             plan = plan_fetch(repo, a.get("remote"))
         elif name == "push":
-            plan = plan_push(repo, a.get("remote"), a.get("branch"), bool(a.get("set_upstream")))
+            plan = plan_push(repo, a.get("remote"), a.get("branch"), bool(a.get("set_upstream")),
+                             truthy(a.get("force")))
         elif name == "switch":
             plan = plan_switch(repo, a.get("branch"), bool(a.get("create")))
         else:

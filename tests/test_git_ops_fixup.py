@@ -175,11 +175,22 @@ def test_an_unpublished_target_has_no_warning(repo):
     assert "warning" not in out and "target_published_on" not in out
 
 
-def test_no_rewriting_op_was_added():
-    """fixup never rewrites history: no rebase or amend anywhere in the op."""
+def test_no_rewriting_op_was_added(repo):
+    """fixup never rewrites history: no rebase or amend anywhere in the op.
+
+    ``_record_commit`` is shared with ``commit amend=true`` (2026-10-13) and
+    does carry ``--amend``, gated on ``plan["amend"]``; so the guard here is
+    that a fixup plan never sets it, and that a fixup adds a commit."""
     import inspect
-    for fn in (g.plan_fixup, g.op_fixup, g._record_commit):
+    for fn in (g.plan_fixup, g.op_fixup):
         src = inspect.getsource(fn)
         assert '"rebase"' not in src and '"--amend"' not in src and '"--fixup' not in src
     for name in ("rebase", "amend"):
         assert name not in g.OPS
+    (repo / "b.py").write_text("b = 3\n")
+    run("add", repo, paths=["b.py"])
+    before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    out = run("fixup", repo, target="HEAD~1")
+    assert not out.get("error"), out
+    assert not out.get("amend")
+    assert _git(repo, "rev-parse", "HEAD~1").stdout.strip() == before
