@@ -141,16 +141,19 @@ def test_heartbeat_and_release_require_matching_conversation(ctl):
     assert "lease_ref" in dump                          # correlation still possible
 
 
-def test_grant_with_stale_lease_id_does_not_grant_new_lease(ctl):
+def test_superseded_lease_id_is_not_a_valid_bearer_token(ctl):
+    """A re-acquire replaces the lease; the old id must not send anything.
+    (There is no pending state to attack: the ceiling is the grant, §6.1.)"""
     from app.shadow import client
+    from app.shadow.client import ShadowError
     sid = ctl.entry.session_id
-    # Interactive path: pretend headless is False for the grant logic.
     ctl.entry.headless = False
     old = client.control_acquire(sid, "a", restriction="gated")["lease_id"]
     new = client.control_acquire(sid, "a", restriction="gated")["lease_id"]  # supersedes
     assert old != new
-    assert ctl.server.grant_active_lease(old) is None       # stale key must not grant
-    assert ctl.server.current_lease().granted is False
+    assert ctl.server.current_lease().lease_id == new
+    with pytest.raises(ShadowError, match="no_lease"):
+        client.send_line(sid, old, "echo stale")
 
 
 def test_send_line_rejects_multiline_and_control_chars(ctl):

@@ -255,7 +255,7 @@ def test_heartbeat_matches_the_normalised_conversation_id(host):
 def _gated_host(home):
     h = _Host(ceiling="gated", headless=False)
     acq = h.acquire(restriction="gated", policy="builtin")
-    assert h.srv.grant_active_lease() == acq["lease_id"]
+    assert acq["granted"] is True          # ceiling is the grant (§6.1)
     return h, acq["lease_id"]
 
 
@@ -307,19 +307,20 @@ def test_lease_ended_during_confirm_wait_means_no_write(home):
 
 
 # ---------------------------------------------------------------------------
-# Grant: the keystroke must grant the lease whose banner was shown
+# Grant: the ceiling is the grant; a superseded lease's token is dead
 # ---------------------------------------------------------------------------
 
-def test_grant_is_bound_to_the_lease_the_banner_named(home):
-    """A re-acquire by the same conversation supersedes its pending lease
-    (possibly with a looser restriction) between banner and keystroke."""
+def test_reacquire_supersedes_and_superseded_token_cannot_send(home):
+    """A re-acquire by the same conversation (possibly with a looser
+    restriction) replaces its lease.  Both are granted by the ceiling, so the
+    only thing that must hold is that the old bearer token no longer works."""
     h = _Host(ceiling="unrestricted", headless=False)
     l1 = h.acquire(restriction="gated", policy="builtin")["lease_id"]
     l2 = h.acquire(restriction="unrestricted", policy="builtin")["lease_id"]
     assert l1 != l2
-    assert h.srv.grant_active_lease(expected_lease_id=l1) is None
-    assert h.srv.current_lease().granted is False
-    assert h.srv.grant_active_lease(expected_lease_id=l2) == l2
+    cur = h.srv.current_lease()
+    assert cur.lease_id == l2 and cur.granted is True
+    assert h.op("send_line", lease_id=l1, text="echo stale")["error"]["code"] == "no_lease"
 
 
 # ---------------------------------------------------------------------------
@@ -489,9 +490,7 @@ def test_confirm_timeout_releases_the_frontend_keystroke_mode(home, monkeypatch)
         sid = core.entry.session_id
         lease = client.control_acquire(sid, "conv-A", restriction="gated",
                                        policy="builtin")["lease_id"]
-        assert _wait(lambda: fe._mode == "grant")
-        os.write(in_w, b"g")
-        assert _wait(lambda: screen.has("control granted"))
+        assert _wait(lambda: screen.has("now has control"))
         with pytest.raises(client.ShadowError) as ei:
             client.send_line(sid, lease, "tee /tmp/never")   # gated → banner → timeout
         assert ei.value.code == "command_denied"
