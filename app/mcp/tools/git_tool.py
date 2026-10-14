@@ -10,6 +10,12 @@ surface and its consent contract:
                                            ``commit`` never approves ``push``
   consent_op_defaults = {"status": "off",
                          "grep": "off"}    ``status`` and ``grep`` are read-only
+  consent_op_for      commit with amend -> ``commit_amend``, push with force
+                      -> ``push_force``: their own ops, so approving
+                      ``commit`` / ``push`` never approves a history rewrite
+  consent_human_only_ops                   those two ask on EVERY call; no
+                                           grant, ``always`` or autonomous
+                                           project skips them
 
 The builtin category ``git`` is off by default.  Enabling it needs no
 signature: no mutating call can run without an approval, and a gate failure
@@ -37,7 +43,8 @@ class GitInput(BaseModel):
             "and untracked files, or a rev, for a pattern (no approval needed).  "
             "add: stage paths.  "
             "unstage: remove paths from the index (worktree untouched).  "
-            "commit: commit the index, or exactly the given tracked paths.  "
+            "commit: commit the index, or exactly the given tracked paths; with "
+            "amend=true, replace HEAD instead (message optional: HEAD's is kept).  "
             "fixup: commit the index (or paths) as a fix for an EARLIER commit "
             "(target), titled 'fixup! <target subject>'; history is not "
             "rewritten — the result's fold_in is the rebase command that folds it.  "
@@ -46,7 +53,9 @@ class GitInput(BaseModel):
             "selects which, default the most recent).  "
             "fetch: update remote-tracking refs from a configured remote (never "
             "prunes; worktree and local branches untouched).  "
-            "push: push the CURRENT branch to a remote (never forced).  "
+            "push: push the CURRENT branch to a remote; with force=true, a "
+            "force-with-lease on the remote-tracking sha (refused on the remote's "
+            "default branch).  "
             "switch: change branch (refused on a dirty tree).  "
             "checkout: with paths, rewrite those files from the index or from rev "
             "(DISCARDS their uncommitted edits; the user approves the exact list); "
@@ -93,6 +102,19 @@ class GitInput(BaseModel):
                      "clone: branch to check out (optional)."),
     )
     set_upstream: bool = Field(False, description="push: set the remote branch as upstream.")
+    amend: bool = Field(
+        False,
+        description=("commit: replace HEAD with HEAD plus the staged changes (or "
+                     "paths).  Without message, HEAD's message is kept.  Asks the "
+                     "user on every call."),
+    )
+    force: bool = Field(
+        False,
+        description=("push: overwrite the remote branch, as --force-with-lease on the "
+                     "remote-tracking sha shown for approval (run fetch first).  "
+                     "Refused on the remote's default branch.  Asks the user on "
+                     "every call."),
+    )
     create: bool = Field(False, description="switch: create the branch first.")
     index: Optional[Union[int, str]] = Field(
         None, description="stash_pop: which stash (0 = most recent, or 'stash@{n}').",
@@ -108,7 +130,7 @@ class GitInput(BaseModel):
 
 
 _ARG_KEYS = ("paths", "message", "pattern", "ignore_case", "rev", "target", "remote",
-             "branch", "set_upstream", "create", "index", "url", "dest")
+             "branch", "set_upstream", "amend", "force", "create", "index", "url", "dest")
 
 
 def _project_root(kwargs: Dict[str, Any]) -> str:
@@ -186,8 +208,11 @@ class GitTool(BaseMCPTool):
         "add expands the paths and stages every matching change; the approval "
         "lists each file.  commit needs a non-empty "
         "message and commits the index (or, with paths, exactly those tracked "
-        "files); a provenance trailer is appended.  push pushes only the "
-        "current branch and never forces.  switch refuses a dirty tree.  "
+        "files); a provenance trailer is appended.  commit with amend=true "
+        "replaces HEAD (message optional).  push pushes only the current "
+        "branch; with force=true it is a lease on the sha the user approves, "
+        "never the remote's default branch.  amend and force ask the user on "
+        "every call.  switch refuses a dirty tree.  "
         "To fix a commit below HEAD, stage the fix and call fixup with "
         "target=<that commit>: it adds a 'fixup! <subject>' commit and returns "
         "fold_in, the autosquash rebase that folds it in.  Do not run that "
@@ -203,8 +228,8 @@ class GitTool(BaseMCPTool):
         "URL and creates a new directory inside the project (no submodules).\n\n"
         "Not available at any permission level: reset, restore, clean, rm, mv, "
         "rebase, merge, pull, cherry-pick, stash drop/clear, branch or tag "
-        "deletion, force push, fetch --prune, "
-        "--amend, --no-verify, -c overrides."
+        "deletion, push --delete/--mirror, bare --force, fetch --prune, "
+        "--no-verify, -c overrides."
     )
     InputSchema = GitInput
 
@@ -216,8 +241,23 @@ class GitTool(BaseMCPTool):
     scope_preflight = True
     # The approval panel lets the human rewrite the message before approving;
     # the approved text is what gets committed / stashed.
-    consent_editable_args = {"commit": ("message",), "stash": ("message",),
-                             "stash_push": ("message",)}
+    # History rewriting: approved by a human on every call, never remembered.
+    consent_human_only_ops = ("commit_amend", "push_force")
+    consent_editable_args = {"commit": ("message",), "commit_amend": ("message",),
+                             "stash": ("message",), "stash_push": ("message",)}
+
+    def consent_op_for(self, args: Dict[str, Any], conversation_id: Optional[str]) -> str:
+        """The consent op: ``op``, except amend / force get their own.
+
+        Uses ``git_ops.truthy``, the same reading dispatch applies, so the op
+        the human is asked about is the op that runs.
+        """
+        op = str(args.get("op") or "")
+        if op == "commit" and git_ops.truthy(args.get("amend")):
+            return "commit_amend"
+        if op == "push" and git_ops.truthy(args.get("force")):
+            return "push_force"
+        return op
 
     async def preflight(self, **kwargs) -> Optional[Dict[str, Any]]:
         """What the call would do — the payload the human approves."""
