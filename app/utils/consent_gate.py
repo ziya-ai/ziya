@@ -128,6 +128,24 @@ def declared_mode(tool_instance: Any, op: str) -> str:
     return MODE_OFF
 
 
+def human_only_ops(tool_instance: Any) -> Set[str]:
+    """Ops a tool requires a human to approve on EVERY call.
+
+    A tool declares ``consent_human_only_ops = ("op", ...)``.  For those ops
+    no configuration (permissions.json ``always``), no autonomous project
+    mode and no standing grant skips the prompt, and the panel offers only
+    ``once``.  The git tool uses it for history rewriting (``commit_amend``,
+    ``push_force``).  Never raises.
+    """
+    try:
+        ops = getattr(tool_instance, "consent_human_only_ops", None)
+        if isinstance(ops, (list, tuple, set, frozenset)):
+            return {o for o in ops if isinstance(o, str) and o}
+    except Exception:  # noqa: BLE001
+        pass
+    return set()
+
+
 def set_consent_mode(tool_name: str, mode: str, op: Optional[str] = None) -> None:
     """Persist a consent mode for a tool (or one op of it) in permissions.json.
 
@@ -493,7 +511,11 @@ async def consent_gate(
         mode = declared_mode(inst, op)
         logger.warning(f"consent mode lookup failed for {tool_name}; using declared {mode!r}: {exc}")
 
-    needs_ask = mode == MODE_ASK and not _grants.covers(tool_name, op, conversation_id)
+    human_only = op in human_only_ops(inst)
+    if human_only:
+        mode = MODE_ASK
+    needs_ask = mode == MODE_ASK and (
+        human_only or not _grants.covers(tool_name, op, conversation_id))
     preflight: Optional[Dict[str, Any]] = None
     if needs_ask or _wants_scope_preflight(inst):
         preflight = await _preflight(inst, args, project_root)
@@ -571,7 +593,7 @@ async def consent_gate(
         "conversation_id": conversation_id,
         "tool_id": tool_id,
         "payload": payload,
-        "scopes": list(SCOPES),
+        "scopes": [SCOPE_ONCE] if human_only else list(SCOPES),
         "opened_at": rec.opened_at,
         "ttl_ms": ttl_ms,
         "at": time.time(),
@@ -596,6 +618,10 @@ async def consent_gate(
 
     decision = str(answer.get("decision") or "reject").lower()
     scope = str(answer.get("scope") or SCOPE_ONCE)
+    if human_only:
+        # Nothing standing is recorded for these ops, whatever the client
+        # sent: the next call asks again.
+        scope = SCOPE_ONCE
     approved = decision == "approve"
     if approved:
         # The standing scope covers the (tool, op), and for a conversation /

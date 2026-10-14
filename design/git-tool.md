@@ -104,6 +104,33 @@ the whole tree and cannot be itemised before the fact. Those remain reachable
 only through the shell's bare-`git` grant, which is signed and announces itself
 on startup. That is the correct home for "I accept the consequences."
 
+**Amend and force push (reversed 2026-10-13).** `commit amend=true` and
+`push force=true` are offered after all. The reason is that the fixup
+two-step still ended every stacked-change hand-off with commands the human
+had to type (`git commit --amend -F …`, `git push -f …`). The original reason
+for leaving them out was that they can't be itemised in advance. They can:
+
+- Amend replaces exactly HEAD. The plan names the replaced commit, the files
+  added to it and the remote branches it is already on.
+- Force push is `--force-with-lease=refs/heads/<b>:<sha>`, where `<sha>` is
+  the remote-tracking sha the approval shows. The plan lists every remote
+  commit it drops (`discards_remote_commits`). If the remote moved since the
+  last fetch, git refuses, so work the human didn't see is never overwritten.
+- Force to the remote's default branch (`<remote>/HEAD`, or
+  main/master/mainline/trunk/develop when that is unknown) is refused
+  outright.
+
+What keeps these apart from plain `commit`/`push` is the consent layer:
+- They get their own consent ops, `commit_amend` and `push_force`, through
+  the tool's `consent_op_for`.
+- They are in `consent_human_only_ops`. For those ops the gate always asks.
+  `permissions.json` `always`, an autonomous project, and conversation or
+  session grants are all ignored, and the panel offers only `once`.
+
+So the `enabled/always` posture described below still never covers a
+history rewrite. `rebase`, `reset`, bare `--force`, `--delete` and
+`--mirror` stay out.
+
 Candidates for v2 once v1 has mileage: `tag` (annotated, no delete),
 `branch` (create/list only).  `stash_pop`, `fetch` and `clone` landed
 2026-10-02 (table above); `grep` and `checkout` 2026-10-01; `fixup`

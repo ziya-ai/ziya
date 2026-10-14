@@ -122,8 +122,10 @@ _READ_ONLY = frozenset({
 # Subcommand → the consent-gated git tool op that covers the common use.
 _TOOL_ALTERNATIVE: Dict[str, str] = {
     "add": "git tool op=add (never -f; every file to be staged is listed for approval)",
-    "commit": "git tool op=commit (no --amend / --no-verify; you approve each commit)",
-    "push": "git tool op=push (current branch only, never forced)",
+    "commit": ("git tool op=commit (never --no-verify; you approve each commit; "
+               "amend=true replaces HEAD and asks on every call)"),
+    "push": ("git tool op=push (current branch only; force=true is a lease on the sha "
+             "you are shown, asks on every call, never the default branch)"),
     "stash": ("git tool op=stash_push (never takes untracked files) or op=stash_pop "
               "(clean tree; each file it writes is listed for approval)"),
     "fetch": "git tool op=fetch (configured remotes only, never prunes)",
