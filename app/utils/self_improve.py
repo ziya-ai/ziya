@@ -317,6 +317,48 @@ def render_outputs_for_judge(outputs: List[Any]) -> str:
 # than allowed to crowd out the condition it is evidence for.
 JUDGE_DATA_CHARS_CAP = 1500
 
+# Cap on the text parts shown to an evaluator.  Larger than the data cap
+# because a text part is prose: a 46-path residue list with one reason per
+# path is ~3 KB, and truncating it to the first few paths would recreate
+# the "absent evidence" verdict this renderer exists to prevent.
+JUDGE_TEXT_CHARS_CAP = 6000
+
+
+def render_text_parts_for_judge(outputs: List[Any]) -> str:
+    """The contents of ``text`` parts, for a condition judge.
+
+    A text part emitted under an output contract (``ziya:text``) is the
+    pass's deliverable, not decoration.  ``render_outputs_for_judge`` only
+    counted them ("1 text"), so a condition such as "every remaining path
+    is listed with a reason" was judged against a prompt that never
+    showed the list: the sweep card's P5 loop (run cli-c72ef56d7591) was
+    refused three times for "DATA is empty" while its ``residue`` part
+    held exactly the accounting the condition named.  Each part is
+    prefixed with its label (or group) so the judge can tell which
+    contracted output it is reading.
+    """
+    chunks: List[str] = []
+    for p in outputs or []:
+        pt = getattr(p, "part_type", None) or (
+            p.get("part_type") if isinstance(p, dict) else None)
+        if pt not in (None, "text"):
+            continue
+        text = getattr(p, "text", None) if not isinstance(p, dict) else p.get("text")
+        if not text or not str(text).strip():
+            continue
+        label = None
+        for key in ("label", "name", "group"):
+            label = getattr(p, key, None) if not isinstance(p, dict) else p.get(key)
+            if label:
+                break
+        chunks.append(f"[{label}]\n{str(text).strip()}" if label else str(text).strip())
+    if not chunks:
+        return "(none)"
+    text = "\n\n".join(chunks)
+    if len(text) > JUDGE_TEXT_CHARS_CAP:
+        text = text[:JUDGE_TEXT_CHARS_CAP] + " […truncated]"
+    return text
+
 
 def render_data_parts_for_judge(outputs: List[Any]) -> str:
     """The contents of ``data`` parts, serialized, for a condition judge.
