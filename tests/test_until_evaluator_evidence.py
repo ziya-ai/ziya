@@ -130,3 +130,65 @@ class TestEvaluatorPrompt:
         msg = self._msg(Artifact(summary="did the thing"))
         assert "did the thing" in msg
         assert "(no per-stage evidence" in msg
+
+
+def _sweep_p5_iteration() -> Artifact:
+    """Shape of sweep run cli-c72ef56d7591, P5 iteration 2: a leaf task
+    whose only emitted part is the contracted ``ziya:text`` residue list.
+    The judge said no three times for "DATA is empty" although the list
+    the condition names was right there in the text part."""
+    residue = (
+        "No commits made; the only planned group is already HEAD e688f496.\n"
+        "Deferred (15): app/cli.py, app/shadow/sock_server.py ... (shadow "
+        "allow-control entry, no attribution); pyproject.toml (bump hunk "
+        "mixed with dependency edits); CHANGELOG.1.md (changelog stage).\n"
+        "Reserved (1): CHANGELOG.md, left for the bump stage.\n"
+        "Excluded (30): untracked in-progress tests and scripts, no entry."
+    )
+    return Artifact(
+        summary="No commits were made this iteration, and none were possible.",
+        tool_calls=3,
+        outputs=[ArtifactPart(part_type="text", text=residue, label="residue")],
+    )
+
+
+class TestTextPartEvidence:
+    """The gap the sweep card hit: a contracted text part is the pass's
+    deliverable, and the judge must be shown its content, not a count."""
+
+    def test_text_part_content_is_rendered_with_its_label(self):
+        txt = si.render_text_parts_for_judge(_sweep_p5_iteration().outputs)
+        assert "[residue]" in txt
+        assert "CHANGELOG.1.md (changelog stage)" in txt
+
+    def test_no_text_parts_renders_none(self):
+        assert si.render_text_parts_for_judge([]) == "(none)"
+        assert si.render_text_parts_for_judge(
+            _gfx2_iteration().outputs) == "(none)"   # data + file only
+        assert si.render_text_parts_for_judge(
+            [ArtifactPart(part_type="text", text="   ")]) == "(none)"
+
+    def test_long_text_part_is_capped(self):
+        big = ArtifactPart(part_type="text", text="x" * (si.JUDGE_TEXT_CHARS_CAP + 500))
+        txt = si.render_text_parts_for_judge([big])
+        assert txt.endswith("[…truncated]")
+        assert len(txt) < si.JUDGE_TEXT_CHARS_CAP + 40
+
+    def test_text_part_reaches_the_evaluator_prompt(self):
+        from app.agents.until_evaluator import _build_user_message
+        msg = _build_user_message(
+            "every path still showing as modified or untracked is present in "
+            "the exclusion list or the plan's deferred list with a stated reason",
+            _sweep_p5_iteration(),
+        )
+        assert "TEXT PARTS" in msg
+        assert "Reserved (1): CHANGELOG.md" in msg
+        # The old shape still appears, so a data-only condition is unchanged.
+        assert "DATA (emitted by the pass):\n(none)" in msg
+
+    def test_system_prompt_admits_text_parts_and_state_conditions(self):
+        from app.agents.until_evaluator import _SYSTEM_PROMPT
+        assert "TEXT PARTS" in _SYSTEM_PROMPT
+        # Iteration 1 of the same run was refused because "no commits were
+        # made this iteration" -- the condition says "is committed", a state.
+        assert "state at the end of the pass" in _SYSTEM_PROMPT
