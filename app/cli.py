@@ -5017,7 +5017,11 @@ Examples:
                                help='Permit exec requests from chat (handshake lands in phase 2)')
     shadow_parser.add_argument('--allow-control', nargs='?', const='gated',
                                choices=['supervised', 'gated', 'unrestricted'], default='none',
-                               help='Control-lease ceiling (leases land in phase 3)')
+                               help='Let chats run commands in this terminal. This IS the grant: '
+                                    'no further keystroke is asked when a chat takes control. '
+                                    'gated (default): read-only commands run, anything else asks '
+                                    'per command (y / a=stop asking); supervised: every command '
+                                    'asks; unrestricted: nothing asks. Revoke any time: C-x C-z, r')
     shadow_parser.add_argument('--meta', action='append', default=[], metavar='K=V',
                                help='Freeform session metadata (repeatable)')
     shadow_parser.add_argument('--redact', action='append', default=[], metavar='SET',
