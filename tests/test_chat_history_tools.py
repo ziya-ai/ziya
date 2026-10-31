@@ -121,6 +121,24 @@ def env(tmp_path, monkeypatch):
     for rec in records_a:
         (projects_dir / pid_a / "chats" / f"{rec['id']}.json").write_text(json.dumps(rec))
 
+    # Folder hierarchy lives in _groups.json, NOT on the chat record (which
+    # carries only the groupId foreign key).  alpha sits in a nested folder;
+    # a self-referencing folder is included so the path walk must terminate.
+    records_a[1]["groupId"] = "grp_child"
+    (projects_dir / pid_a / "chats" / f"{ids['alpha']}.json").write_text(
+        json.dumps(records_a[1]))
+    (projects_dir / pid_a / "chats" / "_groups.json").write_text(json.dumps({
+        "version": 1,
+        "groups": [
+            {"id": "grp_parent", "name": "Infra", "createdAt": NOW_MS,
+             "parentId": None, "order": 0},
+            {"id": "grp_child", "name": "Parsers", "createdAt": NOW_MS,
+             "parentId": "grp_parent", "order": 1},
+            {"id": "grp_loop", "name": "Loop", "createdAt": NOW_MS,
+             "parentId": "grp_loop", "order": 2},
+        ],
+    }))
+
     beta = chat(ids["beta"], "Encrypted beta",
                 [_msg("human", "where does widget_parser get imported?", t),
                  _msg("assistant", "In three places.", t + 1)])
@@ -394,6 +412,53 @@ class TestChatList:
         assert r["count"] == 1 and r["truncated"] is True
 
 
+# ── folder hierarchy join (_groups.json → "Parent / Child") ────────
+
+class TestFolderHierarchy:
+    """The chat record carries only groupId; the names and nesting live in
+    _groups.json.  Every tool must join them so the model sees the sidebar
+    hierarchy, not an opaque grp-… id."""
+
+    def test_chat_list_emits_folder_path(self, env):
+        rows = {c["conversationId"]: c for c in run(ChatListTool().execute())["conversations"]}
+        alpha, old = rows[env["alpha"]], rows[env["old"]]
+        assert alpha["folderId"] == "grp_child"
+        assert alpha["folder"] == "Infra / Parsers"
+        assert "folder" not in old and "folderId" not in old   # unfoldered chat
+
+    def test_chat_list_folder_contains_filters_on_any_ancestor(self, env):
+        r = run(ChatListTool().execute(folder_contains="infra"))
+        assert [c["conversationId"] for c in r["conversations"]] == [env["alpha"]]
+        assert run(ChatListTool().execute(folder_contains="nowhere"))["conversations"] == []
+
+    def test_chat_read_header_carries_folder_path(self, env):
+        r = run(ChatReadTool().execute(chat_id=env["alpha"], turn_start=1))
+        assert r["folderId"] == "grp_child"
+        assert r["folder"] == "Infra / Parsers"
+        r_old = run(ChatReadTool().execute(chat_id=env["old"]))
+        assert "folder" not in r_old
+
+    def test_chat_search_result_carries_folder_path(self, env):
+        r = run(ChatSearchTool().execute(query="widget_parser"))
+        by_id = {x["conversationId"]: x for x in r["results"]}
+        assert env["alpha"] in by_id                      # positive: the hit is there
+        assert by_id[env["alpha"]]["folderId"] == "grp_child"
+        assert by_id[env["alpha"]]["folder"] == "Infra / Parsers"
+        assert "folder" not in by_id[env["old"]]
+
+    def test_self_referencing_folder_terminates(self, env):
+        from app.mcp.tools.chat_history_tools import _folder_paths
+        paths = _folder_paths(env["ziya_home"], env["pid_a"])
+        assert paths["grp_loop"] == "Loop"
+        assert paths["grp_child"] == "Infra / Parsers"
+        assert paths["grp_parent"] == "Infra"
+
+    def test_missing_groups_file_is_empty_not_error(self, env):
+        from app.mcp.tools.chat_history_tools import _folder_paths
+        assert _folder_paths(env["ziya_home"], env["pid_b"]) == {}
+        assert _folder_paths(env["ziya_home"], None) == {}
+
+
 # ── registration seam ──────────────────────────────────────────────
 
 class TestRegistration:
@@ -406,7 +471,7 @@ class TestRegistration:
         # The handoff-draft pair lives in this category too (the one write:
         # it touches only the current chat's own handoffDraft field).
         assert names == {"chat_search", "chat_read", "chat_list",
-                         "handoff_read", "handoff_write"}
+                         "handoff_read", "handoff_write", "recall_tributary"}
 
     def test_results_are_medium_trust(self):
         from app.mcp.tool_result_demarcation import classify_trust
