@@ -1502,7 +1502,7 @@ class ModelManager:
             DirectOpenAIModel: The initialized model
         """
         from app.agents.wrappers.openai_direct import DirectOpenAIModel
-        from app.utils.local_models import local_endpoint_base_url, LOCAL_PLACEHOLDER_API_KEY
+        from app.utils.local_models import local_endpoint_base_url, local_endpoint_api_key
 
         gc.collect()
 
@@ -1531,7 +1531,7 @@ class ModelManager:
             model_name=model_id,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
-            api_key=LOCAL_PLACEHOLDER_API_KEY,
+            api_key=local_endpoint_api_key(endpoint),
             base_url=base_url,
             extra_body=extra_body if isinstance(extra_body, dict) else None,
         )
