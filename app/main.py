@@ -295,60 +295,17 @@ def print_info(args):
     print(f"  AST: {'Enabled' if args.ast else 'Disabled'}")
     if args.ast:
         print(f"  AST Resolution: {args.ast_resolution}")
-        print(f"  MCP: {'Enabled' if args.mcp else 'Disabled'}")
-        # Check for mcp-registry
-        try:
-            result = subprocess.run(['which', 'mcp-registry'], capture_output=True, text=True)
-            mcp_registry_installed = result.returncode == 0
-            print(f"  MCP Registry: {'Installed' if mcp_registry_installed else 'Not found'}")
-        except Exception as e:
-            logger.debug(f"Error checking for mcp-registry: {e}")
-            print(f"  MCP Registry: Not found")
-        
-        # Check Amazon MCP Registry API access
-        print(f"  Amazon MCP Registry API: ", end='')
-        try:
-            session = boto3.Session(profile_name=args.profile, region_name=args.region or 'us-west-2')
-            credentials = session.get_credentials()
-            if credentials:
-                from botocore.auth import SigV4Auth
-                from botocore.awsrequest import AWSRequest
-                import httpx
-                import json
-                
-                # Try a minimal API call
-                payload = {'maxResults': 1}
-                request = AWSRequest(
-                    method='POST',
-                    url='https://registry.example.com/',
-                    data=json.dumps(payload),
-                    headers={
-                        'Content-Type': 'application/x-amz-json-1.0',
-                        'X-Amz-Target': 'MCPRegistryService.ListServices'
-                    }
-                )
-                signer = SigV4Auth(credentials, 'mcp-registry-service', args.region or 'us-west-2')
-                signer.add_auth(request)
-                
-                client = httpx.Client(timeout=5.0)
-                response = client.post(
-                    'https://registry.example.com/',
-                    headers=dict(request.headers),
-                    content=request.body
-                )
-                
-                if response.status_code == 200:
-                    print('Accessible')
-                elif 'NotAuthorizedException' in response.text or 'Not Authorized' in response.text:
-                    print('No permissions (requires access to DEFAULT registry)')
-                else:
-                    print(f'Error ({response.status_code})')
-            else:
-                print('No credentials')
-        except Exception as e:
-            print(f'Check failed ({str(e)[:50]})')
+    print(f"  MCP: {'Enabled' if args.mcp else 'Disabled'}")
     
     print()
+
+    # Deployment-specific diagnostics (enterprise registries, CLIs, ...)
+    from app.plugins import get_info_sections
+    for section in get_info_sections(args):
+        print(f"{section.title}:")
+        for label, value in section.rows:
+            print(f"  {label}: {value}")
+        print()
     
     # ZIYA_* environment variables
     ziya_vars = {k: v for k, v in os.environ.items() if k.startswith('ZIYA_')}

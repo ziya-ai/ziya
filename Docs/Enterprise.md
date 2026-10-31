@@ -412,6 +412,30 @@ Enhancement priority (later overrides earlier for the same tool):
 3. **User overrides** — `~/.ziya/tool_enhancements.json`
 
 ---
+### InfoProvider
+
+Adds a section to `ziya --info` for diagnostics that only exist in one deployment (an internal registry endpoint, a company CLI on PATH). The core prints every registered section after the feature flags; a provider that raises is shown as a one-line `Error` row and the rest of `--info` still prints.
+
+~~~python
+from app.plugins.interfaces import InfoProvider, InfoSection
+
+class MyRegistryInfo(InfoProvider):
+    provider_id = "my-registry-info"
+
+    def get_info_section(self, args) -> InfoSection | None:
+        # args is the parsed CLI namespace (profile, region, endpoint, ...).
+        # Bound any network call with a short timeout.
+        return InfoSection("My Registry", [("API", "Accessible")])
+~~~
+
+Registration in `register()`:
+
+~~~python
+from app.plugins import register_info_provider
+register_info_provider(MyRegistryInfo())
+~~~
+
+---
 
 ## Built-in Service Models
 
