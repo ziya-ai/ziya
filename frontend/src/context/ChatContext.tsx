@@ -4682,8 +4682,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             muted: !updatedMessages[messageIndex].muted
                         };
                     }
-                    // Don't update _version for mute changes to avoid triggering scroll resets
-                    return { ...conv, messages: updatedMessages };
+                    // Stamp _version like every other mutation.  Without it the
+                    // mute is a change nobody can tell is newer: the server's
+                    // bulk-sync "older push" branch keeps its on-disk (unmuted)
+                    // copy of matched messages, and the sync reconcile lets a
+                    // fetched copy replace this one on a version tie.  Either
+                    // way the muted message silently re-enters the request.
+                    return { ...conv, messages: updatedMessages, _version: Date.now() };
                 }
                 return conv;
             });
