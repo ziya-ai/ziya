@@ -891,6 +891,14 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
     const verified = verifiedProp !== undefined ? verifiedProp : formattedOutput.verified;
     const verificationError = verificationErrorProp || formattedOutput.verificationError;
 
+    // Whether the raw body is on screen.  A collapsed block shows only the
+    // digest preview, so the highlight and markdown effects below wait for
+    // the first expand.  They used to run on mount for every tool result in
+    // history and keep the full HTML string in state, unseen.
+    const shouldShowCollapsed = formattedOutput.collapsed !== false
+        && (formattedOutput.summary || formattedOutput.content.length > 500);
+    const bodyShown = !shouldShowCollapsed || isExpanded;
+
     // Check if content should be rendered as markdown (contains markdown formatting)
     const shouldRenderAsMarkdown = useMemo(() => {
         // Serialized JSON (a tool result like a Slack/conversation dump) must
@@ -939,7 +947,7 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
 
     // Render markdown content to HTML
     useEffect(() => {
-        if (shouldRenderAsMarkdown) {
+        if (shouldRenderAsMarkdown && bodyShown) {
             const result = marked.parse(content, { breaks: true, gfm: true });
             if (typeof result === 'string') {
                 // Post-process HTML to add link styling for dark mode
@@ -975,11 +983,15 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
                 });
             }
         }
-    }, [content, shouldRenderAsMarkdown]);
+    }, [content, shouldRenderAsMarkdown, bodyShown]);
 
-    // Render markdown in header text for proper formatting
+    // Render markdown in header text for proper formatting.  Only the
+    // hierarchical-results header shows it; the old `content` fallback
+    // inline-parsed the whole payload of every other tool result.
     useEffect(() => {
-        const headerText = formattedOutput.summary || formattedOutput.content;
+        const headerText = formattedOutput.hierarchicalResults?.length
+            ? (formattedOutput.summary || formattedOutput.content)
+            : '';
         if (headerText && typeof headerText === 'string') {
             // Use parseInline for header text to avoid block elements
             const result = marked.parseInline(headerText, { breaks: false, gfm: true });
@@ -991,7 +1003,7 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
         } else {
             setRenderedHeaderHtml('');
         }
-    }, [formattedOutput.summary, formattedOutput.content]);
+    }, [formattedOutput.summary, formattedOutput.content, formattedOutput.hierarchicalResults]);
 
     // Extract command/query information for display in header
     const getToolSummary = () => {
@@ -1032,10 +1044,9 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
 
     // Destructure formatted output and compute cleanContent before any early returns,
     // so the useEffect below (which is a hook) always runs in the same order.
-    const { content: formattedContent, collapsed, summary } = formattedOutput;
+    const { content: formattedContent, summary } = formattedOutput;
     const renderAsDiff = (formattedOutput as any).renderAs === 'diff';
     const hierarchicalResults = formattedOutput.hierarchicalResults;
-    const shouldShowCollapsed = collapsed !== false && (summary || formattedContent.length > 500);
 
     // Don't clean tool markers - they're already properly formatted by the backend
     // Aggressive cleaning corrupts diffs, code blocks, and template literals
@@ -1061,7 +1072,7 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
     // not the raw tool output, so that file_read results get highlighted
     // after the formatter extracts the actual file text from the wrapper dict.
     useEffect(() => {
-        if (hasSyntaxHighlighting) {
+        if (hasSyntaxHighlighting && bodyShown) {
             const loadHighlighting = async () => {
                 try {
                     const prismLang = contentLanguage === 'sh' ? 'bash' : contentLanguage;
@@ -1078,7 +1089,7 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
             };
             loadHighlighting();
         }
-    }, [hasSyntaxHighlighting, contentLanguage, cleanContent]);
+    }, [hasSyntaxHighlighting, contentLanguage, cleanContent, bodyShown]);
 
     // A shell-policy refusal (anchored at the start of the message): a result
     // that merely QUOTES the sentinel, such as a file_write echoing a test
