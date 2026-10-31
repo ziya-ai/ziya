@@ -166,6 +166,43 @@ class TestCustomBedrockClient(unittest.TestCase):
         # Check the result
         self.assertEqual(result, {"body": []})
 
+    def test_retry_on_context_limit_error_with_conversation_and_no_extended_context(self):
+        """The overflow branch must still reach the max_tokens reduction.
+
+        With a conversation id, an overflow error takes the extended-context
+        branch; on a model without extended context that branch used to fall
+        straight through to ``raise`` -- the reduction lived in a sibling
+        ``elif`` that this error could never enter.
+        """
+        body = json.dumps({"messages": [{"role": "user", "content": "Hello"}],
+                           "max_tokens": 64000})
+        error_message = "input length and `max_tokens` exceed context limit: 179563 + 64000 > 204698"
+        self.mock_client.invoke_model_with_response_stream.side_effect = [
+            Exception(error_message), {"body": []}]
+        with patch.object(self.custom_client, "_extract_conversation_id_from_request",
+                          return_value="conv-1"), \
+                patch.object(self.custom_client, "_supports_extended_context",
+                             return_value=False), \
+                patch("app.utils.context_debug.record_failure"):
+            result = self.custom_client.invoke_model_with_response_stream(
+                modelId="test-model", body=body)
+        self.assertEqual(self.mock_client.invoke_model_with_response_stream.call_count, 2)
+        actual = json.loads(
+            self.mock_client.invoke_model_with_response_stream.call_args[1]["body"])
+        self.assertEqual(actual["max_tokens"],
+                         204698 - 179563 - self.custom_client.CLAUDE_SAFETY_MARGIN)
+        self.assertEqual(result, {"body": []})
+
+    def test_unrelated_error_is_not_retried(self):
+        """Positive control: an error the parser cannot read is re-raised once."""
+        body = json.dumps({"messages": [{"role": "user", "content": "Hello"}],
+                           "max_tokens": 64000})
+        self.mock_client.invoke_model_with_response_stream.side_effect = Exception(
+            "AccessDeniedException: not authorized")
+        with self.assertRaises(Exception):
+            self.custom_client.invoke_model_with_response_stream(modelId="m", body=body)
+        self.assertEqual(self.mock_client.invoke_model_with_response_stream.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
