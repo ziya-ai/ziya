@@ -784,7 +784,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                             description={
                                 <div>
                                     <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 10 }}>
-                                        The file is valid JSON, but these entries cannot be used as written.
+                                        The file loaded, but these entries need attention.
                                     </div>
                                     {status.config_findings.map((f, i) => (
                                         <div
