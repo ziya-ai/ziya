@@ -1771,6 +1771,16 @@ async def run_post_conversation_extraction(
     windows = _split_into_topic_windows(messages)
     candidates: List[Dict[str, Any]] = []
     admitted_by_hint = 0
+    # Windows this conversation already extracted on an earlier turn.  The
+    # server re-dispatches with the FULL history after every stream and
+    # windows are prefix-stable, so without this every turn re-ran every
+    # earlier window and dedup threw the result away.  See extraction_cursor.
+    from app.memory.extraction_cursor import (
+        load_extracted_windows, record_extracted_windows, window_key,
+    )
+    _seen_windows = load_extracted_windows(conversation_id)
+    _windows_this_run: List[str] = []
+    _skipped_seen = 0
     for i, win in enumerate(windows):
         salient = _count_salience_hits(win) > 0
         if not salient:
@@ -1786,6 +1796,11 @@ async def run_post_conversation_extraction(
         win_stripped = strip_conversation(win)
         if len(win_stripped) < 200:
             continue
+        _wkey = window_key(win_stripped)
+        if _wkey in _seen_windows:
+            _skipped_seen += 1
+            continue
+        _windows_this_run.append(_wkey)
         # Pass already-found candidates as additional dedup context so
         # window N+1 doesn't re-extract a fact established in window 1.
         # Triage hints (if any) constrain what the extractor pursues.
@@ -1804,6 +1819,14 @@ async def run_post_conversation_extraction(
             win_candidates = win_candidates[:_cap]
         candidates.extend(win_candidates)
     logger.info(f"🧠 Windowed extraction: {len(windows)} windows → {len(candidates)} candidates")
+    # Record even windows that yielded nothing: an empty result is still a
+    # result, and re-asking next turn would cost the same call again.  Not
+    # recorded on exception (we never get here), so an aborted turn retries.
+    if _windows_this_run:
+        record_extracted_windows(conversation_id, _windows_this_run)
+    if _skipped_seen:
+        logger.info(f"🧠 Skipped {_skipped_seen} window(s) already extracted on an "
+                    f"earlier turn of {conversation_id}")
     if not candidates:
         return {"extracted": 0, "saved": 0, "proposed": 0, "references": references_proposed}
 
