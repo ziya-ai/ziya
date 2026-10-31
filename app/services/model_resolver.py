@@ -104,6 +104,38 @@ def _tier_category_config(
     }
 
 
+def _local_service_model(endpoint: str, region: str) -> Optional[Dict[str, Any]]:
+    """Service model for a local endpoint, or None if ``endpoint`` is not one.
+
+    Prefers the model the conversation is already running (ZIYA_MODEL) when
+    the server lists it.  A local server holds one large model at a time:
+    asking it for a different one -- the server's default, which is just
+    its first listed model -- forces a load that evicts the chat model, and
+    the next chat turn either reloads it or, on a Mac near its memory
+    ceiling, fails with a 507.  Observed 2026-10-19 on oMLX: memory triage
+    after turn 1 loaded GLM-5.3 (103 GB), evicting the 94 GB Qwen the user
+    was chatting with; turn 2 could not load it back.  The default is only
+    for a ZIYA_MODEL the server does not list.
+
+    Runs before the tier step so a tier-declared category (improve_judge)
+    does not round to that same server default.
+    """
+    from app.utils.local_models import is_local_endpoint
+    if not is_local_endpoint(endpoint):
+        return None
+    # local-<runtime> ids are registered at runtime, after this module's
+    # table was built; read the live tables for that server.
+    from app.utils.local_models import register_local_endpoints, resolve_local_alias
+    from app.config.models_config import DEFAULT_SERVICE_MODELS, MODEL_CONFIGS
+    register_local_endpoints()
+    ep = resolve_local_alias(endpoint)
+    active = os.environ.get("ZIYA_MODEL")
+    mid = active if active and active in MODEL_CONFIGS.get(ep, {}) else DEFAULT_SERVICE_MODELS.get(ep)
+    if not mid:
+        return None
+    return {"endpoint": ep, "model_id": mid, "region": region}
+
+
 def resolve_service_model(
     category: str = "default",
 ) -> Dict[str, Any]:
@@ -149,6 +181,12 @@ def resolve_service_model(
     except Exception:
         pass  # No plugin system or no providers
 
+    # 2.4 Local endpoint: the chat's own model, before the tier step --
+    # see _local_service_model for why.
+    local_cfg = _local_service_model(endpoint, env_region)
+    if local_cfg is not None:
+        return local_cfg
+
     # 2.5 Tier-declared category (SERVICE_MODEL_TIERS): resolve the
     # portable rung through the same per-model tier tags that
     # TaskScope.model_tier uses, so the category follows the endpoint's
@@ -166,18 +204,6 @@ def resolve_service_model(
     # client (e.g. POSTing 'us.amazon.nova-lite-v1:0' to api.meta.ai), which
     # fails on every service call. The endpoint and the model ID have to come
     # from the same table.
-    from app.utils.local_models import is_local_endpoint
-    if is_local_endpoint(endpoint):
-        # local-<runtime> ids are registered at runtime, after this module's
-        # table was built; read the live default for that server. A local
-        # install has one model per server, so service calls share it.
-        from app.utils.local_models import register_local_endpoints, resolve_local_alias
-        from app.config.models_config import DEFAULT_SERVICE_MODELS
-        register_local_endpoints()
-        ep = resolve_local_alias(endpoint)
-        mid = DEFAULT_SERVICE_MODELS.get(ep)
-        if mid:
-            return {"endpoint": ep, "model_id": mid, "region": env_region}
     resolved_endpoint = endpoint if endpoint in _ENDPOINT_DEFAULTS else "bedrock"
     ep_defaults = _ENDPOINT_DEFAULTS[resolved_endpoint]
     cat_defaults = ep_defaults.get(category, ep_defaults.get("default", {}))
@@ -408,11 +434,11 @@ async def _call_openai_compatible(config, system_prompt, user_message, max_token
         elif str(config.get("endpoint", "")).startswith("local"):
             from app.utils.local_models import (
                 local_endpoint_base_url, resolve_local_alias,
-                LOCAL_PLACEHOLDER_API_KEY, discover_and_apply,
+                local_endpoint_api_key, discover_and_apply,
             )
             ep = resolve_local_alias(config["endpoint"])
             client = OpenAI(
-                api_key=LOCAL_PLACEHOLDER_API_KEY,
+                api_key=local_endpoint_api_key(ep),
                 base_url=local_endpoint_base_url(ep),
             )
             discover_and_apply(config["model_id"], endpoint=ep)
