@@ -191,6 +191,23 @@ export type UntilMode = 'model' | 'expression';
 export type ScheduleMode = 'interval' | 'at' | 'daily_at' | 'cron';
 export type IntervalUnit = 'minutes' | 'hours' | 'days';
 
+// A container's contract over its children or iterations.  Mirrors
+// app/models/task_card.py::GatherContract; per / min / rerun_missing are
+// not Optional there, so the editor omits them rather than writing null.
+export interface GatherContract {
+  name: string;
+  schema: string | Record<string, unknown>;
+  per?: 'child' | 'iteration' | 'total';
+  min?: number;
+  max?: number | null;
+  // Quorum: units that must meet min.  null/unset = every unit.
+  min_units?: number | null;
+  producer?: string[] | null;
+  rerun_missing?: 0 | 1;
+  require_claims?: boolean | null;
+  container?: 'parallel' | 'repeat' | 'until' | 'group' | 'any';
+}
+
 export interface Block {
   block_type: BlockType;
   id: string;
@@ -259,6 +276,10 @@ export interface Block {
   // Drift policy: 'conservative' (default) corrects toward the stated
   // ask only; 'expansive' may strengthen beyond the ask.
   improve_drift?: 'conservative' | 'expansive' | null;
+
+  // Container-only: outputs required of each child / iteration (or the
+  // whole container).  See GatherContractSection.
+  gather_contract?: GatherContract[] | null;
 
   // Until-only
   until_mode?: UntilMode | null;

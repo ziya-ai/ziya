@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * AskAnswerPanel — the control that answers the Ask checkpoint a run is
  * holding at.  This is the load-bearing gap the Ask feature shipped with:
  * the backend could drive a run to 'awaiting_input' but nothing in the
