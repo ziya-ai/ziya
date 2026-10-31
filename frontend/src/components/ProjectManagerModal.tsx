@@ -13,7 +13,6 @@ import { WritePolicy, ContextManagementSettings, ProjectToolMode } from '../type
 import type { DetectTemplateResponse, ProjectTemplate } from '../types/projectTemplate';
 import * as templateApi from '../api/projectTemplateApi';
 import { GENERAL_TEMPLATE_ID } from '../api/projectTemplateApi';
-import UsageCostModal from './UsageCostModal';
 import { DEFAULT_AUTO_ADD_TOKEN_LIMIT, DEFAULT_AUTO_ADD_AGGREGATE_BUDGET } from '../utils/autoAddTokenLimit';
 
 const { Panel } = Collapse;
@@ -195,9 +194,6 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
     // then replaces it, which reads as a flicker rather than a load.
     const [templatesLoaded, setTemplatesLoaded] = useState(false);
     const [showBrowseModal, setShowBrowseModal] = useState(false);
-    // Usage & cost view.  Lives here because this modal is the closest
-    // thing to a global settings surface; the ledger itself is global.
-    const [showUsageCost, setShowUsageCost] = useState(false);
     const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
     const [browsePath, setBrowsePath] = useState('~');
 
@@ -1202,17 +1198,6 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                     >
                         Manage project templates
                     </a>
-                    <span style={{ fontSize: 12, color: '#888' }}>·</span>
-                    <a
-                        style={{
-                            fontSize: 12,
-                            color: isDarkMode ? '#177ddc' : '#1890ff',
-                            cursor: 'pointer',
-                        }}
-                        onClick={e => { e.preventDefault(); setShowUsageCost(true); }}
-                    >
-                        Usage &amp; cost
-                    </a>
                     {defaultTemplateId && (
                         <span style={{ fontSize: 11, color: '#888' }}>
                             (default: {templates.find(t => t.id === defaultTemplateId)?.name
@@ -1484,11 +1469,6 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                     )}
                 />
             </Modal>
-            <UsageCostModal
-                visible={showUsageCost}
-                onClose={() => setShowUsageCost(false)}
-                projectId={currentProject?.id}
-            />
         </Modal>
     );
 };
