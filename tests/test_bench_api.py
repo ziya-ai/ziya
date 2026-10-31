@@ -144,6 +144,24 @@ def test_conversation_layer_needs_a_conversation(client):
     assert _put(client, "skill:disc", "conversation", "always", cid="nope").status_code == 404
 
 
+def test_conversation_lens_offered_only_when_the_chat_has_a_record(client):
+    """The hub opens on the conversation lens whenever a conversation is open
+    and falls back to ``project`` when the server does not list that lens
+    (BenchModal).  A brand-new chat is an empty shell that never reaches the
+    server, so listing the lens for an unknown id leaves the user on a lens
+    every drop 404s against (the "cannot move" on a fresh install).  The GET
+    must therefore list ``conversation`` only for a chat that exists."""
+    assert "conversation" not in _get(client, cid="nope")["lenses"]
+    assert _get(client, cid="nope")["lenses"] == ["project", "user"]
+    # Positive control: a known chat still gets the lens.
+    assert "conversation" in _get(client, cid=CID)["lenses"]
+    # And every view-returning write reports the same verdict.
+    body = _put(client, "skill:pick", "project", "always", cid="nope").json()
+    assert "conversation" not in body["lenses"]
+    body = _put(client, "skill:pick", "project", "always", cid=CID).json()
+    assert "conversation" in body["lenses"]
+
+
 def test_user_mcp_off_syncs_enable_switch(client):
     assert _put(client, "mcp:jira", "user", "off").status_code == 200
     assert _put(client, "mcp:jira", "user", None).status_code == 200

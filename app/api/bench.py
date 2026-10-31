@@ -69,17 +69,26 @@ class InstallRequest(BaseModel):
     conversation_id: Optional[str] = None
 
 
-def _view_model(items: List[bench_service.BenchItem], result, conversation_id: Optional[str],
+def _view_model(project_id: str, items: List[bench_service.BenchItem], result, conversation_id: Optional[str],
                 placement_meta: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     meta = {i.spec.key: i for i in items}
     placement_meta = placement_meta or {}
     out_items = []
     weight = {"always": 0, "ondemand": 0, "environment": 0}
     deltas = {layer: 0 for layer in WRITABLE_LAYERS}
+    from app.utils.capability_usage import last_used_map
+    last_used = last_used_map()
+    from app.utils.mcp_ondemand import read_record
+    loaded_mcp = read_record(project_id, conversation_id)
     for r in result.items:
         m = meta[r.key]
         d = r.model_dump()
-        d.update(name=m.name, provenance=m.provenance, tokens=m.tokens, health=m.health)
+        d.update(name=m.name, provenance=m.provenance, tokens=m.tokens, health=m.health,
+                 last_used=last_used.get(r.key))
+        # What this conversation has loaded of a within-reach server
+        # (design/mcp-on-demand.md): ``"*"`` or a tool list; null otherwise.
+        if r.kind == "mcp" and r.effective == "ondemand":
+            d["loaded"] = loaded_mcp.get(r.key.partition(":")[2])
         # Per-layer writer info for every layer that holds a placement.
         d["meta"] = {layer: placement_meta.get(layer, {}).get(r.key)
                      for layer, state in r.placements.items() if state is not None}
@@ -97,7 +106,12 @@ def _view_model(items: List[bench_service.BenchItem], result, conversation_id: O
         for layer, state in r.placements.items():
             if state is not None:
                 deltas[layer] += 1
-    lenses = [l for l in WRITABLE_LAYERS if l != "conversation" or conversation_id]
+    # The conversation lens is offered only for a chat the server has a
+    # record of: the client opens on it whenever a conversation is open and
+    # falls back to ``project`` when it is absent.  An unsaved new chat
+    # would otherwise leave the user on a lens every placement 404s against.
+    known = bench_service.conversation_known(project_id, conversation_id)
+    lenses = [l for l in WRITABLE_LAYERS if l != "conversation" or known]
     return {
         "items": out_items,
         "dropped": [d.model_dump() for d in result.dropped],
@@ -123,7 +137,7 @@ def get_bench(project_id: str, conversation_id: Optional[str] = Query(None)) -> 
     except HTTPException:
         raise
     result = bench_service.resolve_bench(project_id, conversation_id, items)
-    return _view_model(items, result, conversation_id, bench_service.placement_meta(project_id))
+    return _view_model(project_id, items, result, conversation_id, bench_service.placement_meta(project_id))
 
 
 @router.get("/detail")
@@ -171,7 +185,7 @@ def put_tool(project_id: str, body: ToolRequest,
     items = bench_service.collect_items(project_id)
     result = bench_service.resolve_bench(project_id, conversation_id, items)
     return {"detail": detail,
-            "view": _view_model(items, result, conversation_id, bench_service.placement_meta(project_id))}
+            "view": _view_model(project_id, items, result, conversation_id, bench_service.placement_meta(project_id))}
 
 
 @router.post("/reauthorize")
@@ -195,7 +209,7 @@ def post_reauthorize(project_id: str, body: ReauthorizeRequest,
     items = bench_service.collect_items(project_id)
     resolved = bench_service.resolve_bench(project_id, conversation_id, items)
     return {"result": result, "detail": detail,
-            "view": _view_model(items, resolved, conversation_id, bench_service.placement_meta(project_id))}
+            "view": _view_model(project_id, items, resolved, conversation_id, bench_service.placement_meta(project_id))}
 
 
 # -- sources / browse / install (slice 8a) -----------------------------------
@@ -267,7 +281,7 @@ def post_install(project_id: str, body: InstallRequest) -> Dict[str, Any]:
             raise HTTPException(status_code=409, detail={"reason": e.reason, "key": e.key, "message": str(e)})
     result = bench_service.resolve_bench(project_id, body.conversation_id, items)
     return {"installed": rec, "missing_requires": ss.missing_requirements(rec.get("requires", [])),
-            "view": _view_model(items, result, body.conversation_id, bench_service.placement_meta(project_id))}
+            "view": _view_model(project_id, items, result, body.conversation_id, bench_service.placement_meta(project_id))}
 
 
 @router.put("/place")
@@ -289,7 +303,7 @@ async def put_place(project_id: str, body: PlaceRequest) -> Dict[str, Any]:
         await _sync_mcp_enabled(body.key.partition(":")[2], body.state != "off")
 
     result = bench_service.resolve_bench(project_id, body.conversation_id, items)
-    return _view_model(items, result, body.conversation_id, bench_service.placement_meta(project_id))
+    return _view_model(project_id, items, result, body.conversation_id, bench_service.placement_meta(project_id))
 
 
 async def _sync_mcp_enabled(server_name: str, enabled: bool) -> None:
