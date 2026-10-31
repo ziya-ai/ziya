@@ -33,7 +33,9 @@ Design choices:
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
+import os
 import time
 from pathlib import Path
 from threading import RLock
@@ -81,6 +83,9 @@ class ProposalsStore:
             memory_dir = get_memory_dir()
         self._dir = Path(memory_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
+        # Serialises threads within this process.  Cross-PROCESS exclusion is
+        # the fcntl lock in _exclusive(); this one is kept because flock is
+        # per open file description, not per thread.
         self._lock = RLock()
         # Cached projection of the event log — invalidated on each append.
         self._cache: Optional[Dict[str, Dict[str, Any]]] = None
@@ -89,6 +94,56 @@ class ProposalsStore:
     @property
     def _path(self) -> Path:
         return self._dir / "probationary.jsonl"
+
+    @property
+    def _lock_path(self) -> Path:
+        return self._dir / "probationary.jsonl.lock"
+
+    class _exclusive:
+        """Cross-process exclusive section around a read-modify-write.
+
+        The log is encrypted as ONE envelope, so every append is a full
+        read-decrypt-rewrite.  With 10+ Ziya processes sharing a home, two
+        appends in the same window both read N events and both write N+1:
+        the second rename wins and the first process's event is gone, and
+        because both use the same ``.jsonl.tmp`` path the loser can crash
+        on a rename of a file the winner already moved (observed in
+        tests/test_proposals_store_cross_process_lock.py; the live log
+        carried a duplicate ``record`` event for one id on 2026-10-25).
+
+        An fcntl advisory lock on a sibling file makes the whole section
+        atomic across processes.  It only serialises: it cannot change
+        which events are written.  Blocking, not try-lock — a writer that
+        skipped on contention would be the lost update this prevents.
+        """
+        def __init__(self, store: "ProposalsStore") -> None:
+            self._store = store
+            self._fd: Optional[int] = None
+
+        def __enter__(self):
+            self._store._lock.acquire()
+            try:
+                self._fd = os.open(self._store._lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+                fcntl.flock(self._fd, fcntl.LOCK_EX)
+            except Exception:
+                if self._fd is not None:
+                    os.close(self._fd)
+                    self._fd = None
+                self._store._lock.release()
+                raise
+            # Another process may have written while we waited; drop the
+            # projection cache so this section reads the file, not memory.
+            self._store._cache = None
+            return self
+
+        def __exit__(self, *exc):
+            try:
+                if self._fd is not None:
+                    fcntl.flock(self._fd, fcntl.LOCK_UN)
+                    os.close(self._fd)
+            finally:
+                self._store._lock.release()
+            return False
 
     # -- Low-level read/write (envelope-aware) ------------------------------
 
@@ -134,9 +189,11 @@ class ProposalsStore:
         Read-modify-write is required because the file is encrypted as
         a single envelope.  Cost is bounded — proposal volume is small
         (single-digits per conversation, 100s lifetime) and writes are
-        infrequent compared to reads.
+        infrequent compared to reads.  The whole sequence runs under the
+        cross-process lock (see _exclusive): without it, concurrent Ziya
+        servers lose each other's appends.
         """
-        with self._lock:
+        with self._exclusive(self):
             existing = self._read_lines()
             existing.append(event)
             self._write_lines(existing)
@@ -449,7 +506,7 @@ class ProposalsStore:
         recent ``max_terminal_records`` records.  Returns the number of
         records pruned.  Idempotent.
         """
-        with self._lock:
+        with self._exclusive(self):
             events = self._read_lines()
             projection = self._project(events)
             terminal_ids = [pid for pid, row in projection.items()

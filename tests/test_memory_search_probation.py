@@ -104,12 +104,37 @@ async def test_genuine_miss_is_out_of_domain(stores):
 
 
 @pytest.mark.asyncio
-async def test_active_hit_takes_precedence_over_probation(stores):
-    """The fallthrough only runs on a MISS in the active store."""
+async def test_active_hit_still_surfaces_probation_after_it(stores):
+    """Probation is consulted on EVERY search, not only on a miss.
+
+    With ~5.5k active memories the similarity search always returns
+    something, so a miss-only fallthrough was dead code and rule 3b
+    (search_hit + response_match) never fired.  Active hits come first;
+    probationary matches follow, labelled, and the search_hit signal is
+    recorded so the fact can promote if the response then uses it.
+    """
+    mem, props = stores
+    from app.models.memory import Memory
+    saved = mem.save(Memory(content="Phaser DWRR active memory.", tags=["phaser"]))
+    pid = _open_proposal(props, "Phaser DWRR probationary duplicate.")
+
+    out = await _search("phaser dwrr")
+    assert out.get("probationary") == 1
+    assert out["count"] == 2
+    body = out["content"]
+    assert body.index(saved.id) < body.index(pid), "active hit must rank first"
+    assert "unverified" in body
+    row = props.get(pid)
+    assert row["status"] == "open"
+    assert any(s.get("name") == "search_hit" for s in row.get("signals", []))
+
+
+@pytest.mark.asyncio
+async def test_active_hit_without_probation_match_has_no_probation_key(stores):
     mem, props = stores
     from app.models.memory import Memory
     mem.save(Memory(content="Phaser DWRR active memory.", tags=["phaser"]))
-    _open_proposal(props, "Phaser DWRR probationary duplicate.")
+    _open_proposal(props, "Unrelated lunar tides fact.")
 
     out = await _search("phaser dwrr")
     assert "probationary" not in out
