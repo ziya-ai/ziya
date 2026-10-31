@@ -84,12 +84,25 @@ at full fidelity in the PDF.
    Cite them only in a sources appendix when the reader needs them.
 4. `<!-- ziya:pagebreak -->` on its own line forces a page break; it is an
    invisible HTML comment in every other markdown viewer.
-5. To render a PDF, POST to the local server (default port 6969):
-   curl -s -X POST localhost:6969/api/export/document \\
+5. To render a PDF, POST to the Ziya server that is running THIS
+   conversation. Its port is in the shell tool's environment as $ZIYA_PORT
+   — use that, never a guessed or remembered port number:
+   curl -s -X POST "localhost:$ZIYA_PORT/api/export/document" \\
      -H 'Content-Type: application/json' \\
      -H "X-Project-Root: $PWD" \\
      -d '{"name": "report.md"}' -o /tmp/report.pdf
-   (or pass {"markdown": "..."} inline). The X-Project-Root header is
+   (or pass {"markdown": "..."} inline). Then verify with
+   `head -c 5 /tmp/report.pdf` — the export succeeded only if it prints
+   %PDF. If $ZIYA_PORT is empty, discover the server instead of assuming a
+   port: `lsof -nP -iTCP -sTCP:LISTEN | grep -i python` lists candidate
+   ports; try the export against each and keep the response that starts
+   with %PDF. You may conclude the export server is unreachable ONLY after
+   every discovered port has been tried and none returned %PDF, and you
+   must record which ports you tried and what each returned. A single
+   failed probe of one port is not evidence of anything. Do not fall back
+   to pandoc, wkhtmltopdf or a hand-rolled renderer before that point —
+   they drop the diagram fences this pipeline renders natively.
+   The X-Project-Root header is
    REQUIRED with "name": the store is <project>/.ziya/documents/, and without
    the header the server resolves it against the directory it was started
    in, which may not be this project ("Document not found"). Your shell
