@@ -199,19 +199,31 @@ size never changes.
 
 ## Exporting
 
-`POST /api/export/document` returns PDF bytes:
+`POST /api/export/document` returns PDF bytes. The server exports its own
+port as `ZIYA_PORT` into the environment the shell tool runs in, so a model
+(or a task-card stage) should address `localhost:$ZIYA_PORT` rather than a
+remembered number — several Ziya servers on one machine each listen on a
+different port, and only the one running the conversation has the right
+project's `.ziya/documents/` store. The default when nothing else is set
+is 6969.
 
 ```bash
 # By stored name (relative to .ziya/documents/):
-curl -X POST localhost:6969/api/export/document \
+curl -X POST "localhost:${ZIYA_PORT:-6969}/api/export/document" \
   -H 'Content-Type: application/json' \
+  -H "X-Project-Root: $PWD" \
   -d '{"name": "q3-report.md"}' -o report.pdf
+head -c 5 report.pdf      # prints %PDF on success
 
 # Or inline:
-curl -X POST localhost:6969/api/export/document \
+curl -X POST "localhost:${ZIYA_PORT:-6969}/api/export/document" \
   -H 'Content-Type: application/json' \
   -d '{"markdown": "---\ntitle: X\n---\n# Hello"}' -o out.pdf
 ```
+
+If `ZIYA_PORT` is unset (a shell outside Ziya), find the server with
+`lsof -nP -iTCP -sTCP:LISTEN | grep -i python` and try each listening port;
+the right one answers with bytes starting `%PDF`.
 
 Optional body fields: `title` (overrides front-matter), `includeFooter`
 (default **true**, matching the other export routes — the running footer
