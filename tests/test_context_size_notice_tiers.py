@@ -63,7 +63,10 @@ def test_no_notice_is_staged_at_any_pressure(tokens):
 def test_main_loop_no_longer_injects_a_token_budget_warning():
     from pathlib import Path
     src = (Path(__file__).resolve().parents[1] / "app" / "streaming_tool_executor.py").read_text()
-    assert "Context Size Notice" not in src
+    # The rendered form the model was shown, not the bare phrase: the code
+    # comment that records WHY the notice was removed quotes the phrase, and
+    # a guard that forbids explaining a removal is a guard against comments.
+    assert "**Context Size Notice:**" not in src
     assert "throttle_state.pop('token_budget_warning'" not in src
     assert "Stop reading new content" not in src
     # The iteration-budget notices are a different thing (iteration count,
