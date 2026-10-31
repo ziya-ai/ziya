@@ -16,8 +16,11 @@ import type { Conversation } from '../utils/types';
 import { db } from '../utils/db';
 import { hydrateConversationMessages } from '../utils/conversationHydration';
 import { computeConversationStats, formatBytes } from '../utils/conversationInfo';
-import { fetchConversationCost, formatTokens, RollupResponse } from '../api/usageApi';
+import {
+    fetchConversationUsage, formatDurationLong, formatTokens, ConversationUsage,
+} from '../api/usageApi';
 import { CostCell } from './UsageCostModal';
+import { RunResourcesPanel } from './TaskCard/RunResourcesPanel';
 
 const { Text } = Typography;
 
@@ -73,10 +76,13 @@ const ConversationInfoModal: React.FC<Props> = ({
     // Backend detailed-capture flag (char counts + disk snapshots); null
     // until the first Load reports it.
     const [detailedCapture, setDetailedCapture] = useState<boolean | null>(null);
-    // Ledger rollup for this conversation (usage.db, global).  null =
-    // not loaded; error string when the request failed.
-    const [cost, setCost] = useState<RollupResponse | null>(null);
+    // Ledger cost for this conversation AND the task runs launched from
+    // it (app/utils/conversation_cost.py).  null = not loaded; error
+    // string when the request failed.
+    const [cost, setCost] = useState<ConversationUsage | null>(null);
     const [costError, setCostError] = useState<string | null>(null);
+    // Run whose Resources panel is expanded inline from a "run #n" link.
+    const [openRunId, setOpenRunId] = useState<string | null>(null);
 
     useEffect(() => {
         if (!visible || !conversationId) return;
@@ -124,15 +130,17 @@ const ConversationInfoModal: React.FC<Props> = ({
     useEffect(() => {
         setCost(null);
         setCostError(null);
+        setOpenRunId(null);
         if (!visible || !conversationId) return;
         let cancelled = false;
-        fetchConversationCost(conversationId).then(r => {
+        const pid = (conversation as any)?.projectId || projectId;
+        fetchConversationUsage(conversationId, pid).then(r => {
             if (!cancelled) setCost(r);
         }).catch(e => {
             if (!cancelled) setCostError(e instanceof Error ? e.message : String(e));
         });
         return () => { cancelled = true; };
-    }, [visible, conversationId]);
+    }, [visible, conversationId, projectId, conversation]);
 
     const fetchContextDebug = async () => {
         const pid = full?.projectId || (conversation as any)?.projectId || projectId;
@@ -244,14 +252,66 @@ const ConversationInfoModal: React.FC<Props> = ({
                         ) : cost.totals.records === 0 ? (
                             <Text type="secondary">no usage recorded</Text>
                         ) : (
-                            <span>
-                                <CostCell g={cost.totals} />
-                                <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                                    {cost.totals.records} calls · {formatTokens(cost.totals.dims.input)} in
-                                    {' · '}{formatTokens(cost.totals.dims.cache_read)} cached
-                                    {' · '}{formatTokens(cost.totals.dims.output)} out
-                                </Text>
-                            </span>
+                            <div data-testid="conversation-cost">
+                                <span>
+                                    <CostCell g={cost.totals} />
+                                    <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                                        {cost.totals.records} calls · {formatTokens(cost.totals.dims.input)} in
+                                        {' · '}{formatTokens(cost.totals.dims.cache_read)} cached
+                                        {' · '}{formatTokens(cost.totals.dims.output)} out
+                                        {cost.chat.records === 0 && cost.runs.length > 0 &&
+                                            ` · all from ${cost.runs.length} task run${cost.runs.length === 1 ? '' : 's'}`}
+                                    </Text>
+                                </span>
+                                {cost.runs.length > 0 && (
+                                    <table style={{ width: '100%', marginTop: 8, fontSize: 12, borderCollapse: 'collapse' }}>
+                                        <tbody>
+                                            <tr>
+                                                <td>💬 Chat turns</td>
+                                                <td style={{ textAlign: 'right' }}>{cost.chat.records} calls</td>
+                                                <td style={{ textAlign: 'right' }}><CostCell g={cost.chat} /></td>
+                                            </tr>
+                                            {cost.runs.map(r => {
+                                                const pid = (conversation as any)?.projectId || projectId;
+                                                const label = `${r.card_name || r.card_id || 'task card'}` +
+                                                    (r.ordinal ? ` run #${r.ordinal}` : '') +
+                                                    (r.attempt && r.attempt > 1 ? ` · attempt ${r.attempt}` : '');
+                                                return (
+                                                    <React.Fragment key={r.run_id}>
+                                                        <tr style={{ borderTop: '1px solid rgba(128,128,128,0.2)' }}>
+                                                            <td>
+                                                                ⚙️ {pid ? (
+                                                                    <a onClick={() => setOpenRunId(openRunId === r.run_id ? null : r.run_id)}
+                                                                       title={r.run_id}>{label}</a>
+                                                                ) : label}
+                                                                {r.status && <Tag style={{ marginLeft: 6 }}>{r.status}</Tag>}
+                                                                {r.missing && <Tag color="orange">record deleted</Tag>}
+                                                                {r.wall_ms != null && (
+                                                                    <Text type="secondary"> {formatDurationLong(r.wall_ms)}</Text>
+                                                                )}
+                                                            </td>
+                                                            <td style={{ textAlign: 'right' }}>{r.cost?.records ?? 0} calls</td>
+                                                            <td style={{ textAlign: 'right' }}>
+                                                                {r.cost ? <CostCell g={r.cost} /> : <Text type="secondary">—</Text>}
+                                                            </td>
+                                                        </tr>
+                                                        {openRunId === r.run_id && pid && (
+                                                            <tr>
+                                                                <td colSpan={3}>
+                                                                    <RunResourcesPanel
+                                                                        projectId={pid} runId={r.run_id}
+                                                                        status={r.status || 'done'} defaultOpen
+                                                                    />
+                                                                </td>
+                                                            </tr>
+                                                        )}
+                                                    </React.Fragment>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
                         )}
                     </Descriptions.Item>
                     <Descriptions.Item label="Storage state">
