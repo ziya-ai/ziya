@@ -362,6 +362,17 @@ class Artifact(BaseModel):
     # when nothing was templated, and on records written before the
     # field existed.
     template_resolutions: List[TemplateResolution] = []
+    # Tool-side CPU this task caused: user+system time of the children the
+    # server process reaped during the task body (shell commands and what
+    # they ran), in ms.  Cannot see the model's CPU, and concurrent tasks
+    # in a Parallel fan-out share the process, so each delta includes any
+    # sibling's children too.  None on container artifacts and on records
+    # written before the field existed.  See app/utils/run_resources.py.
+    cpu_ms: Optional[int] = None
+    # Files the model named to the write tool, sized when the task ended:
+    # ``[{path, bytes, exists}]``.  Shell redirections are not visible
+    # here; declared ``file`` output parts cover some of that gap.
+    files_written: List[Dict[str, Any]] = []
 
 
 # ── Output contracts (design/typed-findings.md) ────────────
