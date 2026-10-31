@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Tests for the inspector's completion footer (B5).
  *
  * The reported symptom: "there's no indication of completion in the live
