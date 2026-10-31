@@ -311,4 +311,30 @@ ziya-approve --list              Audit every escalating task (signed/unsigned)
 sudo ziya-approve --cli-task <name> [--root <dir>]   Approve a CLI task's escalation
 ```
 
+## Scheduled task cards (`ziya schedule`)
+
+A task card's Schedule block is a *request*; nothing fires until the card is
+registered. The registration is what the in-process scheduler reads, and you
+own it from then on (enable, disable, change the cadence, unregister) without
+editing the card. These commands are the same registry the GUI's Tasks →
+Schedules tab and the `/schedules` API use, so they cannot disagree.
+
+```
+ziya schedule list                       Registered cards (next/last fire, problems),
+                                         cards requesting a cadence nobody registered,
+                                         and which process holds the scheduler lock
+ziya schedule register <card>            Register with the cadence from its Schedule block
+ziya schedule register <card> --daily 03:15 | --every 2 hours | --cron "0 3 * * *" | --at 2026-11-01T09:00
+ziya schedule enable|disable <card>      Pause or resume without unregistering
+ziya schedule unregister <card>          Stop firing (the fire count resets)
+ziya schedule fire <card>                Fire now through the scheduler path: headless,
+                                         counted as a fire. Works before registering.
+ziya schedule status                     Who holds ~/.ziya/scheduler.lock
+```
+
+`<card>` is a card id or its name. Only a running Ziya server fires; `list`
+tells you whether one holds the lock. A cadence the scheduler cannot read
+(a 4-field cron, `25:00`, an interval of 0) is refused at registration
+with the reason, and `list` flags a registration that can never fire.
+
 All standard Ziya flags work with tasks: `--profile`, `--model`, `--no-stream`, etc.
