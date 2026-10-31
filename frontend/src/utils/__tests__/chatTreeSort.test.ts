@@ -26,11 +26,13 @@ describe('sortComparator active-processing tier', () => {
     expect(order).toEqual(['conv-active', 'conv-idle1', 'conv-idle2']);
   });
 
-  it('sorts an active conversation above a folder with newer activity', () => {
+  it('keeps an idle folder above an active conversation — folders partition first (design/visual-refresh.md)', () => {
+    // Before the partition an active chat outranked every folder.  Now the
+    // folder block is contiguous; the active tier orders WITHIN each group.
     const activeOld = conv('active', 1000);
     const busyFolder = folder('f1', 9000);
     const order = sortAll([busyFolder, activeOld], new Set(['active']));
-    expect(order).toEqual(['conv-active', 'f1']);
+    expect(order).toEqual(['f1', 'conv-active']);
   });
 
   it('orders two active conversations by activity time, newest first', () => {
@@ -55,11 +57,12 @@ describe('sortComparator active-processing tier', () => {
   });
 
   it('ignores active ids that match folder ids — only conversations qualify', () => {
+    // The folder sorts first regardless (folder partition), so compare two
+    // folders: the one whose id is in the active set must get no boost.
     const f = folder('shared-id', 1000);
-    const c = conv('other', 5000);
-    // 'shared-id' in the active set must not promote the folder
-    const order = sortAll([f, c], new Set(['shared-id']));
-    expect(order).toEqual(['conv-other', 'shared-id']);
+    const f2 = folder('other', 5000);
+    const order = sortAll([f, f2], new Set(['shared-id']));
+    expect(order).toEqual(['other', 'shared-id']);
   });
 
   it('a running-task conversation (also in the active set) outranks idle rows', () => {
@@ -82,17 +85,35 @@ describe('sortComparator active-processing tier', () => {
     expect(sortAll([busyFolder, pinned])).toEqual(['pf', 'busy']);
   });
 
-  it('a directly-active conversation and a folder with an active descendant are both top-tier, ordered by activity time', () => {
+  it('a folder with an active descendant sorts above a directly-active conversation (folder partition wins)', () => {
     const activeConv = conv('active', 5000);
     const busyFolder = folder('busy', 9000, 9000, { hasActiveDescendant: true });
     const order = sortAll([activeConv, busyFolder], new Set(['active']));
     expect(order).toEqual(['busy', 'conv-active']);
   });
+});
+
+describe('sortComparator folder partition (design/visual-refresh.md)', () => {
+  it('every folder sorts above every conversation regardless of activity', () => {
+    const order = sortAll([conv('new', 9000), folder('idle', 10), conv('old', 100), folder('idle2', 20)]);
+    expect(order).toEqual(['idle2', 'idle', 'conv-new', 'conv-old']);
+  });
+
+  it('within the folder block, an active-descendant folder still floats above idle folders', () => {
+    const order = sortAll([folder('idle', 9000), folder('busy', 10, 10, { hasActiveDescendant: true }), conv('c', 5000)], new Set());
+    expect(order).toEqual(['busy', 'idle', 'conv-c']);
+  });
+
+  it('pinned folders stay above unpinned folders', () => {
+    const order = sortAll([folder('f', 9000), folder('p', 10, 10, { isPinned: true })]);
+    expect(order).toEqual(['p', 'f']);
+  });
 
   it('hasActiveDescendant=false does not promote a folder (baseline no-op)', () => {
+    // Against another folder, since folders always precede chats now.
     const f = folder('f', 100, 100, { hasActiveDescendant: false });
-    const c = conv('c', 5000);
-    expect(sortAll([f, c])).toEqual(['conv-c', 'f']);
+    const newer = folder('newer', 5000, 5000);
+    expect(sortAll([f, newer])).toEqual(['newer', 'f']);
   });
 });
 

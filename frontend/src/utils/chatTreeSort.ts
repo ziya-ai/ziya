@@ -33,6 +33,14 @@ export function sortComparator(
   if (a.isPinned && !b.isPinned) return -1;
   if (!a.isPinned && b.isPinned) return 1;
 
+  // Folders before conversations at every level (design/visual-refresh.md,
+  // Chats tab).  Interleaving by activity let a chat touched an hour ago
+  // sit above every folder; filing is the behaviour to encourage, and the
+  // "N unfiled" divider the sidebar draws needs a contiguous chat block.
+  // The active tier below still orders WITHIN each group.
+  if (a.folder && !b.folder) return -1;
+  if (!a.folder && b.folder) return 1;
+
   // Active-processing tier: a conversation currently streaming or running
   // a task always outranks anything that isn't (except pinned folders).
   // Folders participate via a precomputed `hasActiveDescendant` flag (set

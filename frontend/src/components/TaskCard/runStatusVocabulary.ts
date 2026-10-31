@@ -205,6 +205,15 @@ export const RUN_STATUS_CHIP_LABEL: Partial<Record<RunStatus, string>> = {
 };
 
 /**
+ * One-word chip labels for the Compact sidebar density, where the chip
+ * shares a 26px row with the title.  The full label stays in the tooltip.
+ */
+export const RUN_STATUS_CHIP_LABEL_COMPACT: Partial<Record<RunStatus, string>> = {
+  awaiting_input: 'Waiting',
+  held: 'Held',
+};
+
+/**
  * Status as the ROW should read it.
  *
  * A server restart reconciles an unanswered ``awaiting_input`` run to
