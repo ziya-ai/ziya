@@ -4048,7 +4048,12 @@ interface DiffViewWrapperProps {
 const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, index, elementId, isStreaming: isMessageStreaming = false, readOnly = false }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(window.diffShowLineNumbers || false);
-    const { currentConversationId, isStreaming: isGlobalStreaming } = useStreamingContext();
+    // Streaming state is the MESSAGE's (isMessageStreaming), never the
+    // conversation's.  The global flag flips for every message at send and at
+    // stream end; gating the two render branches below on it remounted every
+    // committed diff in history twice per turn (~70 K detached nodes per flip
+    // on a 100-message conversation).
+    const { currentConversationId } = useStreamingContext();
     const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty');
     const [isVisible, setIsVisible] = useState<boolean>(true);
     const [currentContent, setCurrentContent] = useState<string>(token.text || '');
@@ -4178,9 +4183,9 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
 
     // Track streaming state in a ref to avoid re-renders
     useEffect(() => {
-        isStreamingRef.current = isGlobalStreaming;
+        isStreamingRef.current = isMessageStreaming;
         return () => { isStreamingRef.current = false; };
-    }, [isGlobalStreaming]);
+    }, [isMessageStreaming]);
 
     if (!hasText(token)) {
         return <div>Loading content...</div>;
@@ -4191,9 +4196,9 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
     }
 
     // If we're streaming and have any parsed files, always show them
-    if ((isGlobalStreaming) && parsedFilesRef.current.length > 0 && (displayMode as DisplayMode) !== 'raw') {
+    if (isMessageStreaming && parsedFilesRef.current.length > 0 && (displayMode as DisplayMode) !== 'raw') {
         // Keep rendering even when not visible to maintain state
-        if (!isVisible && !isGlobalStreaming) return null; // Always render during streaming
+        if (!isVisible && !isMessageStreaming) return null; // Always render during streaming
 
         return (
             <div>
@@ -4269,7 +4274,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
                         viewType={viewType}
                         initialDisplayMode={displayMode}
                         key={stableElementIdRef.current}
-                        forceRender={isGlobalStreaming} // Force render during streaming
+                        forceRender={isMessageStreaming} // Force render during streaming
                         isStreaming={isMessageStreaming}
                         elementId={stableElementIdRef.current!}
                         showLineNumbers={showLineNumbers}
