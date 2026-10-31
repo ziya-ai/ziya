@@ -345,6 +345,12 @@ def _check_gather(block: Block, index: "_TreeIndex", err, warn) -> None:
                     f"{index.ids[pid].block_type} block; a producer must be a task or a call")
         for label, unit in gather_units(block, g):
             producers, tasks = unit_producers(unit, g)
+            if needs_all and lo >= 1:
+                for p in producers:
+                    if p.block_type == "task" and any(
+                            _entry_get(e, "name") == name and _entry_get(e, "required") is False
+                            for e in p.output_contract or []):
+                        optional_producers.append(p.name or p.id or "?")
             if wanted:
                 if mx == 1 and len(producers) > 1:
                     err(f"gather_contract {name!r}: unit {label!r} has {len(producers)} "
@@ -363,6 +369,15 @@ def _check_gather(block: Block, index: "_TreeIndex", err, warn) -> None:
                 warn(f"gather_contract {name!r}: {label!r} has no task to push the contract "
                      f"to (a call, or nothing) - it is checked only at the container end, "
                      f"with no correction turn")
+        if optional_producers and per in ("child", "iteration"):
+            shown = ", ".join(optional_producers[:8])
+            unit_word = "child" if per == "child" else "iteration"
+            hint = (f" (e.g. {n_units - 1} of {n_units})" if n_units and n_units > 1 else "")
+            warn(f"gather_contract {name!r}: {shown} declare(s) {name!r} with required: false, "
+                 f"but the gather requires every {unit_word} of {block.name or block.id!r} "
+                 f"to emit at least {lo} - one that emits nothing fails the container. Set "
+                 f"min_units to how many must succeed{hint}, or drop the gather contract "
+                 f"if none must")
         _check_gather_conflicts(block, g, name, index, err)
 
 
