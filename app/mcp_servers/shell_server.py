@@ -237,6 +237,57 @@ def _consume_assignment_with_subst(segment: str) -> str | None:
     return None  # unbalanced parens
 
 
+# Placeholders for an escaped ``$`` / backtick, carried through variable
+# expansion and ``shlex.split`` and restored per token afterwards.  Private-use
+# code points: not shell syntax, not glob metacharacters, not valid in a
+# variable name.
+_ESC_DOLLAR = "\ue000"
+_ESC_BACKTICK = "\ue001"
+
+
+def _protect_escaped_expansions(segment: str) -> str:
+    """Replace ``\\$`` and ``\\``` (outside single quotes) with placeholders.
+
+    Inside double quotes bash removes the backslash before exactly ``$``,
+    backtick, ``"`` and ``\\``.  ``shlex.split`` applies that rule only to
+    ``"`` and ``\\``, so ``"FROM \\`tbl\\`"`` reached the program with the
+    backslashes intact (a SQL quoted identifier arrived as ``\\`tbl\\```).
+    And the quote-naive ``_expand_vars`` / ``_expand_special_params`` passes
+    run BEFORE tokenizing, so ``"\\$HOME"`` was expanded instead of delivered
+    as the literal ``$HOME``.  Swapping the pair for a placeholder first makes
+    both passes blind to it; ``_restore_escaped_expansions`` puts the bare
+    character back once the token exists.  Unquoted ``\\$`` / ``\\``` get the
+    same treatment, which agrees with what shlex would have produced.  Inside
+    single quotes a backslash is literal and is left alone.
+    """
+    out = []
+    i, n = 0, len(segment)
+    in_sq = in_dq = False
+    while i < n:
+        ch = segment[i]
+        if ch == '\\' and not in_sq and i + 1 < n:
+            nxt = segment[i + 1]
+            if nxt == '$':
+                out.append(_ESC_DOLLAR)
+            elif nxt == '`':
+                out.append(_ESC_BACKTICK)
+            else:
+                out.append(ch + nxt)
+            i += 2
+            continue
+        if ch == "'" and not in_dq:
+            in_sq = not in_sq
+        elif ch == '"' and not in_sq:
+            in_dq = not in_dq
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _restore_escaped_expansions(token: str) -> str:
+    return token.replace(_ESC_DOLLAR, '$').replace(_ESC_BACKTICK, '`')
+
+
 def _consume_raw_word(segment: str) -> str:
     """Return the raw span of the first whitespace-delimited word in *segment*.
 
@@ -938,6 +989,9 @@ class ShellServer:
         # merged view (os.environ overlaid with them) so assignments earlier
         # in the same command are visible; otherwise defer to the stdlib
         # expander to preserve its exact semantics.
+        # An escaped ``\$`` / ``\``` must survive expansion AND tokenizing as
+        # the bare character; see _protect_escaped_expansions.
+        cmd_segment = _protect_escaped_expansions(cmd_segment)
         expanded = self._expand_vars(cmd_segment, extra_env)
 
         try:
@@ -946,6 +1000,7 @@ class ShellServer:
             # Malformed quoting — fall back to naive whitespace split
             print(f"shlex.split failed ({e}), falling back to split()", file=sys.stderr)
             tokens = expanded.split()
+        tokens = [_restore_escaped_expansions(t) for t in tokens]
 
         if not tokens:
             return tokens
@@ -1323,7 +1378,9 @@ class ShellServer:
             '!': '',                # background jobs are unsupported
         }
         return re.sub(
-            r'\$\{?([?$!])\}?',
+            # A backslash-escaped ``$`` is literal (``"\$?"``), the same
+            # rule _protect_escaped_expansions applies at tokenize time.
+            r'(?<!\\)\$\{?([?$!])\}?',
             lambda m: replacements[m.group(1)],
             cmd_segment,
         )
