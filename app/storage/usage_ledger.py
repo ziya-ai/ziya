@@ -38,7 +38,7 @@ LEDGER_FILENAME = "usage.db"
 
 SOURCES = ("chat", "task", "delegate", "cli", "memory", "other")
 GROUP_KEYS = ("user", "project", "conversation", "run", "model", "provider",
-              "tier", "source", "day", "month", "status")
+              "tier", "source", "day", "month", "status", "block")
 
 
 @dataclass
@@ -263,6 +263,8 @@ def _group_key(rec: UsageRecord, by: str) -> str:
         return rec.conversation_id or "(none)"
     if by == "run":
         return rec.run_id or "(none)"
+    if by == "block":
+        return rec.block_id or "(none)"
     if by == "model":
         return f"{rec.provider}/{rec.model_id}"
     if by == "provider":
