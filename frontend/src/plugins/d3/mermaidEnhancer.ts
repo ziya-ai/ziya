@@ -5138,7 +5138,7 @@ export function enhanceMermaid(mermaid: any): void {
   mermaid.render = async function(id: string, definition: string, ...args: any[]): Promise<any> {
     try {
       // CRITICAL DEBUG: Log exactly what the enhancer receives
-      console.log('🔧 ENHANCER-INPUT: Received definition:', {
+      console.info('🔧 ENHANCER-INPUT: Received definition:', {
         type: typeof definition,
         length: definition?.length || 0,
         first50: definition?.substring(0, 50) || 'N/A',
