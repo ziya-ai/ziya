@@ -2857,9 +2857,19 @@ staff; chord charts stay above (the default).
 direction (`"text": "rit."`).  `position` may be `above` (default) or
 `below`; the line is dashed unless `"dashed": false`.
 
-An above-staff bracket is raised automatically when a `tempo` is also present,
-since both occupy the band above the top staff.  Add `"line": N` (stave-line
-units from the staff) only if you need to clear something else as well.
+`"hooks"` picks the end-hooks: `"end"` (default, the 8va hook), `"both"` (the
+phrase / entry bracket of an ensemble part: a solid line hooked at each end,
+no text needed) or `"none"`.
+
+Placement is automatic: a bracket rises to clear the highest note it spans
+(a lowered one the lowest), brackets whose ranges overlap are stacked onto
+separate bands, and a `tempo` sharing the band is lifted above them.  Add
+`"line": N` (stave-line units from the staff) only to override all of that.
+
+```
+"brackets": [{"from": 0, "to": 2, "hooks": "both"},   // two hooked phrase brackets
+             {"from": 2, "to": 4, "hooks": "both"}]   // overlap -> stacked
+```
 
 `trillLines` draws a full trill across a run of notes.  For the default
 `trill` wiggle the leading `tr` glyph is added automatically, so a trill line
@@ -2950,7 +2960,9 @@ tempo mark or brackets above it.
                                    // is bar 1 (published convention).  Only
                                    // affects numbering; write the short upbeat
                                    // as measures[0] and it engraves as-is.
-  "section": "B",                  // rehearsal-mark style label
+  "section": "B",                  // rehearsal mark on the OPENING bar; for a
+                                   // mark mid-score put "section": "B" on that
+                                   // measure instead (boxed above its bar)
   "notes": [ ... ]
 }
 ```
@@ -3081,10 +3093,19 @@ Controls, all optional:
   one-bar-per-line.
 - `systemSpacing` — px gap between stacked systems (default 36).
 - `"systemBreak": true` on a measure — force a new system there, for a break
-  at a musical seam the width budget would not have chosen.
+  at a musical seam the width budget would not have chosen.  When you place
+  breaks, they define the lines: the width budget no longer also breaks inside
+  one of them, so lay out a whole score with `systemBreak` alone.
+- `justifyLastSystem` — the last system is stretched to the right margin when
+  it is at least half full and left at natural width when it is a short tail.
+  `true` always stretches it, `false` never does.
 - `width` on the spec — pins the canvas and turns wrapping OFF entirely, on
   the basis that an explicit width is you choosing the layout.  A pinned
-  width that is too narrow crowds the notes rather than breaking the line.
+  width too narrow for the music grows to fit it (still one line), and one
+  past the legibility limit is ignored and wrapping turns back on.
+
+A measure with `"notes": []` draws as an empty bar — use it for a bar where a
+part is silent and the other hand plays, without inventing a rest.
 
 One real constraint: a span cannot cross a system break.  `slurs`, `ties`,
 `glissandos`, `hairpins`, `brackets`, `trillLines`, `pedals`, `tuplets` and explicit
@@ -3262,6 +3283,23 @@ The slur arcs from bass c3 up to treble c5; the tie holds the g4 shared between
 bass n1 and treble n0.  An out-of-range endpoint, or a span whose ends land on
 different systems, is skipped with a warning.  Only meaningful with `staves`;
 within one staff use `slurs` / `ties`.
+
+## Hand-crossing lines (keyboard, harp)
+
+The straight line a keyboard or harp score draws from a note in one hand's
+staff to the note the other hand takes next, usually labelled "l.h." /
+"r.h.", is `crossStaffLines` at the SPEC level.  Endpoints are
+`[staffIndex, noteIndex]` pairs, as for `crossStaffSlurs`; `text` labels it
+beside the lower note, and `"dashed": true` draws it dashed.  Put the
+crossed-to note in the OTHER staff's `notes` (that is the hand that plays
+it), leaving an empty bar on the first staff if it has nothing else there.
+
+```
+"crossStaffLines": [{"from": [0, 4], "to": [1, 5], "text": "l.h."}]
+```
+
+Do not use a `glissando` for this: it reads as a pitch slide.  An
+out-of-range endpoint, or one on another system, is skipped with a warning.
 
 ## Independent voices on one staff (keyboard, SATB, counterpoint)
 
