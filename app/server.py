@@ -471,9 +471,13 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     # off the rewrite is a pure function of each message and cached history
     # prefixes are unaffected.  See app/utils/tool_history_rewrite.py and
     # design/tool-result-aging.md.
+    # conversation_id lets the tributary-fold gate read this conversation's
+    # recorded context pressure (record_context_pressure below and in the
+    # executor) and record what this replay's folds saved for the next turn.
     try:
         from app.utils.tool_history_rewrite import rewrite_tool_history
-        processed_chat_history = rewrite_tool_history(processed_chat_history)
+        processed_chat_history = rewrite_tool_history(
+            processed_chat_history, conversation_id=conversation_id)
     except Exception as e:
         logger.warning(f"Tool-history rewrite failed (non-fatal): {e}")
 

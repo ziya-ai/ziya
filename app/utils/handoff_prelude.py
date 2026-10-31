@@ -120,15 +120,25 @@ def record_context_pressure(conversation_id: Optional[str], tokens: int,
     _pressure_cache[conversation_id] = (int(tokens), int(limit))
 
 
-def get_context_pressure(conversation_id: Optional[str]) -> Optional[float]:
-    """Fraction of the context limit the previous turn used, or None."""
+def get_context_pressure_detail(conversation_id: Optional[str]) -> Optional[Tuple[int, int]]:
+    """``(tokens, limit)`` recorded for the previous turn, or None.  The
+    tributary-fold gate needs both numbers, not the ratio, so it can add
+    back what that turn's folds saved (tool_history_rewrite.fold_pressure_for)."""
     if not conversation_id:
         return None
     hit = _pressure_cache.get(conversation_id)
+    if not hit or not hit[1]:
+        return None
+    return int(hit[0]), int(hit[1])
+
+
+def get_context_pressure(conversation_id: Optional[str]) -> Optional[float]:
+    """Fraction of the context limit the previous turn used, or None."""
+    hit = get_context_pressure_detail(conversation_id)
     if not hit:
         return None
     tokens, limit = hit
-    return tokens / limit if limit else None
+    return tokens / limit
 
 
 def clear_pressure_cache() -> None:
