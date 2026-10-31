@@ -851,6 +851,16 @@ class ShellServer:
             if cmd and cmd not in self.allowed_commands:
                 self.allowed_commands.append(cmd)
 
+        # Commands the human granted explicitly, as opposed to the ones the
+        # built-in defaults or an enterprise plugin admit.  _scope_env has
+        # already been verified or clamped to the floor above, so an entry
+        # here beyond the floor carries a ziya-approve signature; a value
+        # hand-written into mcp_config.json never reaches this set.  The
+        # hard-coded subcommand hardening (_aws_subcommand_blocked) defers to
+        # these: a user who put "aws" in their Shell Configuration allowlist
+        # asked for aws, not for "aws minus whatever this file finds risky".
+        self.explicit_commands = set(env_commands)
+
         # Add destructive commands (rm, mv, cp, mkdir, etc.) to the allowlist
         # so they pass the command-name gate.  The write policy checker
         # (ShellWriteChecker._destructive) validates their *target paths*
@@ -2088,11 +2098,17 @@ class ShellServer:
     def _aws_subcommand_blocked(self, cmd_segment: str) -> Optional[str]:
         """Return a denial reason if the segment is a high-risk aws subcommand.
 
-        'aws' stays allowlisted for read-only use, but credential-vending,
-        IAM mutation, infra deploy, and bulk data-movement subcommands are
-        denied because they enable privilege escalation or exfiltration with
-        the developer's credentials. Defense-in-depth, not a complete sandbox;
-        YOLO mode bypasses this (it bypasses the whole allowlist).
+        A hard-coded policy layered on top of the command allowlist, not part
+        of it: an allowlisted 'aws' (the enterprise plugin adds it) admits
+        read-only use, while credential-vending, IAM mutation, infra deploy
+        and S3 upload/delete subcommands are denied because they enable
+        privilege escalation or exfiltration with the developer's
+        credentials.  It defers to an explicit human grant: when the verified
+        allowlist names ``aws``, ``aws <service>`` or ``aws <service>
+        <action>`` itself (self.explicit_commands) the user asked for that,
+        and this layer stays out of the way.  Defense-in-depth, not a
+        complete sandbox; YOLO mode bypasses this (it bypasses the whole
+        allowlist).
         """
         # AWS global options that consume the FOLLOWING token as their value,
         # so "--region us-west-2 iam ..." isn't mis-read as service "us-west-2".
@@ -2125,17 +2141,38 @@ class ShellServer:
             return None
         service = positionals[0]
         action = positionals[1] if len(positionals) > 1 else ''
+        rest = tokens[i:]
+
+        explicit = getattr(self, 'explicit_commands', None) or set()
+        if {'aws', f'aws {service}', f'aws {service} {action}'.strip()} & explicit:
+            return None
 
         def _starts(prefixes) -> bool:
             return any(action.startswith(p) for p in prefixes)
+
+        def _s3_writes() -> bool:
+            # rm/rb/mb mutate the bucket; mv deletes its source after the
+            # copy.  cp/sync are blocked only when they write INTO S3 (upload
+            # or bucket-to-bucket): a download -- one s3:// URI, as the first
+            # operand, with a local destination after it -- is the same read
+            # as `s3api get-object`, which this guard has always allowed.
+            if action in {'rm', 'rb', 'mb', 'mv'}:
+                return True
+            if action not in {'cp', 'sync'}:
+                return False
+            operands = [t for t in rest if not t.startswith('-')]
+            uris = [t for t in rest if t.startswith('s3://')]
+            download = (len(uris) == 1 and operands[:1] == uris
+                        and len(operands) >= 2
+                        and not rest[-1].startswith('s3://'))
+            return not download
 
         blocked = (
             (service == 'sts' and action.startswith('assume-role'))
             or (service == 'iam' and _starts((
                 'create-', 'put-', 'attach-', 'detach-', 'update-',
                 'delete-', 'add-', 'remove-', 'set-', 'upload-')))
-            or (service == 's3' and action in {
-                'cp', 'mv', 'sync', 'rm', 'rb', 'mb'})
+            or (service == 's3' and _s3_writes())
             or (service == 's3api' and _starts(('put-', 'delete-', 'create-')))
             or (service == 'lambda' and action in {
                 'create-function', 'update-function-code',
@@ -2148,12 +2185,25 @@ class ShellServer:
             or (service == 'secretsmanager' and action == 'get-secret-value')
         )
         if blocked:
+            what = ('aws ' + service + ' ' + action).strip()
             return (
-                f"{('aws ' + service + ' ' + action).strip()!r} is blocked: IAM/STS "
-                f"escalation, infra deploy, and bulk data-movement subcommands "
-                f"are not permitted from the shell tool"
+                f"{what!r} is blocked by Ziya's built-in aws subcommand policy "
+                f"(shell_server._aws_subcommand_blocked), not by your command "
+                f"allowlist: IAM/STS escalation, infra deploy, and S3 "
+                f"upload/delete subcommands are refused even though 'aws' is "
+                f"allowed. To lift it, add 'aws' or {what!r} explicitly to the "
+                f"allowlist in Shell Configuration (that grant needs the usual "
+                f"ziya-approve signature)."
             )
         return None
+
+    # Built-in credential path fragments for the curl @file check.
+    # Deployment-specific ones come from ShellConfigProvider
+    # .get_additional_sensitive_paths() and are merged in __init__.
+    _BASE_SENSITIVE_FRAGMENTS = (
+        '/.aws/', '/.ssh/', '/.ziya/keyring',
+        'credentials', 'id_rsa', 'id_ed25519', '.pem',
+    )
 
     def _curl_invocation_blocked(self, cmd_segment: str) -> Optional[str]:
         """Return a denial reason for the two documented curl abuse vectors.
