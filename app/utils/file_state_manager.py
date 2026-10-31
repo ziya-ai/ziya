@@ -26,6 +26,12 @@ class FileState:
 _MAX_CONVERSATIONS = 20           # Keep at most 20 conversations in memory
 _CONVERSATION_TTL_SECONDS = 3600  # Evict conversations not accessed for 1 hour
 
+# file_states.json.backup.<ts> files kept after an unreadable state file is
+# moved aside.  Nothing reads them back; they exist for manual recovery only.
+# Unbounded, they reached 476 files / 3.6 GB on one install (single backups
+# up to 1 GB), one per reset.
+_BACKUP_KEEP = 5
+
 class FileStateManager:
     """Manages file states and changes within a conversation context"""
     
@@ -37,8 +43,41 @@ class FileStateManager:
         self._lock = threading.Lock()
         self._load_state()
         
+    def _backup_and_reset(self):
+        """Move the unreadable state file aside, then prune old backups."""
+        backup_file = self.state_file + f".backup.{int(time.time())}"
+        shutil.move(self.state_file, backup_file)
+        self.conversation_states = {}
+        self._prune_backups()
+
+    def _prune_backups(self, keep: int = _BACKUP_KEEP) -> int:
+        """Delete all but the newest ``keep`` backups.  Returns how many went.
+
+        Matches only ``<state_file>.backup.<suffix>``; the live file and
+        in-flight ``.tmp.`` files are never touched.  Failures are logged and
+        ignored: a cleanup error must not stop the server loading.
+        """
+        import glob
+        removed = 0
+        try:
+            backups = sorted(glob.glob(glob.escape(self.state_file) + ".backup.*"),
+                             key=os.path.getmtime, reverse=True)
+            for old in backups[keep:]:
+                try:
+                    os.remove(old)
+                    removed += 1
+                except OSError as e:
+                    logger.debug(f"Could not remove old file-state backup {old}: {e}")
+            if removed:
+                logger.info(f"♻️ Removed {removed} old file-state backup(s), kept {min(keep, len(backups))}")
+        except Exception as e:
+            logger.debug(f"File-state backup pruning skipped: {e}")
+        return removed
+
     def _load_state(self):
         """Load file states from disk."""
+        # Reclaims backups accumulated before retention existed.
+        self._prune_backups()
         with self._lock:
             try:
                 if os.path.exists(self.state_file):
@@ -46,9 +85,7 @@ class FileStateManager:
                     file_size = os.path.getsize(self.state_file)
                     if file_size > 50 * 1024 * 1024:  # 50MB limit
                         logger.warning(f"File state file is corrupted (size: {file_size:,} bytes). Creating backup and resetting.")
-                        backup_file = self.state_file + f".backup.{int(time.time())}"
-                        shutil.move(self.state_file, backup_file)
-                        self.conversation_states = {}
+                        self._backup_and_reset()
                         return
                     
                     raw = open(self.state_file, 'rb').read()
@@ -61,10 +98,10 @@ class FileStateManager:
                         else:
                             data = json.loads(raw)
                     except (json.JSONDecodeError, ValueError) as e:
+                        # ValueError here is usually a decrypt failure, not bad
+                        # JSON; the message says which.
                         logger.warning(f"File state JSON corrupted: {e}. Resetting.")
-                        backup_file = self.state_file + f".backup.{int(time.time())}"
-                        shutil.move(self.state_file, backup_file)
-                        self.conversation_states = {}
+                        self._backup_and_reset()
                         return
 
                     # Use the state file's mtime as the access-time proxy for
@@ -158,17 +195,27 @@ class FileStateManager:
                 encryptor = get_encryptor()
                 plaintext = json.dumps(data, indent=2).encode("utf-8")
 
-                if encryptor.is_enabled("file_state"):
-                    encrypted = encryptor.encrypt(plaintext, "file_state")
-                    with open(self.state_file, 'wb') as f:
-                        f.write(encrypted)
-                else:
-                    with open(self.state_file, 'w') as f:
-                        f.write(plaintext.decode("utf-8"))
+                payload = (encryptor.encrypt(plaintext, "file_state")
+                           if encryptor.is_enabled("file_state") else plaintext)
+                # Atomic replace.  Writing in place truncated the file first,
+                # so another server sharing ~/.ziya (or this one's next load)
+                # could read a partial envelope, fail to decrypt it, and move
+                # the live state aside as "corrupted".
+                tmp_file = f"{self.state_file}.tmp.{os.getpid()}.{threading.get_ident()}"
                 try:
-                    os.chmod(self.state_file, 0o600)
-                except OSError:
-                    pass
+                    with open(tmp_file, 'wb') as f:
+                        f.write(payload)
+                    try:
+                        os.chmod(tmp_file, 0o600)
+                    except OSError:
+                        pass
+                    os.replace(tmp_file, self.state_file)
+                finally:
+                    if os.path.exists(tmp_file):
+                        try:
+                            os.remove(tmp_file)
+                        except OSError:
+                            pass
 
             logger.debug(f"Saved file states for {len(data)} conversations")
         except Exception as e:
