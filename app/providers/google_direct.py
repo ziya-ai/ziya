@@ -100,9 +100,15 @@ def _sanitize_schema_for_gemini(schema: Any) -> Any:
     # force the type to string and stringify the values — otherwise the REST
     # layer rejects the whole request with
     # "only allowed for STRING type" even when the values themselves are fine.
+    # Empty-string members are stripped: Gemini rejects an empty enum value
+    # outright ("enum[N]: cannot be empty"), though other providers accept it.
     if isinstance(cleaned.get("enum"), list):
-        cleaned["enum"] = [str(v) for v in cleaned["enum"]]
-        cleaned["type"] = "string"
+        vals = [str(v) for v in cleaned["enum"] if v is not None and str(v) != ""]
+        if vals:
+            cleaned["enum"] = vals
+            cleaned["type"] = "string"
+        else:
+            cleaned.pop("enum", None)
 
     # Recurse into sub-schemas.
     if isinstance(cleaned.get("properties"), dict):
@@ -114,6 +120,20 @@ def _sanitize_schema_for_gemini(schema: Any) -> Any:
         cleaned["items"] = _sanitize_schema_for_gemini(cleaned["items"])
     if isinstance(cleaned.get("any_of"), list):
         cleaned["any_of"] = [_sanitize_schema_for_gemini(s) for s in cleaned["any_of"]]
+
+    # Reconcile `required` against the (now-recursed) properties. Gemini
+    # rejects a required entry that names an undefined property
+    # ("required[N]: property is not defined"); this happens when a tool
+    # over-declares required or a property was stripped above. Prune to the
+    # names actually present, and drop an empty/orphaned required list.
+    if isinstance(cleaned.get("required"), list):
+        props = cleaned.get("properties")
+        if isinstance(props, dict):
+            cleaned["required"] = [r for r in cleaned["required"] if r in props]
+        else:
+            cleaned["required"] = []
+        if not cleaned["required"]:
+            cleaned.pop("required", None)
 
     return cleaned
 
