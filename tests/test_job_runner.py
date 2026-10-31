@@ -286,11 +286,16 @@ def test_pid_reuse_guard_reports_lost_not_running(proj):
     r = m.start("echo x", project_root=str(proj))
     m.wait(r["job_id"], timeout_s=10)
     job = m.get(r["job_id"])
+    assert job.state()["state"] == "exited"
     # Forge: no status, pid = this test process (alive), start time wrong.
     (job.dir / "status.json").unlink()
-    job.meta["wrapper_pid"] = os.getpid()
-    job.meta["wrapper_start_time"] = 1.0
-    assert job.state()["state"] == "lost"
+    meta = dict(job.meta, wrapper_pid=os.getpid(), wrapper_start_time=1.0)
+    # A fresh view, as a re-attach after a restart produces.  The live Job
+    # has cached its final state (an exited job cannot change again, and
+    # the sidebar poll must not re-read status.json for it), so the guard
+    # is exercised through a new object reading the forged record.
+    from app.jobs.manager import Job
+    assert Job(job.dir, meta).state()["state"] == "lost"
 
 
 # ── environment ───────────────────────────────────────────────────────────

@@ -336,7 +336,7 @@ class JobManager:
     def wait(self, job_id: str, *, until: Optional[List[str]] = None, pattern: Optional[str] = None,
              lines: int = 5, quiet_ms: int = 800, from_seq: Optional[int] = None,
              timeout_s: float = 240.0, max_tail_records: int = 100,
-             project_root: Optional[str] = None) -> Dict[str, Any]:
+             project_root: Optional[str] = None, cancelled=None) -> Dict[str, Any]:
         from app.shadow.journal import JournalReader, compile_search_pattern, searchable_text
         from app.utils.journal_wait import PollWaiter, parse_wait_request, wait_on_journal
         job = self.get(job_id, project_root)
@@ -355,6 +355,10 @@ class JobManager:
         reader = JournalReader(str(job.journal_path))
 
         def stopped() -> Optional[str]:
+            # The caller gave way (the user sent a message); the job runs on.
+            # Checked every PollWaiter slice (0.2 s).
+            if cancelled is not None and cancelled():
+                return "user_message"
             # An exit record is the normal end; this catches a wrapper that
             # died without writing one.
             st = job.state()
