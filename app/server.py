@@ -1155,25 +1155,13 @@ app = FastAPI(
 )
 
 # Suppress noisy access logs for high-frequency polling endpoints.
-# These are routine background sync requests that clutter the console.
+# Rule set lives in app/utils/access_log_filter.py so tests exercise the
+# real filter; the private copy that used to live here had drifted and
+# missed the per-conversation shadow/consent polls.
 import logging as _logging
+from app.utils.access_log_filter import install as _install_access_log_filter
 
-class _PollingAccessFilter(_logging.Filter):
-    """Filter routine polling GETs from uvicorn access log."""
-    _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config', '/ws/',
-              '/folder-progress', '/model-capabilities', '/current-model', '/static/',
-              '/delegate-status', '/bulk-sync', '/bulk-get', '/api/ast/status', '/ws/file-tree',}
-    # UUID pattern for individual chat GETs: /chats/<uuid>  (re already imported at module top)
-    _chat_get_re = re.compile(r'/chats/[0-9a-f]{8}-[0-9a-f]{4}-.*" [23]')
-    def filter(self, record: _logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        if any(q in msg for q in self._quiet):
-            return False
-        if 'GET' in msg and self._chat_get_re.search(msg):
-            return False
-        return True
-
-_logging.getLogger("uvicorn.access").addFilter(_PollingAccessFilter())
+_install_access_log_filter()
 
 class _WebSocketLifecycleFilter(_logging.Filter):
     """Filter noisy WebSocket connection open/close messages from uvicorn."""
