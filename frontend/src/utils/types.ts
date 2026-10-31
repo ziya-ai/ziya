@@ -62,8 +62,11 @@ export type Message = {
     //   handed_off  a continuation was created; targetId is its conversation
     //               id, so the transcript's last item links forward even
     //               before the record's handedOffTo has synced.
+    //   forked      a fork was taken here; targetId is the fork's id.  Left
+    //               on the SOURCE at the fork point, so later messages in
+    //               the source follow it and the point stays visible.
     handoffNotice?: {
-        kind: 'drafted' | 'updated' | 'handed_off';
+        kind: 'drafted' | 'updated' | 'handed_off' | 'forked';
         targetId?: string;
     };
     _timestamp?: number;

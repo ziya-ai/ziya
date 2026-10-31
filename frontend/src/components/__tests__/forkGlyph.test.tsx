@@ -52,14 +52,23 @@ describe('seam: MUIChatHistory marks fork rows', () => {
         expect(src).toMatch(/isForkChild=\{rowIsFork\}/);
     });
 
-    it('renders the glyph next to the label, after the continuation marker', () => {
-        const label = src.indexOf('{labelText}');
-        const glyph = src.indexOf('<ForkGlyph />');
-        const chain = src.indexOf('>⛓</span>');
-        expect(glyph).toBeGreaterThan(-1);
+    it('lineage glyph REPLACES the chat bubble in the leading slot', () => {
+        // Leading slot is a chain: delegate badge → ⛓ → fork glyph → ChatIcon.
+        // Both lineage glyphs must sit between the delegate branch and the
+        // ChatIcon fallback, i.e. in the same conditional, not beside the bubble.
+        const chatIcon = src.indexOf('<ChatIcon sx=');
+        const chain = src.indexOf(') : isHandoffContinuation ? (');
+        const fork = src.indexOf(') : isForkChild ? (');
         expect(chain).toBeGreaterThan(-1);
-        expect(glyph).toBeGreaterThan(chain);
-        expect(glyph).toBeLessThan(label);
-        expect(src).toContain('{isForkChild && !isHandoffContinuation && <ForkGlyph />}');
+        expect(fork).toBeGreaterThan(chain);
+        expect(chatIcon).toBeGreaterThan(fork);
+        expect(src).toContain('data-testid="handoff-glyph"');
+        // Continuation wins over fork (a continuation is also a branch), and
+        // the ⛓ is no longer gated on the absence of a chain ordinal.
+        expect(src).not.toContain('isHandoffContinuation && !handoffOrdinal');
+        // Nothing lineage-related is rendered inside the label any more.
+        const label = src.indexOf('{labelText}');
+        expect(src.slice(label - 200, label)).not.toContain('ForkGlyph');
+        expect(src.slice(label - 200, label)).not.toContain('⛓');
     });
 });

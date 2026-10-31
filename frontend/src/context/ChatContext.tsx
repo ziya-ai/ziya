@@ -4877,6 +4877,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     console.warn('Fork: server push failed (non-fatal — will retry next sync):', e);
                 }
             }
+            // Leave a forward link on the SOURCE at the fork point, the way
+            // a handoff leaves one: a local notice (system + muted, never sent
+            // to the model) that opens the fork.  Appended now, so anything
+            // the source says afterwards follows it and the point where the
+            // fork was taken stays visible.  The fork's copy was taken above,
+            // so it does not carry this notice.  Routed through
+            // addMessageToConversation (not setConversations) so a shell
+            // source is recovered before the append rather than truncated.
+            addMessageToConversation({
+                id: uuidv4(),
+                role: 'system',
+                muted: true,
+                content: `Forked here into “${forked.title}”.`,
+                _timestamp: Date.now(),
+                handoffNotice: { kind: 'forked', targetId: newId },
+            }, conversationId, true);
             message.success('Conversation forked successfully');
             return newId;
         } catch (err) {
@@ -4888,7 +4904,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             message.error('Failed to fork conversation — storage unavailable');
             return null;
         }
-    }, [setCurrentConversationId, currentProject?.id]);
+    }, [setCurrentConversationId, currentProject?.id, addMessageToConversation]);
 
     const toggleConversationGlobal = useCallback(async (conversationId: string) => {
         // Capture the current state before any mutation so we can roll back
