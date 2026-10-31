@@ -108,6 +108,30 @@ def usage_records(
     }
 
 
+@router.get("/conversation/{conversation_id}")
+def usage_conversation(conversation_id: str, project_id: Optional[str] = None):
+    """One conversation's cost split into its own turns and the Task Card
+    runs launched from it (app/utils/conversation_cost.py).
+
+    ``project_id`` is what lets bound runs be found: the chat's bindings
+    file and the run records live in the project's data dir.  Without it
+    only runs whose ledger rows name this conversation are reported.
+    """
+    from app.utils.conversation_cost import conversation_cost
+    project_dir = None
+    if project_id:
+        try:
+            from app.utils.paths import get_project_dir
+            project_dir = get_project_dir(project_id)
+        except Exception as e:  # noqa: BLE001 - fall back to the ledger-only join
+            logger.debug(f"usage conversation: project dir unavailable: {e}")
+    try:
+        return conversation_cost(conversation_id, project_dir=project_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"usage conversation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="usage conversation failed")
+
+
 @router.get("/catalog")
 def usage_catalog(provider: Optional[str] = None):
     from app.config.pricing import get_catalog
