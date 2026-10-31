@@ -638,9 +638,12 @@ export function buildDiffRejectionNotice(rejected: RejectedDiffRecord[], separat
         return `> ⟳ **Patch${file} did not apply cleanly**${reason ? ` — ${reason}` : ''}. ` +
             'The model has been asked for a corrected version; the rejected patch above is disabled.';
     });
+    // No records means no fence was refused: the server's phantom-diff check
+    // found prose citing a diff the reply never contained.
     const notice = lines.length > 0
         ? lines.join('\n>\n')
-        : '> ⟳ **A patch did not apply cleanly.** The model has been asked for a corrected version.';
+        : '> ⟳ **The reply referred to a diff it did not include.** The model has been asked '
+          + 'to emit it, or to say the change was made another way.';
     const parts = ['\n\n'];
     if (markers.length > 0) parts.push(markers.join('\n'), '\n\n');
     parts.push(notice, '\n');
