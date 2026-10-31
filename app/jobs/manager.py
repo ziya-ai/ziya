@@ -117,6 +117,9 @@ class Job:
     def __init__(self, job_dir: Path, meta: Dict[str, Any]):
         self.dir = job_dir
         self.meta = meta
+        # Final state, once known.  An exited job cannot change again, so the
+        # sidebar poll must not re-read status.json for it on every tick.
+        self._final: Optional[Dict[str, Any]] = None
 
     @property
     def id(self) -> str:
@@ -131,16 +134,21 @@ class Job:
 
     def state(self) -> Dict[str, Any]:
         """running / exited / lost, judged from status.json and the wrapper pid."""
+        if self._final is not None:
+            return dict(self._final)
         st = self.status_file() or {}
         pid = int(self.meta.get("wrapper_pid") or 0)
+        owner = self.meta.get("owner") or {}
         out: Dict[str, Any] = {"job_id": self.id, "label": self.meta.get("label"),
                                "command": self.meta.get("command"), "cwd": self.meta.get("cwd"),
-                               "owner": self.meta.get("owner"), "pid": pid,
+                               "owner": owner, "pid": pid,
+                               "conversation_id": self.meta.get("conversation_id") or owner.get("conversation_id"),
                                "pgid": st.get("pgid"), "started_at": self.meta.get("started_at")}
         if st.get("state") == "exited":
             out.update(state="exited", exit_code=st.get("exit_code"), signal=st.get("signal"),
                        duration_s=st.get("duration_s"), reason=st.get("reason"),
-                       peak_rss_bytes=st.get("peak_rss_bytes"))
+                       peak_rss_bytes=st.get("peak_rss_bytes"), ended_at=st.get("ended_at"))
+            self._final = dict(out)
             return out
         alive = pid > 0 and _pid_alive(pid)
         if alive:
@@ -395,8 +403,18 @@ class JobManager:
         state = job.state()
         if state["state"] != "running":
             return {**state, "killed": False}
-        pgid = int(state.get("pgid") or 0)
         wrapper = int(state.get("pid") or 0)
+        pgid = int(state.get("pgid") or 0)
+        # A wrapper that has just been spawned has not yet written its pgid,
+        # and has not yet installed its TERM handler either: signalling it now
+        # kills it with the default disposition, before it has started the
+        # command or can write a status, and the job reads as "lost".  Give it
+        # a moment to report the group (it does so right after spawning the
+        # child) so the kill reaches the whole tree and is recorded as an exit.
+        deadline = time.monotonic() + 2.0
+        while not pgid and time.monotonic() < deadline and _pid_alive(wrapper):
+            time.sleep(0.05)
+            pgid = int((job.status_file() or {}).get("pgid") or 0)
         # The wrapper relays TERM to its group; signal it directly too so a
         # wrapper that has not yet written pgid still dies.
         if pgid:

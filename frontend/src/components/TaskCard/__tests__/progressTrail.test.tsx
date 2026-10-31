@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Tests for the whole-run progress trail (B8b, frontend half).
  *
  * The reported symptom: "task card progress notes aren't being properly

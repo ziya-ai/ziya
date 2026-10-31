@@ -63,7 +63,7 @@ from app.utils.pcap_analyzer import analyze_pcap_file, is_pcap_supported
 from app.utils.conversation_exporter import export_conversation_for_paste
 
 # Session management API routers
-from app.api import projects, contexts, skills, chats, tokens, task_cards, task_runs, task_bindings
+from app.api import projects, contexts, skills, chats, tokens, task_cards, task_runs, task_bindings, jobs as jobs_api
 from app.api import drag_helper as drag_helper_api
 from app.api import bench as bench_api
 from app.api import delegates as delegates_api

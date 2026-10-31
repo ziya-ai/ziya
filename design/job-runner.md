@@ -4,7 +4,8 @@ Status: **implemented 2026-10-08** (all 11 steps; one deviation: the exit observ
 (observations, shell scope env) · Related: `design/shadow-wait.md` (wait
 conditions), `design/data-source-connectors.md` (`ziya data` CLI).
 Built on by: query broker time-slicing (item 5), Verify `rerun` of commands
-(item 6), time-budgeted cards (item 7).
+(item 6), time-budgeted cards (item 7 — built as `scope.time_budget_secs`,
+see `design/task-cards.md` "Runtime semantics").
 
 ## Problem
 
@@ -236,12 +237,38 @@ observation by starting a new job from the stored command under the
 available. If neither exists the job still starts and `job_start` says so.
 This covers one job. Keeping the machine awake for a whole card is item 7.
 
-## UI (phase 2)
+## UI (implemented 2026-10-25)
 
-A Jobs panel in the conversation sidebar (status, runtime, last line, Kill),
-and the existing green-check notification when a job owned by an idle
-conversation exits. The model is not woken: the result is there when the
-user or the next turn calls `job_status`.
+A job started with `job_start` was visible only in the tool results of the
+turn that started it, which scroll away in a long conversation. Three
+surfaces now carry it, one per place a user could be looking:
+
+| Surface | Source | Shows |
+|---|---|---|
+| Sidebar row (`JobStatusGlyphs`) | `GET …/task-runs/status-index` gains `jobs` (per conversation, chat-started jobs only — a job owned by a Task Card run is already that run's gear) and `live` stays true while a job runs | one terminal glyph per state: running (teal, pulsing), exit 0 (green ✓), non-zero or signal (red ✗), lost (amber !). Finished states **clear on visit** (`utils/jobSeen.ts`, per browser); the open conversation's row shows running only. Compact rows drop the badge |
+| TaskRail chip (`JobChip`) | `GET …/jobs?conversation_id=` (`app/api/jobs.py`), polled every 5 s only while a visible job runs | one chip per **running** job, elapsed on the client clock; popover with the journal tail (2 s refresh), Kill (`POST …/jobs/{id}/kill`, TERM then KILL), and "Jump to the turn that started it" |
+| Exit card (`JobExitFeed`) | the same settled list the rail reads | one card, at the thread's bottom, when a job the rail was showing is next read as exited or lost: outcome, duration, optional tail, jump |
+
+**Settle rule.** A job is shown only once the turn that started it has
+ended and it is still running (`jobRail.settledJobs`). A model often starts
+and waits on several short jobs inside one turn; surfacing those as they
+come and go would churn the rail for work already visible in the tool
+output. A job that exits inside its turn therefore never reaches the rail
+and never posts an exit card. Jobs from earlier turns are unaffected.
+
+**Jump without new state.** The job's `started_at` is resolved against
+message `_timestamp`s with the rule that places unanchored task tiles
+(`jobRail.turnIndexForTime`): the turn whose prompt precedes it, landing
+on that turn's reply. Nothing is recorded in `job.json`.
+
+**Kill from the UI.** A human stop of a process the model may be
+`job_wait`-ing on; the model sees `reason=exit` with a signal, as for a
+`max_runtime` stop. `JobManager.kill` now waits up to 2 s for a freshly
+spawned wrapper to report its pgid before signalling, so a kill in the
+first moments of a job is recorded as an exit rather than read as `lost`.
+
+The model is not woken by any of this: the result is there when the next
+turn calls `job_status` or `job_wait`.
 
 ## What this replaces in the scan
 

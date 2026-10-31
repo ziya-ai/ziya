@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * A run that waits on a PERSON must be OBVIOUS in the conversation row.
  *
  * Before this, every status rendered as a 12px gear in one of nine colours
