@@ -482,6 +482,29 @@ def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optio
 
     # Parse the hunks to track
     try:
+        # Undo the backslash-backtick transport escaping the model is told to
+        # preserve ("Backticks in code context are escaped as \`").  The
+        # frontend forwards the fence verbatim and until now only the difflib
+        # stage's parser unescaped it, so a diff touching any line with a
+        # backtick (every markdown table in a docs repo) failed `patch` and
+        # `git apply` on a context mismatch and reached difflib with its last
+        # chance.  Ground the decision in the file so a JS template literal's
+        # genuine \` is left alone; the same helper and rule the parser uses.
+        try:
+            from ..parsing.diff_parser import unescape_backticks_from_llm
+            _bt_file_content = None
+            if os.path.isfile(file_path):
+                with open(file_path, 'r', encoding='utf-8', errors='replace') as _bf:
+                    _bt_file_content = _bf.read()
+            _unescaped = unescape_backticks_from_llm(git_diff, file_content=_bt_file_content)
+            if _unescaped != git_diff:
+                logger.info("Unescaped backslash-backtick transport escaping before pipeline entry")
+                git_diff = _unescaped
+                pipeline.current_diff = git_diff
+                pipeline.original_diff = git_diff
+        except Exception as _bt_e:
+            logger.debug(f"backtick unescape skipped: {_bt_e}")
+
         # Repair "idempotent additions": lines marked '+' that already exist in
         # the target file, which offset a hunk's old-side and can cause silent
         # misplacement when adjacent hunks are structurally similar. Runs before
@@ -1875,9 +1898,13 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         for i, hunk in enumerate(hunks, 1):
             hunk_id = hunk.get('number', i)
             
-            # Check if the hunk is malformed
+            # Check if the hunk is malformed.  A count is optional in unified
+            # diff ("@@ -63 +63 @@" means one line each side) and the parser
+            # already defaulted it to 1; this check only rejects a header the
+            # parser could not read.  The strict four-number form rejected the
+            # single-line hunks the system prompt itself asks the model for.
             if 'header' in hunk and '@@ -' in hunk['header']:
-                header_match = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@', hunk['header'])
+                header_match = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', hunk['header'])
                 if not header_match:
                     logger.warning(f"Malformed hunk header detected: {hunk['header']}")
                     malformed_hunks.append(hunk_id)
