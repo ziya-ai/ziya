@@ -11,7 +11,12 @@ interface ScrollManagerOptions {
     sentinelRef: React.RefObject<HTMLElement>;
     isTopToBottom: boolean;
     isStreaming: boolean;
-    contentLength: number; // Track content changes
+    /**
+     * Streamed content length.  Optional: App omits it and calls
+     * notifyContentLength from StreamedContentLengthWatcher instead, because
+     * reading the length in App re-rendered App on every streaming flush.
+     */
+    contentLength?: number;
 }
 
 interface ScrollManagerState {
@@ -24,6 +29,29 @@ interface ScrollManagerState {
     /** Jump straight to the bottom, re-pinning while shells settle. */
     scrollToEnd: () => void;
     clearIndicators: () => void;
+    /** Report a new streamed length without re-rendering the caller.  Stable. */
+    notifyContentLength: (length: number) => void;
+}
+
+/** After a stream ends, content keeps re-laying out for a moment (the final
+ *  message commit replaces the streamed div, late diagrams render).  Keep
+ *  following for this long so the view lands on the real end. */
+export const FOLLOW_GRACE_MS = 1500;
+
+/** A programmatic clamp (content shrank, browser lowered scrollTop) leaves
+ *  the view within this many px of the active end; a user gesture does not. */
+const AWAY_SLACK_PX = 4;
+
+function distanceFromActiveEnd(container: HTMLElement, isTopToBottom: boolean): number {
+    return isTopToBottom
+        ? container.scrollHeight - container.scrollTop - container.clientHeight
+        : container.scrollTop;
+}
+
+function pinToActiveEnd(container: HTMLElement, isTopToBottom: boolean): void {
+    container.scrollTop = isTopToBottom
+        ? container.scrollHeight - container.clientHeight
+        : 0;
 }
 
 export function useScrollManager({
@@ -39,9 +67,16 @@ export function useScrollManager({
     const [streamCompletedWhileAway, setStreamCompletedWhileAway] = useState(false);
     const wasAwayDuringStreamRef = useRef(false);
     const wasStreamingRef = useRef(isStreaming);
-    const lastContentLengthRef = useRef(contentLength);
+    const lastContentLengthRef = useRef(contentLength ?? 0);
     const observerRef = useRef<IntersectionObserver | null>(null);
     const scrollRafRef = useRef<number | null>(null);
+    // Read inside the ResizeObserver callback below without re-subscribing
+    // it on every render.
+    const followModeRef = useRef(true);
+    const isStreamingRef = useRef(isStreaming);
+    const streamEndedAtRef = useRef(-Infinity);
+    followModeRef.current = followMode;
+    isStreamingRef.current = isStreaming;
 
     // Scroll to the active end (bottom for top-down, top for bottom-up)
     const scrollToActiveEnd = useCallback(() => {
@@ -153,9 +188,14 @@ export function useScrollManager({
 
         const handleScroll = () => {
             const currentScrollTop = container.scrollTop;
-            const isScrollingAway = isTopToBottom 
+            // Movement away from the active end that LANDS away from it.  A
+            // scrollTop drop caused by content shrinking (a thinking block
+            // collapsing) is clamped by the browser to the new bottom, so
+            // the distance test tells it apart from a wheel-up.
+            const moved = isTopToBottom
                 ? currentScrollTop < lastScrollTop - 10
                 : currentScrollTop > lastScrollTop + 10;
+            const isScrollingAway = moved && distanceFromActiveEnd(container, isTopToBottom) > AWAY_SLACK_PX;
             
             if (isStreaming && isScrollingAway) {
                 setFollowMode(false);
@@ -175,27 +215,71 @@ export function useScrollManager({
         };
     }, [containerRef, isStreaming, isTopToBottom]);
 
-    // Auto-scroll when follow mode is active during streaming
+    // Re-pin when the CONTENT grows, not only when the streamed text does.
+    // The rAF pin below runs the frame contentLength changes, but a tool
+    // fence or thinking block renders its body a frame or more later, and
+    // between a tool result and the next model chunk contentLength does not
+    // change at all -- so the view sat on the top of the last block's header
+    // while its body expanded beneath the sticky composer dock.  A
+    // ResizeObserver on the content box fires after every layout change,
+    // whoever caused it, and runs post-layout so the pin sees the final
+    // height.  Gated to follow mode and streaming (plus a short grace after
+    // the stream ends) so expanding a block in an idle conversation never
+    // yanks the view.
     useEffect(() => {
-        if (!isStreaming || !containerRef.current) return;
-        
-        if (followMode) {
+        const container = containerRef.current;
+        if (!container || typeof ResizeObserver === 'undefined') return;
+        const content = container.querySelector('.chat-content-stabilizer') ?? container.firstElementChild;
+        if (!content) return;
+        const ro = new ResizeObserver(() => {
+            if (!followModeRef.current) return;
+            const live = isStreamingRef.current
+                || Date.now() - streamEndedAtRef.current < FOLLOW_GRACE_MS;
+            if (live) pinToActiveEnd(container, isTopToBottom);
+        });
+        ro.observe(content);
+        return () => ro.disconnect();
+    }, [containerRef, isTopToBottom]);
+
+    // A content-length change: follow, and note growth while away.  Reads
+    // streaming/follow state through refs (assigned during render), so it
+    // is stable and can be called from a child's effect.  While streaming
+    // the length ref tracks every value, so a decrease is only ever seen
+    // after streaming has stopped.
+    const handleContentLength = useCallback((len: number) => {
+        const streaming = isStreamingRef.current;
+        if (streaming && containerRef.current && followModeRef.current) {
             scrollToActiveEnd();
         }
-    }, [contentLength, followMode, isStreaming, scrollToActiveEnd, containerRef]);
-
-    // Track new content arrival while user is away
-    useEffect(() => {
-        // Only track if streaming and content actually changed
-        if (!isStreaming) return;
-        
-        const contentGrew = contentLength > lastContentLengthRef.current;
-        lastContentLengthRef.current = contentLength;
-        
-        if (contentGrew && !followMode) {
-            setHasNewContentWhileAway(true);
+        if (streaming) {
+            const contentGrew = len > lastContentLengthRef.current;
+            lastContentLengthRef.current = len;
+            if (contentGrew && !followModeRef.current) {
+                setHasNewContentWhileAway(true);
+            }
         }
-    }, [contentLength, followMode, isStreaming]);
+        if (len < lastContentLengthRef.current) {
+            // The finished turn's entry was deleted at stream end.  This used
+            // to be read as "a new user message was sent" and forced a scroll
+            // to the end, yanking a reader who had scrolled up and clearing
+            // the "completed while away" indicator as it appeared.  New-message
+            // and conversation-switch scrolling are App.tsx's effects; a
+            // follow-mode user is kept pinned by the FOLLOW_GRACE_MS observer.
+            // Re-baseline only, so the next turn's first chunk counts as growth.
+            lastContentLengthRef.current = len;
+        }
+    }, [containerRef, scrollToActiveEnd]);
+
+    // Follow mode re-engaging, or a stream starting, pins as before.
+    useEffect(() => {
+        if (!isStreaming || !containerRef.current) return;
+        if (followMode) scrollToActiveEnd();
+    }, [followMode, isStreaming, scrollToActiveEnd, containerRef]);
+
+    // The contentLength option, when a caller still passes one.
+    useEffect(() => {
+        if (contentLength !== undefined) handleContentLength(contentLength);
+    }, [contentLength, handleContentLength]);
 
     // Track if user was away at any point during streaming
     useEffect(() => {
@@ -213,6 +297,7 @@ export function useScrollManager({
         const wasStreaming = wasStreamingRef.current;
         const streamJustEnded = wasStreaming && !isStreaming;
         wasStreamingRef.current = isStreaming;
+        if (streamJustEnded) streamEndedAtRef.current = Date.now();
         
         if (streamJustEnded && (wasAwayDuringStreamRef.current || !isAtActiveEnd)) {
             // Stream completed and user was away at some point during streaming
@@ -227,18 +312,6 @@ export function useScrollManager({
         }
     }, [isStreaming, isAtActiveEnd, clearIndicators]);
 
-    // On new user message (detected by contentLength resetting), scroll to active end
-    useEffect(() => {
-        const contentReset = contentLength < lastContentLengthRef.current;
-        
-        if (contentReset) {
-            // Content was cleared - likely new user message
-            // This is the ONE exception where we force scroll
-            setTimeout(() => scrollToActiveEnd(), 100);
-            clearIndicators();
-        }
-    }, [contentLength, scrollToActiveEnd, clearIndicators]);
-
     return {
         isAtActiveEnd,
         hasNewContentWhileAway,
@@ -246,6 +319,7 @@ export function useScrollManager({
         scrollToActiveEnd,
         scrollToStart,
         scrollToEnd,
-        clearIndicators
+        clearIndicators,
+        notifyContentLength: handleContentLength,
     };
 }

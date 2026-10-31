@@ -17,6 +17,7 @@
  */
 import { useCallback, useRef } from 'react';
 import { useActiveChat } from '../context/ActiveChatContext';
+import { useStreamedContentRef } from '../context/StreamedContentContext';
 import { useProject } from '../context/ProjectContext';
 import { useFolderContext } from '../context/FolderContext';
 import { useResolvedModelPin } from './useResolvedModelPin';
@@ -71,6 +72,9 @@ export interface SendPayloadHandle {
  */
 export function useSendPayload(): SendPayloadHandle {
     const activeChat = useActiveChat();
+    // Stable ref, read at send time: subscribing here would re-render every
+    // component that can send (every MarkdownRenderer) on each flush.
+    const streamedRef = useStreamedContentRef();
     const { checkedKeys } = useFolderContext();
     const project = useProject();
     // Effective model-pin resolver (conversation → folder → project →
@@ -108,7 +112,7 @@ export function useSendPayload(): SendPayloadHandle {
             conversationId,
             skills || undefined,
             options.images,
-            ac.streamedContentMap,
+            streamedRef.current.streamedContentMap,
             ac.setStreamedContentMap,
             ac.setIsStreaming,
             ac.removeStreamingConversation,

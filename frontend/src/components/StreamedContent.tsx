@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, useTransition, useId, Suspense } from 'react';
 import { useActiveChat } from '../context/ActiveChatContext';
+import { useStreamedContent } from '../context/StreamedContentContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { useScrollContext } from '../context/ScrollContext';
 import type { ProcessingState } from '../context/ChatContext';
@@ -34,7 +35,6 @@ export const StreamedContent: React.FC<{}> = () => {
     const processedPreservedEvents = useRef<Set<string>>(new Set());
     const [showPreservedContinue, setShowPreservedContinue] = useState(false);
     const {
-        streamedContentMap,
         currentConversationId,
         setStreamedContentMap,
         removeStreamingConversation,
@@ -58,6 +58,8 @@ export const StreamedContent: React.FC<{}> = () => {
     } = useScrollContext();
 
     const { getProcessingState, setReasoningContentMap } = useActiveChat();
+    // The live text: this component is meant to re-render on every flush.
+    const { streamedContentMap } = useStreamedContent();
     const { send } = useSendPayload();
 
     // Get the latest streamed content directly without memoization to avoid stale content
@@ -303,7 +305,7 @@ export const StreamedContent: React.FC<{}> = () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ conversation_id: currentConversationId }),
             })
-                .then(response => console.log('Abort API response:', response.status))
+                .then(response => { console.log('Abort API response:', response.status); })
                 .catch(e => console.warn('Error sending abort notification to server:', e));
 
             // Save accumulated content as a conversation message BEFORE removing
@@ -773,17 +775,32 @@ export const StreamedContent: React.FC<{}> = () => {
 
             console.log('Retrying request after context error for conversation:', retryConversationId);
 
-            // Remove the error banner message so the user doesn't see a stale
-            // error block once the retry succeeds.
+            // The retry replaces its own banner in the history.  Every
+            // error-only assistant turn since the last human message is
+            // dropped — not just the newest — so a history that already
+            // stacked several banners collapses to one on the next retry.
+            // Deleted on the server as well as in state: bulk-sync merges by
+            // id and never removes a message, so a state-only splice left the
+            // banner on the record and the stream-end sync pulled it back
+            // under the new error (observed 2026-10-20 as three stacked
+            // "Content Too Large" banners).  Same fix as handleRetryAuthError.
             setConversations(prev => prev.map(conv => {
                 if (conv.id !== retryConversationId) return conv;
                 const msgs = [...conv.messages];
+                const pid = ownerProjectId(conv);
+                const dropOnServer = (i: number) => {
+                    const loc = messageLocator(conv.messages, i);
+                    void deleteMessage(pid, retryConversationId, loc).then(r => {
+                        if (!r.ok && r.status !== 404) console.warn('Retry: server delete of context-error message failed', r.status);
+                    });
+                };
                 for (let i = msgs.length - 1; i >= 0; i--) {
+                    if (msgs[i].role === 'human') break;
                     if (msgs[i].role === 'assistant' &&
                         typeof msgs[i].content === 'string' &&
                         msgs[i].content.includes('context-error-retry-button')) {
+                        dropOnServer(i);
                         msgs.splice(i, 1);
-                        break;
                     }
                 }
                 return { ...conv, messages: msgs, _version: Date.now() };

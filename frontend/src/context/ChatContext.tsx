@@ -3,6 +3,7 @@ import { StreamingProvider } from './StreamingContext';
 import { ScrollProvider } from './ScrollContext';
 import { ConversationListProvider } from './ConversationListContext';
 import { ActiveChatProvider } from './ActiveChatContext';
+import { StreamedContentProvider } from './StreamedContentContext';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import type { TaskBinding } from '../types/task_binding';
 import { v4 as uuidv4 } from "uuid";
@@ -60,18 +61,12 @@ interface ConversationProcessingState {
 }
 
 interface ChatContext {
-    streamedContentMap: Map<string, string>;
-    /**
-     * Ephemeral thinking blocks, keyed by TURN id (not conversation id).
-     * Never persisted to a message record, so a reload clears them and
-     * there is no path by which reasoning can be resubmitted as context.
-     * Retained across stream end so a completed block stays expandable for
-     * the rest of the session.
-     */
-    reasoningContentMap: Map<string, ThinkingBlockData[]>;
-    dynamicTitleLength: number;
+    // streamedContentMap / reasoningContentMap are deliberately NOT in this
+    // value: they change on every streaming flush, and every consumer of
+    // this context re-rendered with them.  Read them through
+    // StreamedContentContext.  reasoningContentMap is keyed by TURN id,
+    // never persisted, and retained across stream end for the session.
     lastResponseIncomplete: boolean;
-    setDynamicTitleLength: (length: number) => void;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
     setReasoningContentMap: Dispatch<SetStateAction<Map<string, ThinkingBlockData[]>>>;
     isStreaming: boolean;
@@ -518,6 +513,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const updateProcessingState = useCallback((conversationId: string, state: ProcessingState) => {
         setProcessingStates(prev => {
+            // No-op when unchanged.  chatApi resets to 'idle' on every content
+            // chunk; a fresh Map each time gave getProcessingState a new
+            // identity, which changed the ActiveChatContext and ChatContext
+            // values and re-rendered every consumer (the sidebar, header and
+            // closed modals) per chunk.  Nothing reads lastUpdated, so keeping
+            // the old entry loses nothing.
+            if (prev.get(conversationId)?.state === state) return prev;
             const next = new Map(prev);
             next.set(conversationId, {
                 state,
@@ -605,6 +607,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         // Auto-reset processing state when streaming ends
         setProcessingStates(prev => {
+            if (!prev.has(id)) return prev;
             const next = new Map(prev);
             next.delete(id);
             return next;
@@ -5202,11 +5205,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     }, [currentProject?.id, folders, conversations, updateFolder, queueSave]);
 
     const value = useMemo(() => ({
-        streamedContentMap,
-        reasoningContentMap,
-        dynamicTitleLength,
         lastResponseIncomplete,
-        setDynamicTitleLength,
         setStreamedContentMap,
         setReasoningContentMap,
         getProcessingState,
@@ -5278,11 +5277,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // key off these references) then never see the update.
         currentMessages,
         editingMessageIndex,
-        dynamicTitleLength,
         lastResponseIncomplete,
-        setDynamicTitleLength,
-        streamedContentMap,
-        reasoningContentMap,
         setStreamedContentMap,
         getProcessingState,
         updateProcessingState,
@@ -5456,14 +5451,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         conversationTaskBindings={conversationTaskBindings}
                         addStreamingConversation={addStreamingConversation}
                         removeStreamingConversation={removeStreamingConversation}
-                        streamedContentMap={streamedContentMap}
                         setStreamedContentMap={setStreamedContentMap}
-                        reasoningContentMap={reasoningContentMap}
                         setReasoningContentMap={setReasoningContentMap}
                         getProcessingState={getProcessingState}
                         updateProcessingState={updateProcessingState}
-                        dynamicTitleLength={dynamicTitleLength}
-                        setDynamicTitleLength={setDynamicTitleLength}
                         lastResponseIncomplete={lastResponseIncomplete}
                         setDisplayMode={setDisplayMode}
                         toggleMessageMute={toggleMessageMute}
@@ -5473,14 +5464,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         throttlingRecoveryData={throttlingRecoveryData}
                         setThrottlingRecoveryData={setThrottlingRecoveryData}
                     >
-                        <StreamingProvider
-                            isStreaming={isStreaming}
-                            isStreamingAny={isStreamingAny}
-                            currentConversationId={currentConversationId}
-                            streamingConversations={streamingConversations}
+                        <StreamedContentProvider
+                            streamedContentMap={streamedContentMap}
+                            reasoningContentMap={reasoningContentMap}
                         >
-                            {children}
-                        </StreamingProvider>
+                            <StreamingProvider
+                                isStreaming={isStreaming}
+                                isStreamingAny={isStreamingAny}
+                                currentConversationId={currentConversationId}
+                                streamingConversations={streamingConversations}
+                            >
+                                {children}
+                            </StreamingProvider>
+                        </StreamedContentProvider>
                     </ActiveChatProvider>
                 </ConversationListProvider>
             </ScrollProvider>

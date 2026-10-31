@@ -4933,7 +4933,7 @@ const decodeHtmlEntities = (text: string): string => {
 // renderedContent memo and re-running renderTokens across the entire message.
 const LiveThinkingBlock: React.FC<{ turnId: string; index: number; isDarkMode: boolean }> =
     React.memo(({ turnId, index, isDarkMode }) => {
-        const { reasoningContentMap } = useActiveChat();
+        const { reasoningContentMap } = useStreamedContent();
         const block = reasoningContentMap?.get(turnId)?.[index];
         // Unresolvable after a reload (sidecar is session state) or past the
         // retention cap. Rendering nothing is the intended ephemeral behaviour.

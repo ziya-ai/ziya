@@ -18,7 +18,12 @@ const src = fs.readFileSync(
 describe('ExportConversationModal thinking-marker resolution', () => {
     it('imports the resolver and applies it to the current messages', () => {
         expect(src).toMatch(/import\s*\{[^}]*resolveThinkingMarkersInMessages[^}]*\}\s*from\s*'\.\.\/utils\/thinkingBlocks'/);
-        expect(src).toMatch(/resolveThinkingMarkersInMessages\(currentMessages,\s*reasoningContentMap\)/);
+        // The reasoning map is read through the StreamedContentContext ref at
+        // open time (a subscription re-rendered this permanently mounted
+        // modal on every streaming flush), so the resolver receives it from
+        // the ref rather than from useActiveChat().
+        expect(src).toMatch(/resolveThinkingMarkersInMessages\(currentMessages,\s*streamedRef\.current\.reasoningContentMap\)/);
+        expect(src).toMatch(/const streamedRef = useStreamedContentRef\(\)/);
     });
 
     it('sends no fetch body the unresolved message list', () => {
