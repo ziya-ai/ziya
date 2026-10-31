@@ -14,11 +14,11 @@ const FIXTURES = path.resolve(__dirname, '../../../../tests/fixtures/mcp_descrip
 const fixture = (name: string) => fs.readFileSync(path.join(FIXTURES, name), 'utf8');
 
 describe('summarizeServiceDescription', () => {
-    it('reduces the Slack MCP README to its first prose sentence, capped', () => {
+    it('reduces a long registry README to its first prose sentence, capped', () => {
         const raw = fixture('slack_mcp_readme.md');
         expect(raw.length).toBeGreaterThan(15000);          // the fixture is the real blob
         const s = summarizeServiceDescription(raw);
-        expect(s.startsWith('A Slack MCP server for Amazon Enterprise Slack')).toBe(true);
+        expect(s.startsWith('A chat MCP server for an enterprise chat workspace')).toBe(true);
         expect(s).not.toMatch(/^#/);                         // heading skipped
         expect(s).not.toContain('Source Code');              // byline skipped
         expect(s).not.toContain('](');                       // no link syntax
