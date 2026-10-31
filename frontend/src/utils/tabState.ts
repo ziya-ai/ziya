@@ -7,6 +7,7 @@
  *
  * Per-TAB state (each browser tab is independent):
  *   - ZIYA_CURRENT_CONVERSATION_ID
+ *   - ZIYA_TAB_PROJECT_ID (instance-scoped; see ProjectContext)
  *   - ZIYA_CHECKED_FOLDERS
  *   - ZIYA_EXPANDED_FOLDERS
  *

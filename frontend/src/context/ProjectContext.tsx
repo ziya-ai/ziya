@@ -30,12 +30,47 @@ import * as syncApi from '../api/conversationSyncApi';
 import * as folderSyncApi from '../api/folderSyncApi';
 import FirstRunProjectDialog from '../components/FirstRunProjectDialog';
 import { scopedNameSync, setServerInstanceId } from '../utils/instanceIdentity';
+import { getTabState, setTabState } from '../utils/tabState';
 
 // Scoped to the connected server instance: a project id remembered against
 // one installation means nothing to another sharing the same origin.  Only
 // read after /projects/startup has answered (see init below), which is when
 // the instance id becomes known.
 const lastProjectKey = () => scopedNameSync('ZIYA_LAST_PROJECT_ID');
+
+// The project THIS tab has open (sessionStorage), so a reload lands back on
+// it without being pulled to whatever project another tab switched to last.
+// A new tab has no value here and falls back to the browser-wide key.
+const tabProjectKey = () => scopedNameSync('ZIYA_TAB_PROJECT_ID');
+
+function readTabProjectId(): string | undefined {
+  try { return getTabState(tabProjectKey()) || undefined; } catch { return undefined; }
+}
+
+function forgetTabProjectId(): void {
+  try { sessionStorage.removeItem(tabProjectKey()); } catch { /* ignore */ }
+}
+
+/** Record the project this tab is on: per-tab for reload, per-browser for new tabs. */
+function rememberProject(projectId: string): void {
+  try { setTabState(tabProjectKey(), projectId); } catch { /* ignore */ }
+  localStorage.setItem(lastProjectKey(), projectId);
+}
+
+/**
+ * The project id this tab is expected to open against the connected
+ * instance, for code that needs it before currentProject is set
+ * (ChatContext's startup filter and server fallback).  Prefers the tab's own
+ * project (sessionStorage) so a reload scopes the conversation list to the
+ * project the tab was on, then the browser-wide last project.  undefined
+ * when nothing is stored or the instance id is not known yet; never falls
+ * back to the unscoped key, which may name another installation's project.
+ */
+export function readLastProjectId(): string | undefined {
+  const tabId = readTabProjectId();
+  if (tabId) return tabId;
+  try { return localStorage.getItem(lastProjectKey()) || undefined; } catch { return undefined; }
+}
 
 interface ProjectContextType {
   // Project state
@@ -251,7 +286,24 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
         let project: Project | null = null;
 
-        if (startup?.explicit) {
+        // (0) A reloaded tab reopens the project it had open.  Per-tab
+        // (sessionStorage), so it never follows another tab's switch, and
+        // it outranks the explicit startup root: that rule is for NEW
+        // sessions, and a reload is not one.
+        const tabProjectId = readTabProjectId();
+        if (tabProjectId) {
+          try {
+            project = await projectApi.getProject(tabProjectId);
+            console.log('ProjectContext: Restored this tab\'s project:', project.name);
+          } catch {
+            console.warn('ProjectContext: Tab project ID invalid, falling back');
+            forgetTabProjectId();
+          }
+        }
+
+        if (project) {
+          // restored above
+        } else if (startup?.explicit) {
           // (a) Explicit --root/--directory always wins for new sessions:
           // open (or create) the project rooted at the startup directory.
           try {
@@ -307,7 +359,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         
         setCurrentProject(project);
         (window as any).__ZIYA_CURRENT_PROJECT_ID__ = project.id;
-        localStorage.setItem(lastProjectKey(), project.id);
+        rememberProject(project.id);
         
         // Restore lens state for this project
         const savedLens = _loadLens(project.id);
@@ -600,7 +652,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       // 2. Update global path SYNCHRONOUSLY (before any events)
       (window as any).__ZIYA_CURRENT_PROJECT_PATH__ = project.path;
       (window as any).__ZIYA_CURRENT_PROJECT_ID__ = project.id;
-      localStorage.setItem(lastProjectKey(), project.id);
+      rememberProject(project.id);
       
       // 3. Restore lens state for the project we're switching TO
       const savedLens = _loadLens(project.id);
