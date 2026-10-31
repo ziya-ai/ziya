@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Verifies the Parallel block editor is exported, the block factory
  * produces a valid Parallel block, and the BlockEditor dispatcher
  * routes 'parallel' to it (not to the unknown-type fallback).

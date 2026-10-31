@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Wiring guards for the Ask block ('ask' card type).
  *
  * The Ask block landed backend-complete but frontend-stub: the block

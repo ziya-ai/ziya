@@ -1074,6 +1074,11 @@ per-unit stats, a roster), declare it instead of describing it in prose:
   1). A unit holding more than one Task needs `"producer": ["<task id>"]`
   and that task needs an explicit `id`. `"rerun_missing": 1` on a
   Parallel or Repeat re-runs short units once, told why.
+- "At least k of N lanes": `"min_units": k` with `"per": "child"` (or
+  `"iteration"`). Not `"per": "total", "min": k` - that counts parts, so
+  one lane emitting k satisfies it. A task's `"required": false` does NOT
+  relax a container's gather: with no `min_units`, every unit must still
+  emit, and one silent lane fails the container.
 - References are type-checked at launch:
   `{{sibling("lanes").outputs_all.finding.impact.per_unit}}` with a typo in
   the path is a launch error listing the fields that exist.

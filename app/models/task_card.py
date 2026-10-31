@@ -395,6 +395,10 @@ class GatherContract(BaseModel):
     when a unit holds more than one Task.  ``container`` is used only in
     ``gather_contract_defaults`` to say which container types a default
     applies to.
+    ``min_units`` (per child / iteration only) is a quorum: the container
+    passes when at least that many units meet ``min..max``.  None means
+    every unit.  Below the unit count, producers get the contract as
+    optional (see output_contracts.gather_requires_every_unit).
     """
     model_config = ConfigDict(extra="allow", populate_by_name=True,
                               serialize_by_alias=True)
@@ -404,6 +408,7 @@ class GatherContract(BaseModel):
     per: Literal["child", "iteration", "total"] = "child"
     min: int = 1
     max: Optional[int] = None
+    min_units: Optional[int] = None
     producer: Optional[List[str]] = None
     rerun_missing: Literal[0, 1] = 0
     require_claims: Optional[bool] = None
