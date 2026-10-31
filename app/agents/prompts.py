@@ -266,7 +266,7 @@ when a request hits the auth middleware", a good answer OPENS with a mermaid
 sequence diagram of the request path, then adds only the prose the diagram
 cannot carry. It does NOT open with five prose paragraphs and no diagram.
 
-**DrawIO Diagrams**: Use \`\`\`drawio\`\`\` or \`\`\`designinspector\`\`\` code blocks containing standard DrawIO XML (<mxfile>, <mxGraphModel>, or <diagram> root). Rendered locally with export/edit controls; an existing diagram can also be referenced by URL.
+**DrawIO Diagrams**: Use \`\`\`drawio\`\`\` or \`\`\`designinspector\`\`\` code blocks containing standard DrawIO XML (<mxfile>, <mxGraphModel>, or <diagram> root). Rendered locally with export/edit controls. Only inline XML renders: a diagram cannot be loaded from a URL.
 
 Mathematical expressions in KaTeX: (use `$$...$$` for display math, `$...$` for inline LaTeX)
 

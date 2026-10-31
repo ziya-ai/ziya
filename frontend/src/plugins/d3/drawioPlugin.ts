@@ -614,10 +614,6 @@ const isDrawIOSpec = (spec: any): spec is DrawIOSpec => {
             spec.definition.includes('<diagram');
     }
 
-    if (typeof spec.url === 'string') {
-        return spec.url.includes('diagrams.example.com');
-    }
-
     return false;
 };
 
@@ -1957,8 +1953,17 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             return normalizeDrawIOXml(spec.definition);
         })() : null;
 
-        if (!xml && !spec.url) {
-            container.innerHTML = '<div style="padding: 16px; color: #cf1322;">⚠️ No diagram content provided</div>';
+        if (!xml) {
+            // Nothing fetches spec.url: a URL-only spec used to fall through to
+            // maxGraph and fail parsing null.  Say what is supported instead.
+            // textContent, not innerHTML: spec.url is model/user supplied.
+            const msg = document.createElement('div');
+            msg.style.cssText = 'padding: 16px; color: #cf1322;';
+            msg.textContent = spec.url
+                ? '⚠️ DrawIO diagrams cannot be loaded from a URL. Paste the diagram XML (<mxfile>…</mxfile>) into the block instead.'
+                : '⚠️ No diagram content provided';
+            container.innerHTML = '';
+            container.appendChild(msg);
             return;
         }
 
@@ -2661,7 +2666,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             style['imageVerticalAlign'] = 'top';
                             style['spacingTop'] = 5;
 
-                            console.log(`🔧 LABEL-FIX: Applied label positioning for AWS icon ${cellId}`, {
+                            console.info(`🔧 LABEL-FIX: Applied label positioning for AWS icon ${cellId}`, {
                                 serviceName,
                                 labelPosition: 'bottom-center'
                             });
