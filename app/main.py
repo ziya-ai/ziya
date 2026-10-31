@@ -2,7 +2,7 @@
 # This must be the very first thing to ensure logging is configured correctly
 import sys
 import os
-from app.cli_commands import TOP_LEVEL_COMMANDS
+from app.cli_commands import TOP_LEVEL_COMMANDS, unknown_command_message
 if any(cmd in sys.argv for cmd in TOP_LEVEL_COMMANDS):
     os.environ["ZIYA_MODE"] = "chat"
     os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
@@ -83,7 +83,16 @@ def parse_arguments():
                              "network and should be combined with an authenticated SSH tunnel or other access control.")
     parser.add_argument("--ephemeral", action="store_true",
                        help="Don't persist conversations or data to database beyond current session")
-    return parser.parse_args()
+    # Same behaviour as parse_args(), except a leftover bare word (a mistyped
+    # subcommand) gets a one-line hint instead of the full server usage block.
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        msg = unknown_command_message(unknown)
+        if msg:
+            print(f"ziya: {msg}", file=sys.stderr)
+            sys.exit(2)
+        parser.error(f"unrecognized arguments: {' '.join(unknown)}")
+    return args
 
 def setup_environment(args):
     """Server entry-point environment setup.
