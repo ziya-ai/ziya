@@ -1561,14 +1561,9 @@ const MUIChatHistory = () => {
     }
 
     if (isMove) {
+      // Also clears isGlobal (local and server) and, if this is the
+      // conversation in view, switches to the target project with it.
       await moveConversationToProject(nodeId, targetProjectId);
-      // If the conversation was shared across all projects (globe icon),
-      // moving it to a specific project should scope it there — clear the
-      // isGlobal flag so it stops showing in other projects.
-      const conv = conversations.find(c => c.id === nodeId);
-      if (conv?.isGlobal) {
-        await toggleConversationGlobal(nodeId);
-      }
       message.success(`Moved to project "${targetName}"`);
     } else {
       await copyConversationToProject(nodeId, targetProjectId);
