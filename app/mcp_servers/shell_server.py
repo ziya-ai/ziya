@@ -668,6 +668,16 @@ class ShellServer:
         self._effective_config = get_default_shell_config()
         self.allowed_commands = self._effective_config["allowedCommands"].copy()
 
+        # Credential paths a curl @file upload must not read: the built-in
+        # set plus any a shell-config provider adds (an SSO cookie dir, ...).
+        self._sensitive_fragments = self._BASE_SENSITIVE_FRAGMENTS
+        try:
+            from app.plugins import get_shell_config_additions
+            _extra = get_shell_config_additions().get("additional_sensitive_paths", [])
+            self._sensitive_fragments += tuple(str(f).lower() for f in _extra if f)
+        except Exception as _e:  # noqa: BLE001 - keep the built-in set
+            print(f"shell config sensitive paths unavailable: {_e}", file=sys.stderr)
+
         # Write policy
         self.wp_manager = WritePolicyManager()
         self.wp_manager.merge_env_overrides(self._scope_env)
@@ -2019,10 +2029,8 @@ class ShellServer:
         # 2. @file references that resolve to credential material. curl reads
         #    an @-prefixed value as a file for -d/--data*, -F/--form,
         #    -T/--upload-file.
-        _sensitive_fragments = (
-            '/.aws/', '/.sso-cache/', '/.ssh/', '/.ziya/keyring',
-            'credentials', 'id_rsa', 'id_ed25519', '.pem',
-        )
+        _sensitive_fragments = getattr(
+            self, '_sensitive_fragments', self._BASE_SENSITIVE_FRAGMENTS)
         for tok in tokens[1:]:
             # The @path may be a standalone arg (-d @file) or attached to a
             # form field (-F name=@file). Extract every @-reference.

@@ -383,12 +383,14 @@ def get_shell_config_additions() -> dict:
       - additional_git_operations: list[str]
       - additional_interpreters: list[str]
       - additional_write_patterns: list[str]
+      - additional_sensitive_paths: list[str]
       - providers: list[str]  (provider_ids that contributed)
     """
     commands = []
     git_ops = []
     interpreters = []
     write_patterns = []
+    sensitive_paths = []
     providers = []
 
     for provider in _shell_config_providers:
@@ -410,6 +412,10 @@ def get_shell_config_additions() -> dict:
             for pat in provider.get_additional_write_patterns():
                 if pat not in write_patterns:
                     write_patterns.append(pat)
+            # getattr: a provider written before this hook has no method.
+            for frag in getattr(provider, 'get_additional_sensitive_paths', lambda: [])():
+                if frag and frag not in sensitive_paths:
+                    sensitive_paths.append(frag)
         except Exception as e:
             logger.warning(f"Error collecting shell config from {getattr(provider, 'provider_id', '?')}: {e}")
 
@@ -418,6 +424,7 @@ def get_shell_config_additions() -> dict:
         "additional_git_operations": git_ops,
         "additional_interpreters": interpreters,
         "additional_write_patterns": write_patterns,
+        "additional_sensitive_paths": sensitive_paths,
         "providers": providers,
     }
 
