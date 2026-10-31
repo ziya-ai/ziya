@@ -1261,6 +1261,26 @@ export const sendPayload = async (
                     }
                 }
 
+                // Model-driven sidebar organisation (folder_*, chat_move,
+                // chat_rename, chat_fork).  The server record changed mid-turn;
+                // ChatContext answers this event by pulling folders and chat
+                // summaries now, instead of on the 30 s poll.  Without it the
+                // post-turn save of the CURRENT conversation (_version=now)
+                // could push its stale title/folder back over the change.
+                if (unwrappedData.type === 'tool_display'
+                    && /^(folder_(list|create|update|delete)|chat_(move|rename|fork))$/
+                        .test(String(unwrappedData.tool_name || '').replace(/^mcp_/, ''))) {
+                    const raw = unwrappedData.result;
+                    const result = typeof raw === 'string'
+                        ? (() => { try { return JSON.parse(raw); } catch { return null; } })()
+                        : raw;
+                    if (result && result.success) {
+                        window.dispatchEvent(new CustomEvent('conversationOrganizedFromBackend', {
+                            detail: { tool: unwrappedData.tool_name, result },
+                        }));
+                    }
+                }
+
                 // file_write auto-added a small file it wrote to this
                 // conversation's context (app/utils/auto_context.py); show it
                 // in the file tree. Large files are only tracked, not added.

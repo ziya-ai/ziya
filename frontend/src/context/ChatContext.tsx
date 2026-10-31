@@ -4500,6 +4500,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
         projectSync.on('streaming-ended', handleStreamingEnded);
         projectSync.on('streaming-probe', handleStreamingProbe);
 
+        // A conversation_organize tool changed folders or chat metadata on
+        // the server mid-turn (chatApi.ts raises this from tool_display).
+        // Pull both now so the sidebar — and the in-memory copy that the
+        // post-turn save will push back — reflect the server's version.
+        const handleOrganizedFromBackend = () => {
+            handleFoldersChanged();
+            syncWithServerRef.current?.()?.catch(err =>
+                console.warn('📡 SERVER_SYNC: organize-triggered sync failed:', err));
+        };
+        window.addEventListener('conversationOrganizedFromBackend', handleOrganizedFromBackend);
+
         return () => {
             // Cancel any pending rAF to prevent setState after unmount
             if (chunkRafId !== null) {
