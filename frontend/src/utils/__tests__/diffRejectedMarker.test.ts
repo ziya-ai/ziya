@@ -87,8 +87,12 @@ describe('buildDiffRejectionNotice', () => {
         expect(out.indexOf('did not apply')).toBeLessThan(out.indexOf('Correcting failed'));
     });
     it('still explains the pause when the server sent no rejection records', () => {
+        // No records means no fence was refused: the server's phantom-diff check
+        // found prose citing a diff the reply never contained.  "A patch did not
+        // apply cleanly" was false there and read as a validator bug.
         const out = buildDiffRejectionNotice([]);
-        expect(out).toContain('did not apply cleanly');
+        expect(out).toContain('referred to a diff it did not include');
+        expect(out).not.toContain('did not apply cleanly');
         expect(extractRejectedDiffHashes(out).size).toBe(0);
         expect(out).toContain('Correcting failed diff(s)');
     });
