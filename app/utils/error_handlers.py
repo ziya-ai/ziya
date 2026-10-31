@@ -115,7 +115,7 @@ async def handle_streaming_error(request: Request, exc: Exception) -> AsyncItera
             'unsupported protocol scheme', 'failed to initialize iibs client',
         ))):
         # A network/DNS outage while a credential_process tried to reach its
-        # endpoint (e.g. sso-broker.example.com) -- transient, NOT expired
+        # endpoint (e.g. an SSO credential broker) -- transient, NOT expired
         # credentials. Do not send users to re-run mwinit.
         detail = "Network error while retrieving credentials (the credential endpoint could not be reached). This is usually transient — check your connection and try again."
         status_code = 503
