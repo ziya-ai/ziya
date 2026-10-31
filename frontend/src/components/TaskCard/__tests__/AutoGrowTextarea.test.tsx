@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Tests for AutoGrowTextarea's height cap + scroll fallback.
  *
  * Regression: the Task Card Preview modal renders this textarea while
