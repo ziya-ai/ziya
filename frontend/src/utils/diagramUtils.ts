@@ -13,7 +13,7 @@ export function extractDefinitionFromYAML(definition: string, diagramType: strin
         return definition; // Not YAML-wrapped, return as-is
     }
 
-    console.log(`🔧 Detected YAML-wrapped ${diagramType} definition, extracting content...`);
+    console.info(`🔧 Detected YAML-wrapped ${diagramType} definition, extracting content...`);
     const lines = definition.split('\n');
     let inDefinition = false;
     const contentLines: string[] = [];

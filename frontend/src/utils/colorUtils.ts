@@ -614,7 +614,10 @@ export function enhanceSVGVisibility(
     // inherits the graphic minContrast so existing callers are byte-unchanged.
     const textFloor = textMinContrast ?? minContrast;
 
-    const log = debug ? console.log : () => { };
+    // Block body, not an alias of console.log: the production build strips
+    // only literal, value-unused console.log calls (craco.config.js), and the
+    // alias shipped every mermaid/graphviz/drawio contrast line to prod.
+    const log = debug ? (...args: unknown[]) => { console.log(...args); } : () => { };
     const pageBg = isDarkMode ? '#2e3440' : '#ffffff';
     const defaultTextColor = isDarkMode ? '#eceff4' : '#333333';
     const defaultStrokeColor = isDarkMode ? '#88c0d0' : '#333333';
