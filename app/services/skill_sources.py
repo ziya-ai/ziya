@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.services.skill_discovery import parse_skill_md
+from app.services.skill_discovery import iter_skill_dirs, parse_skill_md
 from app.storage.json_state import JsonStateStore
 from app.utils.paths import cache_dir, get_ziya_home, user_state_file
 
@@ -131,7 +131,8 @@ def checksum(files: Dict[str, bytes]) -> str:
 # -- providers --------------------------------------------------------------
 
 class LocalFolderSource(SkillSourceProvider):
-    """A directory whose subdirectories each hold a SKILL.md."""
+    """A directory of skill dirs (each holding a SKILL.md), optionally filed
+    under grouping folders.  Skills are identified by their leaf name."""
     kind = "folder"
 
     def __init__(self, identifier: str, path: str, name: Optional[str] = None):
@@ -142,9 +143,20 @@ class LocalFolderSource(SkillSourceProvider):
     location = property(lambda self: str(self._path))
 
     def _dirs(self) -> List[Path]:
-        if not self._path.is_dir():
-            return []
-        return sorted(d for d in self._path.iterdir() if d.is_dir() and (d / "SKILL.md").is_file())
+        # Grouping folders too, as in discovery: a repo that files skills
+        # under category folders lists and installs them by leaf name.
+        return list(iter_skill_dirs(self._path))
+
+    def _dir_for(self, skill_id: str) -> Optional[Path]:
+        """The skill directory whose leaf name is ``skill_id`` (first in walk order).
+
+        A leaf-name lookup, not ``self._path / skill_id``: that both missed
+        grouped skills and let a ``../`` id address a directory outside
+        the source."""
+        return next((d for d in self._dirs() if d.name == skill_id), None)
+
+    def _version_of(self, d: Path) -> Optional[str]:
+        return checksum(_bundle_files(d))
 
     def _listing(self, d: Path) -> Optional[SkillListing]:
         parsed = parse_skill_md(d / "SKILL.md")
@@ -152,22 +164,22 @@ class LocalFolderSource(SkillSourceProvider):
             return None
         fm, _body = parsed
         return SkillListing(source=self.identifier, id=d.name, name=fm.get("name") or d.name,
-                            description=fm.get("description", ""), version=self.current_version(d.name) or "",
+                            description=fm.get("description", ""), version=self._version_of(d) or "",
                             requires=parse_requires(fm.get("requires")))
 
     def list(self) -> List[SkillListing]:
         return [l for l in (self._listing(d) for d in self._dirs()) if l]
 
     def fetch_bundle(self, skill_id: str) -> SkillBundle:
-        d = self._path / skill_id
-        listing = self._listing(d) if (d / "SKILL.md").is_file() else None
+        d = self._dir_for(skill_id)
+        listing = self._listing(d) if d is not None else None
         if listing is None:
             raise KeyError(skill_id)
         return SkillBundle(listing=listing, files=_bundle_files(d))
 
     def current_version(self, skill_id: str) -> Optional[str]:
-        d = self._path / skill_id
-        return checksum(_bundle_files(d)) if (d / "SKILL.md").is_file() else None
+        d = self._dir_for(skill_id)
+        return self._version_of(d) if d is not None else None
 
 
 class GitSource(LocalFolderSource):
@@ -211,8 +223,9 @@ class GitSource(LocalFolderSource):
         self.refresh()
         return super().list()
 
-    def current_version(self, skill_id: str) -> Optional[str]:
-        return self.head() if (self._path / skill_id / "SKILL.md").is_file() else None
+    def _version_of(self, d: Path) -> Optional[str]:
+        # The whole checkout's HEAD, not a per-skill checksum.
+        return self.head()
 
 
 # -- source registry --------------------------------------------------------

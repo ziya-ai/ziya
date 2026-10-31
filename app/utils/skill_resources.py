@@ -130,10 +130,26 @@ def readable_skill_dirs() -> List[str]:
     symlinked skill is included too (the read tools check resolved paths).
     """
     try:
-        from app.services.skill_discovery import iter_skill_dirs, user_skill_roots
+        from app.services.skill_discovery import user_skill_roots
         roots = [r for r, _ in user_skill_roots()]
     except Exception:  # noqa: BLE001 -- an allowlist lookup must never fail a read
         return []
+    # User-tier recipes (design/recipe-store.md) are skill directories under
+    # a sibling root; their procedure/ and references/ need the same grant.
+    try:
+        from app.recipes.layout import user_recipe_roots
+        roots.extend(r for r, _ in user_recipe_roots())
+    except Exception:  # noqa: BLE001
+        pass
+    # The grouping-folder walk, when the discovery module provides it.  The
+    # fallback is the one-level scan; without it a missing symbol turned the
+    # whole allowlist into [] and every user-skill read was refused.
+    try:
+        from app.services.skill_discovery import iter_skill_dirs
+    except ImportError:
+        def iter_skill_dirs(root: Path):
+            return (c for c in sorted(root.iterdir())
+                    if c.is_dir() and (c / _SKILL_FILE).is_file())
     out: List[str] = []
     for root in roots:
         if not root.is_dir():
