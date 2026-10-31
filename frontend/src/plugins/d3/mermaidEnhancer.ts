@@ -2535,11 +2535,23 @@ export function initMermaidEnhancer(): void {
     }
 
     const idsToQuote = new Set<string>();
+    // True when `pos` lies inside an open double-quoted string on its line:
+    // an odd number of quotes precede it.  The scan regex below restarts
+    // after every `[` it consumes, so inside `B["… {backlog:[…], done:[…]} …"]`
+    // it resumes at `done:` -- a clean token that no substring guard rejects.
+    // Same technique as special-char-guard.
+    const insideQuotes = (text: string, pos: number): boolean => {
+      const sol = text.lastIndexOf('\n', pos) + 1;
+      return ((text.substring(sol, pos).match(/"/g) || []).length % 2) === 1;
+    };
     // Find node definitions with unquoted IDs that contain a colon.
     // e.g., `My Node: with details[Label text]`
     const nodeDefRegex = /([a-zA-Z0-9][^\[\(\n]*:[^\[\(\n]*?)(\[|\()/g;
     let match;
     while ((match = nodeDefRegex.exec(def)) !== null) {
+      if (insideQuotes(def, match.index)) {
+        continue;
+      }
       const id = match[1].trim();
       // Only add if it's not already quoted and doesn't span across node boundaries.
       // If the candidate ID contains '"', ']', or '-->', the regex has matched
@@ -2562,7 +2574,10 @@ export function initMermaidEnhancer(): void {
       const escapedId = id.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
       // Regex to find the unquoted ID as a whole "word".
       const findIdRegex = new RegExp(`(?<=^|\\s)(${escapedId})(?=[\\s;\\[\\(]|$)`, 'g');
-      newDef = newDef.replace(findIdRegex, `"${id}"`);
+      // A genuinely unquoted `done:[x]` elsewhere must not drag the same
+      // token inside a quoted label along with it.
+      newDef = newDef.replace(findIdRegex, (m: string, _g: string, offset: number, whole: string) =>
+        insideQuotes(whole, offset) ? m : `"${id}"`);
     });
 
     return newDef;
