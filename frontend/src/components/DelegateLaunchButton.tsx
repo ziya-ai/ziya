@@ -34,7 +34,7 @@ import { useActiveChat } from '../context/ActiveChatContext';
 import { useProject } from '../context/ProjectContext';
 import { projectSync } from '../utils/projectSync';
 import { useTheme } from '../context/ThemeContext';
-import * as syncApi from '../api/conversationSyncApi';
+import { fetchLaunchedChats } from '../utils/delegateLaunchSync';
 import * as folderSyncApi from '../api/folderSyncApi';
 import { db } from '../utils/db';
 import type { DelegateSpec } from '../types/delegate';
@@ -150,29 +150,13 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
       // T28: Pull new chats/folders from server → IndexedDB → broadcast
       try {
         const pid = currentProject.id;
-        const [serverChats, serverGroups] = await Promise.all([
-          syncApi.listChats(pid, true),
+        // Fetch only the chats this launch created (named in the response);
+        // listing the project with messages downloads every chat in it.
+        const existingIds = new Set(conversations.map(c => c.id));
+        const [newChats, serverGroups] = await Promise.all([
+          fetchLaunchedChats(pid, result, existingIds),
           folderSyncApi.listServerFolders(pid),
         ]);
-        // Merge new server chats into IndexedDB
-        const existingIds = new Set(conversations.map(c => c.id));
-        const newChats = serverChats
-          .filter(sc => !existingIds.has(sc.id))
-          .map(sc => ({
-            id: sc.id,
-            title: sc.title || 'Untitled',
-            messages: sc.messages || [],
-            // Preserve the server's authoritative timestamp.  Falling back
-            // to Date.now() here used to set lastAccessedAt > server's
-            // lastActiveAt at insert time, which then made every empty
-            // delegate chat look "newer locally" on the next sync cycle.
-            lastAccessedAt: sc.lastActiveAt || (sc as any).createdAt || 0,
-            isActive: true,
-            projectId: pid,
-            folderId: sc.groupId || sc.folderId || null,
-            delegateMeta: sc.delegateMeta || null,
-            hasUnreadResponse: false,
-          }));
         if (newChats.length > 0) {
           // Write only new chats — no need to read+rewrite all existing
           await Promise.all(newChats.map(c => db.saveConversation(c as any)));
