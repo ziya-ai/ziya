@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Modal, Radio, Button, message, Space, Typography, Divider, Progress, Switch, Segmented, InputNumber, Select } from 'antd';
 import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined, FileTextOutlined, LinkOutlined, PictureOutlined, CheckCircleOutlined, FilePdfOutlined, MessageOutlined, FilterOutlined, EyeOutlined } from '@ant-design/icons';
 import { useActiveChat } from '../context/ActiveChatContext';
+import { useStreamedContentRef } from '../context/StreamedContentContext';
 import { useTheme } from '../context/ThemeContext';
 import { captureAllVisualizations } from '../utils/visualizationCapture';
 // PDF export is server-side by default: handlePdfExport POSTs to
@@ -66,7 +67,10 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
             description: 'Public paste service with markdown support'
         }
     ]);
-    const { currentConversationId: activeConversationId, currentMessages: activeMessages, reasoningContentMap } = useActiveChat();
+    const { currentConversationId: activeConversationId, currentMessages: activeMessages } = useActiveChat();
+    // Read at open time, not subscribed: MUIChatHistory mounts this modal
+    // permanently, and a subscription would re-render it on every flush.
+    const streamedRef = useStreamedContentRef();
     const { currentProject } = useProject();
     // Conversation-pinned model (conversation → folder → project) so the PDF
     // footer names the model that actually answered, not the server default.
@@ -144,8 +148,9 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     // includeCollapsed filter below (and the server's) governs them too.
     // A conversation loaded from IDB has no live blocks; its markers drop.
     const exportMessages = React.useMemo(
-        () => resolveThinkingMarkersInMessages(currentMessages, reasoningContentMap),
-        [currentMessages, reasoningContentMap],
+        () => resolveThinkingMarkersInMessages(currentMessages, streamedRef.current.reasoningContentMap),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [currentMessages, visible],
     );
 
     /**
