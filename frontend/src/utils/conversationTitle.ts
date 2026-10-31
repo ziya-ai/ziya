@@ -32,9 +32,20 @@ export function shouldDeriveTitleFromMessage(
     return !(existingMessages ?? []).some(m => m.role === 'human');
 }
 
-/** Truncate message content into a display title. */
-export function deriveTitleFromContent(content: string, maxLength: number): string {
-    return content.slice(0, maxLength) + (content.length > maxLength ? '...' : '');
+/** Hard cap on a STORED title.  Not a display width: the row and the
+ *  header breadcrumb ellipsize at render.  Only there so a pasted log
+ *  cannot become a multi-kilobyte title. */
+export const TITLE_STORE_MAX_LENGTH = 200;
+
+/**
+ * Derive a title from message content: the first non-blank line, capped.
+ * The cap used to be the sidebar's width at creation time (width/6,
+ * clamped 30-80), which persisted "..." into titles that then truncated
+ * mid-screen in any wider panel.  See design/visual-refresh.md.
+ */
+export function deriveTitleFromContent(content: string, maxLength: number = TITLE_STORE_MAX_LENGTH): string {
+    const firstLine = (content ?? '').split('\n').map(l => l.trim()).find(l => l.length > 0) ?? '';
+    return firstLine.slice(0, maxLength) + (firstLine.length > maxLength ? '...' : '');
 }
 
 /**

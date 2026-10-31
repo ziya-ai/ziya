@@ -311,10 +311,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
     const folderRef = useRef<string | null>(null);
     const [folderFileSelections, setFolderFileSelections] = useState<Map<string, string[]>>(new Map());
-    const [dynamicTitleLength, setDynamicTitleLength] = useState<number>(50); // Default reasonable length
+    // Retired: titles are no longer sliced to the sidebar width
+    // (design/visual-refresh.md, stage 4).  Kept as a stable value so the
+    // context shape and MUIChatHistory's props stay unchanged.
+    const dynamicTitleLength = 50;
+    const setDynamicTitleLength = useCallback((_length: number) => {}, []);
     const processedModelChanges = useRef<Set<string>>(new Set());
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
-    const otherProjectConvsCache = useRef<{ convs: any[], timestamp: number }>({ convs: [], timestamp: 0 });  // BUGFIX: Cache other-project convos to avoid reading ALL from DB on every save
     const saveDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingSaveConversations = useRef<Conversation[] | null>(null);
     const pendingSaveChangedIds = useRef<Set<string>>(new Set());
@@ -1267,7 +1270,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 _isShell: false, _fullMessageCount: undefined,
                                 _version: Date.now(),
                                 title: firstHuman
-                                    ? deriveTitleFromContent(firstHuman.content, dynamicTitleLength)
+                                    ? deriveTitleFromContent(firstHuman.content)
                                     : c.title,
                             };
                         }));
@@ -1338,7 +1341,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             _fullMessageCount: undefined,
                             // Preserve existing folderId — never overwrite on message add.
                             // (Fixes bug where viewing a swarm delegate re-rooted new conversations.)
-                            title: deriveTitle ? deriveTitleFromContent(message.content, dynamicTitleLength) : conv.title
+                            title: deriveTitle ? deriveTitleFromContent(message.content) : conv.title
                         };
                     }
                     // BUGFIX: Return same reference for unchanged conversations to prevent unnecessary re-renders
@@ -1347,7 +1350,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 : [...prevConversations, {
                     id: conversationId,
                     title: message.role === 'human'
-                        ? deriveTitleFromContent(message.content, dynamicTitleLength)
+                        ? deriveTitleFromContent(message.content)
                         : 'New Conversation',
                     projectId: currentProject?.id,
                     messages: [message],
@@ -1364,7 +1367,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             return updatedConversations;
         });
-    }, [currentConversationId, currentFolderId, dynamicTitleLength, queueSave, currentProject?.id, folders]);
+    }, [currentConversationId, currentFolderId, queueSave, currentProject?.id, folders]);
 
     // T28: Poll for delegate status changes when TaskPlan folders are active
     useDelegatePolling(currentProject?.id, folders, setConversations, setFolders);

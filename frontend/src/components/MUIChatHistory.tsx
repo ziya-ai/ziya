@@ -21,6 +21,8 @@ import { handoffSegmentOrdinals } from '../utils/lineage';
 import { sortComparator } from '../utils/chatTreeSort';
 import { computeStructuralHash, fnv1a } from '../utils/chatTreeHash';
 import { folderBadge, countDirectSubfolders, isTargetFolderRow, withParentExpanded } from '../utils/chatTreeFolderBadge';
+import { formatAbsolute, formatRelativeShort } from '../utils/relativeTime';
+import { useAppearancePrefs } from './AppearancePopover';
 import {
   chatListItemCount,
   isChatListFooterRow,
@@ -191,6 +193,8 @@ interface ChatTreeItemProps {
   // Conversation flags (triage). Folders never carry flags today.
   flags?: string[];
   flagColor?: string | null;
+  // Last activity (epoch ms) for the trailing relative-time label; conversation rows only.
+  lastActiveAt?: number;
   onToggleFlag?: (id: string, flagId: string) => void;
   onSetFlagColor?: (id: string, colorId: string | null) => void;
   onEdit: (id: string) => void;
@@ -262,6 +266,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     openWorkItemCount = 0,
     flags = [],
     flagColor = null,
+    lastActiveAt,
     onToggleFlag,
     onSetFlagColor,
     onEdit,
@@ -297,6 +302,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
   } = props;
 
   const { isDarkMode } = useTheme();
+  const rowHeight = useChatRowHeight();
+  const compact = rowHeight < VIRTUAL_ROW_HEIGHT;
   const [isHovered, setIsHovered] = useState(false);
   // Tracks whether the row's "..." action menu (Dropdown) is actually open,
   // as reported by antd's onOpenChange. This is distinct from isHovered:
@@ -353,27 +360,30 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
         ...style,
         display: 'flex',
         alignItems: 'center',
-        height: VIRTUAL_ROW_HEIGHT,
+        height: rowHeight,
         boxSizing: 'border-box',
         cursor: 'default',
-        borderRadius: 4,
-        padding: `4px 8px 4px ${12 + (depth || 0) * 20}px`,
+        borderRadius: '0 4px 4px 0',
+        padding: `0 8px 0 ${9 + (depth || 0) * 20}px`,
         transition: 'background-color 0.15s',
-        backgroundColor: props.isCurrentItem
-          ? (isDarkMode ? '#177ddc' : '#e6f7ff')
+        // design/visual-refresh.md: the open conversation gets the same
+        // teal rule the human turn uses, so "selected" means one thing.
+        // The target folder (where New chat lands) shares the device but
+        // dashed: solid = selection, dashed = pointer.  An inset-only fill
+        // for the open chat was invisible on linen (#efeeea on #f1f0ec)
+        // while the folder's teal wash read as the selection.
+        borderLeft: props.isCurrentItem
+          ? '3px solid var(--z-accent)'
           : isTargetFolder
-            ? (isDarkMode ? 'rgba(23,125,220,0.16)' : 'rgba(0,0,0,0.05)')
+            ? '3px dashed var(--z-accent)'
+            : '3px solid transparent',
+        backgroundColor: props.isCurrentItem
+          ? 'var(--z-accent-soft)'
+          : isTargetFolder
+            ? 'var(--z-inset)'
             : undefined,
-        // The target folder is a pointer, not a selection, and must rank
-        // below the open conversation's fill.  A 1px edge is a higher-
-        // contrast feature than a wash whatever its colour, so on a light
-        // surface it out-ranks the pale #e6f7ff fill; there the folder gets a
-        // neutral grey wash only.  In dark mode the fill is saturated and the
-        // outline sits comfortably beneath it.
-        boxShadow: isTargetFolder && !props.isCurrentItem && isDarkMode
-          ? 'inset 0 0 0 1px #177ddc'
-          : undefined,
-        color: props.isCurrentItem && isDarkMode ? '#fff' : undefined,
+        color: 'var(--z-text)',
+        fontWeight: props.isCurrentItem ? 600 : undefined,
       }}
       data-target-folder={isTargetFolder ? 'true' : undefined}
     >
@@ -388,7 +398,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
             sx={{
               display: 'flex',
               alignItems: 'center',
-              p: 0.5,
+              py: compact ? 0 : 0.5, px: 0.5,
               width: '100%',
             }}
           >
@@ -416,8 +426,24 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   {delegateStatus === 'ready' && '⏳'}
                   {delegateStatus === 'failed' && '❌'}
                 </span>
+              ) : isHandoffContinuation ? (
+                /* Lineage glyph REPLACES the chat bubble in the leading slot
+                   rather than sitting beside it inside the label, where a
+                   long title's ellipsis clipped it and a bubble-then-glyph
+                   pair read as two icons.  Same box as ChatIcon so the title
+                   x is unchanged. */
+                <span data-testid="handoff-glyph" title="Continuation of an earlier segment"
+                  style={{ marginRight: 8, width: compact ? 16 : 20, fontSize: compact ? 13 : 16,
+                    display: 'inline-flex', justifyContent: 'center', opacity: 0.85, flexShrink: 0 }}>⛓</span>
+              ) : isForkChild ? (
+                <ForkGlyph style={{ marginRight: 8, width: compact ? 16 : 20, fontSize: compact ? 16 : 20,
+                  justifyContent: 'center', flexShrink: 0 }} />
               ) : (
-                <ChatIcon sx={{ mr: 1, fontSize: 20 }} />
+                /* Chat glyph before the title, same x as a folder icon at the
+                   same depth.  A reserved leading gutter was tried and
+                   rejected (design/visual-refresh.md): it pushed root chat
+                   titles onto the folder NAME's x, so they read as children. */
+                <ChatIcon sx={{ mr: 1, fontSize: compact ? 16 : 20 }} />
               )
             )}
 
@@ -435,13 +461,17 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <Box sx={{ display: 'flex', alignItems: 'center', flex: 1, overflow: 'hidden' }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, overflow: 'hidden' }}>
                 {hasUnreadResponse && !isCurrentItem && (
-                  <CheckCircleIcon fontSize="small" color="success" sx={{ mr: 0.5, fontSize: 16 }} />
+                  <Tooltip title="Finished while you were away">
+                    <CheckCircleIcon data-testid="chat-row-unread" fontSize="small" color="success"
+                      sx={{ mr: 0.5, fontSize: compact ? 14 : 16, flexShrink: 0 }} />
+                  </Tooltip>
                 )}
                 <Typography
                   variant="body2"
                   sx={{
+                    flex: 1, minWidth: 0,
                     fontWeight: isFolder ? 'bold' : 'normal',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
@@ -451,10 +481,6 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   }}
                   onDoubleClick={handleLabelDoubleClick}
                 >
-                  {isHandoffContinuation && !handoffOrdinal && (
-                    <span title="Continuation of an earlier segment" style={{ marginRight: 4, opacity: 0.8 }}>⛓</span>
-                  )}
-                  {isForkChild && !isHandoffContinuation && <ForkGlyph />}
                   {labelText}
                   {handoffOrdinal && (
                     <Typography component="span" variant="caption"
@@ -492,10 +518,10 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 )}
                 {!isFolder && flagColor && (
                   <Tooltip title={getFlagColorDef(flagColor)?.label || 'Flagged'}>
-                    <span style={{
-                      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                    <span data-testid="chat-row-flag" style={{
+                      display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
                       backgroundColor: getFlagColorDef(flagColor)?.hex || '#999',
-                      marginLeft: 4, flexShrink: 0,
+                      marginLeft: 6, flexShrink: 0,
                     }} />
                   </Tooltip>
                 )}
@@ -504,6 +530,36 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                     <span style={{ marginLeft: 4, fontSize: 12, whiteSpace: 'nowrap' }}>
                       {flags.map(fid => CONVERSATION_FLAG_LABELS.find(f => f.id === fid)?.emoji || '🏳️').join('')}
                     </span>
+                  </Tooltip>
+                )}
+                {/* Trailing slot, fixed order: state · beads · work · time.
+                    State first because it is the thing that changes.  Moved
+                    here from after the label box so it precedes the bead
+                    count instead of trailing the hover actions. */}
+                {taskBindings && taskBindings.length > 0 ? (
+                  <RunStatusGears bindings={taskBindings} compact={compact} />
+                ) : taskStatusCounts && Object.keys(taskStatusCounts).length > 0 ? (
+                  <RunStatusGears counts={taskStatusCounts} compact={compact} />
+                ) : isRunningTask ? (
+                  <Tooltip title="Task starting…">
+                    <Box sx={{ display: 'flex', alignItems: 'center', ml: 0.75, color: isDarkMode ? '#a78bfa' : '#7c3aed' }}>
+                      <SpinningGear sx={{ fontSize: '12px' }} />
+                      {!compact && <Typography variant="caption" sx={{ fontSize: '11px', ml: 0.25 }}>Task starting…</Typography>}
+                    </Box>
+                  </Tooltip>
+                ) : null}
+                {/* Managed jobs started from this chat.  Finished ones clear
+                    on visit; the open conversation shows only running ones,
+                    its rail and exit card cover the rest. */}
+                {!isFolder && jobs && jobs.length > 0 && (
+                  <JobStatusGlyphs jobs={jobs} seenAt={jobsSeenAt} hideFinished={isCurrentItem} compact={compact} />
+                )}
+                {isStreaming && (
+                  <Tooltip title="Processing…">
+                    <Box sx={{ display: 'flex', alignItems: 'center', ml: 0.75, color: isDarkMode ? '#4cc9f0' : '#1d6fb8' }}>
+                      <SpinningSync sx={{ fontSize: '12px' }} />
+                      <Typography variant="caption" sx={{ fontSize: '11px', ml: 0.25, whiteSpace: 'nowrap' }}>Processing…</Typography>
+                    </Box>
                   </Tooltip>
                 )}
                 {/* Open-work indicators (conversation rows only).  Beads use
@@ -539,9 +595,16 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 {isTaskPlanFolder && taskPlanProgress && (
                   <Typography variant="caption" sx={{ ml: 0.5, px: 0.5, borderRadius: '8px', backgroundColor: '#52c41a', color: '#fff', fontWeight: 600, fontSize: 10 }}>{taskPlanProgress}</Typography>
                 )}
+                {!isFolder && lastActiveAt ? (
+                  <Typography variant="caption" title={formatAbsolute(lastActiveAt)} data-testid="chat-row-time"
+                    sx={{ ml: 0.75, fontSize: '10.5px', color: 'var(--z-text-faint)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                    {formatRelativeShort(lastActiveAt)}
+                  </Typography>
+                ) : null}
 
                 <Box sx={{
-                  ml: 'auto',
+                  ml: 0.5,
+                  flexShrink: 0,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'flex-end',
@@ -599,52 +662,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 </Box>
               </Box>
             )}
-            {/* Per-status gears with counts.  REPLACES the single
-                "Task running…" line rather than sitting beside it: both
-                would draw a gear for a running task, and two gears for one
-                run is worse than the problem being fixed.
-
-                The optimistic ``isRunningTask`` path is kept for the window
-                before any binding exists — set at launch, so it covers the
-                gap where the server has no run record yet — but only when
-                the cluster has nothing to say, so the two cannot overlap. */}
-            {taskBindings && taskBindings.length > 0 ? (
-              <RunStatusGears bindings={taskBindings} />
-            ) : taskStatusCounts && Object.keys(taskStatusCounts).length > 0 ? (
-              /* Not the open chat: statuses come from the project-wide
-                 index.  This branch is the whole point of that index — a
-                 run that held or failed in a conversation the user has not
-                 visited this session previously rendered nothing at all. */
-              <RunStatusGears counts={taskStatusCounts} />
-            ) : /* Not gated on !isStreaming: a launch starts the stream, so
-                   that guard blanked the launch indicator for the whole
-                   window it covers. */
-              isRunningTask ? (
-              <Box sx={{
-                display: 'flex',
-                alignItems: 'center',
-                mt: 0.5,
-                color: isDarkMode ? '#a78bfa' : '#7c3aed',
-              }}>
-                <SpinningGear sx={{ fontSize: '12px', mr: 0.5 }} />
-                <Typography variant="caption" sx={{ fontSize: '11px' }}>
-                  Task starting…
-                </Typography>
-              </Box>
-            ) : null}
-            {isStreaming && (
-              <Box sx={{
-                display: 'flex',
-                alignItems: 'center',
-                mt: 0.5,
-                color: isDarkMode ? '#4cc9f0' : '#1890ff'
-              }}>
-                <SpinningSync sx={{ fontSize: '12px', mr: 0.5 }} />
-                <Typography variant="caption" sx={{ fontSize: '11px' }}>
-                  Processing…
-                </Typography>
-              </Box>
-            )}</Box>
+          </Box>
         </div>
       </div>
     </div>
@@ -870,7 +888,14 @@ interface FlatNode {
   isExpanded: boolean;
   hasChildren: boolean;
   node: any; // original tree node
+  // Synthetic "N unfiled" divider between the root folders and the root
+  // chats (design/visual-refresh.md).  Not a tree node: no conversation,
+  // no folder, never selectable or draggable.
+  isDivider?: boolean;
+  dividerCount?: number;
 }
+
+export const UNFILED_DIVIDER_ID = '__unfiled-divider__';
 
 /** Walk the tree and return only visible (expanded-ancestor) nodes with depth. */
 function flattenVisibleNodes(
@@ -882,6 +907,13 @@ function flattenVisibleNodes(
   if (depth > 20) return []; // Prevent stack overflow from circular references
   const seen = visited || new Set<string>();
   const result: FlatNode[] = [];
+  // Root only: the comparator puts every folder before every chat, so the
+  // first non-folder root node marks the boundary.  Count the chats so the
+  // divider can say how many are unfiled.
+  const rootChatCount = depth === 0
+    ? nodes.filter(n => !(n.folder || n.taskPlan)).length
+    : 0;
+  let dividerEmitted = false;
   for (const node of nodes) {
     if (seen.has(node.id)) continue; // Skip circular references
     seen.add(node.id);
@@ -891,6 +923,13 @@ function flattenVisibleNodes(
     const isFolder = Boolean(node.folder) || Boolean(node.taskPlan);
     const hasChildren = Boolean(node.children?.length);
     const isExpanded = isFolder && expandedSet.has(node.id);
+    if (depth === 0 && !isFolder && !dividerEmitted && result.length > 0) {
+      dividerEmitted = true;
+      result.push({
+        id: UNFILED_DIVIDER_ID, name: '', depth: 0, isFolder: false, isExpanded: false,
+        hasChildren: false, node: null, isDivider: true, dividerCount: rootChatCount,
+      });
+    }
     result.push({
       id: node.id,
       name: node.name,
@@ -911,6 +950,15 @@ function flattenVisibleNodes(
 }
 
 const VIRTUAL_ROW_HEIGHT = 36;
+const COMPACT_ROW_HEIGHT = 26;
+
+/** Row height follows the Appearance density preference
+    (design/visual-refresh.md): Comfortable 36px with the bubble glyph,
+    Compact 26px without.  Both the virtualised list's itemSize and each
+    row's height read this so they can never disagree. */
+function useChatRowHeight(): number {
+  return useAppearancePrefs().density === 'comfortable' ? VIRTUAL_ROW_HEIGHT : COMPACT_ROW_HEIGHT;
+}
 
 /**
  * Stable element type for the virtualized tree's rows.
@@ -1110,7 +1158,6 @@ const MUIChatHistory = () => {
   const {
     currentConversationId,
     setCurrentConversationId,
-    setDynamicTitleLength,
     startNewChat,
     promoteEphemeralToRetained,
     loadConversation,
@@ -1121,6 +1168,7 @@ const MUIChatHistory = () => {
   } = useActiveChat();
 
   const { isDarkMode } = useTheme();
+  const rowHeight = useChatRowHeight();
   const { projects, currentProject, switchProject } = useProject();
 
   // Project-wide run status, so a row that is NOT the open conversation
@@ -1394,34 +1442,6 @@ const MUIChatHistory = () => {
     // last non-empty snapshot.
     localStorage.setItem('ZIYA_PINNED_FOLDERS', JSON.stringify([...pinnedFolders]));
   }, [pinnedFolders]);
-
-  // Handle panel width measurement for dynamic title length
-  useEffect(() => {
-    let lastWidth = 0;
-    let timeoutId: NodeJS.Timeout;
-
-    const resizeObserver = new ResizeObserver((entries) => {
-      // Debounce resize events to prevent excessive firing
-      clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => {
-        const entry = entries[0];
-        if (entry && Math.abs(entry.contentRect.width - lastWidth) > 10) {
-          lastWidth = entry.contentRect.width;
-          const calculatedLength = Math.max(30, Math.min(80, Math.floor(lastWidth / 6)));
-          setDynamicTitleLength(calculatedLength);
-        }
-      }, 250); // 250ms debounce
-    });
-
-    if (chatHistoryRef.current) {
-      resizeObserver.observe(chatHistoryRef.current);
-    }
-
-    return () => {
-      clearTimeout(timeoutId);
-      resizeObserver.disconnect();
-    };
-  }, [setDynamicTitleLength]);
 
   // Custom drag implementation
   const createDragGhost = useCallback((text: string): HTMLElement => {
@@ -4242,6 +4262,19 @@ const MUIChatHistory = () => {
                   );
                 }
                 const flat = flatNodes[index];
+                if (flat.isDivider) {
+                  return (
+                    <div data-testid="unfiled-divider" style={{
+                      ...rowStyle, display: 'flex', alignItems: 'center', gap: 6,
+                      padding: '0 8px 0 12px', fontSize: 10.5, letterSpacing: '0.06em',
+                      textTransform: 'uppercase', color: 'var(--z-text-faint)',
+                      userSelect: 'none', pointerEvents: 'none',
+                    }}>
+                      <span>{(flat.dividerCount ?? 0).toLocaleString()} unfiled</span>
+                      <span style={{ flex: 1, height: 1, background: 'var(--z-border)' }} />
+                    </div>
+                  );
+                }
                 const node = flat.node;
                 const isFolder = flat.isFolder;
                 const nodeId = flat.id;
@@ -4409,11 +4442,13 @@ const MUIChatHistory = () => {
                       isRunningTask={isRunningTaskConv}
                       taskBindings={rowTaskBindings}
                       taskStatusCounts={rowTaskCounts}
+                      jobs={rowJobs} jobsSeenAt={rowJobsSeenAt}
                       isGlobalByInheritanceOnly={isGlobalByInheritanceOnly}
                       openBeadCount={openBeadCount} openWorkItemCount={openWorkItemCount}
                       conversationCount={conversationCount} subfolderCount={subfolderCount}
                       isTargetFolder={isTargetFolder}
                       flags={rowFlags} flagColor={rowFlagColor}
+                      lastActiveAt={isFolder ? undefined : (node.conversation?.lastActiveAt || node.conversation?.lastAccessedAt || undefined)}
                       onToggleFlag={handleToggleFlag} onSetFlagColor={handleSetFlagColor}
                       onEdit={handleEdit} onDelete={handleDelete} onInfo={handleShowInfo} onAddChat={handleAddChat}
                       onExport={handleExportConversation} onPin={togglePinFolder}
@@ -4448,7 +4483,7 @@ const MUIChatHistory = () => {
             {/* Bottom fade: content continues below the fold. Needed because a
                 row can align flush with the container edge, which otherwise
                 reads as the end of the list. */}
-            {chatListHasMoreBelow(listScrollOffset, chatListItemCount(flatNodes.length), VIRTUAL_ROW_HEIGHT, treeContainerHeight) && (
+            {chatListHasMoreBelow(listScrollOffset, chatListItemCount(flatNodes.length), rowHeight, treeContainerHeight) && (
               <div
                 data-chat-list-bottom-fade="true"
                 style={{

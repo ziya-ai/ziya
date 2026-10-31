@@ -43,6 +43,7 @@ import type { RunStatus } from '../../types/task_run';
 import {
   statusClusters, clustersFromCounts, showCount,
   RUN_STATUS_FILL, RUN_STATUS_CHIP_TEXT, RUN_STATUS_CHIP_LABEL,
+  RUN_STATUS_CHIP_LABEL_COMPACT,
 } from './runStatusVocabulary';
 
 // Glyph per needs-human status.  Kept here rather than in the vocabulary
@@ -81,9 +82,14 @@ interface Props {
    * run is actively changing.
    */
   counts?: Record<string, number> | null;
+  /**
+   * Compact sidebar density: one-word chip labels (full text in the
+   * tooltip).  See design/visual-refresh.md.
+   */
+  compact?: boolean;
 }
 
-export const RunStatusGears: React.FC<Props> = ({ bindings, counts }) => {
+export const RunStatusGears: React.FC<Props> = ({ bindings, counts, compact = false }) => {
   // Live clusters are never suppressed.  A task run drives the chat, so
   // the conversation is streaming for almost the whole time a run is
   // live; filtering animated clusters while streaming hid the gear in
@@ -100,11 +106,13 @@ export const RunStatusGears: React.FC<Props> = ({ bindings, counts }) => {
   return (
     <Box sx={{
       display: 'flex', alignItems: 'center', gap: 0.75,
-      mt: 0.5, flexWrap: 'wrap',
+      flexShrink: 0,
     }}>
       {visible.filter(c => c.needsHuman).map(c => {
         const Icon = CHIP_ICON[c.status] ?? QuestionAnswerIcon;
-        const text = RUN_STATUS_CHIP_LABEL[c.status] ?? c.label;
+        const text = (compact
+          ? (RUN_STATUS_CHIP_LABEL_COMPACT[c.status] ?? RUN_STATUS_CHIP_LABEL[c.status])
+          : RUN_STATUS_CHIP_LABEL[c.status]) ?? c.label;
         return (
         <Tooltip
           key={c.status}
