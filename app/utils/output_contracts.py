@@ -1156,6 +1156,44 @@ def unit_producers(unit: Any, g: Any) -> Tuple[List[Any], List[Any]]:
     return (tasks if len(tasks) == 1 else []), tasks
 
 
+def gather_unit_count(container: Any, g: Any) -> Optional[int]:
+    """How many units a gather entry is judged over, when knowable up front.
+
+    ``per: child``: the direct children.  ``per: iteration``: a counted
+    Repeat's ``repeat_count``, or an Until's ``until_max`` (an upper
+    bound).  None for a for_each / until-substring Repeat and ``per: total``.
+    """
+    per = _get(g, "per") or "child"
+    btype = _get(container, "block_type")
+    if per == "child":
+        return len(_get(container, "body") or [])
+    if per != "iteration":
+        return None
+    if btype == "repeat" and (_get(container, "repeat_mode") or "count") == "count":
+        n = _get(container, "repeat_count")
+        return int(n) if n else None
+    if btype == "until":
+        n = _get(container, "until_max")
+        return int(n) if n else None
+    return None
+
+
+def gather_requires_every_unit(container: Any, g: Any) -> bool:
+    """True unless ``min_units`` asks for fewer units than there can be.
+
+    An unknowable unit count with ``min_units`` set counts as a quorum.
+    """
+    mu = _get(g, "min_units")
+    if mu is None or (_get(g, "per") or "child") == "total":
+        return True
+    try:
+        mu = int(mu)
+    except (TypeError, ValueError):
+        return True
+    n = gather_unit_count(container, g)
+    return n is not None and mu >= n
+
+
 def gather_pushdown(container: Any, entries: Iterable[Any]) -> Dict[str, Any]:
     """What a gathered container pushes to the Tasks beneath it.
 
@@ -1168,6 +1206,12 @@ def gather_pushdown(container: Any, entries: Iterable[Any]) -> Dict[str, Any]:
     optional: List[Dict[str, Any]] = []
     for g in entries:
         optional.append(gather_as_output_entry(g, required=False))
+        # Under a quorum (min_units below the unit count) no single unit
+        # owes the part: a producer that fails for lacking it would fail a
+        # container the quorum is meant to let pass.  Short units are
+        # counted at the container end and re-run by rerun_missing.
+        if not gather_requires_every_unit(container, g):
+            continue
         for _, unit in gather_units(container, g):
             producers, _ = unit_producers(unit, g)
             for p in producers:

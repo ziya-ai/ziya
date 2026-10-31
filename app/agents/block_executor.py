@@ -1007,10 +1007,22 @@ async def _check_gather(block: Block, ctx: ExecutionContext, artifact: Artifact,
                 short.append({"unit": label, "count": n})
         if not short:
             continue
-        failed_names.append(contract.name)
         bound = f"{lo}" + (f"-{hi}" if hi is not None else "+")
         shown = ", ".join(f"{s['unit']} ({s['count']})" for s in short[:50])
         more = f" (+{len(short) - 50} more)" if len(short) > 50 else ""
+        # ``min_units``: a quorum of units, not all of them.  The short
+        # units are still recorded, so a tolerated gap stays visible.
+        mu = _gval(g, "min_units")
+        met = len(units) - len(short)
+        if mu is not None and per != "total" and met >= int(mu):
+            decisions.append(
+                f"gather_contract: {met} of {len(units)} unit(s) of "
+                f"{block.name or block.id!r} met {bound} valid {contract.name!r} "
+                f"part(s) (per {per}), at least {int(mu)} required; short: {shown}{more}")
+            continue
+        failed_names.append(contract.name)
+        if mu is not None and per != "total":
+            more += f"; {met} met, at least {int(mu)} required"
         decisions.append(
             f"gather_contract: {len(short)} of {len(units)} unit(s) of "
             f"{block.name or block.id!r} short of {bound} valid "
@@ -1023,7 +1035,10 @@ async def _check_gather(block: Block, ctx: ExecutionContext, artifact: Artifact,
             "at": time.time(),
         })
     if not failed_names:
-        return artifact
+        if not decisions:
+            return artifact
+        return artifact.model_copy(update={
+            "decisions": [*(artifact.decisions or []), *decisions]})
     return artifact.model_copy(update={
         "failed": True,
         "signature": "gather_contract:" + ",".join(failed_names),
@@ -1035,6 +1050,11 @@ def _gather_claims(ctx: ExecutionContext):
     from ..utils.output_contracts import ledger_claim_lookup
     ns = {**(ctx.variables or {}), **(ctx.overrides or {})}.get(EVIDENCE_NAMESPACE_VAR)
     return ledger_claim_lookup(ctx.project_root, str(ns) if ns else None)
+
+
+def _gval(g: Any, k: str) -> Any:
+    """One field of a gather entry, dict or model."""
+    return g.get(k) if isinstance(g, dict) else getattr(g, k, None)
 
 
 def _gather_terms(ctx: ExecutionContext, g: Any):
@@ -1076,6 +1096,15 @@ def _rerun_targets(
         contract, g_per, lo, _hi = _gather_terms(ctx, g)
         if g_per != per:
             continue
+        mu = _gval(g, "min_units")
+        if mu is not None:
+            # A quorum already met needs no re-run: the container will pass.
+            met = 0
+            for _i, _l, art, _s in units:
+                n = count_valid_parts(contract, (art.outputs if art else []) or [], claims=claims)
+                met += lo <= n and (_hi is None or n <= int(_hi))
+            if met >= int(mu):
+                continue
         for idx, label, art, status in units:
             if status == "cancelled":
                 continue

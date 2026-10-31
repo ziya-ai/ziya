@@ -309,6 +309,31 @@ def _check_gather(block: Block, index: "_TreeIndex", err, warn) -> None:
                     warn(f"gather_contract {name!r}: rerun_missing on a sequential repeat whose "
                          f"body uses {{{{previous}}}} - re-running iteration i does not re-run "
                          f"i+1, which already ran on the first attempt's result")
+        from .output_contracts import gather_requires_every_unit, gather_unit_count
+        n_units = gather_unit_count(block, g)
+        mu = _entry_get(g, "min_units")
+        if mu is not None:
+            try:
+                mu = int(mu)
+            except (TypeError, ValueError):
+                err(f"gather_contract {name!r}: min_units must be an integer, got {mu!r}")
+                continue
+            if per == "total":
+                err(f"gather_contract {name!r}: min_units counts units, and per 'total' has "
+                    f"one; use min for a part count, or per 'child'/'iteration' with min_units")
+                continue
+            if mu < 1:
+                err(f"gather_contract {name!r}: min_units {mu} lets the container pass with "
+                    f"nothing; drop the gather contract if no unit must emit {name!r}")
+                continue
+            if n_units is not None and mu > n_units:
+                err(f"gather_contract {name!r}: min_units {mu} exceeds the {n_units} unit(s) "
+                    f"of {block.name or block.id!r}, so it can never be met")
+                continue
+        lo = _entry_get(g, "min")
+        lo = 1 if lo is None else int(lo)
+        needs_all = gather_requires_every_unit(block, g)
+        optional_producers: List[str] = []
         wanted = list(_entry_get(g, "producer") or [])
         sub = _subtree_ids(block) - ({block.id} if block.id else set())
         for pid in wanted:
