@@ -803,6 +803,16 @@ _CAPTURE_FIT_JS = """
     el.style.overflow = 'visible';
     el.style.maxHeight = 'none';
     el.style.maxWidth = 'none';
+    // A flex-centred ancestor (the harness root: 100vh, align-items:center)
+    // centres a child TALLER or WIDER than itself by pushing it to negative
+    // coordinates.  Removing the overflow clip alone does not bring that part
+    // back: an element screenshot cannot reach above y=0 / left of x=0, so a
+    // tall music score lost its first systems and its left margin, and the
+    // same amount showed up as empty canvas at the bottom.  Anchor to the
+    // start instead; the screenshot is element-relative, so a diagram that
+    // was centred and fits loses nothing.
+    el.style.alignItems = 'flex-start';
+    el.style.justifyContent = 'flex-start';
     el = el.parentElement;
   }
   if (document.body) { document.body.style.overflow = 'visible'; }
@@ -1054,13 +1064,31 @@ class DiagramRenderer:
         logger.info("Headless Chromium launched for diagram rendering")
 
     async def close(self) -> None:
-        if self._browser:
-            await self._browser.close()
-            self._browser = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
-        logger.info("Headless Chromium closed")
+        """Release the browser and the Playwright driver; never raises.
+
+        On Ctrl-C the SIGINT reaches the whole process group, so the node
+        driver and Chromium have usually exited already and both calls fail
+        with "Connection closed while reading from the driver".  That is the
+        state we were trying to reach, so each step is attempted on its own
+        (a failed browser close must not skip \`\`stop()\`\`) and bounded, since
+        a half-dead driver can also hang instead of failing.
+        """
+        browser, self._browser = self._browser, None
+        pw, self._playwright = self._playwright, None
+        clean = True
+        for label, step in (("browser close", browser.close if browser else None),
+                            ("playwright stop", pw.stop if pw else None)):
+            if step is None:
+                continue
+            try:
+                await asyncio.wait_for(step(), timeout=5.0)
+            except Exception as e:  # noqa: BLE001 — driver already gone is the common case
+                clean = False
+                logger.debug(f"Diagram renderer {label} during shutdown: {e}")
+        if clean:
+            logger.info("Headless Chromium closed")
+        else:
+            logger.info("Headless Chromium closed (driver had already exited)")
 
     # -- Page acquisition (for harnesses driving a route other than
     # /render) ---------------------------------------------------------
