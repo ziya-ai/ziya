@@ -3,6 +3,7 @@ import { D3RenderPlugin } from '../../types/d3';
 import { applyHeightFloor, applySizing, isCompositeSpec, resolveAutosize, resolveSpecWidth } from './vegaSizing';
 import { estimateChartWidthPx, fitNarrowConcatCellLegends, relocateOverflowingSideLegend } from './vegaLegendPlacement';
 import { fixUnparsedDateFormatting } from './vegaDateExpr';
+import { fixTemporalZoneMismatch } from './vegaTemporalZone';
 import {
   MAX_AXIS_LABEL_LIMIT,
   applySharedAxisDefaults,
@@ -2795,18 +2796,24 @@ export const vegaLitePlugin: D3RenderPlugin = {
               }
             }
           } else if (domain === null || domain === undefined) {
-            console.log(`🔧 VEGA-PREPROCESS: Removed null ${channel} domain`);
+            console.info(`🔧 VEGA-PREPROCESS: Removed null ${channel} domain`);
             delete spec.encoding[channel].scale.domain;
           }
         }
       });
 
       // Fix 3.7: log -> symlog where a value on the scale is <= 0 (see fixLogScales).
-      fixLogScales(spec).forEach(msg => console.log(`🔧 VEGA-PREPROCESS: ${msg}`));
+      fixLogScales(spec).forEach(msg => { console.info(`🔧 VEGA-PREPROCESS: ${msg}`); });
 
       // Fix 3.72: timeFormat/utcFormat over a field that is still a string
       // (never encoded temporal) formats every row to "NaN" (see vegaDateExpr).
-      fixUnparsedDateFormatting(spec).forEach(msg => console.log(`🔧 VEGA-PREPROCESS: ${msg}`));
+      fixUnparsedDateFormatting(spec).forEach(msg => { console.info(`🔧 VEGA-PREPROCESS: ${msg}`); });
+
+      // Fix 3.73: an axis labelled UTC (title, literal Z in the format,
+      // utcFormat labelExpr, Z-stated or date-only values) rendered in the
+      // browser's zone: make the shared scale, timeUnits and tooltips UTC
+      // on every layer (see vegaTemporalZone).
+      fixTemporalZoneMismatch(spec).forEach(msg => { console.info(`🔧 VEGA-PREPROCESS: ${msg}`); });
 
       // Fix 3.75: A bar/area on a log scale must not be auto-stacked.
       //
