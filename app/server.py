@@ -74,6 +74,8 @@ from app.api import backlog as backlog_api
 from app.api import commands as commands_api
 from app.api import consent as consent_api
 from app.api import ledger as ledger_api
+from app.api import extras as extras_api
+from app.api import schedules as schedules_api
 from app.utils.paths import get_ziya_home
 from app.utils.logging_utils import logger as app_logger
 
@@ -717,6 +719,17 @@ async def lifespan(app: FastAPI):
 
     # Periodic cleanup of stale delegate plans and prompt cache
     asyncio.create_task(_periodic_memory_cleanup())
+
+    # Optional extras after an upgrade (app/utils/extras_registry.py): adopt
+    # extras found installed as opted in, and re-install any opted-in extra
+    # that has gone missing and needs no sudo (a Playwright bump moves the
+    # Chromium build; pip has no post-install step to follow it).  Runs off
+    # the loop; failures are logged, never raised.
+    try:
+        from app.utils.extras_registry import reconcile_background
+        asyncio.create_task(reconcile_background())
+    except Exception as e:
+        logger.warning(f"Extras reconcile failed to start (non-fatal): {e}")
 
     # Task-card scheduler — fires scheduled cards on interval / at /
     # daily_at / cron.  Single-writer across multiple servers via a
@@ -1746,8 +1759,12 @@ app.include_router(ledger_api.router)
 app.include_router(task_cards.router)
 app.include_router(task_runs.router)
 app.include_router(task_bindings.router)
+app.include_router(jobs_api.router)
 app.include_router(drag_helper_api.router)
 app.include_router(commands_api.router)
+app.include_router(extras_api.router)
+app.include_router(schedules_api.router)
+app.include_router(schedules_api.status_router)
 app_logger.info("Session management API routes loaded")
 
 # Import and include model routes

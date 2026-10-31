@@ -76,20 +76,33 @@ def run(args: List[str]) -> int:
         return _run_script(args)
     py_targets = [a for a in args if a in PYTHON_EXTRAS]
     # No target at all means --all (the script's own default), and --all
-    # also covers the Python-level extras that belong on every machine of
-    # this platform -- today just --drag on macOS.  --data / --stats stay
-    # explicit-only.
+    # also covers every Python-level extra that applies to this platform
+    # (extras_registry: default_in_all + supported).
     wants_all = "--all" in args or not any(
         a in PYTHON_EXTRAS or a in SCRIPT_TARGETS for a in args)
     if wants_all:
         py_targets += [t for t in default_python_extras() if t not in py_targets]
+    dry = "--dry-run" in args or "--plan" in args
     if not py_targets:
-        return _run_script(args)
-    rc = install_python_extras(py_targets, dry_run="--dry-run" in args or "--plan" in args)
+        rc = _run_script(args)
+        if not dry:
+            _record_installed(_script_targets_requested(args))
+        return rc
+    rc = install_python_extras(py_targets, dry_run=dry)
     rest = [a for a in args if a not in PYTHON_EXTRAS]
     if wants_all or any(a in SCRIPT_TARGETS for a in rest):
         rc = _run_script(rest) or rc
+        if not dry:
+            _record_installed(_script_targets_requested(rest))
     return rc
+
+
+def _script_targets_requested(args: List[str]) -> List[str]:
+    """The script-level targets ``args`` asks for; none / --all means all of them."""
+    named = [a for a in args if a in SCRIPT_TARGETS and a != "--all"]
+    if named and "--all" not in args:
+        return named
+    return [x.target for x in _REGISTRY if x.kind != "pip" and x.supported()]
 
 
 def _run_script(args: List[str]) -> int:
@@ -117,31 +130,40 @@ def _run_script(args: List[str]) -> int:
     return subprocess.run([bash, str(script), *args], env=env).returncode
 
 
-# Keep in step with [tool.poetry.extras] data / stats in pyproject.toml.
-PYTHON_EXTRAS = {
-    "--data": ["duckdb>=1.1", "sqlglot>=25", "pyarrow>=15", "scipy>=1.11"],
-    "--stats": ["statsmodels>=0.14"],
-    # macOS only: lets the native drag helper (app/utils/drag_pasteboard_helper.py)
-    # rewrite the drag pasteboard so a diagram/table dragged out of Ziya lands
-    # in Slack desktop as a file. Harmless to install elsewhere; never spawned.
-    "--drag": ["pyobjc-framework-Cocoa>=10"],
-}
-SCRIPT_TARGETS = {"--browser", "--latex", "--all"}
+# The extras themselves are declared once, in app/utils/extras_registry.py
+# (which also drives the startup reconcile, /api/extras and the Settings
+# page).  These tables are views of it kept under their historical names.
+from .extras_registry import REGISTRY as _REGISTRY, BY_TARGET as _BY_TARGET  # noqa: E402
+
+PYTHON_EXTRAS = {x.target: list(x.pip_packages) for x in _REGISTRY if x.kind == "pip"}
+SCRIPT_TARGETS = {x.target for x in _REGISTRY if x.kind != "pip"} | {"--all"}
 
 # Modules whose presence means a target is already installed.  Checked before
 # pip so the default run does not pay for (or need a login to) an index just
 # to confirm what is there -- mirroring the shell script's "already installed".
-PYTHON_EXTRA_PROBES = {
-    "--data": ["duckdb", "sqlglot", "pyarrow", "scipy"],
-    "--stats": ["statsmodels"],
-    "--drag": ["AppKit"],
-}
+PYTHON_EXTRA_PROBES = {x.target: list(x.probe_modules) for x in _REGISTRY if x.kind == "pip"}
 
 
 def default_python_extras() -> List[str]:
     """Python-level targets --all (and the no-target default) include on
     this platform.  The drag helper only has anything to do on macOS."""
-    return ["--drag"] if sys.platform == "darwin" else []
+    return [x.target for x in _REGISTRY
+            if x.kind == "pip" and x.default_in_all and x.supported()]
+
+
+def _record_installed(targets: List[str]) -> None:
+    """Remember, in ~/.ziya/extras_state.json, the targets the user has
+    installed, so a later upgrade that leaves one of them missing can refresh
+    it rather than merely announce it.  Only targets the probe now finds
+    present are recorded; a declined or failed install is not an opt-in."""
+    try:
+        from .extras_registry import record_opted_in
+        keys = [_BY_TARGET[t].key for t in targets
+                if t in _BY_TARGET and _BY_TARGET[t].missing() is None]
+        if keys:
+            record_opted_in(keys)
+    except Exception as e:  # noqa: BLE001 -- bookkeeping must never fail an install
+        print(f"!! could not record installed extras: {e}")
 
 
 def python_extra_installed(target: str) -> bool:
@@ -182,6 +204,8 @@ def install_python_extras(targets: List[str], dry_run: bool = False) -> int:
     if rc != 0 and _index_failure_hint(targets):
         print(f"==> retrying: {' '.join(cmd)}")
         rc = subprocess.run(cmd).returncode
+    if rc == 0:
+        _record_installed(targets)
     return rc
 
 
