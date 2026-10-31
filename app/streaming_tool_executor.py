@@ -3718,7 +3718,13 @@ class StreamingToolExecutor:
                                     'can_retry': True, 'retry_message': _help,
                                 }
                             else:
-                                yield {'type': 'error', 'content': stream_event.message}
+                                # Tags recognisable provider messages (e.g. a
+                                # local server's memory ceiling) so the
+                                # frontend can show a specific banner instead
+                                # of the generic collapsed error block.
+                                from app.utils.provider_error_chunks import (
+                                    build_provider_error_chunk)
+                                yield build_provider_error_chunk(stream_event.message)
                             break
                     elif isinstance(stream_event, StreamEnd):
                         chunk = {'type': 'message_stop',

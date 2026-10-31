@@ -571,10 +571,24 @@ function showError(errorDetail: string, conversationId: string, addMessageToConv
         // Convert newlines to <br> so multi-line content stays contained within
         // HTML elements — bare \n\n causes the markdown processor to break out.
         const safeDetailHtml = safeDetail.replace(/\n/g, '<br>');
+        // Server running from a deleted install (or a missing CA bundle):
+        // checked first so no other banner claims it and offers a Retry
+        // that cannot succeed until the server is restarted.
+        if (isInstallationChangedError(errorDetail, errorType)) {
+            addMessageToConversation({
+                role: 'assistant',
+                content: renderInstallationChangedBanner(errorDetail, safeDetailHtml, escapeHtml),
+                _timestamp: Date.now()
+            }, conversationId);
+            return;
+        }
         // Check if this is an authentication error that should have a retry button
         const isAuthError = errorType === 'authentication_error' || errorDetail.includes('credential') || errorDetail.includes('mwinit') || errorDetail.includes('AWS credentials');
         // Context-size errors get the same treatment: visible text + retry button, no collapsible.
         const isContextSizeError = errorType === 'context_size_error' || errorDetail.includes('too large') || errorDetail.includes('too long') || errorDetail.includes('tokens >') || errorDetail.includes('prompt is too');
+        // Local model server out of RAM (oMLX memory guard etc.). Checked before the
+        // context-size banner because the oMLX text says "reduce context length".
+        const isModelMemory = isModelMemoryError(errorDetail, errorType);
         // Connection/endpoint failures (e.g. botocore EndpointConnectionError during
         // an AWS-side outage) are transient and retriable, but previously fell through
         // to the generic collapsed <details> block with no retry affordance and raw
@@ -630,6 +644,15 @@ ${safeDetailHtml}
                 _timestamp: Date.now()
             };
             addMessageToConversation(authMessage, conversationId);
+            return;
+        }
+
+        if (isModelMemory) {
+            addMessageToConversation({
+                role: 'assistant',
+                content: renderModelMemoryErrorBanner(errorDetail, safeDetailHtml, conversationId, escapeHtml),
+                _timestamp: Date.now()
+            }, conversationId);
             return;
         }
 
