@@ -92,13 +92,42 @@ def _targets(root: Dict[str, Any], edit: Dict[str, Any]) -> List[Dict[str, Any]]
     return out
 
 
+def _set_state_variable(block: Dict[str, Any], key: str, name: str,
+                        value: Any) -> Optional[str]:
+    """Set (or, with ``value=None``, remove) one entry of ``state_variables``.
+
+    Observed 2026-10-28: to change three variables on a State block whose
+    ``state_variables`` held a ~10 KB rules text, the model's only option
+    was to resend the whole dict, i.e. retype 10 KB it never meant to
+    change.  A per-name key leaves the untouched entries byte-identical.
+    """
+    if not name:
+        return f"{key!r}: name the variable, e.g. 'state_variables.<name>'"
+    current = block.get("state_variables")
+    if current is not None and not isinstance(current, dict):
+        return (f"{key!r}: the block's state_variables is not an object; "
+                f"replace it whole with the 'state_variables' key")
+    updated = dict(current or {})
+    if value is None:
+        if name not in updated:
+            return f"{key!r}: no variable {name!r} to remove"
+        del updated[name]
+    else:
+        updated[name] = value
+    block["state_variables"] = updated or None
+    return None
+
+
 def _set_field(block: Dict[str, Any], key: str, value: Any) -> Optional[str]:
     """Apply one ``key: value``; return a problem string or None."""
     if "." in key:
         head, _, leaf = key.partition(".")
+        if head == "state_variables":
+            return _set_state_variable(block, key, leaf, value)
         if head != "scope" or not leaf:
             return (f"{key!r}: the only dotted keys are 'scope.<field>' "
-                    f"(one of {sorted(_scope_fields())})")
+                    f"(one of {sorted(_scope_fields())}) and "
+                    f"'state_variables.<name>'")
         if leaf not in _scope_fields():
             return (f"{key!r}: {leaf!r} is not a TaskScope field "
                     f"(one of {sorted(_scope_fields())})")
@@ -133,8 +162,9 @@ def apply_block_edits(
 
     Each edit is ``{"block_id": ..., "set": {...}}`` or
     ``{"block_type": ..., "set": {...}}`` (both selectors may be given;
-    they intersect).  ``set`` keys are Block fields, or ``scope.<field>``
-    for any TaskScope field.  An edit that matches no block, or sets a
+    they intersect).  ``set`` keys are Block fields, ``scope.<field>``
+    for any TaskScope field, or ``state_variables.<name>`` to set one
+    State variable (``null`` removes it) without resending the others.  An edit that matches no block, or sets a
     disallowed field, is a problem; when there is any problem the
     ORIGINAL root is returned untouched, so a partially applied edit
     list can never be saved.
