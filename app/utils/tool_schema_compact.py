@@ -156,4 +156,72 @@ def compact_tool_schema(schema: Any, *, strip_root_description: bool = False) ->
     return _compact_node(schema, is_root=True, strip_root_description=strip_root_description)
 
 
-__all__ = ["compact_tool_schema"]
+_ROOT_COMBINATORS = ("oneOf", "anyOf", "allOf")
+
+
+def flatten_root_combinators(schema: Any) -> Any:
+    """Fold a top-level ``oneOf``/``anyOf``/``allOf`` into a plain object schema.
+
+    Anthropic's tool API (direct and via Bedrock) rejects any of these at the
+    root of ``input_schema`` with a ValidationException, which fails the whole
+    request, not just the one tool.  Some MCP servers (Chorus, Pydantic
+    discriminated unions) publish an action-keyed union at the root.
+
+    The result is ``type: object`` with the union of every member's
+    ``properties`` (properties already on the root take precedence).  ``required``
+    keeps the root's own list, plus for ``allOf`` every member's list, and for
+    ``oneOf``/``anyOf`` only the fields required by every member.  Branch-level
+    ``const`` values for the same property become an ``enum`` when the root
+    does not already constrain it.  Per-variant ``required`` is lost; the MCP
+    server still validates the call.
+
+    Schemas without a top-level combinator are returned unchanged.  The input
+    is not mutated.
+    """
+    if not isinstance(schema, dict) or not any(k in schema for k in _ROOT_COMBINATORS):
+        return schema
+
+    out: Dict[str, Any] = {k: v for k, v in schema.items() if k not in _ROOT_COMBINATORS}
+    out["type"] = "object"
+    props: Dict[str, Any] = dict(out.get("properties") or {})
+    root_names = frozenset(props)
+    required = list(out.get("required") or [])
+    consts: Dict[str, list] = {}
+
+    for key in _ROOT_COMBINATORS:
+        members = [m for m in (schema.get(key) or []) if isinstance(m, dict)]
+        if not members:
+            continue
+        common: set | None = None
+        for member in members:
+            for name, sub in (member.get("properties") or {}).items():
+                if name not in props:
+                    props[name] = sub
+                if isinstance(sub, dict) and "const" in sub:
+                    consts.setdefault(name, [])
+                    if sub["const"] not in consts[name]:
+                        consts[name].append(sub["const"])
+            member_req = set(member.get("required") or ())
+            if key == "allOf":
+                required.extend(r for r in member_req if r not in required)
+            else:
+                common = member_req if common is None else common & member_req
+        if common:
+            required.extend(r for r in sorted(common) if r not in required)
+
+    for name, values in consts.items():
+        prop = props.get(name)
+        if name in root_names or not isinstance(prop, dict) or "enum" in prop:
+            continue
+        merged = {k: v for k, v in prop.items() if k != "const"}
+        merged["enum"] = values
+        props[name] = merged
+
+    out["properties"] = props
+    out["required"] = [r for r in required if r in props]
+    if not out["required"]:
+        del out["required"]
+    return out
+
+
+__all__ = ["compact_tool_schema", "flatten_root_combinators"]
