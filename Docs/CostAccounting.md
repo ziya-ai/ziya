@@ -162,20 +162,16 @@ with the resolved id you expect to price.
 
 ## Where to see it
 
-Cost display is **off by default** and there is no discovery link for it;
-tokens are recorded regardless, so turning it on later prices everything
-already in the ledger. To enable it: open the **model configuration modal**
-(the model button), choose a scope under *Apply model to* — project, folder
-or conversation — and tick **Show cost for this &lt;scope&gt;**. The setting is
-saved on that record (`costDisplay: "show" | "hide"`) and resolved like the
-model pin, most specific wins: conversation → folder → project → hidden.
-There is no server-wide value, which is why the checkbox is disabled while
-*Server default* is selected. The row shows the effective value for the
-active conversation and which scope decided it.
+Cost is deliberately kept out of prominent view: there is no cost figure in
+the chat stream, the sidebar or the Manage Projects dialog. Tokens are
+recorded regardless of what is displayed, so every view below prices the
+whole ledger, including calls made before a view was first opened. There
+is no per-scope show/hide setting.
 
-Where the resolved value is *shown*:
+Where cost appears:
 
-- **Usage & cost…** (link in that same row): the global view. Group by
+- **Usage & cost…** (a link at the bottom of the model configuration modal,
+  under the model facts): the global view. Group by
   month, day, project, model, source, tier or conversation over the last
   7 / 30 days, this month, or all time; scope to the current project or
   every project. Bold/italic and `unpriced` follow the rules above; `*`
@@ -183,18 +179,46 @@ Where the resolved value is *shown*:
   vs. effective price, provenance and what is missing. A banner reports the
   share of records with no rate and points at `pricing.json`.
 - **Conversation menu → Info**: a `Cost` line with the conversation's total
-  and its token counts, from the same ledger. Absent when hidden.
+  and its token counts, from the same ledger, broken down into the chat's
+  own turns and each Task Card run launched from the conversation ("Release
+  sweep run #3 · done · 2h 14m · $8.04"). A conversation whose only spend
+  is a run therefore shows that run, not "no usage recorded". Clicking a
+  run opens its Resources panel inline.
+- **Task run tile → Resources**: a collapsible line under every run (live,
+  done or historical) that expands to wall clock, model time (sum of
+  provider call durations), turns, tool calls, tokens by dimension, cost
+  with list price and Flex/standard mix, tool-side CPU, the files the run
+  wrote and the disk its record and `.ziya/task-runs/<run>` scratchpad
+  occupy — then the same per block. Unlike the metrics strip inside the
+  result, it does not collapse with the result and exists for runs that
+  produced none.
 
-Hiding is display-only at every scope: a conversation set to `hide` inside
-a project set to `show` still contributes its rows to the project's totals.
+  Two figures are measured on the server at write time and carry caveats:
+  *tool CPU* is the user+system time of the shell commands (and what they
+  ran) that finished during each task, not the model's CPU, and under a
+  Parallel fan-out concurrent tasks share one process so the figure
+  over-counts (the panel says so). *Files written* are the paths the model
+  named to the write tool; a shell redirection or a script that writes is
+  not seen.
+
+Task-run ledger rows carry the id of the conversation the run was launched
+from (`source=task`, plus `run_id` and `block_id`). Rows written before this
+was recorded name only the run; the Info tab still finds those runs through
+the conversation's task bindings.
+
+Both the Info tab line and the Resources panel are always present; neither
+can be hidden, and neither is shown anywhere more prominent than its own
+dialog.
 
 ## API
 
 | Endpoint | Returns |
 |---|---|
 | `GET /api/usage/summary` | catalog version, active plan, ledger path and row count |
-| `GET /api/usage/rollup?by=model` | grouped totals — `by` ∈ `user`, `project`, `conversation`, `run`, `model`, `provider`, `tier`, `source`, `day`, `month`, `status` |
+| `GET /api/usage/rollup?by=model` | grouped totals — `by` ∈ `user`, `project`, `conversation`, `run`, `block`, `model`, `provider`, `tier`, `source`, `day`, `month`, `status` |
 | `GET /api/usage/records?conversation_id=…` | raw rows, each with its computed cost line |
+| `GET /api/usage/conversation/{id}?project_id=…` | one conversation's cost split into its own turns and each Task Card run launched from it; `project_id` lets bound runs be found |
+| `GET /api/v1/projects/{p}/task-runs/{run}/resources` | one run's resource report: wall, model time, turns, tool calls, tokens, cost, CPU, files written, disk, per block |
 | `GET /api/usage/catalog` | the effective catalog entries |
 
 Rollup and records accept `since` / `until` (unix seconds or ISO date),
