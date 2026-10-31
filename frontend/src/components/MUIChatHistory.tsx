@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useEffect, memo, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useLayoutEffect, memo, useRef, useMemo } from 'react';
+import { anchoredScrollOffset, ChatListAnchor } from '../utils/chatListAnchor';
 import { FixedSizeList, ListProps as ReactWindowListProps } from 'react-window';
 import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } from 'antd';
 import { ConversationHealthDebugModal } from './ConversationHealthDebug';
@@ -3568,6 +3569,37 @@ const MUIChatHistory = () => {
   // Drives the bottom-fade affordance: without it a row that happens to align
   // flush with the container edge reads as the end of the list.
   const [listScrollOffset, setListScrollOffset] = useState(0);
+  // Same value as a ref, for the anchor below, which must read the offset
+  // without re-running on every scroll.
+  const listScrollOffsetRef = useRef(0);
+  // Where the selected conversation was in the last flatNodes we rendered.
+  const selectedAnchorRef = useRef<ChatListAnchor | null>(null);
+  // A re-sort (sending a message makes the chat active and bumps its
+  // timestamp) moves the selected row; keep it at the same viewport position
+  // instead of leaving it wherever the old pixel offset now points.  Layout
+  // effect so the corrected offset lands before paint.  Skipped for a
+  // conversation switch (the scroll-to effect owns that), an expand/collapse
+  // (the user's click must not shift the folder under the cursor), search,
+  // and a pending scroll-to-node.
+  useLayoutEffect(() => {
+    const cid = currentConversationId || null;
+    const index = cid ? flatNodes.findIndex(n => n.id === `conv-${cid}`) : -1;
+    const prev = selectedAnchorRef.current;
+    selectedAnchorRef.current = { convId: cid, index, expanded: expandedSet };
+    if (!prev || !cid || prev.convId !== cid || prev.expanded !== expandedSet) return;
+    if (searchQuery || scrollToNodeIdRef.current || !virtualListRef.current) return;
+    const offset = anchoredScrollOffset({
+      prevIndex: prev.index, newIndex: index,
+      scrollOffset: listScrollOffsetRef.current,
+      rowHeight, viewportHeight: treeContainerHeight,
+    });
+    if (offset === null) return;
+    virtualListRef.current.scrollTo(offset);
+    listScrollOffsetRef.current = offset;
+    // treeContainerHeight / rowHeight are read, not triggers: a resize is
+    // not a re-sort.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flatNodes, expandedSet, currentConversationId, searchQuery]);
   useEffect(() => {
     const el = treeContainerEl;
     if (!el) return;
@@ -4135,10 +4167,13 @@ const MUIChatHistory = () => {
               width="100%"
               ref={virtualListRef}
               itemCount={chatListItemCount(flatNodes.length)}
-              itemSize={VIRTUAL_ROW_HEIGHT}
+              itemSize={rowHeight}
               overscanCount={8}
               className="chat-history-tree"
-              onScroll={({ scrollOffset }) => setListScrollOffset(scrollOffset)}
+              onScroll={({ scrollOffset }) => {
+                listScrollOffsetRef.current = scrollOffset;
+                setListScrollOffset(scrollOffset);
+              }}
               itemKey={(index) => isChatListFooterRow(index, flatNodes.length)
                 ? '__chat-list-footer__'
                 : flatNodes[index].id}
