@@ -91,11 +91,16 @@ class ChatGroupStorage:
             group = ChatGroup(
                 id=group_id,
                 name=data.name,
+                parentId=data.parentId,
                 defaultContextIds=data.defaultContextIds or [],
                 defaultSkillIds=data.defaultSkillIds or [],
                 collapsed=False,
                 order=max_order + 1,
-                createdAt=now
+                createdAt=now,
+                # The frontend's serverFolderWins adopts a server folder when
+                # its updatedAt is newer than the local copy's; a write that
+                # leaves it unset is invisible to an already-synced browser.
+                updatedAt=now,
             )
 
             groups_file.groups.append(group)
@@ -118,6 +123,7 @@ class ChatGroupStorage:
                         # write primitive here.
                         if key in type(data).model_fields:
                             setattr(group, key, value)
+                    group.updatedAt = int(time.time() * 1000)
                     groups_file.groups[i] = group
                     self._write_groups_file(groups_file)
                     return group
