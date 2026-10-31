@@ -141,7 +141,7 @@ class FileChangeHandler(FileSystemEventHandler):
         """Check if a path should be ignored based on gitignore patterns and dot directories."""
         try:
             # Fast check: skip any path containing a dot-directory component
-            # (e.g. .toolbox, .cache, .git, .local, .npm, etc.)
+            # (e.g. .cache, .git, .local, .npm, etc.)
             for part in abs_path.split(os.sep):
                 if part.startswith('.') and len(part) > 1:
                     return True
