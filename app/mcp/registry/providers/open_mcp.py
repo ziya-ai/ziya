@@ -20,6 +20,7 @@ from app.mcp.registry.interface import (
 from app.mcp.registry.command_policy import (
     validate_package_identifier, validate_run_command,
 )
+from app.mcp.registry.installation_helper import InstallationHelper
 from app.utils.logging_utils import logger
 
 
@@ -206,14 +207,12 @@ class OpenMCPProvider(RegistryProvider):
                     package_info.get('name', service_id),
                     source=f"open-mcp:{service_id}",
                 )
-                # Install pip package
-                result = await asyncio.to_thread(
-                    subprocess.run, ['pip', 'install', package_name],
-                    capture_output=True, text=True, timeout=300)
-                if result.returncode != 0:
-                    raise RuntimeError(f"Pip install failed: {result.stderr}")
-                
-                command = [package_name]
+                # Into the service's own venv, never Ziya's interpreter.
+                install_result = await asyncio.to_thread(
+                    InstallationHelper.install_pypi_package, package_name, install_dir)
+                if not install_result['success']:
+                    raise RuntimeError(install_result['error'])
+                command = install_result['command']
                 
             elif service.provider_metadata.get('repository'):
                 # Clone git repository
