@@ -28,29 +28,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # ── Log filter tests ─────────────────────────────────────────────────
 
 class TestPollingAccessFilter:
-    """The uvicorn access filter must suppress noisy chat GET lines."""
+    """The uvicorn access filter must suppress noisy chat GET lines.
 
-    # Replicate the filter logic here to avoid importing app.server
-    # (which loads the entire FastAPI app and takes 30+ seconds).
-    _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config', '/ws/',
-              '/folder-progress', '/model-capabilities', '/current-model', '/static/',
-              '/delegate-status', '/api/ast/status',}
-    _chat_get_re = re.compile(r'/chats/[0-9a-f]{8}-[0-9a-f]{4}-.*" [23]')
+    Uses the REAL filter class (app.utils.access_log_filter), not a copy of
+    its rule set: the previous copy had drifted from the server's set, so it
+    could pass while the server filtered something different.
+    """
 
     @pytest.fixture
     def log_filter(self):
-        """Build a filter matching the server's _PollingAccessFilter contract."""
-        quiet = self._quiet
-        chat_re = self._chat_get_re
-        class Filter(logging.Filter):
-            def filter(self, record):
-                msg = record.getMessage()
-                if any(q in msg for q in quiet):
-                    return False
-                if 'GET' in msg and chat_re.search(msg):
-                    return False
-                return True
-        return Filter()
+        from app.utils.access_log_filter import PollingAccessFilter
+        return PollingAccessFilter()
 
     @staticmethod
     def _make_record(msg: str) -> logging.LogRecord:
@@ -99,6 +87,41 @@ class TestPollingAccessFilter:
         """Delegate polling endpoint must be filtered."""
         msg = '127.0.0.1:62555 - "GET /api/v1/delegate-status/abc HTTP/1.1" 200 OK'
         assert log_filter.filter(self._make_record(msg)) is False
+
+    @pytest.mark.parametrize("path", [
+        "/api/shadow/attached?conversation_id=52f4a424-bb03-44df-a37f-e35952518361",
+        "/api/consent/grants?conversation_id=00c0b0c2-c044-4fe8-b23d-c0d31b5a2273",
+    ])
+    def test_per_conversation_polls_filtered_on_success(self, log_filter, path):
+        """The sidebar polls these for every conversation; a 200 is noise."""
+        msg = f'127.0.0.1:57037 - "GET {path} HTTP/1.1" 200 OK'
+        assert log_filter.filter(self._make_record(msg)) is False
+
+    @pytest.mark.parametrize("status", ["404 Not Found", "500 Internal Server Error"])
+    @pytest.mark.parametrize("path", ["/api/shadow/attached?conversation_id=x",
+                                      "/api/consent/grants?conversation_id=x"])
+    def test_per_conversation_polls_kept_on_error(self, log_filter, path, status):
+        """An error on a poll is the first sign of a broken route; keep it."""
+        msg = f'127.0.0.1:57037 - "GET {path} HTTP/1.1" {status}'
+        assert log_filter.filter(self._make_record(msg)) is True
+
+    def test_consent_post_not_filtered(self, log_filter):
+        """Granting consent is a write; it must always log."""
+        msg = '127.0.0.1:57037 - "POST /api/consent/grants HTTP/1.1" 200 OK'
+        assert log_filter.filter(self._make_record(msg)) is True
+
+    def test_install_is_idempotent(self):
+        """Repeated install() must not stack duplicate filters on the logger."""
+        from app.utils.access_log_filter import PollingAccessFilter, install
+        target = logging.getLogger("uvicorn.access")
+        before = [f for f in target.filters if isinstance(f, PollingAccessFilter)]
+        try:
+            install(); install()
+            assert sum(isinstance(f, PollingAccessFilter) for f in target.filters) == 1
+        finally:
+            for f in list(target.filters):
+                if isinstance(f, PollingAccessFilter) and f not in before:
+                    target.removeFilter(f)
 
 
 # ── StreamingContext contract ─────────────────────────────────────────

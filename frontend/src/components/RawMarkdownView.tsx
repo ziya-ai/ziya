@@ -1,5 +1,5 @@
 import React from 'react';
-import { useActiveChatOptional } from '../context/ActiveChatContext';
+import { useStreamedContent } from '../context/StreamedContentContext';
 import { expandThinkingMarkers } from '../utils/thinkingBlocks';
 
 /**
@@ -12,8 +12,7 @@ import { expandThinkingMarkers } from '../utils/thinkingBlocks';
  * renders, collapsed or not.
  */
 export const RawMarkdownView: React.FC<{ content: string }> = ({ content }) => {
-    const activeChat = useActiveChatOptional();
-    const map = activeChat?.reasoningContentMap;
+    const map = useStreamedContent().reasoningContentMap;
     const expanded = React.useMemo(
         () => expandThinkingMarkers(content, map),
         [content, map],

@@ -3,8 +3,11 @@
  * message state, streaming maps, editing state, and streaming mutations.
  *
  * Components rendering the active chat (Conversation, StreamedContent,
- * SendChat, EditSection) need currentMessages and streamedContentMap,
+ * SendChat, EditSection) need currentMessages and the streaming setters,
  * but do NOT need the full conversations[] list or folder CRUD.
+ * The streaming maps themselves change on every flush, so they live in
+ * StreamedContentContext; carrying them here re-rendered every consumer
+ * per flush.
  *
  * Separating these prevents folder/list-level changes from forcing
  * the message rendering pipeline to re-run.
@@ -49,18 +52,15 @@ export interface ActiveChatContextValue {
   conversationTaskBindings: Map<string, TaskBinding[]>;
   addStreamingConversation: (id: string) => void;
   removeStreamingConversation: (id: string) => void;
-  // Streaming content maps
-  streamedContentMap: Map<string, string>;
+  // Streaming content setters.  The maps are read through
+  // StreamedContentContext (useStreamedContent / Presence / Ref).
   setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
   /** Ephemeral thinking blocks keyed by turn id -- see thinkingBlocks.ts. */
-  reasoningContentMap: Map<string, ThinkingBlockData[]>;
   setReasoningContentMap: Dispatch<SetStateAction<Map<string, ThinkingBlockData[]>>>;
   // Processing state
   getProcessingState: (conversationId: string) => ProcessingState;
   updateProcessingState: (conversationId: string, state: ProcessingState) => void;
   // Misc active-chat state
-  dynamicTitleLength: number;
-  setDynamicTitleLength: (length: number) => void;
   lastResponseIncomplete: boolean;
   setDisplayMode: (conversationId: string, mode: 'raw' | 'pretty') => void;
   toggleMessageMute: (conversationId: string, messageIndex: number) => void;
@@ -98,14 +98,10 @@ export const ActiveChatProvider: React.FC<
       conversationTaskBindings: value.conversationTaskBindings,
       addStreamingConversation: value.addStreamingConversation,
       removeStreamingConversation: value.removeStreamingConversation,
-      streamedContentMap: value.streamedContentMap,
       setStreamedContentMap: value.setStreamedContentMap,
-      reasoningContentMap: value.reasoningContentMap,
       setReasoningContentMap: value.setReasoningContentMap,
       getProcessingState: value.getProcessingState,
       updateProcessingState: value.updateProcessingState,
-      dynamicTitleLength: value.dynamicTitleLength,
-      setDynamicTitleLength: value.setDynamicTitleLength,
       lastResponseIncomplete: value.lastResponseIncomplete,
       setDisplayMode: value.setDisplayMode,
       toggleMessageMute: value.toggleMessageMute,
@@ -124,9 +120,6 @@ export const ActiveChatProvider: React.FC<
       value.streamingConversations,
       value.runningTaskConversations,
       value.conversationTaskBindings,
-      value.streamedContentMap,
-      value.reasoningContentMap,
-      value.dynamicTitleLength,
       value.lastResponseIncomplete,
       value.throttlingRecoveryData,
       value.currentDisplayMode,
@@ -138,7 +131,7 @@ export const ActiveChatProvider: React.FC<
       value.removeStreamingConversation,
       value.setStreamedContentMap, value.setReasoningContentMap,
       value.getProcessingState, value.updateProcessingState,
-      value.setDynamicTitleLength, value.setDisplayMode,
+      value.setDisplayMode,
       value.toggleMessageMute, value.removeMessage, value.replaceMessages, value.setChatContexts,
       value.setThrottlingRecoveryData,
     ]
