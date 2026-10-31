@@ -262,6 +262,37 @@ and the search JSON is unpacked to its summary and result text.  The
 rewrite is a pure function of each message, so cached history prefixes
 stay stable.  Kill switch: `ZIYA_DISABLE_TOOL_HISTORY_REWRITE=1`.
 
+Two replay-time reductions sit on top of the re-encoding, both leaving the
+record untouched.  *Redundant-body elision* (on by default) drops a body
+that is provably still in view further down — contained in a later read of
+the same file, or an identical body recurring.  *Tributary fold* (on by
+default, `contextManagement.fold_tributaries`) replays a multi-call turn
+that ends in prose as its pre-hunt prose, a placeholder listing the calls,
+and its final prose, once two further human turns exist: the calls,
+results and the interim narration between them are the "tributary", the
+final prose is the reward the user asked for.  The fold is gated on
+context pressure (`contextManagement.fold_pressure_ratio`, default 0.8):
+nothing folds until the conversation's unfolded replay reaches that
+fraction of the context limit — below pressure a fold only removes
+verbatim text the model still had in view — and then the oldest eligible
+turns fold first, until the projected size is under the limit minus a
+15% hysteresis band.  The gate adds back what the previous turn's folds
+saved, so a fold never lowers the pressure that caused it and the folded
+set only grows; unknown pressure (first turn after a restart) folds
+nothing.  The placeholder carries a
+content-addressed `tb-…` handle and only absolute counts, so it folds once
+and its bytes never change again.  Folds are planned before elisions so a
+body inside a folded span is never used as the stand-in for an earlier
+one.  The model recovers a folded span with `recall_tributary(handle,
+mode=full|commands|results, grep=, max_chars=)`
+(`app/utils/tributary_recall.py`, tool in the `chat_history` category),
+which re-reads the conversation's own record — a since-muted message still
+resolves, a handle from another conversation does not — and the Session
+Context block carries a "Folded tool turns" paragraph telling the model
+that its own hunts will be replayed folded, so anything a later step needs
+from the middle of a search belongs in its final text or a store.
+Measurement and rationale: `design/tributary-fold.md`.
+
 On the detection side, a model-written fence in the tool-display format
 whose body has the shape of a tool *result* (the Layer C dict signature:
 `success`/`message`/`path`/`bytes_written`…) is treated as a fabricated
@@ -314,6 +345,12 @@ Code changes suggested by the model are applied via `POST /api/apply-changes`. T
 4. **LLM resolver** (future) — for structurally complex cases
 
 Each hunk is tracked independently through the pipeline. The result reports per-hunk status (succeeded, failed, already-applied) so the UI can show partial success accurately. Failed hunks include the pipeline stage where they failed and why.
+
+Two normalisations happen once, at pipeline entry, so every stage sees the same text: the `\`` transport escaping the model preserves from its context is undone (grounded in the target file, so a JS template literal's genuine `\`` is left alone), and hunk header counts are recomputed from the body. A count-less header (`@@ -63 +63 @@`, one line each side) is valid at every stage. The difflib stage preserves the file's own context lines by walking the hunk's raw ` `/`-`/`+` markers, never by content-matching old against new lines.
+
+The recounted header is deliberately **not** what the git-apply and difflib stages receive on the fallthrough path (patch failed, then git apply failed): the recount pass carries system-patch-specific heuristics that regress `git apply`, so those stages get the original text and the parser's own body-vs-header reconciliation. That reconciliation only raises counts that are 2+ lines under on both sides; a one-line undercount, or an undercount paired with an overcount, keeps the model's number. Every consumer of `old_count` in the difflib stage must therefore treat it as a lower bound and size by the body where it matters — the overlapping-hunk merge now does (`max(old_count, len(old_block))` per hunk). `ZIYA_FORCE_DIFFLIB=1` runs difflib on the *recounted* text, so a test under that flag does not exercise this route; drive `run_difflib_stage` with the raw diff to test it.
+
+The streaming **diff verifier** (`app/utils/diff_validation_hook.py`) runs this same pipeline on a temporary copy of the *current* file when a fence closes. If the user has already applied that diff, the verifier should see "already applied"; a "both old and new content exist" verdict after a user apply means the apply itself left the file in a mixed state and is worth believing.
 
 ### Language Validation
 
