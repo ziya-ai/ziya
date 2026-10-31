@@ -77,18 +77,37 @@ export const taskCardApi = {
     return json(await fetch(`${base(projectId)}/export${qs}`));
   },
 
+  /** What an import would need from this machine, before writing anything:
+   *  the distinct absolute `scope.cwd` paths in the file (they came from
+   *  the exporting machine and would be confined to this project's root at
+   *  run time) and the card count.  Feed the user's choices to
+   *  `importCards(..., cwdMap)`. */
+  async inspectImport(
+    projectId: string, payload: unknown,
+  ): Promise<TaskCardImportInspection> {
+    return json(await fetch(`${base(projectId)}/import/inspect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }));
+  },
+
   /** Import an export envelope (or a bare card / list of cards) as NEW
    *  cards.  Block ids are reminted server-side, so imported escalation is
    *  unsigned until signed in this deck.  Nothing is created if any card
    *  fails validation.  `warnings` are advisory (name collisions,
-   *  validator findings). */
+   *  validator findings).  `cwdMap` rewrites absolute `scope.cwd` paths
+   *  (keys, as returned by `inspectImport`) to local directories before
+   *  the cards are validated or written; omit it to import as-is. */
   async importCards(
-    projectId: string, payload: unknown,
+    projectId: string, payload: unknown, cwdMap?: Record<string, string>,
   ): Promise<TaskCardImportResult> {
+    const body = cwdMap && Object.keys(cwdMap).length > 0
+      ? { payload, cwd_map: cwdMap } : payload;
     return json(await fetch(`${base(projectId)}/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(body),
     }));
   },
 
@@ -203,6 +222,13 @@ export interface TaskCardImportResult {
   count: number;
 }
 
+/** Mirrors app/api/task_cards.py::inspect_task_card_import. */
+export interface TaskCardImportInspection {
+  cwds: string[];
+  count: number;
+  project_root: string | null;
+}
+
 /** Mirrors app/api/task_cards.py::get_schedule_state. */
 export interface ScheduleSkip {
   at: number;
@@ -231,6 +257,13 @@ export interface ScheduleStateRecord {
   deferred_since?: number | null;
   deferred_behind_run_id?: string | null;
   last_run?: ScheduleLastRun | null;
+  /** Why the scheduler projected no next slot (an unreadable cadence),
+   *  recorded by the tick; absent when the cadence is readable. */
+  cadence_error?: string;
+  /** Whether a schedule registration exists (app/agents/schedule_registry.py);
+   *  only a registered card fires.  Absent from servers that predate it. */
+  registered?: boolean;
+  enabled?: boolean | null;
 }
 
 export interface CardScopeBlockStatus {

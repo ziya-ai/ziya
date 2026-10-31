@@ -416,6 +416,118 @@ class TestStorageImport:
         assert len(created) == 1
         assert any("sibling" in w for w in warnings), warnings
 
+    # ── cwd remapping (import onto another machine) ────────────────────
+
+    def _cwd_card(self, cwd="/Users/old/workplace/Other", name="C") -> dict:
+        return {
+            "name": name,
+            "scope": {"cwd": cwd},
+            "root": {
+                "block_type": "group", "name": "G",
+                "body": [
+                    {"block_type": "task", "name": "A", "instructions": "a",
+                     "scope": {"cwd": cwd}},
+                    {"block_type": "task", "name": "B", "instructions": "b",
+                     "scope": {"cwd": "sub/dir"}},
+                ],
+            },
+        }
+
+    def test_portable_cwds_lists_distinct_absolute_paths(self):
+        from app.storage.task_cards import portable_cwds
+        env = {"format": PORTABLE_FORMAT, "cards": [
+            self._cwd_card("/old/one"), self._cwd_card("/old/two", "D"),
+            self._cwd_card("/old/one", "E"),
+        ]}
+        # Absolute only, first-seen order, no duplicates; "sub/dir" is
+        # root-relative and portable as-is.
+        assert portable_cwds(env) == ["/old/one", "/old/two"]
+        assert portable_cwds({"name": "x", "root": {"block_type": "task",
+                              "name": "T", "instructions": "i"}}) == []
+
+    def test_cwd_map_rewrites_card_and_block_scopes(self, storage, tmp_path):
+        root = tmp_path / "newproj"
+        (root / "local").mkdir(parents=True)
+        created, warnings = storage.import_cards(
+            self._cwd_card("/old/one"), project_root=str(root),
+            cwd_map={"/old/one": str(root / "local")})
+        card = created[0]
+        assert card.scope.cwd == str(root / "local")
+        assert card.root.body[0].scope.cwd == str(root / "local")
+        # Untouched: the relative cwd, and nothing else was invented.
+        assert card.root.body[1].scope.cwd == "sub/dir"
+        # The seam that motivated this: the post-import validator now sees
+        # a path inside the root, so the "escapes the project root" error
+        # that an unmapped import produces is gone.
+        assert not any("escapes the project root" in w for w in warnings), warnings
+
+    def test_unmapped_absolute_cwd_still_warns(self, storage, tmp_path):
+        root = tmp_path / "newproj"
+        root.mkdir()
+        _created, warnings = storage.import_cards(
+            self._cwd_card("/old/one"), project_root=str(root))
+        assert any("escapes the project root" in w for w in warnings), warnings
+
+    def test_cwd_map_none_clears(self, storage):
+        created, _ = storage.import_cards(
+            self._cwd_card("/old/one"), cwd_map={"/old/one": None})
+        assert created[0].scope is None or created[0].scope.cwd is None
+        assert created[0].root.body[0].scope.cwd is None
+
+    def test_export_relativizes_cwds_inside_the_source_root(self, storage, tmp_path):
+        """A cwd that is the exporting project's root, or a directory under
+        it, is a root-relative fact: the executor resolves cwd against the
+        project root, so the absolute spelling carries nothing but the
+        exporting machine's layout.  Exported verbatim it fails launch on
+        every other host ("escapes the project root", one error per block
+        -- the symptom that motivated this) until someone remaps each path
+        by hand.  Export drops a cwd equal to the root and relativizes one
+        beneath it; a cwd genuinely outside the root stays absolute so the
+        import remap still sees it."""
+        src = tmp_path / "srcproj"
+        (src / "sub" / "dir").mkdir(parents=True)
+        card = _create(storage, "C", root={
+            "block_type": "group", "name": "G", "scope": {"cwd": str(src)},
+            "body": [
+                {"block_type": "task", "name": "A", "instructions": "a",
+                 "scope": {"cwd": str(src / "sub" / "dir")}},
+                {"block_type": "task", "name": "B", "instructions": "b",
+                 "scope": {"cwd": "/elsewhere/other"}},
+                {"block_type": "task", "name": "D", "instructions": "d",
+                 "scope": {"cwd": "already/relative"}},
+            ],
+        }, scope={"cwd": str(src)})
+        env = build_export([card], project_root=str(src))
+        p = env["cards"][0]
+        assert "cwd" not in (p.get("scope") or {}), p.get("scope")
+        assert "cwd" not in (p["root"].get("scope") or {}), p["root"].get("scope")
+        a, b, d = p["root"]["body"]
+        assert a["scope"]["cwd"] == "sub/dir"
+        assert b["scope"]["cwd"] == "/elsewhere/other"
+        assert d["scope"]["cwd"] == "already/relative"
+        from app.storage.task_cards import portable_cwds
+        assert portable_cwds(env) == ["/elsewhere/other"]
+
+        # Seam: the same export lands on another machine's root with no
+        # remap and the relativized blocks raise no launch-blocking error.
+        dst = tmp_path / "dstproj"
+        (dst / "sub" / "dir").mkdir(parents=True)
+        other = TaskCardStorage(tmp_path / "proj2")
+        created, warnings = other.import_cards(env, project_root=str(dst))
+        assert created[0].root.body[0].scope.cwd == "sub/dir"
+        escapes = [w for w in warnings if "escapes the project root" in w]
+        assert escapes and all("/elsewhere/other" in w for w in escapes), warnings
+
+    def test_export_without_root_leaves_cwds_alone(self, storage):
+        card = _create(storage, "C", scope={"cwd": "/some/abs"})
+        assert card_to_portable(card)["scope"]["cwd"] == "/some/abs"
+
+    def test_cwd_map_key_matching_nothing_warns(self, storage):
+        _created, warnings = storage.import_cards(
+            self._cwd_card("/old/one"), cwd_map={"/old/one": "/x", "/nope": "/y"})
+        assert any("'/nope'" in w and "matched no block" in w for w in warnings), warnings
+        assert not any("'/old/one'" in w and "matched no block" in w for w in warnings)
+
     def test_import_ignores_run_history_in_payload(self, storage):
         # A hand-edited file carrying history fields must not smuggle them.
         payload = {
@@ -500,6 +612,45 @@ class TestApi:
         names = sorted(x["name"] for x in
                        c.get(f"/api/v1/projects/{pid}/task-cards").json())
         assert names == ["Src", "Src"]
+
+    def test_inspect_lists_cwds_and_wrapped_import_remaps(self, client, tmp_path, monkeypatch):
+        c, pid = client
+        root = tmp_path / "newproj"
+        (root / "here").mkdir(parents=True)
+        monkeypatch.setattr("app.api.task_cards._portable_root", lambda _pid: str(root))
+        env = {"format": PORTABLE_FORMAT, "cards": [{
+            "name": "Remote",
+            "root": {"block_type": "task", "name": "T", "instructions": "x",
+                     "scope": {"cwd": "/Users/other/workplace/Unrelated"}},
+        }]}
+        r = c.post(f"/api/v1/projects/{pid}/task-cards/import/inspect", json=env)
+        assert r.status_code == 200, r.text
+        assert r.json()["cwds"] == ["/Users/other/workplace/Unrelated"]
+        assert r.json()["count"] == 1
+        assert r.json()["project_root"] == str(root)
+
+        r = c.post(f"/api/v1/projects/{pid}/task-cards/import", json={
+            "payload": env,
+            "cwd_map": {"/Users/other/workplace/Unrelated": str(root / "here")},
+        })
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["cards"][0]["root"]["scope"]["cwd"] == str(root / "here")
+        assert not any("escapes the project root" in w for w in body["warnings"]), body["warnings"]
+
+    def test_inspect_rejects_non_export_like_import(self, client):
+        c, pid = client
+        r = c.post(f"/api/v1/projects/{pid}/task-cards/import/inspect", json={"nope": 1})
+        assert r.status_code == 400
+
+    def test_import_bad_cwd_map_is_400(self, client):
+        c, pid = client
+        r = c.post(f"/api/v1/projects/{pid}/task-cards/import", json={
+            "payload": {"name": "x", "root": {"block_type": "task", "name": "T",
+                                              "instructions": "i"}},
+            "cwd_map": {"/a": 3},
+        })
+        assert r.status_code == 400
 
     def test_import_invalid_is_400_and_writes_nothing(self, client):
         c, pid = client

@@ -6,6 +6,7 @@ through BaseStorage, which provides file locking and optional
 ALE encryption.
 """
 
+import os
 import re
 import time
 import uuid
@@ -104,9 +105,22 @@ def card_to_portable(
         if k not in NON_PORTABLE_CARD_FIELDS
     }
     portable.setdefault("name", card.name)
+    # A cwd equal to the exporting root, or under it, is a root-relative
+    # fact wearing this machine's absolute path; exported verbatim it fails
+    # launch everywhere else ("escapes the project root", one error per
+    # block) until each path is remapped by hand.  Relativize it here so the
+    # common case imports with no remap; a cwd outside the root is left
+    # absolute for the import remap to show.
+    if project_root:
+        _relativize_cwds(portable, project_root)
     try:
         from ..utils.task_card_portable import card_needs, derived_requires
         needs = card_needs(card, project_root)
+        if project_root and needs.get("cwd"):
+            needs["cwd"] = [c for c in needs["cwd"]
+                            if _relative_to_root(c, project_root) is None]
+            if not needs["cwd"]:
+                del needs["cwd"]
         if needs:
             portable["needs"] = needs
             req = derived_requires(card, needs)
@@ -188,6 +202,113 @@ def portable_cards_from_payload(payload: Any) -> List[Dict[str, Any]]:
             raise ValueError(f"card #{i + 1} is not a card object (no \"root\")")
         out.append(c)
     return out
+
+
+def _relative_to_root(cwd: str, project_root: str) -> Optional[str]:
+    """``cwd`` as a path relative to ``project_root`` when it is the root
+    or lies beneath it (``""`` for the root itself), else None.  Both sides
+    are resolved through symlinks so ``/var`` vs ``/private/var`` spellings
+    of the same directory compare equal; relative input is returned as-is
+    since it is already root-relative."""
+    raw = str(cwd).strip()
+    if not raw:
+        return None
+    if not os.path.isabs(raw):
+        return raw
+    try:
+        rel = os.path.relpath(os.path.realpath(raw), os.path.realpath(project_root))
+    except (ValueError, OSError):
+        return None
+    if rel == os.curdir:
+        return ""
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return None
+    return rel.replace(os.sep, "/")
+
+
+def _relativize_cwds(entry: Dict[str, Any], project_root: str) -> None:
+    """Rewrite every absolute ``scope.cwd`` of ``entry`` that sits inside
+    ``project_root`` to its root-relative form; one equal to the root is
+    dropped so the block inherits.  Paths outside the root are untouched."""
+    for sc in _scope_dicts(entry):
+        cwd = sc.get("cwd")
+        if not isinstance(cwd, str) or not os.path.isabs(cwd.strip()):
+            continue
+        rel = _relative_to_root(cwd, project_root)
+        if rel is None:
+            continue
+        if rel == "":
+            sc.pop("cwd", None)
+        else:
+            sc["cwd"] = rel
+
+
+def _walk_block_dicts(block: Any):
+    if not isinstance(block, dict):
+        return
+    yield block
+    for child in block.get("body") or []:
+        yield from _walk_block_dicts(child)
+
+
+def _scope_dicts(entry: Dict[str, Any]):
+    """Every ``scope`` dict of a portable card: the card's own, then each
+    block's, in tree order."""
+    sc = entry.get("scope")
+    if isinstance(sc, dict):
+        yield sc
+    for block in _walk_block_dicts(entry.get("root")):
+        bsc = block.get("scope")
+        if isinstance(bsc, dict):
+            yield bsc
+
+
+def portable_cwds(payload: Any) -> List[str]:
+    """Distinct absolute ``scope.cwd`` values in an import payload, in
+    first-seen order.
+
+    These are paths from the EXPORTING machine: the executor confines a
+    task's cwd to the project root, so an absolute path that was inside
+    the source project is, on another host, almost certainly outside this
+    one and would silently fall back to the root at run time.  The import
+    UI shows this list so the user can map each path to a local directory
+    before anything is written (``import_cards(cwd_map=...)``).  Relative
+    cwds are root-relative already and need no mapping.  Raises
+    ``ValueError`` for a payload that is not a card export at all.
+    """
+    out: List[str] = []
+    for entry in portable_cards_from_payload(payload):
+        for sc in _scope_dicts(entry):
+            cwd = sc.get("cwd")
+            if not isinstance(cwd, str):
+                continue
+            cwd = cwd.strip()
+            if cwd and os.path.isabs(cwd) and cwd not in out:
+                out.append(cwd)
+    return out
+
+
+def _rewrite_cwds(entry: Dict[str, Any], cwd_map: Dict[str, Optional[str]]) -> int:
+    """Replace every ``scope.cwd`` of ``entry`` that equals a key of
+    ``cwd_map`` with its value (``None`` / empty clears it, so the block
+    inherits).  Exact match on the stripped path — no prefix rewriting,
+    since the UI maps the distinct values one by one.  Returns the number
+    of substitutions made."""
+    n = 0
+    for sc in _scope_dicts(entry):
+        cwd = sc.get("cwd")
+        if not isinstance(cwd, str):
+            continue
+        key = cwd.strip()
+        if key not in cwd_map:
+            continue
+        target = cwd_map[key]
+        if target is None or not str(target).strip():
+            sc.pop("cwd", None)
+        else:
+            sc["cwd"] = str(target).strip()
+        n += 1
+    return n
 
 
 def _assign_block_ids(
@@ -453,6 +574,7 @@ class TaskCardStorage(BaseStorage[TaskCard]):
 
     def import_cards(
         self, payload: Any, project_root: Optional[str] = None,
+        cwd_map: Optional[Dict[str, Optional[str]]] = None,
     ) -> Tuple[List[TaskCard], List[str]]:
         """Create one card per entry of a portable payload.
 
@@ -483,12 +605,25 @@ class TaskCardStorage(BaseStorage[TaskCard]):
         (``<root>/.ziya/schemas/``) and lets the validator resolve the
         cards' ``project:`` references.  Without it schemas are reported
         rather than written.
+
+        ``cwd_map`` maps absolute ``scope.cwd`` values found in the payload
+        (see ``portable_cwds``) to directories on THIS machine; matching
+        cwds on the card and on every block are rewritten before the card
+        is validated or written.  A value of ``None`` clears the cwd.  A
+        key that matches nothing in the payload is reported as a warning
+        rather than ignored silently.
         """
         entries = portable_cards_from_payload(payload)
+        cwd_map = {str(k).strip(): v for k, v in (cwd_map or {}).items()}
+        # Taken BEFORE the rewrite below mutates the shared scope dicts,
+        # or every mapped path would read as "matched nothing".
+        present = set(portable_cwds(payload)) if cwd_map else set()
         creates: List[TaskCardCreate] = []
         for i, entry in enumerate(entries):
             clean = {k: v for k, v in entry.items()
                      if k not in NON_PORTABLE_CARD_FIELDS | PORTABLE_HINT_FIELDS}
+            if cwd_map:
+                _rewrite_cwds(clean, cwd_map)
             try:
                 creates.append(TaskCardCreate(**clean))
             except (ValueError, TypeError) as e:
@@ -496,6 +631,10 @@ class TaskCardStorage(BaseStorage[TaskCard]):
                 raise ValueError(f"card {label!r} is not valid: {e}") from e
 
         warnings: List[str] = []
+        for src in cwd_map:
+            if src not in present:
+                warnings.append(
+                    f"cwd mapping for {src!r} matched no block in the export")
         existing = {c.name.lower() for c in self.list(include_drafts=True)}
         seen_in_payload: set = set()
         for req in creates:

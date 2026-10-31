@@ -177,6 +177,50 @@ def export_task_cards(
     )
 
 
+def _unwrap_import_body(payload: Any):
+    """``POST /import`` takes either the portable payload itself or
+    ``{"payload": <portable>, "cwd_map": {src: dst}}``.  The wrapper is
+    unambiguous: an envelope has ``cards``, a bare card has ``root``."""
+    if (isinstance(payload, dict) and "payload" in payload
+            and "cards" not in payload and "root" not in payload):
+        cwd_map = payload.get("cwd_map") or {}
+        if not isinstance(cwd_map, dict) or any(
+                not isinstance(k, str) or not (v is None or isinstance(v, str))
+                for k, v in cwd_map.items()):
+            raise HTTPException(
+                status_code=400,
+                detail="cwd_map must map source path strings to target path "
+                       "strings (or null to clear)")
+        return payload["payload"], cwd_map
+    return payload, {}
+
+
+@router.post("/import/inspect")
+def inspect_task_card_import(project_id: str, payload: Any = Body(...)):
+    """What an import would need from this machine, before writing anything.
+
+    Returns ``{"cwds": [...], "count": n}``: the distinct absolute
+    ``scope.cwd`` paths in the payload (paths from the exporting machine,
+    which the executor would confine to this project's root — see
+    ``portable_cwds``) and the number of cards.  The import UI shows each
+    path with a directory picker and sends the chosen mapping back as
+    ``cwd_map`` on ``/import``.  Nothing is created or validated here; a
+    payload that is not a card export is a 400, the same as ``/import``.
+    """
+    from ..storage.task_cards import portable_cards_from_payload, portable_cwds
+    payload, _ = _unwrap_import_body(payload)
+    try:
+        cards = portable_cards_from_payload(payload)
+        cwds = portable_cwds(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "cwds": cwds,
+        "count": len(cards),
+        "project_root": _portable_root(project_id),
+    }
+
+
 @router.post("/import", status_code=201)
 def import_task_cards(project_id: str, payload: Any = Body(...)):
     """Create cards from a portable export (or a bare card / list).
@@ -193,11 +237,17 @@ def import_task_cards(project_id: str, payload: Any = Body(...)):
     side fills ``requires`` from the tree when the author wrote none, so
     this is where "this card wants a Jira server you do not have" is said
     — at import, not an hour into a run.
+
+    The body may be wrapped as ``{"payload": ..., "cwd_map": {...}}`` to
+    rewrite absolute ``scope.cwd`` paths from the exporting machine to
+    local directories (``/import/inspect`` lists them).
     """
+    payload, cwd_map = _unwrap_import_body(payload)
     project_root = _portable_root(project_id)
     try:
         created, warnings = _get_storage(project_id).import_cards(
-            payload, project_root=project_root)
+            payload, project_root=project_root,
+            cwd_map=cwd_map or None)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     for card in created:
