@@ -10,6 +10,7 @@ import { isDuplicateMessage } from '../utils/messageDedup';
 import { db } from '../utils/db';
 import { buildSearchPattern } from '../utils/searchPattern';
 import * as syncMerge from '../utils/syncMerge';
+import { readConversationsByIds } from '../utils/idbTargetedRead';
 import { forkLineageFields } from '../utils/lineage';
 import { detectIncompleteResponse } from '../utils/responseUtils';
 import { importWithRetry } from '../utils/lazyWithRetry';
@@ -873,56 +874,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // changedIdSet, skipValidation, isRecoveryAttempt already declared above
 
-            // Use cached other-project conversations when possible, BUT
-            // never substitute React state for IndexedDB when state contains
-            // shell conversations (messages stripped to first+last only).
-            // Writing shells back to IndexedDB would destroy full message data.
-            const CACHE_TTL_MS = 300_000; // 5 minutes — reduces full IDB reads during idle polling
+            // The base the merge starts from.  With changedIds, only those
+            // records can reach the write below (step 2 overlays them, the
+            // active guard touches only the active one, and the save filters
+            // to changedIdSet), so reading just them yields the same records.
+            // Reading the whole store here -- every project, every message
+            // body -- ran on effectively every save, because React state
+            // almost always holds deferred shells.  React state is still never
+            // the base, so shells are never written over full IDB records.
             let allDbConversations: Conversation[];
-            const reactStateHasShells = validatedConversations.some(c => (c as any)._isShell);
-            if (reactStateHasShells) {
-                // CRITICAL: React state has shell data — must read full data from IndexedDB
-                console.debug('📝 SHELL_GUARD: Fast-path disabled — React state has shells, reading full data from IndexedDB');
-                allDbConversations = await db.getConversations();
-                const pid = currentProject?.id;
-                if (pid) {
-                    otherProjectConvsCache.current = {
-                        // Strip message bodies — only metadata is needed for merge logic.
-                        // Full messages were the #1 memory leak during idle polling.
-                        convs: allDbConversations
-                            .filter(c => c.projectId !== pid)
-                            .filter(c => !c.isGlobal)
-                            .map(c => ({ ...c, messages: [] })),
-                        timestamp: Date.now()
-                    };
-                }
-            } else if (changedIdSet.size > 0 &&
-                otherProjectConvsCache.current.timestamp > 0 &&
-                Date.now() - otherProjectConvsCache.current.timestamp < CACHE_TTL_MS) {
-                allDbConversations = [...otherProjectConvsCache.current.convs, ...validatedConversations];
-                console.debug(`Save (fast path): reused ${otherProjectConvsCache.current.convs.length} cached other-project convos`);
+            if (changedIdSet.size > 0) {
+                allDbConversations = await readConversationsByIds(db, changedIdSet);
             } else {
+                // Legacy call without changedIds: every record is a candidate
+                // to write, so the base must be the whole store.
                 allDbConversations = await db.getConversations();
-                const pid = currentProject?.id;
-                if (pid) {
-                    otherProjectConvsCache.current = {
-                        // Strip message bodies — only metadata is needed for merge logic.
-                        convs: allDbConversations
-                            .filter(c => c.projectId !== pid)
-                            .filter(c => !c.isGlobal)
-                            .map(c => ({ ...c, messages: [] })),
-                        timestamp: Date.now()
-                    };
-                }
             }
 
             // Build merged list: start with DB as base, overlay our changes
             const mergedMap = new Map<string, Conversation>();
 
             // 1. Load everything from DB (preserves other tabs' writes).
-            //    Skip conversations that came from the otherProjectConvsCache
-            //    with stripped messages (messages: []) — writing them back to
-            //    IDB would destroy their full message history.
+            //    Skip other-project entries with stripped messages
+            //    (messages: []) — writing them back to IDB would destroy their
+            //    full message history.  (Defensive: the base is now read from
+            //    IDB, which never holds stripped records.)
             allDbConversations.forEach(c => {
                 // Cache-sourced entries have messages: [] and belong to other
                 // projects.  Never let them overwrite IDB's full data.
@@ -4346,7 +4322,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 // folder-inherited globalness resolves correctly — the closure
                 // `folders` here is mount-stale (not in this effect's deps).
                 const allDbFolders = await db.getFolders();
-                const projectConvs = (await db.getConversations())
+                // Every sender names the conversations it changed.  Read only
+                // those: a full getAll here ran in EVERY other tab on EVERY
+                // save.  A message without ids (none today) falls back.
+                const ids: string[] = Array.isArray(msg?.ids) ? msg.ids : [];
+                const changed = ids.length > 0
+                    ? await readConversationsByIds(db, ids)
+                    : await db.getConversations();
+                const projectConvs = changed
                     .filter(c => c.projectId === currentProject?.id || conversationIsEffectivelyGlobal(c, allDbFolders));
                 setConversations(prev => {
                     try { return mergeConversations(prev, projectConvs); }
