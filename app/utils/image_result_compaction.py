@@ -88,6 +88,81 @@ def recall_hint(handle: Optional[str]) -> str:
     )
 
 
+# Media types the Anthropic/Bedrock Messages API accepts for image blocks.
+# Anything else (notably image/svg+xml) fails the WHOLE request with a
+# ValidationException, and because the block stays in the conversation every
+# later call fails the same way.
+SUPPORTED_IMAGE_MEDIA_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/gif", "image/webp"}
+)
+
+_SVG_INLINE_LIMIT = 40_000  # characters of SVG source worth putting in context
+
+
+def unsupported_image_to_text_blocks(content: List[Any]) -> List[Any]:
+    """Return ``content`` with image blocks the API cannot accept replaced
+    by text blocks.  SVG is vector text, so its source is inlined (when
+    small) so the model still gets something to reason about."""
+    import base64
+
+    out: List[Any] = []
+    for b in content:
+        if not (isinstance(b, dict) and b.get("type") == "image"):
+            out.append(b)
+            continue
+        src = b.get("source") or {}
+        mt = (src.get("media_type") or "").lower()
+        if mt in SUPPORTED_IMAGE_MEDIA_TYPES:
+            out.append(b)
+            continue
+        text = (
+            f"[Image omitted: media type {mt or 'unknown'!r} cannot be sent "
+            f"to the model as an image.]"
+        )
+        if mt == "image/svg+xml" and isinstance(src.get("data"), str):
+            try:
+                svg = base64.b64decode(src["data"]).decode("utf-8", "replace")
+                if len(svg) <= _SVG_INLINE_LIMIT:
+                    text = f"[SVG output, as source text]\n{svg}"
+                else:
+                    text = (
+                        f"[SVG output omitted: {len(svg)} chars of source. "
+                        f"Render with format=png to view it.]"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        out.append({"type": "text", "text": text})
+    return out
+
+
+def sanitize_unsupported_images(conversation: List[Dict[str, Any]]) -> int:
+    """Heal a conversation already holding image blocks with unsupported
+    media types (in tool_result content or directly in message content).
+    Mutates in place; returns the number of blocks rewritten."""
+    fixed = 0
+
+    def _bad(lst: Any) -> bool:
+        return isinstance(lst, list) and any(
+            isinstance(b, dict) and b.get("type") == "image"
+            and ((b.get("source") or {}).get("media_type") or "").lower()
+            not in SUPPORTED_IMAGE_MEDIA_TYPES
+            for b in lst
+        )
+
+    for msg in conversation:
+        if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
+            continue
+        if _bad(msg["content"]):
+            msg["content"] = unsupported_image_to_text_blocks(msg["content"])
+            fixed += 1
+        for blk in msg["content"]:
+            if (isinstance(blk, dict) and blk.get("type") == "tool_result"
+                    and _bad(blk.get("content"))):
+                blk["content"] = unsupported_image_to_text_blocks(blk["content"])
+                fixed += 1
+    return fixed
+
+
 def has_image_blocks(content: Any) -> bool:
     """True iff ``content`` is a content-block list containing an image."""
     return isinstance(content, list) and any(
