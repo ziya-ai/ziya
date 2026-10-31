@@ -102,7 +102,11 @@ describe('currentMessages stale-ref ownership', () => {
     // mentions PROJECT_CLEAR hundreds of lines earlier in the file.
     const idx = SRC.indexOf('🧹 PROJECT_CLEAR: switching');
     expect(idx).toBeGreaterThan(-1);
-    const region = SRC.slice(idx, idx + 400);
+    // Scoped to the effect's end, not a fixed window: the effect now has a
+    // branch that keeps a conversation moved into the new project.
+    const end = SRC.indexOf('lastProjectIdRef.current = newPid;', idx);
+    expect(end).toBeGreaterThan(idx);
+    const region = SRC.slice(idx, end);
     expect(region).toMatch(/setConversations\(\[\]\)/);
   });
 });
