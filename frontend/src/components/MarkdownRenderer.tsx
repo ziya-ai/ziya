@@ -543,49 +543,26 @@ interface ToolBlockProps {
     verificationError?: string;  // Verification error message if failed
 }
 
-// Lightweight diff preview for tool-block bodies (e.g. file_write patch
-// previews).  Uses the same react-diff-view engine as inline chat diffs
-// but skips the apply button, hunk-status registry, and context-check
-// machinery — none of which apply to "show what was just written".
+// Diff preview for tool-block bodies (file_write patch results).
 //
-// Every diff shown here has ALREADY been written to disk by the tool, so it
-// is rendered in the neutral `tool-diff-applied` palette (see
-// styles/toolDiffApplied.css) with a caption, rather than the red/green of
-// an inline chat diff the user is still being asked to apply.
+// Renders through the SAME path as a chat diff fence (DiffViewWrapper ->
+// DiffView -> DiffLine): file header, unified/split and line-number
+// controls, Prism syntax highlighting inside the add/remove colouring.  The
+// earlier react-diff-view <Diff>/<Hunk> rendering drew removed and added
+// lines interleaved, struck through and uncoloured, which read worse than
+// the proposal diff it was meant to echo.  Every diff shown here has ALREADY
+// been written to disk, so the one difference from a chat diff is the
+// caption and the absence of an Apply button (readOnly).
 const ToolDiffPreview: React.FC<{ diff: string; isDarkMode: boolean }> = ({ diff, isDarkMode }) => {
-    let files: ReturnType<typeof parseDiff> = [];
-    try {
-        files = parseDiff(diff);
-    } catch (e) {
-        // parseDiff failed — fall back to raw text so the user still
-        // sees something useful instead of a blank panel.
-        return (
-            <pre style={{
-                margin: 0, padding: '16px',
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'auto',
-                color: isDarkMode ? '#e6e6e6' : '#24292e',
-            }}>{diff}</pre>
-        );
-    }
-    if (!files.length) {
-        return (
-            <pre style={{
-                margin: 0, padding: '16px',
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'auto',
-                color: isDarkMode ? '#e6e6e6' : '#24292e',
-            }}>{diff}</pre>
-        );
-    }
+    // Content-addressed so hunk/element registries stay stable across
+    // remounts, and distinct from any chat diff of the same text.
+    const elementId = `tool-${stableDiffId(diff)}`;
     return (
-        <div className="tool-diff-applied" style={{ padding: '8px', overflow: 'auto' }}>
+        <div className="tool-diff-applied" data-testid="tool-diff-preview" style={{ padding: '8px', overflow: 'auto' }}>
             <div className="tool-diff-applied-caption">
                 ✓ already written to disk — shown for review, nothing to apply
             </div>
-            {files.map((file, fi) => (
-                <Diff key={fi} viewType="unified" diffType={file.type} hunks={file.hunks} gutterType="none" className="diff-view smaller-diff-view">
-                    {hunks => hunks.map((h, hi) => <Hunk key={hi} hunk={h} />)}
-                </Diff>
-            ))}
+            <ReadOnlyDiffView diff={diff} elementId={elementId} />
         </div>
     );
 };
