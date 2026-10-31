@@ -1048,18 +1048,35 @@ class ShellServer:
 
             cmd_word = words[idx]
 
-            # Variable assignment (var=...) — not a command invocation
-            if '=' in cmd_word and not cmd_word.startswith('=') and not cmd_word.startswith('-'):
+            # A leading NAME=value is an env prefix, not a statement: peel it
+            # and validate the command behind it (a bare assignment has
+            # none).  Skipping the whole segment let ``FOO=1 anycmd`` run
+            # anything inside a compound body, and LD_PRELOAD= escape the
+            # loader-hijack block.
+            if _ENV_ASSIGN_RE.match(cmd_word):
+                rest, env, reason = self._peel_env_prefix(' '.join(words[idx:]))
+                if reason:
+                    return False, reason
+                reason = _env_prefix_denial(rest, env)
+                if reason:
+                    return False, reason
+                words, idx = rest.split(), 0
+                if not words:
+                    continue
+                cmd_word = words[0]
+            elif '=' in cmd_word and not cmd_word.startswith('=') and not cmd_word.startswith('-'):
+                # Not a valid NAME=: left as before (not a command word).
                 continue
 
-            # Validate the command against the allowlist
-            test_cmd = ' '.join(words[idx:])
+            # Validate the command against the allowlist, with its command
+            # word unquoted / PATH-resolved (see _normalize_command_word).
+            test_cmd, shown_word = _normalize_command_word(' '.join(words[idx:]))
             segment_ok = any(
                 re.match(p, test_cmd, re.IGNORECASE | re.DOTALL)
                 for p in self.safe_command_patterns.values()
             )
             if not segment_ok:
-                return False, f"'{cmd_word}' is not allowed"
+                return False, f"'{shown_word or cmd_word}' is not allowed"
 
         # Validate $() and backtick substitutions using the quote- and
         # nesting-aware extractor (handles ) inside quoted bodies, nested
@@ -1807,9 +1824,20 @@ class ShellServer:
             peeled_segment, _peeled_env, peel_reason = self._peel_env_prefix(cmd_segment)
             if peel_reason:
                 return False, peel_reason
+            path_reason = _env_prefix_denial(peeled_segment, _peeled_env)
+            if path_reason:
+                return False, path_reason
             if peeled_segment != cmd_segment:
                 print(f"Peeled env prefix; validating: '{peeled_segment}'", file=sys.stderr)
                 cmd_segment = peeled_segment
+
+            # Unquote / PATH-resolve the command word BEFORE the guards
+            # below, so ``"/usr/bin/curl" <imds-url>`` meets the curl guard
+            # exactly as ``curl <imds-url>`` does.
+            normalized_segment, shown_word = _normalize_command_word(cmd_segment)
+            if normalized_segment != cmd_segment:
+                print(f"Normalized command word; validating: '{normalized_segment}'", file=sys.stderr)
+                cmd_segment = normalized_segment
 
             # Block high-risk AWS CLI subcommands (IAM/STS role escalation,
             # bulk data movement, infra deploy). 'aws' is allowlisted for
