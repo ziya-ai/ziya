@@ -501,16 +501,30 @@ async def _fire_one(target: _ScheduledCard) -> str:
         })
     except Exception as e:  # noqa: BLE001 — audit record must never block a fire
         logger.warning(f"⏰ Scheduler: card_snapshot capture failed: {e}")
+
+    # A fire has no request, so there is no X-Project-Root header; resolve
+    # the root the same way the launch endpoint does for a header-less
+    # launch (app/utils/launch_root.py): the project's recorded path when
+    # that directory exists, else None.  A bare ``project.path`` would hand
+    # a moved or deleted directory to the executor.
+    from ..utils.launch_root import resolve_launch_root
+    project_root = resolve_launch_root(target.project_id, None)
+
+    from ..storage.projects import ProjectStorage as _PS
+    try:
+        _proj = _PS(get_ziya_home()).get(target.project_id)
+    except Exception as e:  # noqa: BLE001 — a bad project record must not stop the fire
+        logger.warning(f"⏰ Scheduler: project {target.project_id} unreadable: {e}")
+        _proj = None
+    _deck = getattr(_proj.settings, "taskScope", None) if _proj else None
+
     try:
         from ..utils.permissions_snapshot import build_permissions_snapshot
-        from ..storage.projects import ProjectStorage as _PS
-        _proj = _PS(get_ziya_home()).get(target.project_id)
-        _deck = getattr(_proj.settings, "taskScope", None) if _proj else None
         from ..models.task_card import merge_scopes
         run_storage.set_permissions_snapshot(run.id, build_permissions_snapshot(
-            # project_root=None mirrors the ExecutionContext built in _go()
-            # below; the snapshot records what the run was actually granted.
-            root_block=target.body_root, project_root=None,
+            # The same root the ExecutionContext in _go() below runs under;
+            # the snapshot records what the run was actually granted.
+            root_block=target.body_root, project_root=project_root,
             deck_scope=_deck,
             # The schedule block is not in body_root, but _go() seeds its
             # scope onto the stack, so it IS an ancestor layer at run time.
