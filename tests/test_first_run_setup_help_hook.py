@@ -107,7 +107,7 @@ def test_blank_help_treated_as_absent(monkeypatch, blank):
 def test_resolver_does_not_depend_on_detect_environment(monkeypatch):
     """The no-credentials path cannot rely on credential-based detection.
 
-    EnterpriseAuthProvider.detect_environment() can fall through to an STS identity
+    An enterprise auth plugin's detect_environment() can fall through to an STS identity
     call, which fails precisely when the user has no credentials -- the case
     this help text exists for.
     """
