@@ -46,7 +46,9 @@ from app.utils.session_context_prompt import build_session_context_section
 
 # ── Fixtures ────────────────────────────────────────────────────────
 
-NOW = datetime.datetime(2026, 1, 2, 3, 4, 5)
+# Aware, so the expected string does not depend on the machine's zone.
+NOW = datetime.datetime(2026, 1, 2, 3, 4, 5,
+                        tzinfo=datetime.timezone(datetime.timedelta(hours=-7)))
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +82,7 @@ class TestSessionContextHeader:
         )
         assert '<CurrentProjectRoot value="/foo/bar" />' in out
         assert '<CurrentWorkingDirectory value="/foo/bar" />' in out
-        assert '<CurrentDateTime value="2026-01-02 03:04:05" />' in out
+        assert '<CurrentDateTime value="2026-01-02 03:04:05-07:00" />' in out
 
     def test_omits_project_root_when_none(self):
         out = build_session_context_section(project_root=None, now=NOW)
@@ -318,3 +320,63 @@ class TestStructure:
         idx_skills = out.index("### Allowed skills")
         idx_shell = out.index("### Shell command grants")
         assert idx_writable < idx_readable < idx_tools < idx_skills < idx_shell
+
+
+# ── Working with data ──────────────────────────────────────────────
+#
+# The standing guidance that points record-shaped work at analyze /
+# dataset_register instead of hand-built JSON stores.  It is SHARED: chat
+# and task prompts both get it, because the deep-research chats and the
+# task-card runs that filled .ziya/ with derived JSON were both missing it.
+
+class TestWorkingWithDataSection:
+    @staticmethod
+    def _enabled(cats):
+        def f(name):
+            return name in cats
+        return f
+
+    def test_present_with_all_data_categories(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.mcp.builtin_tools.is_builtin_category_enabled",
+            self._enabled({"datasets", "output_contracts", "evidence"}),
+        )
+        out = build_session_context_section(project_root="/p", now=NOW)
+        assert "### Working with data" in out
+        sec = out[out.index("### Working with data"):]
+        for needle in ("dataset_register", "analyze(", "path#member", "_key",
+                       "store_output", "ledger_record", "JSONL",
+                       "entity_distribution", "snapshot-copy"):
+            assert needle in sec, needle
+        # It must say what NOT to do, since the failure mode is a habit.
+        assert "bespoke JSON store" in sec
+        assert "python3 + json" in sec
+
+    def test_reaches_task_prompts_too(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.mcp.builtin_tools.is_builtin_category_enabled",
+            self._enabled({"datasets"}),
+        )
+        scope = _Scope(paths=[_Entry(".ziya/x", is_dir=True, write=True)], tools=["analyze"])
+        out = build_session_context_section(project_root="/p", task_scope=scope, now=NOW)
+        assert "### Working with data" in out
+
+    def test_optional_lines_follow_their_own_categories(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.mcp.builtin_tools.is_builtin_category_enabled",
+            self._enabled({"datasets"}),
+        )
+        out = build_session_context_section(project_root="/p", now=NOW)
+        sec = out[out.index("### Working with data"):]
+        assert "analyze(" in sec
+        assert "store_output" not in sec
+        assert "ledger_record" not in sec
+
+    def test_absent_when_datasets_disabled(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.mcp.builtin_tools.is_builtin_category_enabled",
+            self._enabled({"output_contracts", "evidence"}),
+        )
+        out = build_session_context_section(project_root="/p", now=NOW)
+        assert "### Working with data" not in out
+        assert "dataset_register" not in out
