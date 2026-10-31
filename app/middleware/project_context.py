@@ -6,6 +6,7 @@ project directory — without touching os.environ.
 
 import os
 import threading
+import time
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
@@ -20,6 +21,9 @@ from app.utils.logging_utils import logger
 # pre-adding to it would make initialize_ast_capabilities() bail out and skip
 # indexing entirely.
 _ast_kickoff_claimed: set = set()
+# abs_root -> monotonic time of last failed indexing attempt.
+_ast_failed_at: dict = {}
+_AST_RETRY_COOLDOWN_S = 300
 _ast_kickoff_lock = threading.Lock()
 
 
@@ -76,6 +80,9 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
                     or abs_root in _ast_kickoff_claimed
                 ):
                     return
+                failed = _ast_failed_at.get(abs_root)
+                if failed is not None and time.monotonic() - failed < _AST_RETRY_COOLDOWN_S:
+                    return
                 _ast_kickoff_claimed.add(abs_root)
 
             # Update the global status dict that /api/ast/status reads.
@@ -104,6 +111,7 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
                     result = initialize_ast_capabilities(abs_root, patterns, max_depth)
                     files = result.get("files_processed", 0)
                     if result.get("initialized") and files > 0:
+                        _ast_failed_at.pop(abs_root, None)
                         _ast_indexing_status.update({
                             'is_indexing': False,
                             'completion_percentage': 100,
@@ -119,6 +127,17 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
                             'is_complete': False,
                             'error': result.get("error", "Indexing returned no files"),
                         })
+                except Exception as exc:
+                    _ast_failed_at[abs_root] = time.monotonic()
+                    logger.warning(
+                        f"AST indexing failed for {abs_root}: {exc}; "
+                        f"will not retry for {_AST_RETRY_COOLDOWN_S}s"
+                    )
+                    _ast_indexing_status.update({
+                        'is_indexing': False,
+                        'is_complete': False,
+                        'error': str(exc),
+                    })
                 finally:
                     # Release the claim unless the project actually indexed, so a
                     # failed or crashed run can be retried by a later request.
