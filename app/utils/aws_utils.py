@@ -480,13 +480,34 @@ def _ensure_data_retention(
         get_req = AWSRequest(method="GET", url=url, headers={})
         SigV4Auth(creds, "bedrock", region).add_auth(get_req)
         get_resp = _requests.get(url, headers=dict(get_req.headers), timeout=10)
+        read_err = ""
         if get_resp.status_code != 200:
-            return False, (
+            read_err = (
                 f"Failed to read {endpoint_label} data retention mode: "
-                f"HTTP {get_resp.status_code} — {get_resp.text[:200]}"
+                f"HTTP {get_resp.status_code} — {get_resp.text[:400]}"
             )
-
-        current_mode = get_resp.json().get("mode", "inherit")
+            if not assume_below:
+                # Permission denied on the read only says this identity may
+                # not see the switch, not that the switch is wrong: on
+                # 2026-10-30 role bedrock-chatter could not start Ziya with
+                # the account already at 'aws_review'.  Without the read a
+                # write could lower a more permissive mode, so do neither and
+                # let the call itself decide; a real gate rejection is then
+                # handled by the heal path (assume_below=True).  An explicit
+                # downgrade/reset must know the current mode, so it still fails.
+                if get_resp.status_code in (401, 403) and not allow_downgrade:
+                    logger.warning(
+                        f"{read_err}; cannot verify the {endpoint_label} data "
+                        f"retention mode in {region}, continuing without changing "
+                        f"it (a call rejected for retention will be healed then)"
+                    )
+                    return True, ""
+                return False, read_err
+            logger.warning(f"{read_err}; the rejected call shows the mode is below "
+                           f"'{required_mode}', writing it without the read")
+            current_mode = "unknown"
+        else:
+            current_mode = get_resp.json().get("mode", "inherit")
         if current_mode == required_mode:
             logger.debug(f"{endpoint_label} data retention mode already '{required_mode}'")
             return True, ""

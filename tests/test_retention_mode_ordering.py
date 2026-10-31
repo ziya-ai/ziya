@@ -194,11 +194,23 @@ def test_equality_only_comparison_would_fail_this_suite():
 
 
 def test_get_failure_is_reported_and_no_write_attempted():
-    get_resp = MagicMock(status_code=403, text="denied")
+    get_resp = MagicMock(status_code=500, text="internal error")
     with patch("app.utils.aws_utils.create_fresh_boto3_session", return_value=_mock_session()), \
          patch("requests.get", return_value=get_resp), \
          patch("requests.put") as mock_put:
         ok, err = _ensure_data_retention("Test", URL, "aws_review", "us-east-1")
     assert ok is False
-    assert "403" in err
+    assert "500" in err
+    assert mock_put.call_count == 0
+
+
+def test_get_denied_is_not_fatal_and_no_write_attempted():
+    # A 403 on the read means "this role may not see the switch"; treating it
+    # as fatal blocked startup on an account already set correctly.
+    get_resp = MagicMock(status_code=403, text="denied")
+    with patch("app.utils.aws_utils.create_fresh_boto3_session", return_value=_mock_session()), \
+         patch("requests.get", return_value=get_resp), \
+         patch("requests.put") as mock_put:
+        ok, err = _ensure_data_retention("Test", URL, "aws_review", "us-east-1")
+    assert (ok, err) == (True, "")
     assert mock_put.call_count == 0
