@@ -189,6 +189,25 @@ export interface MusicCrossStaffSlur {
 }
 
 /**
+ * A straight line between two notes on DIFFERENT staves of a grand staff --
+ * the hand-crossing indicator a keyboard or harp score draws from a note in
+ * one hand's staff down (or up) to the note the other hand takes next, often
+ * labelled "l.h." / "r.h.".  A `glissando` is same-staff and reads as a pitch
+ * slide, so it cannot stand in.  Endpoints are [staffIndex, noteIndex] pairs
+ * like `crossStaffSlurs`, and the same one-system rule applies.
+ */
+export interface MusicCrossStaffLine {
+  /** Start endpoint as a [staffIndex, noteIndex] pair. */
+  from: [number, number];
+  /** End endpoint as a [staffIndex, noteIndex] pair. */
+  to: [number, number];
+  /** Label drawn beside the line, e.g. "l.h.".  No label by default. */
+  text?: string;
+  /** Solid by default; true draws the line dashed. */
+  dashed?: boolean;
+}
+
+/**
  * A tuplet (triplet, quintuplet, ...) over a run of notes, by index into the
  * staff's own note list.  VexFlow has no way to spell an irrational duration
  * such as "an eighth of a triplet" in a duration code, so the notes are
@@ -228,6 +247,17 @@ export interface MusicBracket extends MusicSpan {
   position?: 'above' | 'below';
   /** Dashed by convention; set false for a solid line. */
   dashed?: boolean;
+  /**
+   * Which vertical end-hooks the line carries.  "end" (default) is the 8va
+   * convention VexFlow draws: a hook at the far end only.  "both" is the
+   * phrase / entry bracket of an ensemble score (a hook at each end, drawn
+   * solid unless `dashed` is true); "none" is a bare line.  Brackets whose
+   * ranges overlap and have no explicit `line` are stacked automatically so
+   * they never share a band.
+   */
+  /** "start": a hook at the left end only, with the rail running to the end of
+   *  the system (a bracket whose end falls on a later line). */
+  hooks?: 'end' | 'both' | 'none' | 'start';
   /**
    * Distance from the staff in stave-line units.  Raise this to clear other
    * material in the same band; the renderer already lifts brackets by one
@@ -786,6 +816,15 @@ export interface MusicMeasure {
    */
   systemBreak?: boolean;
   /**
+   * Rehearsal mark (boxed letter / number) at THIS measure, e.g. "B".  The
+   * spec-level `section` can only label the opening bar; a mark mid-score is
+   * ordinary published practice and is drawn here as a boxed label above the
+   * top staff at the bar's first note, clear of a system-start measure
+   * number.  Read from the top staff only (a mark applies to the whole
+   * system).
+   */
+  section?: string;
+  /**
    * Mark this measure as a pickup (anacrusis) -- an incomplete opening bar
    * that carries only the upbeat before the first full measure.
    *
@@ -1008,6 +1047,13 @@ export interface MusicNoteSpec {
   tremolo?: number;
   /** Dynamic mark placed below this note; must be in DYNAMIC_MARKS. */
   dynamic?: string;
+  /**
+   * Where the dynamic goes.  "below" (default) is under this note's staff.
+   * "between" is the ensemble-score convention for a mark that governs both
+   * staves: drawn large in the gap between this staff and the next, centred
+   * on the note when it opens a system, otherwise ending just before its bar.
+   */
+  dynamicPlacement?: 'below' | 'between';
   /** Left-hand fingering digit; a bare value defaults to below the staff. */
   fingering?: string | number | MusicFingering;
   /** String number for bowed/plucked instruments, drawn above the staff. */
@@ -1094,8 +1140,34 @@ export interface MusicSpec {
    * an explicit `width` is taken as the author having chosen the layout.
    */
   maxSystemWidth?: number;
+  /**
+   * Whether the LAST system is stretched to the right margin like the others.
+   * Unset ("auto"): justified when its natural width is at least half the
+   * line, left at natural spacing when it is a short tail -- the MuseScore /
+   * LilyPond house rule, so a final line holding a full complement of bars
+   * lines up with the systems above it while a two-bar tail is not spread
+   * across the page.  `true` always fills; `false` always leaves it natural.
+   */
+  justifyLastSystem?: boolean;
   /** Vertical gap in px between stacked systems.  Defaults to 36. */
   systemSpacing?: number;
+  /**
+   * Empty stave spaces between one staff's bottom line and the next staff's
+   * top line within a system (grand staff, ensemble).  Defaults to 8.  Printed
+   * harp and piano parts use about 3.5-4; lower it for print, keeping room for
+   * the ledger notes and dynamics that sit between the staves.  Clamped to
+   * [2, 20].
+   */
+  staffGap?: number;
+  /**
+   * Width in px every system is justified into, overriding the width
+   * estimated from note counts.  Wrapping stays on and `systemBreak`s still
+   * define the lines.  A narrower value removes blank space inside the bars,
+   * so when the score is scaled to a page the notes and staves print larger
+   * at the same bars per line.  Distinct from `width`, which pins the canvas
+   * and turns wrapping off.  Floor 340.
+   */
+  systemWidth?: number;
   /** Phrase curves drawn over the notes. */
   slurs?: MusicSpan[];
   /** Ties joining two notes of the same pitch. */
@@ -1145,6 +1217,15 @@ export interface MusicSpec {
    * see MusicCrossStaffSlur.  Only meaningful with `staves`.
    */
   crossStaffSlurs?: MusicCrossStaffSlur[];
+  /**
+   * Straight hand-crossing lines between a note on one staff and a note on
+   * another (a keyboard / harp "l.h." indicator).  Each entry's `from`/`to`
+   * are [staffIndex, noteIndex] pairs; see MusicCrossStaffLine.  Only
+   * meaningful with `staves`.  Drawn with VexFlow's StaveLine, which reads
+   * each endpoint note's own resolved position, so the line runs diagonally
+   * from notehead to notehead across the gap between the staves.
+   */
+  crossStaffLines?: MusicCrossStaffLine[];
   /**
    * Tuplets (triplets, quintuplets, ...) for a single-staff spec, by note
    * index.  Rescales the spanned notes' beat time and draws the number
@@ -2204,7 +2285,7 @@ export function normalizeMeasureMajorVoices<
     const out: Record<string, unknown> = {};
     for (const k of [
       'endBar', 'beginBar', 'timeSignature', 'systemBreak', 'pickup',
-      'multiRest', 'multiMeasureRest',
+      'multiRest', 'multiMeasureRest', 'section',
     ]) {
       if (m?.[k] !== undefined) out[k] = m[k];
     }
@@ -3022,6 +3103,7 @@ export function drawDynamicsLayer(
   renderedNotes: any[],
   specNotes: MusicNoteSpec[],
   isDarkMode: boolean,
+  lowerStave?: any,
 ): void {
   const textFill = musicInkColor(isDarkMode);
   // Bold italic serif is the conventional look of a dynamic; the real SMuFL
@@ -3044,6 +3126,20 @@ export function drawDynamicsLayer(
     }
     const x = xOf(note);
     if (x == null) return;
+    if (specNotes[i]?.dynamicPlacement === 'between' && lowerStave
+        && typeof lowerStave.getYForLine === 'function') {
+      // Between the staves: large, vertically in the gap.  A mark on a
+      // system's first note is centred on it; any other ends before its bar.
+      const first = renderedNotes.indexOf(note) === 0;
+      svg.append('text')
+        .attr('x', first ? x : x - 24)
+        .attr('y', (bottomLineY + lowerStave.getYForLine(0)) / 2 + 8)
+        .attr('text-anchor', first ? 'middle' : 'end')
+        .attr('fill', textFill)
+        .style('font', 'italic 700 22px "Times New Roman", Georgia, serif')
+        .text(mark);
+      return;
+    }
     svg.append('text')
       .attr('x', x).attr('y', y)
       .attr('text-anchor', 'middle')
@@ -3364,6 +3460,100 @@ export function drawMeasureNumbers(
       .attr('fill', textFill)
       .style('font', '400 11px "Times New Roman", Georgia, serif')
       .text(String(number));
+  }
+}
+
+/**
+ * Mid-score rehearsal marks: a boxed label above the top staff at the first
+ * note of the measure that carries `section`.
+ *
+ * VexFlow's StaveSection is a stave modifier and can only sit at the stave's
+ * left edge, i.e. the start of a system, so the spec-level `section` could
+ * never mark a bar mid-line.  Drawn like the measure numbers, post-format,
+ * from each bar's first rendered note.  On a system's first bar the box is
+ * shifted right of the measure number (when numbers are on) so the two do
+ * not overprint.
+ *
+ * Placed clear of what shares its band: above any above-staff bracket that
+ * spans its note (`aboveLine`, filled in by the bracket planner) and above
+ * the note itself when it sits high on ledger lines.  The default position,
+ * with neither, is unchanged.
+ */
+export function drawRehearsalMarks(
+  d3: any,
+  svg: any,
+  plans: Array<{
+    stave: any; note: any; text: string; firstOfSystem: boolean; aboveLine?: number;
+  }>,
+  hasMeasureNumbers: boolean,
+  isDarkMode: boolean,
+): void {
+  const ink = musicInkColor(isDarkMode);
+  for (const { stave, note, text, firstOfSystem, aboveLine } of plans) {
+    let x = note && typeof note.getAbsoluteX === 'function'
+      ? note.getAbsoluteX()
+      : (typeof stave.getNoteStartX === 'function' ? stave.getNoteStartX() : 50);
+    if (firstOfSystem && hasMeasureNumbers) x += 18;
+    const topY = typeof stave.getYForLine === 'function' ? stave.getYForLine(0) : 20;
+    const label = String(text);
+    const w = Math.max(18, label.length * 9 + 8);
+    const h = 19;
+    const topText = (line: number): number =>
+      (typeof stave.getYForTopText === 'function' ? stave.getYForTopText(line) : topY - 10 * (line + 1));
+    let baseline = topY - 13;
+    // A bracket over this bar: sit a line and a half above its rail, which
+    // also clears an 8va's "8" text drawn at the rail.
+    // Only a mark that opens a system sits over its bar; a mid-system mark
+    // ends just before the barline, left of any bracket that starts there.
+    if (aboveLine != null && firstOfSystem) baseline = Math.min(baseline, topText(aboveLine + 1.5));
+    // A note high on ledger lines: sit above it.
+    const noteLine = note ? noteClearanceLine(note) : 0;
+    if (noteLine > 0 && firstOfSystem) baseline = Math.min(baseline, topText(noteLine) - 2);
+    const left = firstOfSystem ? x - 3 : x - 24 - w;
+    svg.append('rect')
+      .attr('x', left).attr('y', baseline - h + 4).attr('width', w).attr('height', h)
+      .attr('fill', 'none').attr('stroke', ink).attr('stroke-width', 1);
+    svg.append('text')
+      .attr('x', left + w / 2).attr('y', baseline)
+      .attr('text-anchor', 'middle').attr('fill', ink)
+      .style('font', '700 14px "Times New Roman", Georgia, serif')
+      .text(label);
+  }
+}
+
+/**
+ * Labels for `crossStaffLines` ("l.h."), drawn beside the LOWER endpoint.
+ *
+ * VexFlow's StaveLine prints its text in the first note's top-text band,
+ * i.e. above the upper staff near the next barline, far from the note the
+ * other hand takes.  A harp / keyboard score sets the label by that note, so
+ * it is drawn here post-format, below-left of whichever endpoint's notehead
+ * is lower on the page (the line arrives from above, so below-left is clear).
+ */
+export function drawCrossStaffLineLabels(
+  d3: any,
+  svg: any,
+  plans: Array<{ fromNote: any; toNote: any; text: string }>,
+  isDarkMode: boolean,
+): void {
+  const ink = musicInkColor(isDarkMode);
+  const headY = (n: any): number | null => {
+    const ys = n && typeof n.getYs === 'function' ? n.getYs() : null;
+    return Array.isArray(ys) && ys.length > 0 ? Math.max(...ys) : null;
+  };
+  for (const { fromNote, toNote, text } of plans) {
+    if (!text) continue;
+    const yf = headY(fromNote);
+    const yt = headY(toNote);
+    if (yf == null || yt == null) continue;
+    const note = yt >= yf ? toNote : fromNote;
+    const x = typeof note.getAbsoluteX === 'function' ? note.getAbsoluteX() : null;
+    if (x == null) continue;
+    svg.append('text')
+      .attr('x', x - 4).attr('y', Math.max(yf, yt) + 18)
+      .attr('text-anchor', 'end').attr('fill', ink)
+      .style('font', 'italic 400 15px "Times New Roman", Georgia, serif')
+      .text(String(text));
   }
 }
 
@@ -3822,6 +4012,193 @@ export function drawVoltaBracket(
       .attr('fill', textFill)
       .style('font', '400 12px "Times New Roman", Georgia, serif')
       .text(volta.label);
+  }
+}
+
+/** Stave-line units between stacked bracket bands: one stave space, as in harp scores. */
+export const BRACKET_STACK_STEP = 1;
+
+/**
+ * Lowest above-staff text `line` (TextBracket / getYForTopText units) that
+ * clears `note`: its highest notehead, plus the stem when the stem points up.
+ *
+ * keyProps `line` is in stave-line units with the bottom line at 1 and the
+ * top line at 5 (verified: E4 = 1, F5 = 5, D6 = 7.5), and is set at
+ * construction, so this works BEFORE formatting -- which the 8va
+ * TextBracket needs, since its line must be set before factory.draw().  A
+ * stem is 3.5 spaces.  Text `line` L sits at keyProps line 6 + L, so a top
+ * at t is cleared by one space at L = ceil(t - 5).  A note whose top stays
+ * within a space of the staff (including an up-stemmed A4) returns <= 1, so
+ * brackets over ordinary notes keep VexFlow's default line exactly.
+ */
+export function noteClearanceLine(note: any): number {
+  const props = note && typeof note.getKeyProps === 'function' ? note.getKeyProps() : [];
+  const lines = (props ?? []).map((k: any) => Number(k?.line)).filter(Number.isFinite);
+  if (lines.length === 0) return 0;
+  const stemUp = typeof note.hasStem === 'function' && note.hasStem()
+    && typeof note.getStemDirection === 'function' && note.getStemDirection() === 1;
+  const top = Math.max(...lines) + (stemUp ? 3.5 : 0);
+  return Math.max(0, Math.ceil(top - 5));
+}
+
+/** noteClearanceLine over every note of a span. */
+export function spanClearanceLine(notes: any[]): number {
+  return notes.reduce((m, n) => Math.max(m, noteClearanceLine(n)), 0);
+}
+
+/**
+ * Below-staff counterpart of noteClearanceLine: the lowest bottom-text `line`
+ * that clears `note`'s lowest notehead, plus its stem when the stem points
+ * down.  A below TextBracket at line L draws at stave position 6 + L, which
+ * is keyProps line -1 - L, so a bottom at b is cleared by one space at
+ * L = ceil(-b).  Notes on or near the staff return <= 1, VexFlow's default.
+ */
+export function noteClearanceLineBelow(note: any): number {
+  const props = note && typeof note.getKeyProps === 'function' ? note.getKeyProps() : [];
+  const lines = (props ?? []).map((k: any) => Number(k?.line)).filter(Number.isFinite);
+  if (lines.length === 0) return 0;
+  const stemDown = typeof note.hasStem === 'function' && note.hasStem()
+    && typeof note.getStemDirection === 'function' && note.getStemDirection() === -1;
+  const bottom = Math.min(...lines) - (stemDown ? 3.5 : 0);
+  return Math.max(0, Math.ceil(-bottom));
+}
+
+/** noteClearanceLineBelow over every note of a span. */
+export function spanClearanceLineBelow(notes: any[]): number {
+  return notes.reduce((m, n) => Math.max(m, noteClearanceLineBelow(n)), 0);
+}
+
+/**
+ * Final `line` for each bracket of one staff.
+ *
+ * Each bracket starts at `minLines[i]` (the tempo band or VexFlow's default,
+ * raised to clear the tallest note in its span) and is pushed up, in steps
+ * of `step`, past any earlier bracket on the same side whose range overlaps
+ * and whose line is within `step` -- so overlapping brackets never share a
+ * band and none is drawn through a high note.  An explicit `line` is kept
+ * as written and is not an obstacle, so hand-tuned specs are unchanged.  A
+ * staff with no overlaps and no high notes keeps VexFlow's default line 1.
+ */
+export function placeBracketLines(
+  brackets: MusicBracket[],
+  minLines: number[],
+  step: number = BRACKET_STACK_STEP,
+): number[] {
+  const placed: Array<{ from: number; to: number; line: number; side: string }> = [];
+  return brackets.map((b, i) => {
+    if (b.line != null) return b.line;
+    const side = b.position === 'below' ? 'below' : 'above';
+    const from = Math.min(b.from, b.to);
+    const to = Math.max(b.from, b.to);
+    let line = minLines[i] ?? 1;
+    let clashes = placed.filter((p) => p.side === side && from <= p.to && to >= p.from
+      && Math.abs(p.line - line) < step);
+    while (clashes.length > 0) {
+      line = Math.max(...clashes.map((p) => p.line)) + step;
+      const current = line;
+      clashes = placed.filter((p) => p.side === side && from <= p.to && to >= p.from
+        && Math.abs(p.line - current) < step);
+    }
+    placed.push({ from, to, line, side });
+    return line;
+  });
+}
+
+/**
+ * Phrase / entry bracket with a hook at EACH end (`hooks: "both"`), drawn as a
+ * d3 overlay after formatting.
+ *
+ * VexFlow's TextBracket can only hook the far end (the 8va convention), so the
+ * two-hook bracket an ensemble score uses to show where a part enters and
+ * leaves had no primitive.  Placed at the stave's own top-text y for `line`
+ * so it sits in the same band a TextBracket at that line would, and so the
+ * automatic stacking applies to both kinds alike.  Solid unless `dashed`.
+ */
+export function drawPhraseBracket(
+  d3: any,
+  svg: any,
+  stave: any,
+  bracket: MusicBracket,
+  fromNote: any,
+  toNote: any,
+  line: number,
+  isDarkMode: boolean,
+): void {
+  const ink = musicInkColor(isDarkMode);
+  const xOf = (note: any): number | null =>
+    note && typeof note.getAbsoluteX === 'function' ? note.getAbsoluteX() : null;
+  const x1raw = xOf(fromNote);
+  const x2raw = xOf(toNote);
+  if (x1raw == null || x2raw == null) return;
+  const below = bracket.position === 'below';
+  const glyphW = typeof toNote.getGlyphWidth === 'function' ? toNote.getGlyphWidth() : 10;
+  const x1 = Math.min(x1raw, x2raw) - 4;
+  const x2 = Math.max(x1raw, x2raw) + glyphW;
+  // Below: the same y a below TextBracket at this line uses (it adds
+  // TEXT_HEIGHT_OFFSET_HACK = 1), so noteClearanceLineBelow applies to both.
+  const y = below
+    ? (typeof stave.getYForBottomText === 'function' ? stave.getYForBottomText(line + 1) : 120)
+    : (typeof stave.getYForTopText === 'function' ? stave.getYForTopText(line) : 20);
+  // Hooks point toward the staff.
+  const hook = below ? -8 : 8;
+  const label = String(bracket.text ?? '');
+  const sup = String(bracket.superscript ?? '');
+  const hasText = label !== '' || sup !== '';
+  const labelW = label.length * 8 + sup.length * 6;
+  // An octave-style bracket (text) is dashed by convention; a bare phrase bracket is solid.
+  const dashedLine = bracket.dashed ?? (hasText && bracket.hooks !== 'both');
+  const stroke = (xa: number, ya: number, xb: number, yb: number): void => {
+    const el = svg.append('line')
+      .attr('x1', xa).attr('x2', xb).attr('y1', ya).attr('y2', yb)
+      .attr('stroke', ink).attr('stroke-width', 1.2);
+    if (dashedLine) el.attr('stroke-dasharray', '4 3');
+  };
+  if (hasText) {
+    svg.append('text')
+      .attr('x', x1 + 2).attr('y', y + (below ? 10 : -2))
+      .attr('text-anchor', 'start').attr('fill', ink)
+      .style('font', 'italic 400 14px "Times New Roman", Georgia, serif')
+      .text(label);
+    if (sup) {
+      svg.append('text')
+        .attr('x', x1 + 2 + label.length * 8).attr('y', y + (below ? 10 : -2) - 4)
+        .attr('text-anchor', 'start').attr('fill', ink)
+        .style('font', 'italic 400 10px "Times New Roman", Georgia, serif')
+        .text(sup);
+    }
+  }
+  // A one-note octave bracket still shows "8va - - ┐": the line runs at
+  // least two dashes past the label, then drops.
+  const railStart = x1 + (hasText ? labelW + 4 : 0);
+  // "start": hook the left end only and run the rail to the stave's right edge.
+  const toSystemEnd = bracket.hooks === 'start';
+  const staveEnd = typeof stave.getX === 'function' && typeof stave.getWidth === 'function'
+    ? stave.getX() + stave.getWidth() - 14 : x2;
+  const railEnd = toSystemEnd
+    ? Math.max(x2, staveEnd)
+    : hasText ? Math.max(x2, railStart + 22) : x2;
+  stroke(railStart, y, railEnd, y);
+  if (!hasText || toSystemEnd) stroke(x1, y, x1, y + hook);
+  if (!toSystemEnd) stroke(railEnd, y, railEnd, y + hook);
+}
+
+/**
+ * Vertical lines joining a grand staff's interior barlines across the gap
+ * between adjacent staves (from the upper staff's bottom line to the lower
+ * staff's top line).  Each in-stave BarNote draws only on its own stave.
+ */
+export function drawGrandStaffBarlines(
+  svg: any,
+  joins: Array<{ upper: any; lower: any; x: number }>,
+  isDarkMode: boolean,
+): void {
+  const ink = musicInkColor(isDarkMode);
+  for (const { upper, lower, x } of joins) {
+    if (typeof upper?.getYForLine !== 'function' || typeof lower?.getYForLine !== 'function') continue;
+    svg.append('line')
+      .attr('x1', x).attr('x2', x)
+      .attr('y1', upper.getYForLine(4)).attr('y2', lower.getYForLine(0))
+      .attr('stroke', ink).attr('stroke-width', 1);
   }
 }
 
@@ -4370,6 +4747,46 @@ export function hasAboveStaffChordOrAnnotation(
 }
 
 /**
+ * Extra px the tempo mark must rise (and the first system move down) so it
+ * clears the top staff's highest above-staff bracket on the first system.
+ *
+ * A tempo's lift (TEMPO_SHIFT_Y) is fixed and was tuned against a bracket at
+ * BRACKET_LINE_WITH_TEMPO; a bracket raised past that line to clear high
+ * notes (or stacked over an overlapping one) ran into the tempo text.  This
+ * reproduces placeBracketLines from the SPEC's pitches -- noteBandExtentPx,
+ * the same source the D-436 ledger reserve uses -- because the first
+ * system's y is fixed before any note exists.  It ignores stems, which is
+ * exact for the stem-down high notes that cause this.  0 (no change) when no
+ * first-system bracket rises above the tempo band.
+ */
+export function tempoBracketLiftPx(
+  brackets: MusicBracket[] | undefined,
+  notes: MusicNoteSpec[],
+  clef: string | undefined,
+  firstSystemNoteCount: number,
+): number {
+  const list = brackets ?? [];
+  if (list.length === 0) return 0;
+  const minLines = list.map((b) => {
+    const lo = Math.max(0, Math.min(b.from, b.to));
+    const hi = Math.min(notes.length - 1, Math.max(b.from, b.to));
+    let above = 0;
+    for (let i = lo; i <= hi; i += 1) {
+      above = Math.max(above, noteBandExtentPx(notes[i]?.keys, clef).above);
+    }
+    return Math.max(BRACKET_LINE_WITH_TEMPO, Math.ceil(above / (2 * DIATONIC_STEP_PX)));
+  });
+  const lines = placeBracketLines(list, minLines);
+  let top = BRACKET_LINE_WITH_TEMPO;
+  list.forEach((b, i) => {
+    if (b.position === 'below' || Math.min(b.from, b.to) >= firstSystemNoteCount) return;
+    top = Math.max(top, lines[i]);
+  });
+  // One stave-line unit is 10px (Tables.STAVE_LINE_DISTANCE).
+  return (top - BRACKET_LINE_WITH_TEMPO) * 10;
+}
+
+/**
  * Split a FLAT note list into measures at meter boundaries (D-138).
  *
  * A top-level `notes[]` staff is treated by measuresOf as a single indivisible
@@ -4414,6 +4831,66 @@ export function synthesizeMeasures(
 }
 
 /**
+ * Length of one spec duration in whole notes, dots applied
+ * (base * (2 - 2^-dots)).  An absent or unknown duration counts as a quarter,
+ * the same default the renderer draws it with.
+ */
+export function noteWholeNoteUnits(duration: string | number | undefined): number {
+  if (duration == null || duration === '') return 1 / 4;
+  return noteDurationInWholes(duration);
+}
+
+/**
+ * Whole-note capacity of one bar of `meter` ("3/4" -> 0.75, "6/8" -> 0.75,
+ * "C" -> 1, "C|" -> 1).  Null for an absent or unparseable meter, so a caller
+ * can tell "no meter" from "a meter of zero".
+ */
+export function measureCapacityWholeNotes(meter: string | undefined): number | null {
+  const parsed = parseMeterFraction(meter);
+  return parsed ? parsed[0] / parsed[1] : null;
+}
+
+function parseMeterFraction(meter: string | undefined): [number, number] | null {
+  if (typeof meter !== 'string') return null;
+  const m = meter.trim();
+  if (m === 'C') return [4, 4];
+  if (m === 'C|') return [2, 2];
+  const match = /^(\d+)\s*\/\s*(\d+)$/.exec(m);
+  if (!match) return null;
+  const n = Number(match[1]);
+  const d = Number(match[2]);
+  return n > 0 && d > 0 ? [n, d] : null;
+}
+
+/**
+ * Bar a flat `notes[]` staff at `meter`'s boundaries, returning a staff with
+ * `measures` in place of `notes`.  Note order and count are preserved exactly
+ * (synthesizeMeasures never splits a note across a barline).
+ *
+ * Returned BY REFERENCE, unchanged, when there is nothing to bar: no usable
+ * meter, a staff that already has `measures` or `voices`, or a melody that
+ * fits in one bar.  The renderer reaches this through
+ * synthesizeFlatNotesMeasures, which adds the D-138 legibility gate on top.
+ */
+export function segmentFlatStaffIntoMeasures<
+  T extends { notes?: MusicNoteSpec[]; measures?: MusicMeasure[]; voices?: MusicVoice[] },
+  // `& { measures? }` so a caller passing a bare `{ notes }` can read the
+  // barred result's `measures` without a cast.
+>(staff: T, meter: string | undefined): T & { measures?: MusicMeasure[] } {
+  const hasMeasures = Array.isArray(staff.measures) && staff.measures.length > 0;
+  const hasVoices = Array.isArray(staff.voices) && staff.voices.length > 0;
+  if (hasMeasures || hasVoices) return staff;
+  const notes = staff.notes;
+  if (!Array.isArray(notes) || notes.length === 0) return staff;
+  const parsed = parseMeterFraction(meter);
+  if (!parsed) return staff;
+  const measures = synthesizeMeasures(notes, parsed[0], parsed[1]);
+  if (measures.length <= 1) return staff;
+  const { notes: _dropped, ...rest } = staff;
+  return { ...rest, measures } as T;
+}
+
+/**
  * If a staff carries only a flat `notes[]` list whose natural width would make
  * it an illegible single system, replace it with meter-synthesised measures so
  * the wrapper can break it (D-138).  A staff that already has `measures` or
@@ -4435,10 +4912,7 @@ export function synthesizeFlatNotesMeasures(
   // previous (barline-free) layout.
   const naturalWidth = SYSTEM_LEAD_IN_PX + estimateMeasureWidthFromNotes(notes);
   if (naturalWidth <= LEGIBILITY_WIDTH_LIMIT) return staff;
-  const measures = synthesizeMeasures(notes, numBeats, beatValue);
-  if (measures.length <= 1) return staff;
-  const { notes: _dropped, ...rest } = staff;
-  return { ...rest, measures };
+  return segmentFlatStaffIntoMeasures(staff, `${numBeats}/${beatValue}`);
 }
 
 /**
@@ -4634,6 +5108,39 @@ function estimateSystemWidth(measureWidths: number[], indices: number[]): number
 }
 
 /**
+ * Width budget for planSystemBreaks when the author placed explicit
+ * `systemBreak`s but set no `maxSystemWidth`.
+ *
+ * Explicit breaks are the author laying out the lines, so the default budget
+ * must not ALSO break inside one of them: with the 1200px default a six-bar
+ * line of a 3/4 score overflowed one bar early and the forced break then
+ * opened a fresh system, orphaning a single bar on a line of its own.  The
+ * budget is therefore raised to the widest author-delimited segment, capped
+ * at the legibility limit -- past that an automatic break is still the lesser
+ * evil, since a wider system cannot be read at any column scale.  With no
+ * explicit breaks, or with an author budget, the caller never reaches this
+ * and the plan is byte-identical.
+ */
+export function explicitBreakBudget(
+  measureWidths: number[],
+  explicitBreaks: boolean[],
+  fallback: number,
+): number {
+  if (!explicitBreaks.some(Boolean)) return fallback;
+  let widest = 0;
+  let segment: number[] = [];
+  measureWidths.forEach((_, i) => {
+    if (explicitBreaks[i] && segment.length > 0) {
+      widest = Math.max(widest, estimateSystemWidth(measureWidths, segment));
+      segment = [];
+    }
+    segment.push(i);
+  });
+  widest = Math.max(widest, estimateSystemWidth(measureWidths, segment));
+  return Math.max(fallback, Math.min(widest, LEGIBILITY_WIDTH_LIMIT));
+}
+
+/**
  * Group measure indices into systems (lines).
  *
  * First-fit by width budget, with a forced break wherever `explicitBreaks`
@@ -4774,6 +5281,35 @@ export function splitBeamRunsExcluding<T>(notes: T[], excluded: ReadonlySet<T>):
 }
 
 /**
+ * Wait until the music fonts (Bravura for glyphs, Academico for text) are
+ * usable.
+ *
+ * VexFlow's default entry embeds both fonts and starts loading them when the
+ * module is evaluated, but exposes no promise, so `await import('vexflow')`
+ * resolves while they are still loading.  Everything VexFlow measures in that
+ * window uses a fallback font: noteheads come out ~2.4x too wide, stems
+ * detach from their heads, ledger lines overshoot and note spacing balloons.
+ * A fresh page (every headless capture, and the first music render after a
+ * page load) is always in that window.  The fonts register themselves with
+ * document.fonts, so waiting on it is enough.  Never throws or blocks
+ * forever on a failure: an offline or font-less environment renders with
+ * whatever is available, as it did before.
+ */
+export async function ensureMusicFonts(): Promise<void> {
+  const fonts = typeof document !== 'undefined' ? (document as any).fonts : undefined;
+  if (!fonts || typeof fonts.load !== 'function') return;
+  try {
+    await Promise.all([
+      fonts.load('30px Bravura', '\uE0A4'),
+      fonts.load('14px Academico'),
+    ]);
+    if (fonts.ready) await fonts.ready;
+  } catch {
+    /* render with the fonts that are available */
+  }
+}
+
+/**
  * Render a MusicSpec into an SVG-capable container using VexFlow.
  */
 export async function renderMusicSpec(
@@ -4783,6 +5319,7 @@ export async function renderMusicSpec(
   d3: any,
 ): Promise<void> {
   const Vex = await import('vexflow');
+  await ensureMusicFonts();
   const {
     Factory, Annotation, Renderer, Voice,
     StaveHairpin, Articulation, Ornament, Modifier, Accidental,
@@ -4933,16 +5470,22 @@ export async function renderMusicSpec(
   const systemPlan = wrapEnabled
     ? planSystemBreaks(
         measureWidths, explicitBreaks,
-        authorMaxSystemWidth ?? DEFAULT_MAX_SYSTEM_WIDTH,
+        authorMaxSystemWidth
+          ?? explicitBreakBudget(measureWidths, explicitBreaks, DEFAULT_MAX_SYSTEM_WIDTH),
       )
     : [measureWidths.map((_, i) => i)];
   // Degenerate specs (no measures at all) still need one system to draw into.
   const systems = systemPlan.length > 0 ? systemPlan : [[]];
 
+  const authorSystemWidth = wrapEnabled
+    ? sanitizeLayoutDimension(spec.systemWidth, 340, MAX_CANVAS_DIM, 'systemWidth')
+    : undefined;
   const contentWidth = wrapEnabled
     // Widest planned system, so every system shares one canvas width and the
     // right-hand margins line up down the page as engraving requires.
-    ? Math.max(340, ...systems.map((sys) => estimateSystemWidth(measureWidths, sys)))
+    // An author `systemWidth` replaces the estimate (see MusicSpec.systemWidth).
+    ? (authorSystemWidth
+      ?? Math.max(340, ...systems.map((sys) => estimateSystemWidth(measureWidths, sys))))
     : Math.max(340, 110 + longestStaff * 78 + mostBarlines * 24);
   // D-140: never let an explicit `width` shrink the canvas below the music's
   // natural size.  An undersized width (e.g. w2-06's width:120 for 40 notes)
@@ -4986,7 +5529,7 @@ export async function renderMusicSpec(
       // Dynamics are engraved BELOW the staff (see drawDynamicsLayer, the d3
       // overlay drawn under the bottom stave line), so they occupy the same
       // below-staff band and need room reserved for them.
-      || n.dynamic != null)
+      || (n.dynamic != null && n.dynamicPlacement !== 'between'))
     || (s.hairpins?.length ?? 0) > 0
     || (s.brackets ?? []).some((b) => b.position === 'below')
     // A below-staff tuplet number sits where a dynamic would.
@@ -4999,6 +5542,8 @@ export async function renderMusicSpec(
     spec.tempo || spec.mark || (spec.marks?.length ?? 0) > 0
     || spec.volta || (spec.voltas?.length ?? 0) > 0 ||
     spec.measureNumber != null || spec.measureNumbers || spec.section
+    // A mid-score rehearsal mark is boxed above the top staff at its bar.
+    || staffSpecs.some((s) => measuresOf(s).some((m) => Boolean(m.section)))
     // Brackets and trill lines also occupy the band above the staff.
     || staffSpecs.some((s) =>
       (s.brackets ?? []).some((b) => b.position !== 'below')
@@ -5073,7 +5618,13 @@ export async function renderMusicSpec(
    *   - Drawn content ends ~50px below the last stave's TOP line (the stave
    *     spans 40px, plus stem/beam overshoot).
    */
-  const STAVE_ADVANCE = 120;
+  // spaceBetweenStaves (stave-line units, 10px each) is top line to top line,
+  // i.e. the 4 spaces of the stave itself plus the empty gap below it.  The
+  // default gap of 8 reproduces the measured 120px advance exactly.
+  const staffGap = Math.max(2, Math.min(20,
+    Number.isFinite(Number(spec.staffGap)) ? Number(spec.staffGap) : 8));
+  const spaceBetweenStaves = staffGap + 4;
+  const STAVE_ADVANCE = spaceBetweenStaves * 10;
   /** Top line to bottom line of a 5-line stave. */
   const STAVE_SPAN = 40;
   /** Stem/beam overshoot below the bottom line on a plain stave. */
@@ -5169,9 +5720,21 @@ export async function renderMusicSpec(
   // final system(s) off the bottom -- which read as "the draw loop stopped
   // early" (empty margins, missing trailing staves) when the real cause was a
   // short canvas.  systems.length == 1 leaves this byte-for-byte unchanged.
+  // A first-system bracket raised above the tempo's band lifts the tempo by
+  // the same amount, and the first system moves down by it so the lifted
+  // tempo still has headroom (see tempoBracketLiftPx).  0 without a tempo.
+  const tempoBracketLift = spec.tempo
+    ? tempoBracketLiftPx(
+        staffSpecs[0]?.brackets,
+        notesOf(staffSpecs[0]),
+        (staffSpecs[0] as any)?.clef ?? (spec as any).clef ?? 'treble',
+        (systems[0] ?? []).reduce(
+          (n, m) => n + (measuresOf(staffSpecs[0])[m]?.notes?.length ?? 0), 0),
+      )
+    : 0;
   const contentHeight = stackedCanvasHeight(
     staffSpecs.length, systems.length, STAVE_ADVANCE, systemTail,
-    systemSpacing, roomAbove, titleH,
+    systemSpacing, roomAbove + tempoBracketLift, titleH,
   );
   // D-140: an author `height` is honoured only down to the content floor -- an
   // undersized one (e.g. w2-13's height:60 for 12 staves) used to collapse the
@@ -5201,7 +5764,8 @@ export async function renderMusicSpec(
   // Push the first system further down when the tempo is lifted onto its own
   // row above a navigation mark, so the raised tempo band (30px higher than
   // usual) still has clear headroom above it rather than clipping at y<0.
-  const firstSystemY = (needsRoomAbove ? (tempoAboveMark ? 70 : 40) : 10) + titleH;
+  const firstSystemY = (needsRoomAbove ? (tempoAboveMark ? 70 : 40) : 10) + titleH
+    + tempoBracketLift;
   // Width VexFlow justifies a system's notes across.  System.format() spreads
   // its voices to fill exactly this width, so a system given the full canvas
   // width is stretched to the right margin regardless of how much music it
@@ -5216,15 +5780,26 @@ export async function renderMusicSpec(
   // layouts keep the full width, so their spacing is unchanged byte-for-byte.
   const fullSystemWidth = width - 20 - labelGutter;
   const lastSystemIdx = systems.length - 1;
+  // A last line that is at least half full is justified like the others (the
+  // MuseScore / LilyPond rule); a shorter tail keeps its natural spacing.  The
+  // dotted-half-heavy final line of a slow 3/4 piece estimates narrow despite
+  // holding as many bars as the lines above it, and was being drawn at about
+  // half their width.  `justifyLastSystem` overrides the rule either way.
+  const LAST_SYSTEM_FILL_THRESHOLD = 0.5;
   const systemWidth = (i: number): number => {
     if (!wrapEnabled || systems.length < 2 || i !== lastSystemIdx) {
       return fullSystemWidth;
     }
+    if (spec.justifyLastSystem === true) return fullSystemWidth;
     // The lead-in (clef/key/time) is re-printed on every system and already
     // sits inside the stave, so the natural width estimate covers it.  Cap at
     // the full width so a last system that happens to be full still justifies
     // rather than overrunning the margin.
     const natural = estimateSystemWidth(measureWidths, systems[i]);
+    if (spec.justifyLastSystem !== false
+        && natural >= LAST_SYSTEM_FILL_THRESHOLD * fullSystemWidth) {
+      return fullSystemWidth;
+    }
     return Math.min(fullSystemWidth, Math.max(SYSTEM_LEAD_IN_PX, natural));
   };
   const vexSystems = systems.map((_, i) => factory.System({
@@ -5234,7 +5809,7 @@ export async function renderMusicSpec(
     x: 10 + labelGutter,
     width: systemWidth(i),
     y: firstSystemY + i * (perSystemHeight + systemSpacing),
-    ...(staffSpecs.length > 1 ? { spaceBetweenStaves: 12 } : {}),
+    ...(staffSpecs.length > 1 ? { spaceBetweenStaves } : {}),
   }));
 
   // A model-authored measure rarely sums exactly to the time signature.
@@ -5350,6 +5925,18 @@ export async function renderMusicSpec(
    * auto-beams they need an explicit draw pass after factory.draw().
    */
   const secondaryBeams: any[] = [];
+  /** Mid-score rehearsal marks (per-measure `section`), drawn post-format. */
+  const rehearsalPlans: Array<
+    { stave: any; note: any; text: string; firstOfSystem: boolean; aboveLine?: number }
+  > = [];
+  /** Two-hook phrase brackets (`hooks: "both"`), drawn post-format. */
+  /** Interior BarNotes, to join barlines across a grand staff post-format. */
+  const interiorBarPlans: Array<{ staffIndex: number; systemIndex: number; note: any }> = [];
+  const phraseBracketPlans: Array<
+    { stave: any; bracket: MusicBracket; fromNote: any; toNote: any; line: number }
+  > = [];
+  /** `crossStaffLines` labels, drawn post-format by the lower endpoint. */
+  const crossStaffLabelPlans: Array<{ fromNote: any; toNote: any; text: string }> = [];
 
   /** Resolve the barline drawn between two adjacent measures. */
   const barlineBetween = (before: MusicMeasure, after: MusicMeasure): number => {
@@ -5435,7 +6022,9 @@ export async function renderMusicSpec(
       if (measureIndex > 0) {
         // A BarNote is what draws a barline INSIDE a stave; setBegBarType /
         // setEndBarType only reach the stave's two outer edges.
-        tickables.push(new BarNote(barlineBetween(measures[measureIndex - 1], measure)));
+        const interiorBar = new BarNote(barlineBetween(measures[measureIndex - 1], measure));
+        tickables.push(interiorBar);
+        interiorBarPlans.push({ staffIndex, systemIndex, note: interiorBar });
       }
       // Mid-stave meter change: engrave the new signature as a 0-tick
       // TimeSigNote before this measure's notes, exactly where a printed score
@@ -5499,6 +6088,21 @@ export async function renderMusicSpec(
           byMeasure.push([]);
           multiRests.push({ ghost: spacer, count: restCount });
         }
+        return;
+      }
+      // An EMPTY bar (a crossover: the other hand plays this bar) has no
+      // tickables, so this staff would run a whole bar ahead of the others
+      // from here on.  A silent spacer of the bar's length keeps the barlines
+      // of a grand staff lined up; it draws nothing.
+      if (measureNotes.length === 0) {
+        const spacer = new GhostNote({ duration: 'w' });
+        const mm = /^(\d+)\/(\d+)$/.exec(String(effectiveMeterByMeasure[globalIdx] ?? meter));
+        if (mm && Number(mm[1]) > 0 && Number(mm[2]) > 0 && typeof spacer.setIntrinsicTicks === 'function') {
+          const res = (Vex as any).Tables?.RESOLUTION ?? 16384;
+          spacer.setIntrinsicTicks((res * Number(mm[1])) / Number(mm[2]));
+        }
+        tickables.push(spacer);
+        byMeasure.push([]);
         return;
       }
       // Same precedence as the stave's own addKeySignature below, so the
@@ -5771,6 +6375,30 @@ export async function renderMusicSpec(
     };
     easyNotes.forEach((note: any, i: number) => applyNoteModifiers(note, specNotes[i]));
 
+    // A lone whole rest is the whole-bar rest in ANY meter, but VexFlow counts
+    // it as four quarter-note beats.  In 3/4 (or 2/4, 6/8 ...) that overfills
+    // the bar, so every later bar on this staff starts a beat late relative to
+    // the staves that hold real notes -- the barlines of a grand staff stop
+    // lining up.  Keep the whole-rest glyph but give it the tick length of the
+    // bar it fills.  Only a lone rest in a bar shorter than a whole note is
+    // touched, so 4/4 and every multi-note bar are unchanged.
+    byMeasure.forEach((renderedMeasure: any[], li: number) => {
+      const bar = measures[li];
+      const spec1 = bar?.notes?.length === 1 ? bar.notes[0] : undefined;
+      if (!spec1 || renderedMeasure.length !== 1) return;
+      const isRest = Boolean(spec1.rest) || !spec1.keys?.length;
+      if (!isRest || sanitizeDuration(spec1.duration).base !== 'w') return;
+      const parts = /^(\d+)\/(\d+)$/.exec(String(effectiveMeterByMeasure[globalMeasureIndices[li]] ?? meter));
+      if (!parts) return;
+      const num = Number(parts[1]);
+      const den = Number(parts[2]);
+      if (!(num > 0 && den > 0) || num >= den) return;
+      const resolution = (Vex as any).Tables?.RESOLUTION ?? 16384;
+      if (typeof renderedMeasure[0].setIntrinsicTicks === 'function') {
+        renderedMeasure[0].setIntrinsicTicks((resolution * num) / den);
+      }
+    });
+
     // Force the PRIMARY voice's stems when voices[0] asked for a direction.
     // voices[0] is normalised through measuresOf into the standard staff path
     // (so width/beams/spans share one code path), and that path lets VexFlow
@@ -5993,6 +6621,17 @@ export async function renderMusicSpec(
       stave, notes: easyNotes, staffSpec, specNotes, tickables, byMeasure,
       systemIndex, noteOffset, multiRests, beamGroupsByMeasure,
     });
+    // Rehearsal marks ride the TOP staff (a mark applies to the whole system).
+    if (staffIndex === 0) {
+      globalMeasureIndices.forEach((gi, li) => {
+        const text = allMeasures[gi]?.section;
+        if (text == null || String(text).trim() === '') return;
+        rehearsalPlans.push({
+          stave, note: byMeasure[li]?.[0] ?? null, text: String(text).trim(),
+          firstOfSystem: li === 0,
+        });
+      });
+    }
     for (const note of easyNotes) {
       staffNotes.push(note);
       staffNoteSystem.push(systemIndex);
@@ -6095,7 +6734,8 @@ export async function renderMusicSpec(
       // shares the immovable band above the staff, so lift the tempo onto its
       // own higher row when one is present.  tempoAboveMark already accounts
       // for both fields.
-      const tempoShiftY = tempoAboveMark ? TEMPO_SHIFT_Y_WITH_MARK : TEMPO_SHIFT_Y;
+      const tempoShiftY = (tempoAboveMark ? TEMPO_SHIFT_Y_WITH_MARK : TEMPO_SHIFT_Y)
+        - tempoBracketLift;
       if (tempoSpec.name && hasBpm) {
         // Split the mark: hand-draw the NAME and let VexFlow draw ONLY the
         // parenthesised metronome to its right.  VexFlow's StaveTempo.draw
@@ -6474,9 +7114,59 @@ export async function renderMusicSpec(
     // INSIDE options.  Passing them at the top level (which is the shape the
     // TextBracket *constructor* documents) throws
     // "Cannot read properties of undefined (reading 'superscript')".
-    for (const bracket of staffSpec.brackets ?? []) {
+    const staffBrackets: MusicBracket[] = staffSpec.brackets ?? [];
+    // Note range of a bracket on this staff, clamped (spanEnds reports a bad
+    // range; this only has to stay in bounds).
+    const bracketSpanNotes = (b: MusicBracket): any[] => {
+      const lo = Math.max(0, Math.min(b.from, b.to));
+      const hi = Math.min(notes.length - 1, Math.max(b.from, b.to));
+      return hi >= lo ? notes.slice(lo, hi + 1) : [];
+    };
+    // Lowest line each bracket may take.  An above-staff bracket shares its
+    // band with the tempo mark on the top staff, so it starts a line higher
+    // there; VexFlow's own default is 1.  Either is raised to clear the
+    // tallest note in the span (8va over a ledger-line D6, an entry bracket
+    // over B5s), which neither TextBracket nor the overlay knew about.
+    const minBracketLines = staffBrackets.map((b) => {
+      // Below the staff: clear the lowest notehead / down-stem in the span
+      // (an 8vb over ledger-line bass notes), the mirror of the above case.
+      if (b.position === 'below') return Math.max(1, spanClearanceLineBelow(bracketSpanNotes(b)));
+      const sharesBandWithTempo =
+        staffIndex === 0 && Boolean(spec.tempo);
+      const base = sharesBandWithTempo ? BRACKET_LINE_WITH_TEMPO : 1;
+      return Math.max(base, spanClearanceLine(bracketSpanNotes(b)));
+    });
+    const bracketLines = placeBracketLines(staffBrackets, minBracketLines);
+    for (let bracketIdx = 0; bracketIdx < staffBrackets.length; bracketIdx++) {
+      const bracket = staffBrackets[bracketIdx];
       const ends = spanEnds(staffView, bracket, 'bracket');
       if (!ends) continue;
+      const line = bracketLines[bracketIdx];
+      // A rehearsal mark on a bar this bracket covers is lifted above it.
+      if (staffIndex === 0 && bracket.position !== 'below') {
+        const covered = new Set(bracketSpanNotes(bracket));
+        for (const plan of rehearsalPlans) {
+          if (plan.note && covered.has(plan.note)) {
+            plan.aboveLine = Math.max(plan.aboveLine ?? 0, line);
+          }
+        }
+      }
+      const oneNoteOctave = Boolean(bracket.text)
+        && Math.min(bracket.from, bracket.to) === Math.max(bracket.from, bracket.to);
+      if (bracket.hooks === 'both' || bracket.hooks === 'start' || (oneNoteOctave && bracket.hooks !== 'none')) {
+        // No VexFlow primitive hooks both ends; drawn post-format as an
+        // overlay where the endpoint notes' resolved x exist.
+        // Anchor to the stave of the system the bracket's first note is on
+        // (the same lookup the pedal planner below uses).
+        const sys = noteSystem[Math.min(bracket.from, bracket.to)];
+        const entry = built.find((b) => b.staffSpec === staffSpec && b.systemIndex === sys);
+        if (entry) {
+          phraseBracketPlans.push({
+            stave: entry.stave, bracket, fromNote: ends.from, toNote: ends.to, line,
+          });
+        }
+        continue;
+      }
       const rendered = factory.TextBracket({
         from: ends.from, to: ends.to, text: String(bracket.text ?? '8'),
         options: {
@@ -6486,14 +7176,11 @@ export async function renderMusicSpec(
       });
       // Dashed is the engraving default, so only an explicit false changes it.
       if (bracket.dashed === false) rendered.setDashed(false);
-      // An above-staff bracket shares its band with the tempo mark, so raise
-      // it by a line when the two coincide.  Only the top staff carries the
-      // tempo, so a lower staff's brackets keep their natural position.
-      const sharesBandWithTempo =
-        staffIndex === 0 && Boolean(spec.tempo) && bracket.position !== 'below';
-      const line = bracket.line
-        ?? (sharesBandWithTempo ? BRACKET_LINE_WITH_TEMPO : undefined);
-      if (line != null && typeof rendered.setLine === 'function') {
+      if (bracket.hooks === 'none' && rendered.renderOptions) {
+        rendered.renderOptions.showBracket = false;
+      }
+      // 1 is TextBracket's own default, so only a raised line is set.
+      if (line !== 1 && typeof rendered.setLine === 'function') {
         rendered.setLine(line);
       }
     }
@@ -6855,6 +7542,51 @@ export async function renderMusicSpec(
     }
   }
 
+  // Cross-staff hand-crossing lines: a straight line from a note on one staff
+  // to a note on another ("l.h." / "r.h." in keyboard and harp scores).  Same
+  // [staffIndex, noteIndex] addressing and same one-system rule as
+  // crossStaffSlurs.  factory.StaveLine reads each endpoint note's own
+  // resolved x/y (verified: the path runs from the upper notehead to the
+  // lower one across the inter-staff gap), so no cross-staff geometry is
+  // computed here.
+  for (const csl of spec.crossStaffLines ?? []) {
+    if (staffSpecs.length < 2) {
+      problems.push('crossStaffLines is only meaningful with two or more staves; skipped');
+      continue;
+    }
+    const resolveLineEnd = (pair: any): { note: any; system: number } | null => {
+      const si = Array.isArray(pair) ? pair[0] : undefined;
+      const ni = Array.isArray(pair) ? pair[1] : undefined;
+      const staff = si != null ? perStaff[si] : undefined;
+      if (!staff || !Number.isInteger(ni) || (ni as number) < 0
+          || (ni as number) >= staff.notes.length) {
+        problems.push(
+          `crossStaffLines endpoint [${si}, ${ni}] is out of range and the line was skipped`,
+        );
+        return null;
+      }
+      return { note: staff.notes[ni as number], system: staff.noteSystem[ni as number] };
+    };
+    const from = resolveLineEnd(csl.from);
+    const to = resolveLineEnd(csl.to);
+    if (!from || !to) continue;
+    if (from.system !== to.system) {
+      problems.push('crossStaffLines span crosses a system break and was skipped');
+      continue;
+    }
+    // StaveLine's own text lands in the upper staff's top band, away from
+    // the note it labels, so the line is drawn bare and the label is an
+    // overlay beside the lower endpoint (drawCrossStaffLineLabels).
+    const line = factory.StaveLine({
+      from: from.note, to: to.note, first_indices: [0], last_indices: [0],
+      options: { text: '' },
+    });
+    if (csl.dashed && line?.renderOptions) line.renderOptions.lineDash = [4, 4];
+    if (csl.text) {
+      crossStaffLabelPlans.push({ fromNote: from.note, toNote: to.note, text: String(csl.text) });
+    }
+  }
+
   // Restore each tuplet's requested placement.  Beam.generateBeams (called
   // above while constructing the auto-beams) ran its trailing pass over every
   // beamed tuplet and overwrote `location` with `stemDown ? -1 : 1`, discarding
@@ -7005,6 +7737,36 @@ export async function renderMusicSpec(
     // drawMeasureNumbers.  Empty for scores without `measureNumbers`, so this
     // no-ops and the layout is unchanged for them.
     drawMeasureNumbers(d3, svg, measureNumberPlans, isDarkMode);
+    // Mid-score rehearsal marks (per-measure `section`), boxed above the top
+    // staff at their bar.  Empty without any, so this no-ops.
+    drawRehearsalMarks(d3, svg, rehearsalPlans, Boolean(spec.measureNumbers), isDarkMode);
+    // Two-hook phrase / entry brackets (`hooks: "both"`), which VexFlow's
+    // end-hook-only TextBracket cannot draw.  Empty without any, so no-ops.
+    for (const plan of phraseBracketPlans) {
+      drawPhraseBracket(
+        d3, svg, plan.stave, plan.bracket, plan.fromNote, plan.toNote, plan.line, isDarkMode,
+      );
+    }
+    // `crossStaffLines` labels beside the lower endpoint.  Empty without any,
+    // so this no-ops.
+    drawCrossStaffLineLabels(d3, svg, crossStaffLabelPlans, isDarkMode);
+    // Join interior barlines across the staves of a grand staff.
+    if (staffSpecs.length > 1) {
+      const joins: Array<{ upper: any; lower: any; x: number }> = [];
+      for (let s = 0; s < vexSystems.length; s += 1) {
+        for (let k = 0; k < staffSpecs.length - 1; k += 1) {
+          const a = interiorBarPlans.filter((p) => p.systemIndex === s && p.staffIndex === k);
+          const b = interiorBarPlans.filter((p) => p.systemIndex === s && p.staffIndex === k + 1);
+          const upper = built.find((e) => e.staffSpec === staffSpecs[k] && e.systemIndex === s)?.stave;
+          const lower = built.find((e) => e.staffSpec === staffSpecs[k + 1] && e.systemIndex === s)?.stave;
+          a.forEach((p, i) => {
+            const x = p.note?.getAbsoluteX?.();
+            if (upper && lower && b[i] && typeof x === 'number') joins.push({ upper, lower, x });
+          });
+        }
+      }
+      drawGrandStaffBarlines(svg, joins, isDarkMode);
+    }
     // Overflow navigation marks: the 2nd+ mark on a side, which VexFlow's
     // immovable Repetition glyph would overprint (see drawNavOverflowMarks).
     // Anchored to the FIRST system's top staff, the same staff the primary
@@ -7096,7 +7858,12 @@ export async function renderMusicSpec(
       // Dynamics (p/mf/f...) share the same overlay pass and, for the same
       // reasons, are drawn below the staff here rather than via TextDynamics
       // (whose `line` option VexFlow 5.0 ignores -- see drawDynamicsLayer).
-      drawDynamicsLayer(d3, svg, stave, notes, specNotes, isDarkMode);
+      const dynEntry = built.find((b) => b.stave === stave);
+      const dynLower = dynEntry
+        ? built.find((b) => b.systemIndex === dynEntry.systemIndex
+            && staffSpecs.indexOf(b.staffSpec) === staffSpecs.indexOf(dynEntry.staffSpec) + 1)?.stave
+        : undefined;
+      drawDynamicsLayer(d3, svg, stave, notes, specNotes, isDarkMode, dynLower);
       // Breath / caesura marks above the staff, just after each marked note.
       // drawBreathMarks (and drawCueNotes below) were implemented and their
       // canvas headroom reserved (needsRoomAbove counts `breath`, the cue
