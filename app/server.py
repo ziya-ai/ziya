@@ -2180,6 +2180,12 @@ async def stream_chunks(body):
                         # chatApi marks the response incomplete and disables
                         # Apply for any diff left by a failed continuation.
                         yield f"data: {json.dumps(chunk)}\n\n"
+                    elif chunk.get('type') == 'tool_group_end':
+                        # Closes a parallel tool group's container in the chat
+                        # (app/tool_batch.py -> chatApi appendGroupEnd).  Without
+                        # it the group is never closed and the renderer draws the
+                        # rest of the message inside it.
+                        yield f"data: {json.dumps(chunk)}\n\n"
                     elif chunk.get('type') in ('consent_opened', 'consent_answered'):
                         # Consent runtime: the frontend renders a ConsentPanel
                         # at the tool block and answers via /api/consent.
@@ -2345,7 +2351,7 @@ async def stream_chunks(body):
                                     yield f"data: {json.dumps(_cap)}\n\n"
                             elif retry_chunk.get('type') == 'throttling_error':
                                 yield f"data: {json.dumps(retry_chunk)}\n\n"
-                            elif retry_chunk.get('type') in ('continuation_rewind', 'continuation_failed'):
+                            elif retry_chunk.get('type') in ('continuation_rewind', 'continuation_failed', 'tool_group_end'):
                                 yield f"data: {json.dumps(retry_chunk)}\n\n"
                             elif retry_chunk.get('type') in ('consent_opened', 'consent_answered'):
                                 yield f"data: {json.dumps(retry_chunk)}\n\n"

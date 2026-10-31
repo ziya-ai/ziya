@@ -219,6 +219,10 @@ class MCPTool:
     name: str
     description: str
     inputSchema: Dict[str, Any]
+    # MCP tool annotations (readOnlyHint, destructiveHint, ...) as the server
+    # declared them.  Ordering hints only: the per-turn batch runner uses
+    # readOnlyHint to overlap calls; nothing security-relevant reads them.
+    annotations: Optional[Dict[str, Any]] = None
     
 @dataclass
 class MCPPrompt:
@@ -284,7 +288,13 @@ class MCPClient:
         # Rate limiting for tool calls
         self._tool_call_timestamps: Dict[str, float] = {}
         self._tool_rate_limits: Dict[str, float] = {}
-        self._default_rate_limit: float = 2.0  # Default 2 seconds between consecutive calls
+        # Default 2 s between consecutive calls of one tool, as a courtesy to
+        # external servers.  Our own builtin servers (the shell) pay nothing:
+        # the limit was a flat 2 s tax on every second shell call of a batch,
+        # and the shell server already handles concurrent requests.
+        self._default_rate_limit: float = float(
+            server_config.get("rate_limit_seconds",
+                              0.0 if server_config.get("builtin") else 2.0))
         
         # Single-reader transport: one background task (_reader_loop) owns
         # process.stdout and demultiplexes responses to per-request futures
