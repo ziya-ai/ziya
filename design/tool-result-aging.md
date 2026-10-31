@@ -58,6 +58,16 @@ redundant) and rare (0.4% of history), so the cost is an occasional one-turn
 miss rather than a per-turn tax.  Acceptable; it removes stale file copies,
 which is an efficacy win independent of size.
 
+### Tier 2 — tributary fold (see `design/tributary-fold.md`)
+
+Replays a multi-call "quest" turn as its final prose only, folding the
+calls, results AND interim narration behind a content-addressed handle,
+once two further human turns have passed.  Unlike Tier 1 it reaches
+assistant prose, needs no epochs (one byte change per message, inside the
+miss region the new turn already pays for), and is keyed on turn shape
+rather than age.  It is the tier to build next; Tier 1 below is kept as
+written but its `recall_tool_result` tool is subsumed by `recall_tributary`.
+
 ### Tier 1 — aging (this design)
 
 Old tool bodies are replaced on replay by **head + tail + a recall handle**.
