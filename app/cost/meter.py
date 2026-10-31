@@ -59,8 +59,13 @@ def _current_user() -> Optional[str]:
 
 
 def _attribution(is_delegate: bool) -> Dict[str, Any]:
+    # ``conversation_id`` is the conversation a Task Card run was launched
+    # from.  The executor streams under ``conversation_id=run_id`` (a
+    # stand-in the context tools need), so without this every run was
+    # filed under an id no chat has.  None means "use the stream's id".
     attr: Dict[str, Any] = {"source": "delegate" if is_delegate else "chat",
-                            "run_id": None, "block_id": None}
+                            "run_id": None, "block_id": None,
+                            "conversation_id": None}
     try:
         from app.context import get_usage_attribution
         ctx = get_usage_attribution()
@@ -113,7 +118,8 @@ def open_iteration(*, provider: str, model_id: str, region: Optional[str],
             dims={"input": max(0, int(estimated_input_tokens or 0))},
             user=_current_user(),
             project_id=_resolve_project_id(project_root), project_root=project_root,
-            conversation_id=conversation_id, run_id=attr["run_id"], block_id=attr["block_id"],
+            conversation_id=attr.get("conversation_id") or conversation_id,
+            run_id=attr["run_id"], block_id=attr["block_id"],
             source=attr["source"], iteration=iteration,
         )
         return get_ledger().append(rec)
