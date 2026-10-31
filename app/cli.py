@@ -1627,7 +1627,7 @@ class CLI:
             response = await self._run_with_tools_from_messages(messages, stream)
             # Compute has_diff BEFORE the f-string: a backslash inside an
             # f-string expression part is a SyntaxError on Python 3.11 (allowed
-            # only in 3.12+), and the toolbox venv is 3.11.
+            # only in 3.12+), and Ziya still supports 3.11.
             _diff_re = re.search(r'^`{3,}diff\s*$', response, re.MULTILINE)
             _trace(f"model returned, len={len(response)}, has_diff={bool(_diff_re)}")
             
@@ -2235,6 +2235,24 @@ class CLI:
                         tool_name = chunk.get('tool_name', 'unknown') if isinstance(chunk, dict) else 'unknown'
                         print(f"\n\033[33m⚠ Tool result from {tool_name} (display error)\033[0m", flush=True)
             
+                elif chunk_type == 'consent_opened':
+                    # A tool is parked on the consent ledger waiting for a human
+                    # (a write outside the write policy, an ``ask``-mode tool such
+                    # as git commit).  The browser answers through ConsentPanel;
+                    # nothing in a terminal did, so the turn sat on "Executing
+                    # file write..." until ^C.  Ask here and record the answer
+                    # in the ledger the gate is polling.
+                    if md_renderer:
+                        md_renderer.flush()
+                    from app.utils import cli_consent
+                    cli_consent.answer_from_terminal(chunk)
+
+                elif chunk_type == 'consent_answered':
+                    decision = chunk.get('decision') or 'answered'
+                    rule = chunk.get('rule') or ''
+                    print(f"\033[90m  ⏵ {decision}"
+                          + (f" — {rule}" if rule else '') + "\033[0m", flush=True)
+
                 elif chunk_type == 'stream_end':
                     break
             
@@ -4472,6 +4490,42 @@ def _task_escalation_badge(signed) -> str:
     return "  \033[33m[🔒 unsigned]\033[0m"
 
 
+def cmd_schedule(args):
+    """Handle: ziya schedule list|register|unregister|enable|disable|fire|status"""
+    from app import cli_schedule
+    setup_env(args)
+    root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+    sub = getattr(args, 'schedule_cmd', None) or 'list'
+    # Plugins first: the encryption provider they register derives the KEK
+    # that decrypts GUI-written project / card files (see cmd_task).
+    from app.plugins import initialize as initialize_plugins
+    initialize_plugins()
+    if sub == 'status':
+        sys.exit(cli_schedule.cmd_status())
+    if sub == 'list':
+        sys.exit(cli_schedule.cmd_list(root))
+    if sub == 'fire':
+        # The only subcommand that runs a model: full init, as --card does.
+        _init_and_authenticate(args, skip_setup_env=True)
+        sys.exit(asyncio.run(_run_with_mcp(_fire_card(root, args.card))))
+    sys.exit(cli_schedule.cmd_mutate(root, sub, args.card, args))
+
+
+async def _fire_card(root: str, card_ref: str) -> int:
+    """Run cli_schedule.cmd_fire inside the MCP-wrapped loop.  cmd_fire
+    drives its own asyncio.run, so unwrap it here: resolve, fire, await."""
+    from app import cli_schedule
+    from app.agents import live_runs
+    from app.agents.task_scheduler import fire_now
+    project, card = cli_schedule._project_and_card(root, card_ref)
+    if card is None:
+        return 1
+    run_id = await fire_now(project.id, card.id)
+    task = live_runs.get(run_id)
+    if task is not None:
+        await task
+    return cli_schedule.report_fire(project.id, card.name, run_id)
+
 def cmd_task(args):
     """Handle: ziya task <name> [--list] [--show TASK]"""
     from app.task_runner import (
@@ -4917,6 +4971,22 @@ def cmd_shadow(args):
     argv = list(args.cmd)
     if argv and argv[0] == '--':
         argv = argv[1:]
+    # Resolve the command before a session exists: a failed exec in the child
+    # used to announce a session, print "cannot exec", then tear it down.
+    if argv:
+        import shutil
+        if shutil.which(argv[0]) is None:
+            parser = getattr(args, '_shadow_parser', None)
+            if argv == ['help'] and parser is not None:
+                parser.print_help()
+                return
+            hint = ''
+            if parser is not None and f'--{argv[0]}' in parser._option_string_actions:
+                hint = f" (did you mean the option --{argv[0]}?)"
+            print(f"\033[31mziya shadow: command not found: {argv[0]}{hint}\033[0m\n"
+                  "usage: ziya shadow [options] [--] [command ...]   "
+                  "(ziya shadow --help for options)", file=sys.stderr)
+            sys.exit(127)
     from app.shadow.redaction import build_user_patterns
     try:
         redact_patterns = build_user_patterns(args.redact, args.redact_regex)
@@ -5005,6 +5075,31 @@ Examples:
                              help='Show the prompt for a task')
     task_parser.set_defaults(func=cmd_task)
 
+    # schedule: the registry that puts task cards on the in-process
+    # scheduler (app/agents/schedule_registry.py).  Given the common parent
+    # only because ``fire`` runs a model; the other subcommands ignore it.
+    schedule_parser = subparsers.add_parser(
+        'schedule', parents=[common_parent],
+        help='Register task cards to run on a timer; list, enable, disable, fire now')
+    sched_sub = schedule_parser.add_subparsers(dest='schedule_cmd')
+    sched_sub.add_parser('list', help='Registered cards, unregistered requests, lock holder')
+    sched_sub.add_parser('status', help='Which process holds the scheduler lock')
+    sr = sched_sub.add_parser('register', help='Register a card (cadence from its Schedule block unless given)')
+    sr.add_argument('card', help='Card id or name')
+    cad = sr.add_mutually_exclusive_group()
+    cad.add_argument('--daily', metavar='HH:MM', help='Daily at this local time')
+    cad.add_argument('--every', nargs=2, metavar=('N', 'UNIT'),
+                     help='Every N minutes|hours|days')
+    cad.add_argument('--cron', metavar='EXPR', help='5-field cron expression')
+    cad.add_argument('--at', metavar='ISO', help='Once, at an ISO-8601 local time')
+    for name, helptext in (('unregister', 'Stop firing; the fire count resets'),
+                           ('enable', 'Resume firing a disabled registration'),
+                           ('disable', 'Pause without unregistering'),
+                           ('fire', 'Fire now through the scheduler path (counts as a fire)')):
+        p = sched_sub.add_parser(name, help=helptext)
+        p.add_argument('card', help='Card id or name')
+    schedule_parser.set_defaults(func=cmd_schedule)
+
     # shadow: PTY wrapper that journals a terminal session for chat to read
     # (Docs/design/shadow-sessions.md).  Deliberately NOT given the common
     # parent: it never talks to a model, so model/profile flags do not apply.
@@ -5031,7 +5126,7 @@ Examples:
                                help='Redact every match of RX from the journal (repeatable)')
     shadow_parser.add_argument('--list', '-l', action='store_true', dest='list_sessions',
                                help='List live shadow sessions and exit')
-    shadow_parser.set_defaults(func=cmd_shadow)
+    shadow_parser.set_defaults(func=cmd_shadow, _shadow_parser=shadow_parser)
 
     # ziya jobs: inspect, tail, kill and garbage-collect managed jobs
     # (design/job-runner.md, step 10).  Reads the job directories directly,
@@ -5106,6 +5201,47 @@ Examples:
     
 
 
+def _reorder_argv(argv):
+    """Move everything written before the subcommand to after it.
+
+    Supports ``ziya --profile x chat`` as well as ``ziya chat --profile x``.
+    Everything is moved verbatim: the previous version kept only ``--`` flags
+    and a fixed set, so ``ziya -h shadow`` silently lost the ``-h`` and
+    started a shadow session instead of printing help.
+    """
+    from app.cli_commands import TOP_LEVEL_COMMANDS as commands
+    cmd_idx = next((i for i, a in enumerate(argv) if a in commands), None)
+    if cmd_idx is None or cmd_idx == 0:
+        return list(argv)
+    return [argv[cmd_idx]] + argv[cmd_idx + 1:] + argv[:cmd_idx]
+
+
+def _reject_unknown_args(parser, args, unknown):
+    """Report leftover arguments through the SUBCOMMAND's parser.
+
+    argparse hands a subparser's unknown options back to the root parser,
+    whose usage line lists the subcommands and none of their options -- so
+    ``ziya shadow --allow-remote`` said nothing about what ``shadow`` does
+    accept.  Exits 2 like ``parser.error``.
+    """
+    import difflib
+    sub = parser
+    sub_action = next((a for a in parser._actions
+                       if isinstance(a, argparse._SubParsersAction)), None)
+    if sub_action is not None and args.command in sub_action.choices:
+        sub = sub_action.choices[args.command]
+    msg = f"unrecognized arguments: {' '.join(unknown)}"
+    bad = next((u for u in unknown if u.startswith('-')), None)
+    if bad is not None:
+        options = [o for o in sub._option_string_actions if o.startswith('--')]
+        close = difflib.get_close_matches(bad, options, n=1, cutoff=0.6)
+        if close:
+            msg += f". Did you mean {close[0]}?"
+    sys.stdout.write("\033[23;0t")
+    sys.stdout.flush()
+    sub.error(msg)
+
+
 def main():
     """CLI entry point."""
     parser = create_parser()
@@ -5115,42 +5251,11 @@ def main():
     sys.stdout.write("\033]0;Ziya Chat\007")
     sys.stdout.flush()
     
-    # Pre-process argv to support flags both before and after subcommand
-    # e.g., "ziya --profile x chat" -> "ziya chat --profile x"
-    argv = sys.argv[1:]
-    from app.cli_commands import TOP_LEVEL_COMMANDS as commands
-    global_flags = {'--model', '-m', '--profile', '--region', '--root', '--no-stream', '--debug'}
-    
-    # Find command position
-    cmd_idx = None
-    for i, arg in enumerate(argv):
-        if arg in commands:
-            cmd_idx = i
-            break
-    
-    # If command found and there are flags before it, move them after
-    if cmd_idx is not None and cmd_idx > 0:
-        pre_cmd = argv[:cmd_idx]
-        cmd = argv[cmd_idx]
-        post_cmd = argv[cmd_idx + 1:]
-        
-        # Separate flags from non-flags in pre_cmd section
-        flags_to_move = []
-        i = 0
-        while i < len(pre_cmd):
-            arg = pre_cmd[i]
-            if arg in global_flags or arg.startswith('--'):
-                flags_to_move.append(arg)
-                # Check if next arg is a value (not a flag)
-                if i + 1 < len(pre_cmd) and not pre_cmd[i + 1].startswith('-'):
-                    flags_to_move.append(pre_cmd[i + 1])
-                    i += 1
-            i += 1
-        
-        # Reconstruct argv with flags after command
-        argv = [cmd] + post_cmd + flags_to_move
-    
-    args = parser.parse_args(argv)
+    # "ziya --profile x chat" -> "ziya chat --profile x"
+    argv = _reorder_argv(sys.argv[1:])
+    args, unknown = parser.parse_known_args(argv)
+    if unknown:
+        _reject_unknown_args(parser, args, unknown)
     
     if args.command is None:
         # No command - show help

@@ -2,6 +2,15 @@
 Task-card scheduler — fires scheduled cards on interval / at /
 daily_at / cron.  In-process, asyncio-driven.
 
+What is scheduled
+-----------------
+Registrations (schedule_registry.py), not cards.  A card's Schedule block
+is the author's request for a cadence; the user registers the card to put
+it on the scheduler and owns the cadence from then on.  Each tick resolves
+every enabled registration against its card: the registration supplies a
+synthetic Schedule block (cadence, concurrency, catch-up, max runs), the
+card supplies the body.
+
 Single-writer guarantee
 -----------------------
 If two Ziya servers are running against the same ~/.ziya home, only
@@ -146,20 +155,51 @@ def _find_schedule_block(root: Block) -> Optional[Block]:
     return None
 
 
+# Defaults for fields the author left unset.  These are the values the
+# Schedule block editor and the register dialog DISPLAY for an unset field
+# (ScheduleBlockEditor.tsx, scheduleCadence.normalizeCadence), so a card
+# saved without touching them fires on the cadence the author saw.  They
+# used to be minutes / 00:00 here, so "every 2 (hours shown)" fired every
+# two minutes.
+DEFAULT_INTERVAL_UNIT = "hours"
+DEFAULT_DAILY_AT = "09:00"
+
+
+def schedule_tz(block: Block):
+    """The tzinfo a schedule's wall-clock fields are read in: the block's
+    ``schedule_timezone`` (an IANA name) or None for the server's local
+    time.  An unknown name is reported and falls back to local, so a typo
+    shifts the fire rather than silencing it."""
+    name = (getattr(block, "schedule_timezone", None) or "").strip()
+    if not name:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception as e:  # noqa: BLE001 — ZoneInfoNotFoundError, bad key types
+        logger.warning(f"schedule_timezone {name!r} unknown ({e}); using local time")
+        return None
+
+
 def compute_next_fire(block: Block, after_ms: int) -> Optional[int]:
     """Return the next fire time (epoch ms) at or after `after_ms`,
-    or None if the schedule has no future fire (e.g. one-shot already past).
+    or None if the schedule has no future fire (e.g. one-shot already past,
+    or a cadence the scheduler cannot read -- see cadence_problem).
+
+    Wall-clock fields (``daily_at``, a naive ``at``, cron) are interpreted
+    in ``schedule_timezone`` when set, else local time.
     """
     mode = (block.schedule_mode or "interval").lower()
-    after = datetime.fromtimestamp(after_ms / 1000.0)
+    tz = schedule_tz(block)
+    after = datetime.fromtimestamp(after_ms / 1000.0, tz)
     if mode == "interval":
         n = max(1, int(block.schedule_interval_value or 1))
-        unit = (block.schedule_interval_unit or "minutes").lower()
+        unit = (block.schedule_interval_unit or DEFAULT_INTERVAL_UNIT).lower()
         delta = {
             "minutes": timedelta(minutes=n),
             "hours": timedelta(hours=n),
             "days": timedelta(days=n),
-        }.get(unit, timedelta(minutes=n))
+        }.get(unit, timedelta(hours=n))
         return int((after + delta).timestamp() * 1000)
     if mode == "at":
         if not block.schedule_at_iso:
@@ -169,13 +209,17 @@ def compute_next_fire(block: Block, after_ms: int) -> Optional[int]:
         except ValueError:
             logger.warning(f"schedule_at_iso unparseable: {block.schedule_at_iso!r}")
             return None
+        if dt.tzinfo is None and tz is not None:
+            dt = dt.replace(tzinfo=tz)
         ts = int(dt.timestamp() * 1000)
         return ts if ts > after_ms else None  # one-shot doesn't repeat
     if mode == "daily_at":
-        hhmm = block.schedule_daily_at or "00:00"
+        hhmm = block.schedule_daily_at or DEFAULT_DAILY_AT
         try:
             hh, mm = hhmm.split(":")
             hh, mm = int(hh), int(mm)
+            if not (0 <= hh < 24 and 0 <= mm < 60):
+                raise ValueError(hhmm)
         except ValueError:
             logger.warning(f"schedule_daily_at unparseable: {hhmm!r}")
             return None
@@ -202,6 +246,68 @@ def compute_next_fire(block: Block, after_ms: int) -> Optional[int]:
             logger.warning(f"cron expr {expr!r} unparseable: {e}")
             return None
     return None
+
+
+def cadence_problem(block: Block, now_ms: Optional[int] = None) -> Optional[str]:
+    """Why ``compute_next_fire`` would return None for this cadence, in
+    one sentence, or None when the cadence is readable.
+
+    Shared by the card validator (so a bad cadence is refused at save and
+    launch), the registry (so register / edit refuse it with a 422) and the
+    schedules list (so an already-registered bad cadence says what is
+    wrong instead of "next slot not computed yet" forever).  A one-shot
+    ``at`` whose time has passed is reported too: it is not an error on
+    save, but a registration for it will never fire.
+    """
+    mode = (block.schedule_mode or "interval").lower()
+    if mode == "interval":
+        n = block.schedule_interval_value
+        if n is not None and (not isinstance(n, int) or n < 1):
+            return f"interval must be a whole number of at least 1 (got {n!r})"
+        unit = block.schedule_interval_unit
+        if unit is not None and str(unit).lower() not in ("minutes", "hours", "days"):
+            return f"interval unit must be minutes, hours or days (got {unit!r})"
+        return None
+    if mode == "at":
+        iso = block.schedule_at_iso
+        if not iso:
+            return "no date and time given for a one-shot schedule"
+        try:
+            dt = datetime.fromisoformat(iso)
+        except ValueError:
+            return f"date/time {iso!r} is not ISO-8601"
+        tz = schedule_tz(block)
+        if dt.tzinfo is None and tz is not None:
+            dt = dt.replace(tzinfo=tz)
+        if now_ms is not None and int(dt.timestamp() * 1000) <= now_ms:
+            return f"one-shot time {iso} has already passed"
+        return None
+    if mode == "daily_at":
+        hhmm = block.schedule_daily_at or DEFAULT_DAILY_AT
+        try:
+            hh, mm = hhmm.split(":")
+            hh, mm = int(hh), int(mm)
+            if not (0 <= hh < 24 and 0 <= mm < 60):
+                raise ValueError(hhmm)
+        except ValueError:
+            return f"daily time {hhmm!r} is not HH:MM (24-hour)"
+        return None
+    if mode == "cron":
+        expr = (block.schedule_cron or "").strip()
+        if not expr:
+            return "cron expression is empty"
+        if len(expr.split()) != 5:
+            return f"cron expression {expr!r} needs 5 fields (min hour day month weekday)"
+        try:
+            from croniter import croniter  # type: ignore
+        except ImportError:
+            return "cron schedules need the croniter package, which is not installed"
+        try:
+            croniter(expr, datetime.now())
+        except (ValueError, KeyError) as e:
+            return f"cron expression {expr!r} is invalid: {e}"
+        return None
+    return f"unknown schedule mode {mode!r}"
 
 
 @dataclass
@@ -285,11 +391,20 @@ def _resolve_body_root(schedule_block: Block) -> Block:
 
 
 def _enumerate_scheduled_cards() -> List[_ScheduledCard]:
-    """Walk every project's task_cards and collect cards with a
-    schedule block.  Cheap enough to do on every tick — projects and
-    cards are bounded; storage is local JSON."""
+    """Walk every project's schedule REGISTRATIONS (schedule_registry.py)
+    and resolve each enabled one against its card.  Cheap enough to do on
+    every tick — projects and registrations are bounded; storage is local
+    JSON.
+
+    A card's own Schedule block is only the author's request; it fires
+    nothing until the user registers the card.  The registration carries
+    the cadence (possibly edited since), the card carries the body.  The
+    card is read with ``get`` so a conversation-only (draft) card can be
+    registered like any other.
+    """
     from ..storage.projects import ProjectStorage
     from ..storage.task_cards import TaskCardStorage
+    from . import schedule_registry as registry
     out: List[_ScheduledCard] = []
     try:
         projects = ProjectStorage(get_ziya_home()).list()
@@ -298,32 +413,44 @@ def _enumerate_scheduled_cards() -> List[_ScheduledCard]:
         return out
     for proj in projects:
         try:
-            cards = TaskCardStorage(get_project_dir(proj.id)).list()
+            card_storage = TaskCardStorage(get_project_dir(proj.id))
+            regs = registry.ensure_migrated(proj.id, card_storage)
         except Exception as e:
-            logger.debug(f"scheduler: cards enum failed for {proj.id}: {e}")
+            logger.debug(f"scheduler: registry read failed for {proj.id}: {e}")
             continue
-        for card in cards:
-            sched = _find_schedule_block(card.root)
-            if sched is None:
+        for card_id, reg in regs.items():
+            if not reg.enabled:
                 continue
-            if not sched.schedule_enabled:
+            try:
+                card = card_storage.get(card_id)
+            except Exception as e:  # noqa: BLE001 — one corrupt card must not stop the tick
+                logger.warning(f"scheduler: card {card_id[:8]} unreadable: {e}")
                 continue
+            if card is None:
+                logger.debug(f"scheduler: registration for missing card {card_id[:8]} skipped")
+                continue
+            source = registry.find_source_block(card)
             out.append(_ScheduledCard(
                 project_id=proj.id, card_id=card.id, card_name=card.name,
-                block=sched, body_root=_resolve_body_root(sched),
+                block=reg.as_block(source),
+                body_root=registry.body_root_for(card, source),
             ))
     return out
 
 
-async def _fire_one(target: _ScheduledCard) -> None:
-    """Launch a TaskRun for one schedule fire and update state."""
+async def _fire_one(target: _ScheduledCard) -> str:
+    """Launch a TaskRun for one schedule fire and update state.  Returns
+    the new run's id.
+
+    The run itself is driven by app/agents/run_driver.py, the same code
+    the interactive launch endpoint uses, so a scheduled run takes the
+    executor lock (Cancel works; a sibling server's startup reconcile
+    leaves it alone), emits run_started / run_completed, is held rather
+    than failed on an infrastructure fault, and has its jobs cleaned up.
+    """
     from ..models.task_run import TaskRunCreate, TaskRunBlockState
     from ..storage.task_runs import TaskRunStorage
     from ..storage.task_cards import TaskCardStorage
-    from .block_executor import (
-        execute_block, ExecutionContext, BlockExecutionCancelled,
-    )
-    from .task_executor import TaskExecutorError
 
     project_dir = get_project_dir(target.project_id)
     run_storage = TaskRunStorage(project_dir)
@@ -412,43 +539,69 @@ async def _fire_one(target: _ScheduledCard) -> None:
         f"(project={target.project_id}, run={run.id[:8]})"
     )
 
-    # Background-run the body, mirroring the launch endpoint's pattern.
-    async def _go() -> None:
-        try:
-            run_storage.update_status(run.id, "running")
-            from ..storage.projects import ProjectStorage
-            proj = ProjectStorage(get_ziya_home()).get(target.project_id)
-            deck_scope = getattr(proj.settings, "taskScope", None) if proj else None
-            ctx = ExecutionContext(
-                run_id=run.id, project_root=None,
-                project_id=target.project_id, storage=run_storage,
-                deck_scope=deck_scope, card_scope=card_scope,
-                # _resolve_body_root promotes the schedule's body to a
-                # synthetic new root (or unwraps to a single child), so
-                # the schedule block itself is never re-visited by
-                # execute_block.  Seed its own scope onto the stack so
-                # it still contributes to the effective-scope merge for
-                # everything the fire executes.
-                scope_stack=[target.block.scope],
-            )
-            artifact = await execute_block(target.body_root, ctx)
-            run_storage.set_artifact(run.id, artifact)
-            _final = "failed" if artifact.failed else "done"
-            run_storage.update_status(run.id, _final)
-            # Feed what the run established into probationary memory
-            # (app/agents/run_memory_harvest.py).  Fire-and-forget.
-            from .run_memory_harvest import schedule_harvest
-            schedule_harvest(run_id=run.id, card=card, artifact=artifact,
-                             status=_final,
-                             project_path=getattr(proj, "path", None))
-        except BlockExecutionCancelled:
-            run_storage.update_status(run.id, "cancelled")
-        except TaskExecutorError as e:
-            run_storage.update_status(run.id, "failed", error=str(e))
-        except Exception as e:
-            run_storage.update_status(run.id, "failed", error=str(e))
-            logger.error(f"Scheduled run crashed: {run.id[:8]}: {e}", exc_info=True)
-    asyncio.create_task(_go())
+    # Hand the run to the shared driver.  ``execute`` is resolved at call
+    # time from block_executor so a test that patches
+    # app.agents.block_executor.execute_block is honoured.
+    from .run_driver import RunLaunch, start_run
+
+    async def _execute(block: Block, ctx: Any) -> Any:
+        from . import block_executor
+        return await block_executor.execute_block(block, ctx)
+
+    start_run(RunLaunch(
+        run_id=run.id, root=target.body_root,
+        project_id=target.project_id, project_root=project_root,
+        card=card, run_storage=run_storage,
+        deck_scope=_deck,
+        project_path=getattr(_proj, "path", None),
+        # _resolve_body_root promotes the schedule's body to a synthetic
+        # root (or unwraps to a single child), so the schedule block itself
+        # is never re-visited by execute_block.  Seed its scope onto the
+        # stack so it still contributes to the effective-scope merge for
+        # everything the fire executes.
+        context_kwargs={"scope_stack": [target.block.scope],
+                        "root_card_label": target.card_name},
+        execute=_execute, label="Scheduled run",
+    ))
+    return run.id
+
+
+class NotFireable(ValueError):
+    """fire_now could not resolve a runnable target for the card."""
+
+
+async def fire_now(project_id: str, card_id: str) -> str:
+    """Fire a card through the scheduler path immediately, as if its slot
+    were due: headless run, card snapshot marked as the schedule's body,
+    fire count and run history bumped.  Returns the run id.
+
+    Distinct from the interactive launch (which runs a Schedule root as a
+    one-off passthrough and records nothing in schedule_state): this is
+    "run the nightly now and have it count".  Uses the registration's
+    cadence when the card is registered, else the card's Schedule block,
+    else the whole card -- so an unregistered card can be test-fired
+    before registering it.
+    """
+    from ..storage.task_cards import TaskCardStorage
+    from . import schedule_registry as registry
+    card = TaskCardStorage(get_project_dir(project_id)).get(card_id)
+    if card is None:
+        raise NotFireable(f"task card {card_id} not found")
+    source = registry.find_source_block(card)
+    reg = registry.get_registration(project_id, card_id)
+    if reg is not None:
+        block = reg.as_block(source)
+    elif source is not None:
+        block = source
+    else:
+        block = Block(block_type="schedule", id=f"adhoc:{card.id}",
+                      name="(fire now)", body=[], schedule_mode="daily_at",
+                      schedule_daily_at=DEFAULT_DAILY_AT)
+    target = _ScheduledCard(
+        project_id=project_id, card_id=card.id, card_name=card.name,
+        block=block, body_root=registry.body_root_for(card, source),
+    )
+    return await _fire_one(target)
 
 
 def _live_runs_for_card(project_id: str, card_id: str) -> List[Any]:
@@ -542,6 +695,19 @@ async def _tick_card(target: _ScheduledCard, now_ms: int) -> None:
         rec["next_fire_at"] = compute_next_fire(target.block, now_ms)
         rec.setdefault("fires_so_far", 0)
         rec.setdefault("run_ids", [])
+        # A cadence the scheduler cannot read projects no slot.  Record
+        # the reason so the schedules list and the block's status line
+        # say what is wrong; without it the card read "next slot not
+        # computed yet" for ever.  Logged once per distinct reason, not
+        # once per 15 s tick.
+        problem = (cadence_problem(target.block, now_ms)
+                   if rec["next_fire_at"] is None else None)
+        if problem:
+            if rec.get("cadence_error") != problem:
+                logger.warning(f"⏰ Scheduler: {target.card_name!r} will not fire: {problem}")
+            rec["cadence_error"] = problem
+        else:
+            rec.pop("cadence_error", None)
         state[target.card_id] = rec
         _write_state(target.project_id, state)
         return

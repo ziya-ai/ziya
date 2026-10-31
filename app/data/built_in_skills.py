@@ -595,10 +595,14 @@ condition is met.  Modes:
 - `"at"` — once at a specific ISO-8601 timestamp (`schedule_at_iso`)
 - `"daily_at"` — every day at `"HH:MM"` local time (`schedule_daily_at`)
 - `"cron"` — a 5-field cron expression (`schedule_cron`)
-A card with a Schedule root is launched once to *register* the trigger;
-each subsequent fire produces its own independent TaskRun.  "Run now" on
-such a card runs the body immediately as a one-off, in addition to (not
-instead of) its scheduled fires.
+A Schedule block is the author's REQUEST; nothing fires until the user
+REGISTERS the card (Tasks → Schedules in the header, the block's Register
+link, or `ziya schedule register <card>`).  Staging, saving or running the
+card does NOT register it.  When you stage a scheduled card, say so: "this
+will not fire until you register it".  "Run" on such a card runs the body
+once as a one-off; the registered schedule fires its own independent
+TaskRuns.  An unreadable cadence (a 4-field cron, 25:00, interval 0) is
+refused at save; a one-shot `at` in the past is accepted but will never fire.
 
 `schedule_concurrency` decides what a due slot does when a run of the
 card — a previous fire OR a hand-launched run — is still live:
