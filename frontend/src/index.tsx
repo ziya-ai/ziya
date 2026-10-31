@@ -15,6 +15,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import './index.css';
 import './styles/mermaid-theme.css';
 import './styles/mui-overrides.css';
+import './styles/theme-tokens.css';
 import { App } from "./components/App";
 import { RootErrorBoundary } from "./components/RootErrorBoundary";
 import { Debug } from "./components/Debug";
