@@ -192,6 +192,34 @@ def _validate_run_args(
     return clean
 
 
+_VENV_PYTHON_RE = re.compile(r"^python(\d+(\.\d+)*)?(\.exe)?$")
+
+
+def _is_service_venv_python(head: str, install_dir: Union[str, Path]) -> bool:
+    """True when *head* is the interpreter of ``<install_dir>/.venv``.
+
+    A venv's ``bin/python`` is a symlink to the interpreter it was created
+    from, so the realpath containment check refuses it. Accepted instead when
+    the DIRECTORY (resolved) is the venv's scripts dir, the venv is real
+    (``pyvenv.cfg``), and the symlink target is itself a Python interpreter --
+    which keeps a planted ``.venv/bin/python -> /bin/sh`` refused. A target of
+    the base interpreter is no more than the bare ``python`` already allowed.
+    """
+    try:
+        venv = Path(os.path.realpath(str(install_dir))) / ".venv"
+        if not (venv / "pyvenv.cfg").is_file():
+            return False
+        if not _VENV_PYTHON_RE.match(_basename(head)):
+            return False
+        scripts = venv / ("Scripts" if os.name == "nt" else "bin")
+        if os.path.realpath(os.path.dirname(head)) != os.path.realpath(str(scripts)):
+            return False
+        target = os.path.realpath(head)
+        return os.path.isfile(target) and bool(_VENV_PYTHON_RE.match(_basename(target)))
+    except OSError:
+        return False
+
+
 def validate_run_command(
     command: Union[str, Sequence[str], None],
     *,
@@ -254,6 +282,10 @@ def validate_run_command(
                 )
         except OSError:
             pass
+        # The service's own venv interpreter (a symlink out of install_dir).
+        if _is_service_venv_python(head, install_dir):
+            # Filtered as "python": -c stays refused.
+            return argv[:1] + _validate_run_args("python", tail, source=source)
 
     # A BuilderToolbox-managed tool: the shape used by the toolbox-vended
     # slice of the internal registry, where the run command is the bare name
