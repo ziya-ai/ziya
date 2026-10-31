@@ -32,7 +32,31 @@ from __future__ import annotations
 import datetime
 import os
 from types import SimpleNamespace
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
+
+
+def format_prompt_timestamp(when: Union[datetime.datetime, int, float]) -> str:
+    """Format a timestamp for a model-facing tag: local wall clock WITH its
+    UTC offset, e.g. ``2026-10-23 23:51:04-07:00``.
+
+    Every timestamp the model sees (CurrentDateTime, ConversationStartTime,
+    MessageTime, project-change notes) goes through here so they agree.
+    Before this, those tags were naive local times (``23:51:04``) while the
+    project-change note was labelled UTC (``06:51:04 UTC``) and tool output
+    (``date``, git, file mtimes) carried its own zones; the model had no way
+    to line them up and burned turns reconciling them.
+
+    ``when`` may be an aware or naive datetime (naive is taken as local
+    wall-clock time, which is what ``datetime.now()`` and
+    ``fromtimestamp()`` produce) or an epoch in MILLISECONDS.
+    """
+    if isinstance(when, (int, float)):
+        when = datetime.datetime.fromtimestamp(when / 1000)
+    if when.tzinfo is None:
+        # Naive == local wall clock; attach the local offset.  An aware
+        # value keeps the offset it was given (no conversion).
+        when = when.astimezone()
+    return when.isoformat(sep=" ", timespec="seconds")
 
 
 def _safe_get_effective_policy(project_root: Optional[str] = None) -> dict:
@@ -350,7 +374,7 @@ def build_session_context_section(
     if project_root:
         out.append(f'<CurrentProjectRoot value="{project_root}" />')
     out.append(f'<CurrentWorkingDirectory value="{cwd}" />')
-    out.append(f'<CurrentDateTime value="{now.strftime("%Y-%m-%d %H:%M:%S").strip()}" />')
+    out.append(f'<CurrentDateTime value="{format_prompt_timestamp(now)}" />')
     if conv_start_iso:
         out.append(f'<ConversationStartTime value="{conv_start_iso}" />')
     try:

@@ -62,7 +62,8 @@ def _build(chat_history, question="current question"):
 
 
 def _iso(ms):
-    return datetime.datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+    # Local wall clock with UTC offset, e.g. "2026-01-02 03:04:05-08:00".
+    return datetime.datetime.fromtimestamp(ms / 1000).astimezone().isoformat(sep=" ", timespec="seconds")
 
 
 def test_current_time_does_not_change_cache_controlled_system_prompt():

@@ -147,10 +147,9 @@ class PrecisionPromptSystem:
                     conv_start_iso = None
                     if conv_start_ts is not None:
                         try:
-                            conv_start_iso = datetime.datetime.fromtimestamp(
-                                conv_start_ts / 1000
-                            ).strftime("%Y-%m-%d %H:%M:%S")
-                        except (ValueError, OSError, TypeError):
+                            from app.utils.session_context_prompt import format_prompt_timestamp
+                            conv_start_iso = format_prompt_timestamp(conv_start_ts)
+                        except (ValueError, OSError, TypeError, OverflowError):
                             pass
 
                     # Unified session+permissions block.  Replaces the
@@ -362,8 +361,10 @@ class PrecisionPromptSystem:
                 messages[0]["content"] += (
                     "\n\n## Message Timing\n"
                     "Each prior message below is prefixed with a hidden "
-                    "<MessageTime value=\"YYYY-MM-DD HH:MM:SS\" /> tag recording when "
-                    "it was sent. Combine these with <CurrentDateTime> to reason about "
+                    "<MessageTime value=\"YYYY-MM-DD HH:MM:SS+HH:MM\" /> tag recording when "
+                    "it was sent, as local wall-clock time with its UTC offset; "
+                    "<CurrentDateTime> and <ConversationStartTime> use the same form. "
+                    "Combine these with <CurrentDateTime> to reason about "
                     "elapsed time between turns (how long a task took, how stale prior "
                     "context is, etc.). These tags are invisible to the user — never "
                     "repeat, quote, or echo them in your responses."
@@ -371,7 +372,7 @@ class PrecisionPromptSystem:
 
             # Add chat history before the question
             if chat_history:
-                import datetime as _dt
+                from app.utils.session_context_prompt import format_prompt_timestamp
 
                 def _with_time_tag(content, ts):
                     """Prepend a hidden <MessageTime> tag to a history message.
@@ -383,8 +384,8 @@ class PrecisionPromptSystem:
                     if ts is None:
                         return content
                     try:
-                        iso = _dt.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
-                    except (ValueError, OSError, TypeError):
+                        iso = format_prompt_timestamp(ts)
+                    except (ValueError, OSError, TypeError, OverflowError):
                         return content
                     tag = f'<MessageTime value="{iso}" />\n'
                     if isinstance(content, str):
