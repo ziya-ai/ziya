@@ -43,6 +43,20 @@ class ToolStopRequested(Exception):
 
 
 async def _await_tool_result(coro, timeout: float, ctx) -> Any:
+    """Run a tool call with the chat turn held (see chat_turn_relay.held).
+
+    A tool call spends no model tokens, and a long one (job_wait, shadow_wait)
+    is when a tab is closed or a tunnel drops.  Unheld, the relay's disconnect
+    grace timer cancelled the turn mid-wait.  Held, the grace timer re-arms
+    only once the tool returns.
+    """
+    from app.agents.chat_turn_relay import held
+    async with held(getattr(ctx, "conversation_id", None),
+                    f"tool:{getattr(ctx, 'tool_id', '') or id(coro)}"):
+        return await _await_tool_result_unheld(coro, timeout, ctx)
+
+
+async def _await_tool_result_unheld(coro, timeout: float, ctx) -> Any:
     """Await *coro* with a timeout, aborting early on a stop directive.
 
     Previously a bare ``asyncio.wait_for``, which meant a single tool call was
@@ -65,8 +79,17 @@ async def _await_tool_result(coro, timeout: float, ctx) -> Any:
         return await asyncio.wait_for(coro, timeout=timeout)
 
     from app.utils.feedback_directives import is_stop_feedback
+    from app.utils import tool_interrupt
 
-    task = asyncio.ensure_future(coro)
+    # Bound before the task exists: the task copies the context (and so does
+    # asyncio.to_thread inside it), so a waiting tool can see the event.
+    # A non-stop message sets it, and job_wait / shadow_wait return early
+    # so the message is delivered now rather than when the job ends.
+    interrupt, _itok = tool_interrupt.bind()
+    try:
+        task = asyncio.ensure_future(coro)
+    finally:
+        tool_interrupt.reset(_itok)
     deadline = time.monotonic() + timeout
     try:
         while True:
@@ -88,6 +111,12 @@ async def _await_tool_result(coro, timeout: float, ctx) -> Any:
                         f"{ctx.actual_tool_name}; abandoning the call"
                     )
                     raise ToolStopRequested(fb.get("message", ""))
+            if pending and not interrupt.is_set():
+                logger.info(
+                    f"💬 TOOL_YIELD: user message during {ctx.actual_tool_name}; "
+                    f"asking a waiting tool to return early"
+                )
+                interrupt.set()
     finally:
         if not task.done():
             task.cancel()
@@ -469,9 +498,10 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             # arguments and uses it as the session_id keying workspace-scoped
             # client instances (f"{workspace_path}::{session_id}"). Omitted,
             # session_id is None, the key collapses to the bare workspace
-            # path, and every conversation shares ONE shell subprocess whose
-            # request loop is serial -- so a slow command in one conversation
-            # blocks all others. The manager strips this key before dispatch.
+            # path, and every conversation shares ONE shell subprocess (its
+            # request loop is concurrent, but a crash or restart in one
+            # conversation would take out all others). The manager strips
+            # this key before dispatch.
             if ctx.conversation_id:
                 ctx.args['conversation_id'] = ctx.conversation_id
             if task_scope_payload is not None:

@@ -618,6 +618,7 @@ class ShadowWaitTool(BaseMCPTool):
             until = [until]
         try:
             from app.shadow import client
+            from app.utils import tool_interrupt
             entry = client.resolve_one(session)
             want = set(until) if until else (
                 {"exit"} if kwargs.get("cmd_seq") is not None else {"change"})
@@ -635,13 +636,19 @@ class ShadowWaitTool(BaseMCPTool):
             # process to a socket read it cannot interrupt.
             while True:
                 remaining = max(0, budget_ms - int((time.monotonic() - started) * 1000))
+                # 10 s hops (not the 60 s socket cap) so a user message ends
+                # the wait promptly; still above the 5 s quiet_ms maximum.
+                hop = min(remaining, client.WAIT_CHUNK_MS, 10_000)
                 resp = await asyncio.to_thread(
                     client.wait, session, until=until, cmd_seq=kwargs.get("cmd_seq"),
                     from_seq=from_seq, pattern=kwargs.get("pattern"),
                     lines=int(kwargs.get("lines", 5)), quiet_ms=int(kwargs.get("quiet_ms", 800)),
-                    timeout_ms=min(remaining, client.WAIT_CHUNK_MS), max_tail_records=100)
+                    timeout_ms=hop, max_tail_records=100)
                 from_seq = resp.get("from_seq", from_seq)
-                if resp.get("reason") != "timeout" or remaining <= client.WAIT_CHUNK_MS:
+                if resp.get("reason") != "timeout" or remaining <= hop:
+                    break
+                if tool_interrupt.requested():
+                    resp["reason"] = tool_interrupt.REASON
                     break
             tail_lines = int(kwargs.get("tail_lines", 20))
             max_chars = int(kwargs.get("max_chars", 4000))
@@ -667,6 +674,8 @@ class ShadowWaitTool(BaseMCPTool):
             for k in ("exit_code", "exit_seq", "matched"):
                 if k in resp:
                     out[k] = resp[k]
+            if out["reason"] == tool_interrupt.REASON:
+                tool_interrupt.mark(out, f"Session {entry.session_id}'s command")
             hints = []
             if out["still_running"]:
                 hints.append(f"shadow_wait(session={entry.session_id!r}, cmd_seq={kwargs.get('cmd_seq')}, "

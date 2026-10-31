@@ -133,15 +133,18 @@ class JobStartTool(BaseMCPTool):
             return _error(e)
         out: Dict[str, Any] = {"ok": True, **started, "owner": owner, "state": "running"}
         if wait_s > 0:
+            from app.utils import tool_interrupt
             try:
                 waited = await asyncio.to_thread(
                     mgr.wait, started["job_id"], until=["exit"], timeout_s=wait_s,
-                    project_root=project_root)
+                    project_root=project_root, cancelled=tool_interrupt.requested)
             except JobError as e:
                 return {**out, "wait_error": _error(e)}
             out.update(_format_tail(waited, 20, TAIL_MAX_CHARS))
-            if out.get("still_running", True) and out.get("reason") == "timeout":
+            if out.get("still_running", True) and out.get("reason") in ("timeout", tool_interrupt.REASON):
                 out["next"] = (f"job_wait(job_id={started['job_id']!r}, from_seq={out.get('next_seq')})")
+            if out.get("reason") == tool_interrupt.REASON:
+                tool_interrupt.mark(out, f"Job {started['job_id']}")
         else:
             out["next"] = f"job_wait(job_id={started['job_id']!r}) or job_status()"
         return out
@@ -180,13 +183,15 @@ class JobWaitTool(BaseMCPTool):
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         from app.jobs.manager import JobError, get_job_manager
+        from app.utils import tool_interrupt
         project_root = _get_project_root(kwargs)
         try:
             result = await asyncio.to_thread(
                 get_job_manager().wait, kwargs["job_id"], until=kwargs.get("until"),
                 pattern=kwargs.get("pattern"), lines=int(kwargs.get("lines") or 5),
                 quiet_ms=int(kwargs.get("quiet_ms") or 800), from_seq=kwargs.get("from_seq"),
-                timeout_s=float(kwargs.get("timeout_s") or WAIT_DEFAULT_S), project_root=project_root)
+                timeout_s=float(kwargs.get("timeout_s") or WAIT_DEFAULT_S), project_root=project_root,
+                cancelled=tool_interrupt.requested)
         except JobError as e:
             return _error(e)
         out = _format_tail({"ok": True, "job_id": kwargs["job_id"], **result},
@@ -194,6 +199,8 @@ class JobWaitTool(BaseMCPTool):
                            min(int(kwargs.get("max_chars") or 4000), TAIL_MAX_CHARS))
         if out.get("still_running"):
             out["next"] = f"job_wait(job_id={kwargs['job_id']!r}, from_seq={out.get('next_seq')})"
+        if out.get("reason") == tool_interrupt.REASON:
+            tool_interrupt.mark(out, f"Job {kwargs['job_id']}")
         return out
 
 
