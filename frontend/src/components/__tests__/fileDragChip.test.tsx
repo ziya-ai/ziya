@@ -6,7 +6,7 @@
  */
 import React from 'react';
 import { render } from '@testing-library/react';
-import { FileDragChip, filePathFromHeader } from '../FileDragChip';
+import { FileDragChip, FileDragIcon, filePathFromHeader } from '../FileDragChip';
 
 jest.mock('antd', () => ({ message: { warning: jest.fn() } }));
 
@@ -27,5 +27,18 @@ describe('FileDragChip', () => {
         expect(chip.textContent).toContain('plan.md');
         expect(chip.draggable).toBe(true);
         expect(chip.getAttribute('data-file-drag')).toBe('true');
+    });
+});
+
+describe('FileDragIcon', () => {
+    // The 📄 in front of a shown document's path.  Before this it was a
+    // plain emoji; only the file write/read header chip could be dragged.
+    it('is the 📄 glyph, draggable and wired to fileDrag for the path', () => {
+        const { container } = render(<FileDragIcon path="Docs/report.csv" />);
+        const icon = container.querySelector('.file-drag-icon') as HTMLElement;
+        expect(icon.textContent).toBe('📄');
+        expect(icon.draggable).toBe(true);
+        expect(icon.getAttribute('data-file-drag')).toBe('true');
+        expect(icon.getAttribute('title')).toContain('report.csv');
     });
 });
