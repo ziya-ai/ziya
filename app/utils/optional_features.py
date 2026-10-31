@@ -58,19 +58,67 @@ def _browsers_dir() -> Optional[Path]:
     return (Path(xdg) if xdg else Path.home() / ".cache") / "ms-playwright"
 
 
-def chromium_browser_available() -> bool:
-    """True when a Chromium build ``playwright install chromium`` produces is present.
+def _playwright_package_dir() -> Optional[Path]:
+    """The installed ``playwright`` package directory, found without importing it."""
+    import importlib.util
+    try:
+        spec = importlib.util.find_spec("playwright")
+    except (ImportError, ValueError):
+        return None
+    locs = list(spec.submodule_search_locations or []) if spec else []
+    return Path(locs[0]) if locs else None
 
-    Playwright >= 1.49 launches ``headless=True`` on the ``chromium_headless_shell``
-    build; older releases and ``channel="chromium"`` use ``chromium-*``.  The
-    install command lays down both, so either directory counts.  ``pip install
-    playwright`` alone leaves this False, which is the case the package-only
-    check missed: the tool was offered and failed at launch with "Executable
-    doesn't exist".
+
+def required_chromium_build() -> Optional[str]:
+    """Cache directory name the INSTALLED Playwright launches ``headless=True`` from.
+
+    E.g. ``chromium_headless_shell-1208``.  Read from the manifest Playwright
+    ships (``driver/package/browsers.json``), so no driver is started.  None
+    when the manifest is missing or unreadable; callers then accept any build.
+
+    Each Playwright release pins one browser revision and launches only that
+    one.  Two Ziya installs on a machine (a pyenv wheel and a per-version launcher venv)
+    can carry different Playwright versions sharing one browser cache, and
+    accepting any ``chromium*`` directory let a build left by the other
+    install count as present: the installer said "already installed" and
+    skipped, the server offered render_diagram, and the launch failed with
+    "Executable doesn't exist".
+    """
+    import json
+    pkg = _playwright_package_dir()
+    if pkg is None:
+        return None
+    try:
+        data = json.loads((pkg / "driver" / "package" / "browsers.json").read_text())
+        revs = {b.get("name"): str(b.get("revision")) for b in data.get("browsers", [])
+                if isinstance(b, dict) and b.get("revision")}
+    except (OSError, ValueError, AttributeError):
+        return None
+    # >= 1.49 lists the headless shell and launches headless=True on it.
+    if "chromium-headless-shell" in revs:
+        return f"chromium_headless_shell-{revs['chromium-headless-shell']}"
+    if "chromium" in revs:
+        return f"chromium-{revs['chromium']}"
+    return None
+
+
+def chromium_browser_available() -> bool:
+    """True when the Chromium build the installed Playwright launches is present.
+
+    ``pip install playwright`` alone leaves this False, which is the case the
+    package-only check missed: the tool was offered and failed at launch with
+    "Executable doesn't exist".  The build must be the one this Playwright
+    pins (``required_chromium_build``) and fully installed (Playwright writes
+    ``INSTALLATION_COMPLETE`` last).  Without a readable manifest, any
+    ``chromium-*`` or ``chromium_headless_shell-*`` directory counts.
     """
     root = _browsers_dir()
     if root is None or not root.is_dir():
         return False
+    required = required_chromium_build()
+    if required is not None:
+        build = root / required
+        return build.is_dir() and (build / "INSTALLATION_COMPLETE").exists()
     try:
         for entry in root.iterdir():
             if entry.is_dir() and (
@@ -83,13 +131,59 @@ def chromium_browser_available() -> bool:
     return False
 
 
+def installed_chromium_builds() -> List[str]:
+    """Names of the Chromium build directories present in the browser cache."""
+    root = _browsers_dir()
+    if root is None or not root.is_dir():
+        return []
+    try:
+        return sorted(e.name for e in root.iterdir() if e.is_dir() and (
+            e.name.startswith("chromium-") or e.name.startswith("chromium_headless_shell-")))
+    except OSError:
+        return []
+
+
+def playwright_version() -> Optional[str]:
+    try:
+        from importlib.metadata import version
+        return version("playwright")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def playwright_status() -> Optional[str]:
-    """None when headless rendering is usable; otherwise what is missing."""
+    """None when headless rendering is usable; otherwise what is missing.
+
+    Names the BUILD the installed Playwright pins, and any other build found
+    in the cache, so "the browser went stale when pip upgraded Playwright"
+    reads as what it is rather than as "not installed".
+    """
     if not playwright_package_available():
         return "playwright package"
     if not chromium_browser_available():
-        return "Chromium browser for Playwright"
+        required = required_chromium_build()
+        if required is None:
+            return "Chromium browser for Playwright"
+        ver = playwright_version()
+        msg = f"Chromium build {required} for Playwright" + (f" {ver}" if ver else "")
+        others = [b for b in installed_chromium_builds() if b != required]
+        if others:
+            msg += f" (found {', '.join(others)}, built for a different Playwright)"
+        return msg
     return None
+
+
+def invalidate_browser_caches() -> None:
+    """Forget the once-per-process browser verdicts after an install.
+
+    diagram_renderer and pdf_exporter each cache ``_check_playwright()``; a
+    Chromium installed while the server runs would otherwise stay "missing"
+    until restart.  Tool registration is separate and may still need one.
+    """
+    for mod in ("app.services.diagram_renderer", "app.services.pdf_exporter"):
+        m = sys.modules.get(mod)
+        if m is not None and hasattr(m, "_playwright_available"):
+            m._playwright_available = None
 
 
 def playwright_missing_description() -> str:

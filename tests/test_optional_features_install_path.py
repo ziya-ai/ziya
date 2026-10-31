@@ -55,8 +55,10 @@ class TestBrowserDetection:
 
     @pytest.mark.parametrize("name", ["chromium-1148", "chromium_headless_shell-1148"])
     def test_either_chromium_build_counts(self, tmp_path, monkeypatch, name):
-        # >= 1.49 launches headless on the headless shell; both are laid down
-        # by `playwright install chromium`, so either proves the install ran.
+        # Fallback only: with no readable Playwright manifest the required
+        # build is unknown, so any build proves the install ran.  With a
+        # manifest the exact build is required (test_chromium_build_match.py).
+        monkeypatch.setattr(of, "required_chromium_build", lambda: None)
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         (tmp_path / name).mkdir()
         assert of.chromium_browser_available() is True
@@ -67,10 +69,21 @@ class TestBrowserDetection:
         assert of.playwright_status() == "playwright package"
         monkeypatch.setattr(of, "playwright_package_available", lambda: True)
         assert "Chromium" in of.playwright_status()
-        (tmp_path / "chromium-1").mkdir()
+        # A build for some other Playwright is still "missing" ...
+        (tmp_path / "chromium_headless_shell-1").mkdir()
+        assert "Chromium" in of.playwright_status()
+        # ... the one this Playwright pins is not.
+        monkeypatch.setattr(of, "required_chromium_build", lambda: "chromium_headless_shell-9")
+        (tmp_path / "chromium_headless_shell-9").mkdir()
+        (tmp_path / "chromium_headless_shell-9" / "INSTALLATION_COMPLETE").write_text("")
         assert of.playwright_status() is None
 
     def test_banner_lines_name_the_one_command(self, monkeypatch):
+        # The banner lists every missing extra in the registry; pin it to the
+        # two whose probes are patched here so the host's pip extras (data,
+        # stats, drag) cannot make the positive control non-empty.
+        from app.utils import extras_registry as er
+        monkeypatch.setattr(er, "REGISTRY", [er.BY_KEY["browser"], er.BY_KEY["latex"]])
         monkeypatch.setattr(of, "playwright_status", lambda: "playwright package")
         monkeypatch.setattr(of, "tex_status", lambda: "TeX distribution")
         lines = of.missing_feature_lines()
