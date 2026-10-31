@@ -400,6 +400,16 @@ def _conversation_placements(project_id: str, conversation_id: Optional[str]) ->
     return dict(getattr(chat, "placements", None) or {})
 
 
+def conversation_known(project_id: str, conversation_id: Optional[str]) -> bool:
+    """Whether the conversation layer can be WRITTEN for this id.
+
+    ``place`` raises ChatNotFound for an id with no record, and a brand-new
+    chat is an empty shell the client never sends to the server.  The view
+    model must not offer a lens whose every write would 404 (see the
+    conversation-lens test in tests/test_bench_api.py)."""
+    return bool(conversation_id) and _chat_storage(project_id).get(conversation_id) is not None
+
+
 def load_layers(project_id: str, conversation_id: Optional[str]) -> Dict[str, Dict[str, Optional[str]]]:
     return {
         "conversation": _conversation_placements(project_id, conversation_id),
