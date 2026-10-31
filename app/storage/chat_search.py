@@ -234,6 +234,47 @@ def _iter_chat_files(chats_dir: Path):
         yield chat_file
 
 
+def _candidate_files(ziya_home: Path, projects_dir: Path, project_id: str,
+                     all_projects: bool, id_filter: Optional[set],
+                     query: str = ""):
+    """Yield (project_id, chat_file) pairs to scan.
+
+    Listed ids name specific conversations, so they are resolved directly
+    through the cross-project chat index (the file stem is the id) and only
+    those files are opened, whatever the project scope.  Scanning the scope
+    and filtering afterwards decrypted every chat file in it (7-22 s per
+    call with all_projects), and an id owned by another project was never
+    reached without all_projects (case 606f5f05).
+    """
+    if id_filter is not None:
+        from app.storage import chat_index
+        resolved, missing = chat_index.lookup_many(ziya_home, sorted(id_filter))
+        if missing:
+            # Possibly written by another process since the index was built.
+            chat_index.invalidate()
+            more, _ = chat_index.lookup_many(ziya_home, missing)
+            resolved.update(more)
+        for path in resolved.values():
+            yield path.parent.parent.name, path
+        return
+    # Otherwise the in-memory trigram filter narrows the scan to chats that
+    # can contain the query (app/utils/chat_search_index.py); None means the
+    # query has no usable trigram, or the index is off, so scan everything.
+    from app.utils import chat_search_index
+    hits = chat_search_index.candidate_files(ziya_home, project_id,
+                                             all_projects, query)
+    if hits is not None:
+        yield from hits
+        return
+    for proj_dir in projects_dir.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        if not all_projects and proj_dir.name != project_id:
+            continue
+        for chat_file in _iter_chat_files(proj_dir / "chats"):
+            yield proj_dir.name, chat_file
+
+
 def search_chats(ziya_home: Path, project_id: str, query: str,
                  all_projects: bool = False, case_sensitive: bool = False,
                  max_snippet_length: int = 150,
@@ -251,7 +292,8 @@ def search_chats(ziya_home: Path, project_id: str, query: str,
     a mode this server does not know still gets usable results.
 
     ``conversation_ids``, when given and non-empty, restricts hits to those
-    conversations (within the project scope above).  This is what lets a
+    conversations, wherever they live: the ids are resolved across projects
+    and ``all_projects`` / ``project_id`` do not apply.  This is what lets a
     caller ask "where in *this* thread did we decide X" — without it every
     search is project-wide.
     """
@@ -271,28 +313,22 @@ def search_chats(ziya_home: Path, project_id: str, query: str,
     seen_ids = set()
     n_files = 0
 
-    for proj_dir in projects_dir.iterdir():
-        if not proj_dir.is_dir():
+    for proj_name, chat_file in _candidate_files(
+            ziya_home, projects_dir, project_id, all_projects, id_filter,
+            query):
+        data = _read_chat_data(chat_file)
+        if not data:
             continue
-        if not all_projects and proj_dir.name != project_id:
+        chat_id = data.get("id")
+        if not chat_id or chat_id in seen_ids:
             continue
-
-        for chat_file in _iter_chat_files(proj_dir / "chats"):
-            data = _read_chat_data(chat_file)
-            if not data:
-                continue
-            chat_id = data.get("id")
-            if not chat_id or chat_id in seen_ids:
-                continue
-            if id_filter is not None and chat_id not in id_filter:
-                continue
-            n_files += 1
-            result = _search_one_chat(
-                data, proj_dir.name, pattern, max_snippet_length
-            )
-            if result:
-                seen_ids.add(chat_id)
-                results.append(result)
+        if id_filter is not None and chat_id not in id_filter:
+            continue
+        n_files += 1
+        result = _search_one_chat(data, proj_name, pattern, max_snippet_length)
+        if result:
+            seen_ids.add(chat_id)
+            results.append(result)
 
     if sort == "newest":
         results.sort(key=lambda r: (r["lastActivityAt"], r["relevanceScore"]),

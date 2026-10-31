@@ -337,6 +337,45 @@ def rewrite_assistant_text(text: str,
     return _ORPHAN_MARKER_RE.sub('', text)
 
 
+# --- Transcript view: tool blocks collapsed to one line ------------------
+
+# Group brackets chatApi writes around a batch of tool calls
+# (frontend/src/utils/toolGroupDisplay.ts).  Pure display markup.
+_TOOL_GROUP_RE = re.compile(r'<!--\s*TOOL_GROUP_(?:START|END):[^>]*-->\n?')
+
+
+def collapse_tool_blocks(text: str) -> Tuple[str, int, int]:
+    """Replace every rendered tool block with a one-line stub.
+
+    For reading a past conversation as a transcript (chat_read).  A
+    tool-heavy assistant turn is mostly tool OUTPUT: one measured turn was
+    534,000 characters, nearly all of it the bodies of file and web reads,
+    with the model's own conclusions after them.  Truncating that message
+    keeps the head, so a reader saw the first tool body and none of the
+    prose, and had to fish for the conclusions with dozens of searches.
+
+    Returns ``(text, n_blocks, n_chars_elided)``.  Inline image bytes and
+    group brackets are removed as well; prose is left untouched.
+    """
+    if not text:
+        return text, 0, 0
+    text = _TOOL_GROUP_RE.sub('', elide_inline_images(text))
+    if "tool:" not in text and "TOOL_BLOCK_START" not in text:
+        return _ORPHAN_MARKER_RE.sub('', text), 0, 0
+    blocks = _non_overlapping(find_tool_blocks(text))
+    out: List[str] = []
+    pos = 0
+    elided = 0
+    for b in blocks:
+        out.append(text[pos:b.start])
+        elided += b.end - b.start
+        out.append(f"[tool {b.tool}: {_clean_label(b.header)} "
+                   f"({len(b.body):,} chars of output not shown)]")
+        pos = b.end
+    out.append(text[pos:])
+    return _ORPHAN_MARKER_RE.sub('', "".join(out)), len(blocks), elided
+
+
 # --- Planning: which bodies are redundant with a later one ---------------
 
 def _norm_tool(name: str) -> str:
