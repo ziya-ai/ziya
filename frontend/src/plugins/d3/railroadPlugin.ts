@@ -7,6 +7,7 @@
  * selection — the same split the packet plugin uses.
  */
 import { D3RenderPlugin } from '../../types/d3';
+import { addDiagramActions, diagramSourceText } from './diagramActions';
 import {
     renderRailroadSvg,
     lenientJsonParse,
@@ -128,6 +129,13 @@ function render(container: HTMLElement, _d3: any, rawSpec: any,
         }
     }
     container.appendChild(wrap);
+    addDiagramActions(container, {
+        view: wrap,
+        source: diagramSourceText(rawSpec),
+        title: 'Railroad Diagram',
+        filenameBase: 'railroad-diagram',
+        isDarkMode,
+    });
 }
 
 export const railroadPlugin: D3RenderPlugin = {

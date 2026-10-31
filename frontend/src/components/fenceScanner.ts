@@ -671,6 +671,8 @@ export function upgradeNestedFences(markdown: string): string {
  * so a new profile cannot miss the repair pass.  The remaining literals still
  * need manual sync with the diagram cases in determineTokenType — a language
  * present there but missing here only loses the repair, never renders wrongly.
+ * __tests__/atomicFenceLangCoverage.test.ts reads those cases and fails when
+ * one is missing here.
  */
 const ATOMIC_FENCE_LANGS = new Set([
     'mermaid', 'graphviz', 'dot',
@@ -678,6 +680,9 @@ const ATOMIC_FENCE_LANGS = new Set([
     'drawio', 'draw.io', 'designinspector',
     'packet', 'packet-diagram', 'bytefield',
     'music', 'sheet-music', 'vexflow',
+    'railroad', 'railroad-diagram', 'syntax-diagram',
+    'wavedrom', 'wavejson', 'timing', 'timing-diagram',
+    'flamegraph', 'flame-graph', 'collapsed-stacks',
     'joint', 'jointjs', 'diagram', 'd2', 'chord',
     'force-directed', 'forcedirected', 'network', 'd3',
     'html-mockup', 'ui-mockup', 'mockup',

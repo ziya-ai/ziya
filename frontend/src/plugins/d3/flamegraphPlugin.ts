@@ -19,6 +19,7 @@ import {
     flamegraphCss,
 } from '../../utils/d3Plugins/flamegraphPlugin';
 import { extractDefinition } from '../../utils/d3Plugins/specEnvelope';
+import { addDiagramActions, diagramSourceText } from './diagramActions';
 
 /** Monotonic index, so two charts on a page get distinct style scopes. */
 let renderIndex = 0;
@@ -139,6 +140,13 @@ async function render(container: HTMLElement, d3: any, rawSpec: any,
         svgEl.insertBefore(style, svgEl.firstChild);
         (svgEl as any).style.display = 'block';
     }
+    addDiagramActions(container, {
+        view: wrap,
+        source: diagramSourceText(rawSpec),
+        title: 'Flame Graph',
+        filenameBase: 'flamegraph',
+        isDarkMode,
+    });
 
     // Returned for correctness, but note D3Renderer currently discards the
     // cleanup function on the plugin path (it only captures one from the

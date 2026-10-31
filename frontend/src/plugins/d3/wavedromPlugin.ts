@@ -20,6 +20,7 @@ import {
     extractDefinition,
     isStreamingIncomplete,
 } from '../../utils/d3Plugins/specEnvelope';
+import { addDiagramActions, diagramSourceText } from './diagramActions';
 
 /** A WaveJSON body is renderable once JSON5 parses it; a truncated one yields
  *  undefined.  Shared by the streaming guard in render() and by the plugin's
@@ -157,6 +158,13 @@ async function render(container: HTMLElement, _d3: any, rawSpec: any,
         (svgEl as any).style.height = 'auto';
     }
     container.appendChild(wrap);
+    addDiagramActions(container, {
+        view: wrap,
+        source: diagramSourceText(rawSpec),
+        title: 'WaveDrom Diagram',
+        filenameBase: 'wavedrom-diagram',
+        isDarkMode,
+    });
 }
 
 export const wavedromPlugin: D3RenderPlugin = {
