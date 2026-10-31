@@ -332,6 +332,93 @@ def _format_jobs_section() -> List[str]:
     ]
 
 
+def _format_data_section() -> List[str]:
+    """Steer record-shaped work to the dataset tools instead of ad-hoc JSON.
+
+    Emitted when the ``datasets`` builtin category is enabled; the
+    ``store_output`` and ``ledger_record`` lines follow their own
+    categories.  Chat and task prompts alike: a review of task-card runs
+    (gfx-sweep, complandscape, memory-replay) found the model building
+    bespoke JSON stores and python3 aggregation scripts — 5,000 snapshot
+    copies of one 2 MB backlog, 1,700 JSON files for one matrix — while
+    ``analyze`` went uncalled, because nothing standing in the prompt
+    named it as the way to do that work.
+    """
+    try:
+        from app.mcp.builtin_tools import is_builtin_category_enabled
+        if not is_builtin_category_enabled("datasets"):
+            return []
+        has_outputs = is_builtin_category_enabled("output_contracts")
+        has_ledger = is_builtin_category_enabled("evidence")
+    except Exception:  # noqa: BLE001 — this block never raises
+        return []
+    where = (
+        "Register a file with `dataset_register(path=...)`"
+        + (" or append validated records with `store_output` "
+           "(.ziya/outputs/<family>.jsonl)" if has_outputs else "")
+        + "; both persist under .ziya/ and are queryable later."
+    )
+    lines = [
+        "### Working with data",
+        "  - Rows you produce or find (sweep results, a tool's output, a "
+        "CSV/JSON/JSONL already on disk) belong in a dataset or an "
+        "append-only JSONL file, not in a bespoke JSON store or a Python "
+        "dict you rewrite each step. " + where,
+        "  - Compute with `analyze(sql=..., inputs={alias: path or ds_id})` "
+        "(DuckDB; `path#member` selects one array inside a JSON object, and "
+        "an object of objects becomes rows keyed by `_key`). Its macros "
+        "(bin_with_coverage, counter_deltas, intervals_union/intersect/"
+        "subtract, interval_duration, runs, entity_distribution) replace "
+        "the python3 + json aggregation scripts you would otherwise write.",
+        "  - Never snapshot-copy a whole state file per iteration or per "
+        "record, and never build a directory of large JSON files: append "
+        "one JSONL line per event and let `analyze` derive the current "
+        "state. Keep raw inputs; derived tables are reproducible from the "
+        "recorded SQL.",
+    ]
+    if has_ledger:
+        lines.append(
+            "  - Report numbers from `analyze` results and record them with "
+            "`ledger_record`; do not transcribe, recount or re-aggregate by hand."
+        )
+    return lines
+
+
+def _format_fold_section(project_root: Optional[str]) -> List[str]:
+    """Tell the model that quest turns are replayed folded, and what to do
+    about it (design/tributary-fold.md, "Division of responsibility").
+
+    Emitted only when the project's ``contextManagement.fold_tributaries``
+    is on and the ``chat_history`` category (which carries
+    ``recall_tributary``) is enabled.  The text depends on nothing that
+    changes between turns, so it sits in the cached prefix.
+    """
+    try:
+        from app.utils.tool_history_rewrite import resolve_fold_settings
+        if not resolve_fold_settings(project_root).enabled:
+            return []
+        from app.mcp.builtin_tools import is_builtin_category_enabled
+        if not is_builtin_category_enabled("chat_history"):
+            return []
+    except Exception:  # noqa: BLE001 — this block never raises
+        return []
+    return [
+        "### Folded tool turns",
+        "  - Once this conversation nears its context limit, the oldest "
+        "tool-heavy turns in this history are replayed as "
+        "their final text only, with the search that produced it folded "
+        "behind a `tb-…` handle that lists the calls made. The full span "
+        "is in the record: call `recall_tributary(handle=...)` if you need "
+        "the calls or results again (`mode=\"commands\"` for the calls "
+        "alone, `mode=\"results\"` for bodies, `grep=` to slice). "
+        "Conclusions you drew when the span was in view stand.",
+        "  - Your own tool-heavy turns will be replayed the same way, so "
+        "anything a later step needs from the middle of a search — ids, "
+        "paths, the query that worked, an intermediate figure — belongs in "
+        "your final text or in a store, not only in the tool output.",
+    ]
+
+
 def build_session_context_section(
     project_root: Optional[str] = None,
     task_scope: Optional[Any] = None,
@@ -391,6 +478,8 @@ def build_session_context_section(
         _format_skills_section(task_scope),
         _format_shell_section(task_scope),
         _format_jobs_section(),
+        _format_data_section(),
+        _format_fold_section(project_root),
     ]
     for sec in sections:
         if sec:
