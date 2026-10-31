@@ -23,14 +23,16 @@ import { useConversationList } from '../context/ConversationListContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { projectSync } from '../utils/projectSync';
 import {
+  backgroundReattachCandidates,
   decideReattach,
   fetchChatTurnStatus,
+  fetchChatTurnStatuses,
   probeOtherTabs,
 } from '../utils/chatTurnReattach';
 
 export const ChatTurnReattachWatcher: React.FC = () => {
   const { currentConversationId, currentMessages, streamingConversations } = useActiveChat();
-  const { hasLoadedConversations } = useConversationList();
+  const { hasLoadedConversations, conversations } = useConversationList();
   const { send } = useSendPayload();
 
   // Read at decision time, not captured at effect time: the probe wait
@@ -39,6 +41,10 @@ export const ChatTurnReattachWatcher: React.FC = () => {
   streamingRef.current = streamingConversations;
   const messagesRef = useRef(currentMessages);
   messagesRef.current = currentMessages;
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+  const currentIdRef = useRef(currentConversationId);
+  currentIdRef.current = currentConversationId;
 
   // Turn ids this tab has already reattached to.  A turn id is minted per
   // server-side turn, so this is exact: the same conversation can be
@@ -90,6 +96,53 @@ export const ChatTurnReattachWatcher: React.FC = () => {
 
     return () => { stale = true; };
   }, [currentConversationId, hasLoadedConversations, send]);
+
+  // Reload sweep, once per page load: resubscribe to turns in conversations
+  // this tab is NOT showing.  The effect above only covers the viewed one,
+  // so before this a turn running elsewhere (typically parked in a
+  // job_wait / shadow_wait) had no subscriber after a reload, hit the
+  // relay's disconnect grace timer (60 s) and was cancelled.
+  const sweptRef = useRef(false);
+  useEffect(() => {
+    if (!hasLoadedConversations || sweptRef.current) return;
+    sweptRef.current = true;
+    (async () => {
+      const statuses = await fetchChatTurnStatuses();
+      const candidates = backgroundReattachCandidates(
+        statuses, currentIdRef.current, conversationsRef.current);
+      if (candidates.length === 0) return;
+      // One probe window for all of them, not 250 ms each.
+      for (const c of candidates) {
+        projectSync.post('streaming-probe', { conversationId: c.status.conversation_id });
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+      for (const c of candidates) {
+        const id = c.status.conversation_id;
+        // The user may have opened it during the probe; that path owns it now.
+        if (id === currentIdRef.current || inFlightRef.current.has(id)) continue;
+        const decision = decideReattach(
+          c.status, c.messages, streamingRef.current.has(id), reattachedRef.current);
+        if (!decision.reattach) {
+          console.log(`📡 REATTACH: sweep skip ${id.slice(0, 8)} — ${decision.reason}`);
+          continue;
+        }
+        reattachedRef.current.add(decision.turnId);
+        inFlightRef.current.add(id);
+        console.log(`📡 REATTACH: sweep resuming turn ${decision.turnId.slice(0, 8)} for ${id.slice(0, 8)}`);
+        // Not awaited: each background stream runs concurrently.
+        send({
+          conversationId: id,
+          question: decision.question,
+          messages: c.messages.filter(m => !m.muted),
+          reattach: true,
+          includeReasoning: true,
+          isStreamingToCurrentConversation: false,
+        })
+          .catch(e => console.warn('📡 REATTACH: sweep failed', e))
+          .finally(() => inFlightRef.current.delete(id));
+      }
+    })().catch(e => console.warn('📡 REATTACH: sweep failed', e));
+  }, [hasLoadedConversations, send]);
 
   return null;
 };

@@ -248,6 +248,45 @@ class TestDisconnectSemantics:
             st = await wait_done("d2", timeout=1.0)
         assert st["cancelled"] is True
 
+    async def test_all_statuses_lists_every_turn_running_and_finished(self):
+        # The reload sweep depends on this: a turn in a conversation the
+        # tab is NOT showing must be discoverable without knowing its id.
+        gate = asyncio.Event()
+        await relay.start_turn("L-run", gen_from([content("a"), content("b")], gate, gate_after=1))
+        await relay.start_turn("L-done", gen_from([content("x")]))
+        await wait_done("L-done")
+        by_id = {s["conversation_id"]: s for s in relay.all_statuses()}
+        assert set(by_id) == {"L-run", "L-done"}
+        assert by_id["L-run"]["active"] is True
+        assert by_id["L-done"]["active"] is False
+        assert by_id["L-run"]["turn_id"] == relay.status("L-run")["turn_id"]
+        gate.set()
+        await wait_done("L-run")
+
+    async def test_all_statuses_empty_when_relay_has_nothing(self):
+        assert relay.all_statuses() == []
+
+    async def test_reload_resubscribe_from_listing_saves_a_waiting_turn(self):
+        # The reported loss: a turn parked in a long tool wait in a
+        # background conversation; the tab reloads (its subscriber drops).
+        # Resubscribing via the listing within the grace window keeps it
+        # alive, and it completes uncancelled.
+        gate = asyncio.Event()
+        await relay.start_turn("bg", gen_from([content("a"), content("b")], gate, gate_after=1))
+        with patch.object(relay, "_grace_seconds", return_value=0.05):
+            first = relay.subscribe("bg")
+            await first.__anext__()
+            await first.aclose()                      # reload
+            ids = [s["conversation_id"] for s in relay.all_statuses() if s["active"]]
+            assert ids == ["bg"]
+            task = asyncio.create_task(collect(ids[0]))   # sweep resubscribes
+            await asyncio.sleep(0.12)                 # well past grace
+            assert relay.status("bg")["active"] is True, "resubscribe must disarm grace"
+            gate.set()
+            got = await asyncio.wait_for(task, 2)
+        assert joined_text(got) == "ab"
+        assert relay.status("bg")["cancelled"] is False
+
     async def test_new_subscriber_disarms_grace(self):
         gate = asyncio.Event()
         await relay.start_turn("d3", gen_from([content("a"), content("b")], gate, gate_after=1))
@@ -291,6 +330,30 @@ class TestDisconnectSemantics:
             await relay.release("d5", "r2")
             st = await wait_done("d5", timeout=1.0)
         assert st["cancelled"] is True
+
+    async def test_held_context_suspends_grace_then_releases(self):
+        # A non-tool reason (e.g. a consent wait): grace re-arms on release.
+        # A tool: reason changes the turn's grace rule; see
+        # test_turn_that_ran_a_tool_* below.
+        gate = asyncio.Event()
+        await relay.start_turn("h1", gen_from([content("a"), content("b")], gate, gate_after=1))
+        with patch.object(relay, "_grace_seconds", return_value=0.02):
+            agen = relay.subscribe("h1")
+            await agen.__anext__()
+            await agen.aclose()
+            async with relay.held("h1", "consent:x") as ok:
+                assert ok is True
+                await asyncio.sleep(0.08)
+                assert relay.status("h1")["active"] is True
+            assert relay.status("h1")["held"] is False
+            st = await wait_done("h1", timeout=1.0)   # grace re-armed on release
+        assert st["cancelled"] is True
+
+    async def test_held_is_a_noop_without_a_turn(self):
+        async with relay.held(None, "r") as ok:
+            assert ok is False
+        async with relay.held("ghost", "r") as ok:
+            assert ok is False
 
     async def test_hold_on_unknown_or_finished_turn_is_false(self):
         assert await relay.hold("ghost", "r") is False
