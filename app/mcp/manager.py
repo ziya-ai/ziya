@@ -654,18 +654,35 @@ class MCPManager:
         if self.config_path and os.path.exists(self.config_path):
             logger.debug(f"Loading user MCP configuration from: {self.config_path}")
             raw_config_text = ""
+            whitespace_warning: Optional[str] = None
+            whitespace_first_line: Optional[int] = None
             try:
-                with open(self.config_path, 'r') as f:
+                with open(self.config_path, 'r', encoding='utf-8-sig') as f:
                     raw_config_text = f.read()
-                user_config_data = json.loads(raw_config_text)
+                # Tolerates U+00A0 and other Unicode whitespace between tokens
+                # (common in text pasted from a browser); string values untouched.
+                from app.utils.json_whitespace import loads_tolerant
+                _loaded = loads_tolerant(raw_config_text)
+                user_config_data = _loaded.data
+                if _loaded.changes:
+                    whitespace_warning = _loaded.warning
+                    whitespace_first_line = _loaded.changes[0].line
+                    logger.warning(
+                        f"MCP config {self.config_path}: {whitespace_warning} "
+                        f"(file not rewritten)"
+                    )
                 self.config_error = None  # Clear any previous error on successful parse
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON in MCP config file {self.config_path}: {e}")
                 logger.error(f"Line {e.lineno}, Column {e.colno}: {e.msg}")
                 logger.warning("Skipping malformed config file, using built-in defaults only")
                 self.config_error = f"Syntax error in {self.config_path} — line {e.lineno}, column {e.colno}: {e.msg}"
+                from app.utils.json_whitespace import whitespace_hint
+                _hint = whitespace_hint(raw_config_text, e)
+                if _hint:
+                    self.config_error += f" ({_hint})"
                 user_config_data = {}
-            except (OSError, PermissionError) as e:
+            except (OSError, PermissionError, UnicodeDecodeError) as e:
                 logger.error(f"Error reading MCP config from {self.config_path}: {e}")
                 logger.warning("Skipping unreadable config file, using built-in defaults only")
                 self.config_error = f"Failed to read {self.config_path}: {e}"
@@ -692,6 +709,22 @@ class MCPManager:
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"MCP config validation skipped: {e}")
                 self.config_findings = []
+            if whitespace_warning:
+                # Non-fatal: the file loaded. Listed first so it is seen before
+                # per-entry findings that may cite the same lines.
+                self.config_findings.insert(0, {
+                    "server": "",
+                    "code": "nonascii_whitespace",
+                    "severity": "warning",
+                    "summary": "Non-ASCII whitespace between JSON tokens",
+                    "detail": (
+                        f"{whitespace_warning}. Loaded as if they were plain "
+                        "spaces; the file was not rewritten. Replace them with "
+                        "ordinary spaces to make it valid JSON."
+                    ),
+                    "line": whitespace_first_line,
+                    "suggestion": None,
+                })
             
             try:
                 user_servers = user_config_data.get("mcpServers", {})
