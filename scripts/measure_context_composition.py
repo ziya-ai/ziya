@@ -39,6 +39,12 @@ Usage:
   python3 scripts/measure_context_composition.py [--min-messages 20]
         [--top 15] [--tier1-threshold 4000] [--json .ziya/context_survey.json]
         [--project <project_id>] [--chat <chat_id>]
+        [--simulate-fold [--grace 1,2,3] [--min-calls 2] [--fold-min-chars 1500]]
+
+--simulate-fold adds the tributary-fold report (design/tributary-fold.md):
+quest-turn share split into tool blocks vs interim prose, the token-threshold
+crossings with folds applied per grace value, what the single-block exemption
+leaves, and a reuse proxy for how often recall would be needed.
 """
 from __future__ import annotations
 
@@ -62,7 +68,7 @@ from app.utils.tool_history_rewrite import (  # noqa: E402
 )
 
 CHARS_PER_TOKEN = 4.0
-THRESHOLDS_TOKENS = (50_000, 100_000, 150_000, 200_000)
+THRESHOLDS_TOKENS = (50_000, 100_000, 200_000, 500_000, 1_000_000)
 
 # Tools whose body is a file's contents and whose header/args name the path.
 _FILE_READ_TOOLS = {"file_read", "mcp_file_read", "read_file", "mcp_read_file"}
@@ -298,6 +304,329 @@ def analyze_chat(rec: dict, tier1_threshold: int) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# Tributary-fold simulation (design/tributary-fold.md, slice 1)
+# --------------------------------------------------------------------------
+#
+# A quest turn is an assistant message with >= min_calls tool blocks and
+# non-empty prose after the last block.  Its tributary is the span from the
+# first block's start to the last block's end (bodies AND interim prose);
+# replay keeps prose before the first block and the final prose.  A fold
+# applies to replays made once >= grace human messages follow the turn.
+# Nothing here changes replay; it only reports what folding would do.
+
+FOLD_MIN_CALLS = 2
+FOLD_MIN_CHARS = 1500
+FOLD_MAX_LABELS = 12
+# Reuse proxy: a line from a folded span quoted by a later assistant message.
+REUSE_MIN_LINE = 40
+REUSE_MAX_LINES = 60
+
+_EMPTY_RESULT_RE = re.compile(
+    r"^(?:\(no output\)|no output\.?|no match(?:es)?(?: found)?\.?|"
+    r"not found\.?|\[\]|\{\}|null|none)$",
+    re.IGNORECASE,
+)
+
+
+def _non_overlapping_blocks(text: str) -> List[ToolBlock]:
+    """Same selection rule as tool_history_rewrite._non_overlapping."""
+    out: List[ToolBlock] = []
+    pos = 0
+    for b in find_tool_blocks(text):
+        if b.start < pos:
+            continue
+        out.append(b)
+        pos = b.end
+    return out
+
+
+def _fold_label(b: ToolBlock) -> str:
+    label = re.sub(r"\s+", " ", (b.header or "").replace("🔐", " ")).strip()
+    return label or _norm_tool(b.tool)
+
+
+def _is_empty_result(b: ToolBlock) -> bool:
+    p = payload_for_block(b).strip()
+    return not p or bool(_EMPTY_RESULT_RE.match(p))
+
+
+def fold_placeholder(handle: str, labels: List[str], n_empty: int,
+                     n_notes: int, span_chars: int) -> str:
+    """The replay placeholder from the design, so savings are net of it."""
+    shown = labels[:FOLD_MAX_LABELS]
+    out = [f"[Ziya: tributary {handle} folded on replay — {len(labels)} tool "
+           f"calls ({n_empty} returned nothing), {n_notes} interim notes, "
+           f"~{span_chars / CHARS_PER_TOKEN:,.0f} tokens. Calls:"]
+    out += [f"   {lab[:160]}" for lab in shown]
+    if len(labels) > len(shown):
+        out.append(f"   … {len(labels) - len(shown)} more")
+    out.append(f" Full span: recall_tributary(handle=\"{handle}\"); "
+               f"mode=\"commands\" for the calls alone, mode=\"results\" for "
+               f"bodies, grep= to slice. The text that follows was written "
+               f"with the whole span in view and stands.]")
+    return "\n".join(out)
+
+
+def classify_turn(content: str, min_calls: int = FOLD_MIN_CALLS,
+                  min_chars: int = FOLD_MIN_CHARS) -> Optional[Dict[str, Any]]:
+    """Classify one assistant message for folding.
+
+    Returns None for a message with no tool blocks, otherwise a dict whose
+    ``kind`` is ``quest`` (foldable), ``single`` (one block, exempt),
+    ``ends_on_block`` (no final prose) or ``small`` (span under min_chars).
+    """
+    if not content or ("tool:" not in content and "TOOL_BLOCK_START" not in content):
+        return None
+    blocks = _non_overlapping_blocks(content)
+    if not blocks:
+        return None
+    start, end = blocks[0].start, blocks[-1].end
+    prose0 = content[:start]
+    final = content[end:]
+    span = content[start:end]
+    block_chars = sum(b.end - b.start for b in blocks)
+    notes = [content[a.end:b.start] for a, b in zip(blocks, blocks[1:])]
+    info: Dict[str, Any] = {
+        "n_calls": len(blocks),
+        "span": span,
+        "span_chars": len(span),
+        "block_chars": block_chars,
+        "interim_chars": len(span) - block_chars,
+        "prose0_chars": len(prose0.strip()),
+        "prose0": prose0,
+        "final": final,
+        "n_empty": sum(1 for b in blocks if _is_empty_result(b)),
+        "n_notes": sum(1 for n in notes if n.strip()),
+        "labels": [_fold_label(b) for b in blocks],
+    }
+    if not final.strip():
+        info["kind"] = "ends_on_block"
+    elif len(blocks) < min_calls:
+        info["kind"] = "single"
+    elif len(span) < min_chars:
+        info["kind"] = "small"
+    else:
+        info["kind"] = "quest"
+    return info
+
+
+def _reuse_lines(info: Dict[str, Any]) -> List[str]:
+    """Distinctive span lines that replay would NOT keep anyway."""
+    kept = info["prose0"] + info["final"]
+    out: List[str] = []
+    seen: set = set()
+    for line in info["span"].splitlines():
+        s = line.strip()
+        if len(s) < REUSE_MIN_LINE or s in seen or s in kept:
+            continue
+        if s.startswith("```") or "tool_result" in s or "TOOL_BLOCK" in s:
+            continue
+        if len(set(s)) < 8:  # rules, separators, repeated characters
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= REUSE_MAX_LINES:
+            break
+    return out
+
+
+def simulate_fold(rec: dict, graces: Tuple[int, ...] = (2,),
+                  min_calls: int = FOLD_MIN_CALLS,
+                  min_chars: int = FOLD_MIN_CHARS) -> Dict[str, Any]:
+    """Per-chat fold simulation over the non-muted (replayed) messages."""
+    msgs: List[dict] = rec.get("messages") or []
+    live = [(i, m) for i, m in enumerate(msgs) if not m.get("muted")]
+    sizes: List[int] = []
+    humans_upto: List[int] = []   # human messages in live[0..k], inclusive
+    h = 0
+    kinds: Counter = Counter()
+    quests: List[Tuple[int, int, Dict[str, Any]]] = []  # (pos, saving, info)
+    agg = Counter()
+    prose0_lens: List[int] = []
+
+    for pos, (_i, m) in enumerate(live):
+        content = m.get("content")
+        text = content if isinstance(content, str) else ""
+        sizes.append(len(text))
+        role = m.get("role") or ""
+        if role in ("human", "user"):
+            h += 1
+        humans_upto.append(h)
+        if role != "assistant":
+            continue
+        info = classify_turn(text, min_calls, min_chars)
+        if info is None:
+            continue
+        kinds[info["kind"]] += 1
+        if info["kind"] == "single":
+            agg["single_chars"] += info["span_chars"]
+            if info["span_chars"] >= min_chars:
+                agg["single_large_chars"] += info["span_chars"]
+                agg["single_large_n"] += 1
+        if info["kind"] != "quest":
+            continue
+        handle = "tb-" + hashlib.sha1(
+            info["span"].encode("utf-8", "replace")).hexdigest()[:10]
+        ph = fold_placeholder(handle, info["labels"], info["n_empty"],
+                              info["n_notes"], info["span_chars"])
+        saving = max(0, info["span_chars"] - len(ph))
+        quests.append((pos, saving, info))
+        agg["span_chars"] += info["span_chars"]
+        agg["block_chars"] += info["block_chars"]
+        agg["interim_chars"] += info["interim_chars"]
+        agg["placeholder_chars"] += len(ph)
+        agg["calls"] += info["n_calls"]
+        agg["empty_calls"] += info["n_empty"]
+        prose0_lens.append(info["prose0_chars"])
+
+    total = sum(sizes)
+    last = len(live) - 1
+
+    def _between(p: int, k: int) -> int:
+        return humans_upto[k] - humans_upto[p]
+
+    per_grace: Dict[str, Any] = {}
+    for g in graces:
+        pending = list(quests)
+        saved = 0
+        running = 0
+        crossings: Dict[int, Optional[int]] = {t: None for t in THRESHOLDS_TOKENS}
+        for k in range(len(live)):
+            still = []
+            for q in pending:
+                if q[0] < k and _between(q[0], k) >= g:
+                    saved += q[1]
+                else:
+                    still.append(q)
+            pending = still
+            running += sizes[k]
+            for t in THRESHOLDS_TOKENS:
+                if crossings[t] is None and (running - saved) / CHARS_PER_TOKEN >= t:
+                    crossings[t] = live[k][0]
+        steady = sum(q[1] for q in quests
+                     if last >= 0 and _between(q[0], last) >= g)
+        per_grace[str(g)] = {
+            "steady_saved_chars": steady,
+            "crossings": {str(t): v for t, v in crossings.items()},
+        }
+
+    # Reuse proxy, bucketed by how many human turns separate the quest from
+    # the later assistant message that quotes it.  0 = same turn, skipped.
+    reuse_buckets: Counter = Counter()
+    for pos, _saving, info in quests:
+        lines = _reuse_lines(info)
+        if not lines:
+            continue
+        hit: set = set()
+        for k in range(pos + 1, len(live)):
+            m = live[k][1]
+            if (m.get("role") or "") != "assistant":
+                continue
+            hb = _between(pos, k)
+            if hb == 0:
+                continue
+            bucket = min(hb, 3)
+            if bucket in hit:
+                continue
+            content = m.get("content")
+            if isinstance(content, str) and any(l in content for l in lines):
+                hit.add(bucket)
+        for b in hit:
+            reuse_buckets[str(b)] += 1
+        if hit:
+            reuse_buckets["min_" + str(min(hit))] += 1
+
+    return {
+        "total_chars": total,
+        "kinds": dict(kinds),
+        "agg": dict(agg),
+        "prose0_lens": prose0_lens,
+        "n_quests": len(quests),
+        "per_grace": per_grace,
+        "reuse": dict(reuse_buckets),
+    }
+
+
+def _median(xs: List[int]) -> Optional[int]:
+    xs = sorted(xs)
+    return xs[len(xs) // 2] if xs else None
+
+
+def _p(xs: List[int], q: float) -> Optional[int]:
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else None
+
+
+def print_fold_report(results: List[Dict[str, Any]], min_messages: int,
+                      graces: Tuple[int, ...], min_calls: int,
+                      min_chars: int) -> None:
+    long_chats = [r for r in results
+                  if r["messages"] >= min_messages and "fold" in r]
+    if not long_chats:
+        print("\nFold simulation: no long chats.")
+        return
+    folds = [r["fold"] for r in long_chats]
+    total = sum(f["total_chars"] for f in folds)
+    kinds = Counter(); agg = Counter(); reuse = Counter()
+    prose0: List[int] = []
+    n_q = 0
+    for f in folds:
+        kinds.update(f["kinds"]); agg.update(f["agg"]); reuse.update(f["reuse"])
+        prose0 += f["prose0_lens"]; n_q += f["n_quests"]
+
+    print(f"\n=== Tributary fold simulation over {len(long_chats)} long chats "
+          f"(min_calls={min_calls}, min_chars={min_chars}) ===")
+    print(f"  replayed history: {_k(total)} chars ≈ {_tok(total)} tokens")
+    print(f"  assistant messages with tool blocks, by kind:")
+    for k in ("quest", "single", "small", "ends_on_block"):
+        print(f"    {k:14s} {kinds.get(k, 0):6d}")
+    span = agg.get("span_chars", 0)
+    print(f"\n  quest tributary spans: {_k(span)} chars  {_pct(span, total)} of all replayed")
+    print(f"    tool blocks       {_k(agg.get('block_chars', 0)):>9s}  "
+          f"{_pct(agg.get('block_chars', 0), span)} of span")
+    print(f"    interim prose     {_k(agg.get('interim_chars', 0)):>9s}  "
+          f"{_pct(agg.get('interim_chars', 0), span)} of span   <- unreachable by aging")
+    print(f"    placeholders      {_k(agg.get('placeholder_chars', 0)):>9s}  "
+          f"(net cost of folding)")
+    print(f"    calls {agg.get('calls', 0)}, returned nothing {agg.get('empty_calls', 0)}")
+    sl = agg.get("single_large_chars", 0)
+    print(f"  left by single-block exemption (>= min_chars): "
+          f"{agg.get('single_large_n', 0)} turns, {_k(sl)} chars  {_pct(sl, total)} of all")
+    if prose0:
+        empty = sum(1 for x in prose0 if x == 0)
+        print(f"  prose₀ on quest turns: median {_median(prose0)} chars, "
+              f"p90 {_p(prose0, 0.9)}, empty in {_pct(empty, len(prose0)).strip()}")
+
+    base = {t: [r["crossings"][str(t)] for r in long_chats
+                if r["crossings"][str(t)] is not None] for t in THRESHOLDS_TOKENS}
+    for g in graces:
+        saved = sum(f["per_grace"][str(g)]["steady_saved_chars"] for f in folds)
+        print(f"\n  grace = {g} human turn(s):")
+        print(f"    steady-state reclaimed (net of placeholders): {_k(saved)} chars  "
+              f"{_pct(saved, total)} of all replayed")
+        print(f"    {'threshold':>9s}  {'no fold':>22s}  {'with fold':>22s}")
+        for t in THRESHOLDS_TOKENS:
+            xs = [f["per_grace"][str(g)]["crossings"][str(t)] for f in folds]
+            xs = [x for x in xs if x is not None]
+            b = base[t]
+            bt = f"{len(b):4d} cross, med #{_median(b)}" if b else "none"
+            ft = f"{len(xs):4d} cross, med #{_median(xs)}" if xs else "none"
+            print(f"    {t//1000:>8d}K  {bt:>22s}  {ft:>22s}")
+
+    print(f"\n  reuse proxy ({n_q} quest turns): a later assistant message quotes a")
+    print(f"  distinctive (>= {REUSE_MIN_LINE}-char) span line, by human turns elapsed:")
+    for b, lab in (("1", "1 (the next turn)"), ("2", "2"), ("3", ">= 3")):
+        print(f"    {lab:18s} {reuse.get(b, 0):6d}  {_pct(reuse.get(b, 0), n_q)}")
+    for g in graces:
+        need = sum(reuse.get(f"min_{b}", 0) for b in ("1", "2", "3") if int(b) >= g)
+        # A quest whose FIRST reuse falls at >= g was reused only after the fold.
+        print(f"    grace {g}: first reuse after the fold in {need} "
+              f"({_pct(need, n_q).strip()}) — recall would be needed")
+    print("  Caveats: reuse includes re-reads and re-runs that reproduce a line, which")
+    print("  is the recall case; prose paraphrase is not detected; chars/4 tokens.")
+
+
+# --------------------------------------------------------------------------
 # Reporting
 # --------------------------------------------------------------------------
 
@@ -394,7 +723,14 @@ def main() -> int:
     ap.add_argument("--json", type=Path, default=None, help="write per-chat results here")
     ap.add_argument("--project", default=None)
     ap.add_argument("--chat", default=None)
+    ap.add_argument("--simulate-fold", action="store_true",
+                    help="also simulate tributary folding (design/tributary-fold.md)")
+    ap.add_argument("--grace", default="1,2,3",
+                    help="comma-separated grace values (human turns) to compare")
+    ap.add_argument("--min-calls", type=int, default=FOLD_MIN_CALLS)
+    ap.add_argument("--fold-min-chars", type=int, default=FOLD_MIN_CHARS)
     args = ap.parse_args()
+    graces = tuple(int(g) for g in str(args.grace).split(",") if g.strip())
 
     _init_plugins()
     home = _ziya_home()
@@ -410,9 +746,15 @@ def main() -> int:
             continue
         r = analyze_chat(rec, args.tier1_threshold)
         r["project"] = project_id
+        if args.simulate_fold:
+            r["fold"] = simulate_fold(rec, graces, args.min_calls,
+                                      args.fold_min_chars)
         results.append(r)
 
     print_report(results, errors, args.top, args.min_messages, args.tier1_threshold)
+    if args.simulate_fold:
+        print_fold_report(results, args.min_messages, graces, args.min_calls,
+                          args.fold_min_chars)
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(results, indent=1))
