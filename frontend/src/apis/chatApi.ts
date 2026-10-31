@@ -3578,6 +3578,11 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
                     (typeof content === 'string' && content.trim() ? '\n\n' + content : '');
             }
         }
+        // Rendered-image <img> tags are display-only; the server drops them
+        // from replayed history, so do not upload them (413 at 20 MB).
+        if (message.role === 'assistant' && typeof content === 'string') {
+            content = elideInlineImages(content);
+        }
         // Include images if present
         // Per-message timestamp (epoch ms) is appended as the final tuple
         // element so the backend can expose it to the model. It is never
