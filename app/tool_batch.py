@@ -5,9 +5,13 @@ A model turn can emit several tool calls at once.  Executing them strictly one
 at a time is safe but slow; executing them all concurrently is fast but unsafe
 (a write racing a read of the same file).  This module splits the difference:
 
-* Consecutive **read-only** calls form a group that runs concurrently.
+* Calls whose resource footprints do not conflict (app/utils/tool_footprint.py)
+  form a group that runs concurrently: reads, plus writes that are append-only
+  or touch distinct paths and cannot ask for approval.
 * Any other call is a **barrier** — it runs alone, after everything before it
   has finished and before anything after it starts.
+* The leading reads of a message may already be running when the batch is
+  dispatched (app/utils/tool_prestart.py); the batch replays their events.
 
 Read-only classification is deliberately conservative (``is_read_only_call`` /
 ``shell_command_is_read_only``): an unknown tool, or a shell command that is
