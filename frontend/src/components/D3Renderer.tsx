@@ -449,7 +449,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             const host = d3ContainerRef.current;
             const parked = host ? claimParkedRender(cacheKey, isDarkModeRef.current) : null;
             if (parked && host) {
-                console.log('🔧 D3RENDERER: Adopting parked render across remount');
+                console.info('🔧 D3RENDERER: Adopting parked render across remount');
                 host.innerHTML = '';
                 host.appendChild(parked.node);
                 cleanupFunctionsRef.current.push(...parked.cleanups);
@@ -475,29 +475,29 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             const containerHasContent = d3ContainerRef.current?.querySelector('svg') !== null ||
                                         d3ContainerRef.current?.querySelector('.mermaid-wrapper') !== null;
             if (containerHasContent) {
-                console.log('🔧 D3RENDERER: Skipping - already rendered in THIS instance');
+                console.info('🔧 D3RENDERER: Skipping - already rendered in THIS instance');
                 hasSuccessfulRenderRef.current = true;
                 setIsLoading(false);
                 setShowRawContent(false);
                 return;
             }
             // Cache hit but container is empty (component remounted) - must re-render
-            console.log('🔧 D3RENDERER: Cache hit but container empty (remount) - proceeding to render');
+            console.info('🔧 D3RENDERER: Cache hit but container empty (remount) - proceeding to render');
         }
 
         // If we already have a successful render and not forcing, skip
         if (hasSuccessfulRenderRef.current && !forceRender) {
-            console.log('🔧 D3RENDERER: Skipping render - already successfully rendered and not forcing');
+            console.info('🔧 D3RENDERER: Skipping render - already successfully rendered and not forcing');
             return;
         }
 
         // Prevent concurrent plugin loading
         if (isLoadingPluginRef.current) {
-            console.log('🔧 D3RENDERER: Plugin already loading, skipping duplicate call');
+            console.info('🔧 D3RENDERER: Plugin already loading, skipping duplicate call');
             return;
         }
 
-        console.log('🔧 D3RENDERER: initializeVisualization called, isRendering:', isRenderingRef.current, {
+        console.info('🔧 D3RENDERER: initializeVisualization called, isRendering:', isRenderingRef.current, {
             hasPlugin: !!plugin,
             hasD3: !!d3,
             specType: spec?.type
@@ -531,7 +531,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             // which sends diagnosis to the diagram definition instead.
             const loadDiagnostics = { loadFailures: [] as string[] };
             isLoadingPluginRef.current = true;
-            console.log('🔧 D3RENDERER: Loading plugin for spec:', spec.type);
+            console.info('🔧 D3RENDERER: Loading plugin for spec:', spec.type);
             const PLUGIN_LOAD_TIMEOUT_MS = 15000;
             try {
                 // Bounded by a race and released in the finally below. This
@@ -608,13 +608,13 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 setIsLoading(false);
                 return;
             }
-            console.log('🔧 D3RENDERER: Plugin loaded:', loadedPlugin.name);
+            console.info('🔧 D3RENDERER: Plugin loaded:', loadedPlugin.name);
             setPlugin(loadedPlugin);
         }
         
         // Load d3 separately if needed (not tied to plugin loading)
         if (!d3 && !loadedD3) {
-            console.log('🔧 D3RENDERER: Loading d3 module');
+            console.info('🔧 D3RENDERER: Loading d3 module');
             loadedD3 = await import('d3');
             setD3(loadedD3);
         }
@@ -625,7 +625,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
         // Early exit if we still don't have plugin or d3
         if (!currentPlugin || !currentD3) {
-            console.log('🔧 D3RENDERER: Waiting for plugin and d3 to load...', { hasPlugin: !!plugin, hasD3: !!d3 });
+            console.info('🔧 D3RENDERER: Waiting for plugin and d3 to load...', { hasPlugin: !!plugin, hasD3: !!d3 });
             return;
         }
         
@@ -647,7 +647,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             setIsLoading(true);
         }
 
-        console.log('🔧 D3RENDERER: Starting render with plugin:', currentPlugin.name);
+        console.info('🔧 D3RENDERER: Starting render with plugin:', currentPlugin.name);
 
         // Prevent concurrent renders that cause loops in Safari
         // But check AFTER async plugin loading completes
@@ -656,7 +656,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             return;
         }
 
-        console.log('🔧 D3RENDERER: Setting isRendering=true');
+        console.info('🔧 D3RENDERER: Setting isRendering=true');
         isRenderingRef.current = true;
         try {
             // Clear previous cleanup functions
@@ -780,7 +780,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 const container = d3ContainerRef.current;
                 if (!container || !currentPlugin) return;
 
-                console.log('🔧 D3RENDERER: About to render with plugin:', currentPlugin.name);
+                console.info('🔧 D3RENDERER: About to render with plugin:', currentPlugin.name);
 
                 // Check if this is a Graphviz or Mermaid plugin
                 lastUsedPluginRef.current = currentPlugin || null;
@@ -890,7 +890,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                             });
                         }
                     } else if (currentPlugin) {
-                        console.log('🔧 D3RENDERER: Calling plugin.render for:', currentPlugin.name);
+                        console.info('🔧 D3RENDERER: Calling plugin.render for:', currentPlugin.name);
 
                         // Add timeout for plugin render to prevent infinite hang
                         // D-001: an explicit numeric spec.width/height WINS over
@@ -918,9 +918,9 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                             )
                         ]);
 
-                        console.log('🔧 D3RENDERER: Awaiting plugin render...');
+                        console.info('🔧 D3RENDERER: Awaiting plugin render...');
                         await renderPromise;
-                        console.log('🔧 D3RENDERER: Plugin render completed');
+                        console.info('🔧 D3RENDERER: Plugin render completed');
 
                         // Plugins holding resources React cannot see (WebGL
                         // contexts, observers) expose a teardown on the container.
@@ -1012,7 +1012,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 }
             }
         } finally {
-            console.log('🔧 D3RENDERER: Setting isRendering=false');
+            console.info('🔧 D3RENDERER: Setting isRendering=false');
             isRenderingRef.current = false;
         }
     }, []);
@@ -1023,12 +1023,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         // Don't trigger if we already have a successful render and spec hasn't changed
         // This prevents ~10 redundant trigger attempts after initial success
         if (hasSuccessfulRenderRef.current) {
-            console.log('🔧 D3RENDERER: Plugin/d3 available but already rendered, skipping');
+            console.info('🔧 D3RENDERER: Plugin/d3 available but already rendered, skipping');
             return;
         }
 
         if (plugin && d3 && spec) {
-            console.log('🔧 D3RENDERER: Plugin and d3 available, triggering render');
+            console.info('🔧 D3RENDERER: Plugin and d3 available, triggering render');
             initializeVisualization(forceRender);
         }
     }, [plugin, d3]); // Removed spec, initializeVisualization, forceRender to prevent redundant triggers
