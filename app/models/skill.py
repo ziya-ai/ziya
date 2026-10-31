@@ -35,6 +35,10 @@ class Skill(BaseModel):
     allowImplicitInvocation: bool = True
     # Visibility: 'model_discoverable' or 'user_selectable'
     visibility: Optional[str] = None
+    # 'skill' (default) or 'recipe': a skill directory that also carries a
+    # signature.json contract (design/recipe-store.md).  None on stored-JSON
+    # and built-in skills, which are always plain skills.
+    kind: Optional[str] = None
     # agentskills.io spec fields
     keywords: Optional[List[str]] = None
     license: Optional[str] = None
