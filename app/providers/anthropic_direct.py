@@ -399,7 +399,18 @@ class AnthropicDirectProvider(LLMProvider):
         request_kwargs: Dict[str, Any],
     ) -> AsyncGenerator[StreamEvent, None]:
         """Run a single streaming request and yield normalized events."""
+        from app.providers.base import PassbackBlock
+        from app.utils.mcp_ondemand import is_native_search_request
         active_tools: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, partial_json}
+        # Tool-search blocks (server_tool_use, tool_search_tool_result) by
+        # index, echoed back verbatim at content_block_stop.  A
+        # server_tool_use's input streams as input_json_delta like a tool_use.
+        _passback: Dict[int, Dict[str, Any]] = {}
+        # The result-block types and ``defer_loading`` exist only in the SDK's
+        # beta namespace (0.75.0); the ordinary path stays for every other
+        # request so nothing else changes shape.
+        _messages = (self.client.beta.messages
+                     if is_native_search_request(request_kwargs.get("tools")) else self.client.messages)
 
         # Completed thinking blocks for reasoning-continuity passback, keyed by
         # content-block index.  Closed by signature_delta — a block without a
@@ -413,7 +424,7 @@ class AnthropicDirectProvider(LLMProvider):
         # bedrock-mantle / claude-fable-5: a 35-char reply cut mid-token).
         final_stop_reason = "end_turn"
 
-        async with self.client.messages.stream(**request_kwargs) as stream:
+        async with _messages.stream(**request_kwargs) as stream:
             async for event in stream:
                 if event.type == "message_start" and hasattr(event, "message"):
                     usage = getattr(event.message, "usage", None)
@@ -442,6 +453,15 @@ class AnthropicDirectProvider(LLMProvider):
                             "partial_json": "",
                         }
                         yield ToolUseStart(id=cb.id, name=cb.name, index=idx)
+                    elif cb.type in ("server_tool_use", "tool_search_tool_result"):
+                        try:
+                            _blk = cb.model_dump(exclude_none=True)
+                        except Exception:  # noqa: BLE001 -- a bare object in tests
+                            _blk = {"type": cb.type, **{k: getattr(cb, k) for k in ("id", "name", "tool_use_id", "content") if hasattr(cb, k)}}
+                        if cb.type == "server_tool_use":
+                            _blk["input"] = {}
+                            _blk["_json"] = ""
+                        _passback[idx] = _blk
                     elif cb.type == "thinking":
                         _thinking_blocks[idx] = {
                             "type": "thinking", "thinking": "", "signature": None,
@@ -481,7 +501,9 @@ class AnthropicDirectProvider(LLMProvider):
                         partial = delta.partial_json
                         if idx in active_tools:
                             active_tools[idx]["partial_json"] += partial
-                        yield ToolUseInput(partial_json=partial, index=idx)
+                            yield ToolUseInput(partial_json=partial, index=idx)
+                        elif idx in _passback:
+                            _passback[idx]["_json"] += partial
 
                 elif event.type == "content_block_stop":
                     idx = getattr(event, "index", 0)
@@ -516,6 +538,16 @@ class AnthropicDirectProvider(LLMProvider):
                                 content=_tb.get("thinking", ""),
                                 signature=None, index=idx,
                             )
+                    _pb = _passback.pop(idx, None)
+                    if _pb is not None:
+                        raw = _pb.pop("_json", "")
+                        if _pb.get("type") == "server_tool_use":
+                            try:
+                                _pb["input"] = json.loads(raw) if raw else {}
+                            except json.JSONDecodeError:
+                                _pb["input"] = {}
+                            logger.info(f"🔎 TOOL_SEARCH: {_pb.get('name')} {_pb['input']}")
+                        yield PassbackBlock(block=_pb, index=idx)
                     if idx in active_tools:
                         tdata = active_tools.pop(idx)
                         try:
