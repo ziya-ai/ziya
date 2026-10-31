@@ -638,7 +638,7 @@ from app.config.scope_canonical import (
 # (is_command_allowed) now both consult the same opener definition.
 from app.mcp_servers.write_policy import (
     ShellWriteChecker, _strip_heredoc_bodies, _has_heredoc,
-    _heredoc_body_commands,
+    _heredoc_body_commands, _strip_redirections,
 )
 
 
@@ -1101,7 +1101,13 @@ class ShellServer:
             part = part.strip()
             if not part:
                 continue
-            words = part.split()
+            # Drop redirection operators and their targets before looking
+            # for the command word.  A segment such as ``done 2>/dev/null``
+            # or ``fi > /tmp/out`` otherwise has its keyword stripped and
+            # the redirection token itself rejected as a command
+            # (``'2>/dev/null' is not allowed``).  Redirection targets are
+            # policed separately by the write policy's ``_redirection``.
+            words = _strip_redirections(part.split())
             if not words:
                 continue
 
