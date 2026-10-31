@@ -89,6 +89,7 @@ class GetSkillDetailsTool(BaseMCPTool):
         # Loads the full body on demand (agentskills.io progressive disclosure).
         if not skill:
             try:
+                from app.context import get_project_root_or_none
                 from app.services.skill_discovery import discover_all_skills
                 from app.services.token_service import TokenService
                 from app.utils.skill_match import skill_key, skill_matches
@@ -99,7 +100,7 @@ class GetSkillDetailsTool(BaseMCPTool):
                 # not whichever repo the server happened to be launched in.
                 workspace = (
                     kwargs.get("_workspace_path")
-                    or _request_project_root()
+                    or get_project_root_or_none()
                     or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
                     or None
                 )
