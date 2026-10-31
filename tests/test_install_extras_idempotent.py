@@ -120,6 +120,19 @@ class TestPlanReflectsInstalledState:
 
 class TestInstallPhaseSkipsWhatIsPresent:
 
+    def test_everything_present_is_one_line_not_a_plan(self, harness):
+        """A machine with everything installed should read "already installed",
+        not a multi-section plan whose every entry says ok (2026-10-26).  The
+        full plan is still printed for --dry-run."""
+        r = harness(chromium=True)
+        assert r.returncode == 0, r.stderr
+        lines = [l for l in r.stdout.splitlines() if l.strip()]
+        assert len(lines) == 1, r.stdout
+        assert "already installed" in lines[0] and "Nothing to do" in lines[0]
+        assert "installation plan" not in r.stdout
+        dry = harness("--dry-run", chromium=True)
+        assert "installation plan" in dry.stdout
+
     def test_yes_with_everything_present_runs_no_installer(self, harness):
         # Not a dry run: --yes would previously have re-run both installers.
         r = harness("--yes", chromium=True)

@@ -30,10 +30,10 @@ which is the same set the ``ziya[data]`` / ``ziya[stats]`` extras name:
               table dragged out of the chat drop into Slack desktop as a
               PNG file (Docs/UserInterface.md).
 
-``--data`` / ``--stats`` are opt-in only.  ``--drag`` is included by ``--all``
-and the no-target default on macOS (it is skipped when pyobjc is already
-importable, so the default run never needs the index just to re-check it),
-and is never installed elsewhere.
+All three are included by ``--all`` and the no-target default (``--drag`` only
+on macOS, where it has something to do); each is skipped when its modules are
+already importable, so the default run never needs the index just to re-check
+what is there.  The flags remain for installing one thing.
 
 Editions that add their own extras wrap this: they run their additions and
 then call ``run(args)`` here, so the script location and invocation live in
@@ -163,10 +163,13 @@ def install_python_extras(targets: List[str], dry_run: bool = False) -> int:
     """``pip install`` the packages for ``targets`` into this interpreter."""
     missing = []
     for t in targets:
-        if python_extra_installed(t):
-            print(f"==> {t}: ok already installed; skipped.", flush=True)
-        else:
+        if not python_extra_installed(t):
             missing.append(t)
+    have = [t for t in targets if t not in missing]
+    if have:
+        # One line, not one per target: on a machine with everything present
+        # the whole run should read as "already installed", not as a log.
+        print(f"ok already installed: {' '.join(have)}", flush=True)
     targets = missing
     if not targets:
         return 0

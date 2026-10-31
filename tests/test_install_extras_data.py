@@ -63,39 +63,53 @@ def test_stats_and_dry_run(calls, capsys):
     assert "statsmodels" in capsys.readouterr().out
 
 
-def test_existing_targets_are_forwarded_unchanged(calls, monkeypatch):
-    # Off macOS there are no default Python extras, so the no-target run is
-    # exactly the script's own --all.
-    monkeypatch.setattr(ie.sys, "platform", "linux")
+def test_existing_targets_are_forwarded_unchanged(calls, monkeypatch, capsys):
+    # With every Python extra already present, the no-target run is exactly
+    # the script's own --all; named script targets pass through untouched.
+    monkeypatch.setattr(ie, "python_extra_installed", lambda t: True)
     ie.main(["--latex", "--dry-run"])
     ie.main([])
     ie.main(["--all"])
     ie.run(["--help"])
     assert calls["script"] == [["--latex", "--dry-run"], [], ["--all"], ["--help"]]
     assert calls["pip"] == []
+    # One summary line per run for what was already there, not one per target.
+    out = [l for l in capsys.readouterr().out.splitlines() if "already installed" in l]
+    assert len(out) == 2 and all(l.startswith("ok already installed: ") for l in out), out
 
 
 @pytest.mark.parametrize("argv", [[], ["--all"], ["--all", "--yes"]])
-def test_default_run_on_macos_installs_drag_then_runs_the_script(calls, monkeypatch, argv):
+def test_default_run_installs_every_python_extra_then_runs_the_script(calls, monkeypatch, argv):
+    """The banner says "Install everything with: ziya-install-extras"; the
+    default run must mean that.  For weeks --data / --stats were excluded, so
+    a user who ran the installer still had no analyze tool (2026-10-05,
+    2026-10-26)."""
     monkeypatch.setattr(ie.sys, "platform", "darwin")
     monkeypatch.setattr(ie, "python_extra_installed", lambda t: False)
     assert ie.main(argv) == 0
     (cmd,) = calls["pip"]
-    assert cmd[4:] == ["pyobjc-framework-Cocoa>=10"]
+    names = {p.split(">")[0] for p in cmd[4:]}
+    assert {"duckdb", "sqlglot", "pyarrow", "scipy", "statsmodels",
+            "pyobjc-framework-Cocoa"} == names
     # The script still gets its own argv (no target == its --all default).
     assert calls["script"] == [argv]
 
 
-def test_default_run_skips_drag_when_pyobjc_is_present_and_off_macos(calls, monkeypatch, capsys):
+def test_default_run_skips_present_extras_and_drag_off_macos(calls, monkeypatch, capsys):
     monkeypatch.setattr(ie.sys, "platform", "darwin")
     monkeypatch.setattr(ie, "python_extra_installed", lambda t: t == "--drag")
     assert ie.main([]) == 0
-    assert calls["pip"] == [] and calls["script"] == [[]]
-    assert "--drag: ok already installed" in capsys.readouterr().out
+    (cmd,) = calls["pip"]
+    assert "pyobjc-framework-Cocoa>=10" not in cmd and "statsmodels>=0.14" in cmd
+    assert calls["script"] == [[]]
+    assert "ok already installed: --drag" in capsys.readouterr().out
+    calls["pip"].clear()
     monkeypatch.setattr(ie.sys, "platform", "linux")
     monkeypatch.setattr(ie, "python_extra_installed", lambda t: False)
     ie.main([])
-    assert calls["pip"] == []
+    (cmd,) = calls["pip"]
+    assert "pyobjc-framework-Cocoa>=10" not in cmd, "drag is macOS-only"
+    assert "duckdb>=1.1" in cmd
 
 
 def test_explicit_drag_alone_does_not_run_the_script(calls, monkeypatch):
