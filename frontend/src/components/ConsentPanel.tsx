@@ -24,9 +24,9 @@ import { CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import {
   CONSENT_ANSWERED_EVENT, CONSENT_OPENED_EVENT, SCOPE_LABELS,
   answerConsent, applyAnswered, applyOpened, applyServerList, describe,
-  fetchOpenConsents, openFor,
+  fetchOpenConsents, openFor, pathScopeOf, ruleFor, rungLabel, suggestedRungIndex,
 } from '../utils/consentStore';
-import type { ConsentRecord, ConsentScope, OpenConsents } from '../utils/consentStore';
+import type { ConsentRecord, ConsentScope, OpenConsents, ScopeRung } from '../utils/consentStore';
 import { ConsentPreflight, originalText } from './ConsentPreflight';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 import './TaskCard/task-card-inline-tile.css';
@@ -120,10 +120,10 @@ const ConsentPanel: React.FC<Props> = ({ conversationId }) => {
 
   const answer = useCallback(async (
     rec: ConsentRecord, decision: 'approve' | 'reject', scope: ConsentScope, text: string,
-    edits: Record<string, string> = {},
+    edits: Record<string, string> = {}, pathScope?: string,
   ) => {
     setBusy(rec.request_id);
-    const res = await answerConsent(rec.request_id, decision, scope, text, edits);
+    const res = await answerConsent(rec.request_id, decision, scope, text, edits, pathScope);
     setBusy(null);
     // Success, or the server says nothing is waiting any more: either way
     // the request leaves the panel.  The stream's consent_answered frame
@@ -143,24 +143,42 @@ const ConsentPanel: React.FC<Props> = ({ conversationId }) => {
           key={rec.request_id}
           rec={rec}
           busy={busy === rec.request_id}
-          onAnswer={(d, s, t, e) => answer(rec, d, s, t, e)}
+          onAnswer={(d, s, t, e, ps) => answer(rec, d, s, t, e, ps)}
         />
       ))}
     </div>
   );
 };
 
+// Colour of the rule line by how wide the grant is (design/scope-consent.md D1).
+const RUNG_TONE: Record<ScopeRung['kind'], string> = {
+  file: '#2dd4bf', dir: '#d48806', project: '#cf1322',
+};
+
 const ConsentRequest: React.FC<{
   rec: ConsentRecord;
   busy: boolean;
   onAnswer: (decision: 'approve' | 'reject', scope: ConsentScope, text: string,
-             edits?: Record<string, string>) => void;
+             edits?: Record<string, string>, pathScope?: string) => void;
 }> = ({ rec, busy, onAnswer }) => {
   const [scope, setScope] = useState<ConsentScope>('once');
   const [text, setText] = useState('');
   const [edits, setEdits] = useState<Record<string, string>>({});
   const p = rec.payload;
-  const scopes: ConsentScope[] = rec.scopes ?? ['once', 'conversation', 'session', 'always'];
+  const scopes: ConsentScope[] = rec.scopes ?? ['once', 'conversation', 'project'];
+  // The path-scope ladder: the file, its ancestors, the project.  Walking up
+  // the tree is walking down the dropdown.  Opens at the rung this
+  // conversation last chose when it still contains the new path (D3).
+  const ladder: ScopeRung[] = p.kind === 'tool_call' ? (p.scope_ladder ?? []) : [];
+  const [rung, setRung] = useState<number>(() =>
+    suggestedRungIndex(ladder, p.kind === 'tool_call' ? p.suggested_scope : undefined));
+  const chosen = ladder[rung];
+  // The sentence the server will store for this choice; null when nothing
+  // is remembered (the defaults), so the panel stays quiet by default.
+  const rule = p.kind === 'tool_call' ? ruleFor(p, chosen, scope) : null;
+  const ruleTone = chosen
+    ? RUNG_TONE[chosen.kind]
+    : (scope === 'project' ? RUNG_TONE.dir : RUNG_TONE.file);
   const preflight = p.kind === 'tool_call' ? p.preflight : null;
   const args = p.kind === 'tool_call' ? p.args : null;
   // design/scope-consent.md: paths outside the write policy, and the
@@ -205,10 +223,7 @@ const ConsentRequest: React.FC<{
           aria-label="Outside the write policy"
           style={{ borderLeft: '3px solid #d48806', paddingLeft: 8, fontSize: 12 }}
         >
-          <strong>Outside the write policy.</strong>{' '}
-          Approving once allows writes to exactly these paths, for this call only.
-          A conversation or session scope also remembers these exact files for this
-          tool, so later writes to them won't ask again (or show a diff).
+          <strong>Outside the write policy.</strong>
           <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
             {outside.map(o => (
               <li key={o.path}><code>{o.path}</code></li>
@@ -247,26 +262,53 @@ const ConsentRequest: React.FC<{
 
       <div className="tc-ask-panel__free consent-actions">
         <div className="consent-actions__approve">
-          <Tooltip title={blanked ? 'An edited value is empty' : 'Approve this tool call with the selected scope'}>
+          <Tooltip title={blanked ? 'An edited value is empty' : 'Approve this tool call for the selected scope and duration'}>
             <Button
               type="primary"
               size="small"
               icon={<CheckCircleOutlined />}
               loading={busy}
               disabled={blanked}
-              onClick={() => onAnswer('approve', scope, text, edits)}
+              onClick={() => onAnswer('approve', scope, text, edits, pathScopeOf(chosen))}
             >
               Approve
             </Button>
           </Tooltip>
+          {ladder.length > 0 && (
+            <>
+              <span style={{ fontSize: 12, opacity: 0.7 }}>for</span>
+              <Select<number>
+                size="small"
+                value={rung}
+                onChange={setRung}
+                disabled={busy}
+                style={{ minWidth: 180, maxWidth: 360 }}
+                popupMatchSelectWidth={false}
+                aria-label="Path scope"
+                options={ladder.map((r, i) => ({
+                  value: i,
+                  label: (
+                    <span style={{ fontFamily: r.kind === 'project' ? undefined : 'ui-monospace, monospace' }}>
+                      <span>{rungLabel(r)}</span>
+                      {r.kind !== 'file' && typeof r.files === 'number' && (
+                        <span style={{ opacity: 0.6, marginLeft: 8, fontSize: 11 }}>
+                          {r.files_capped ? `${r.files}+` : r.files} files
+                        </span>
+                      )}
+                    </span>
+                  ),
+                }))}
+              />
+            </>
+          )}
           <Select<ConsentScope>
             size="small"
             value={scope}
             onChange={setScope}
             disabled={busy}
-            style={{ minWidth: 150 }}
+            style={{ minWidth: 140 }}
             options={scopes.map(s => ({ value: s, label: SCOPE_LABELS[s] }))}
-            aria-label="Approval scope"
+            aria-label="Approval duration"
           />
         </div>
         <div className="consent-actions__reject">
@@ -289,6 +331,17 @@ const ConsentRequest: React.FC<{
           </Button>
         </div>
       </div>
+      {rule && (
+        <div
+          role="note"
+          aria-label="What approving remembers"
+          className="consent-rule"
+          style={{ marginTop: 6, padding: '5px 10px', fontSize: 12.5, borderRadius: 4,
+                   borderLeft: `3px solid ${ruleTone}`, background: `${ruleTone}1a` }}
+        >
+          {rule}
+        </div>
+      )}
     </div>
   );
 };

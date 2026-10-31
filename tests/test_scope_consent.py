@@ -318,7 +318,7 @@ async def _asks(tool, tool_name, tid, conv="c", pf=OUT):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scope", ["conversation", "session", "always"])
+@pytest.mark.parametrize("scope", ["conversation", "project"])
 async def test_a_standing_scope_remembers_the_approved_paths(gate, scope):
     """Regression: approving a write for the conversation/session asked again
     on the very next write to the same file."""
@@ -343,7 +343,7 @@ async def test_once_remembers_nothing(gate):
 
 @pytest.mark.asyncio
 async def test_a_remembered_path_does_not_cover_a_new_path(gate):
-    await _approve(_Writer, "writer", "t1", "session")
+    await _approve(_Writer, "writer", "t1", "project")
     both = {"op": "write", "outside_policy": [
         {"path": "src.py", "reason": "x"}, {"path": "lib.py", "reason": "x"}]}
     assert await _asks(_Writer, "writer", "t2", pf=both), "lib.py was never shown"
@@ -363,11 +363,11 @@ async def test_remembered_paths_are_per_tool_and_conversation_scope_is_per_conve
 
 
 @pytest.mark.asyncio
-async def test_session_scope_spans_conversations_and_forget_clears_conversation_paths(gate):
+async def test_project_scope_spans_conversations_and_forget_clears_conversation_paths(gate):
     await _approve(_Writer, "writer", "t1", "conversation")
     cg.grants().forget_conversation("c")
     assert await _asks(_Writer, "writer", "t2")
-    await _approve(_Writer, "writer", "t3", "session")
+    await _approve(_Writer, "writer", "t3", "project")
     assert not await _asks(_Writer, "writer", "t4", conv="c-other")
 
 
@@ -376,7 +376,7 @@ async def test_a_rejection_remembers_nothing(gate):
     gen = cg.consent_gate(tool_name="writer", tool_id="t1", args={}, conversation_id="c",
                           tool=_Writer(OUT), project_root="/p")
     opened = await gen.__anext__()
-    cg.ledger().record_answer(opened["request_id"], "reject", scope="session")
+    cg.ledger().record_answer(opened["request_id"], "reject", scope="project")
     [e async for e in gen]
     assert await _asks(_Writer, "writer", "t2")
 
@@ -385,19 +385,19 @@ async def test_a_rejection_remembers_nothing(gate):
 async def test_remembered_paths_do_not_skip_an_ask_mode_tool_op(gate):
     """Path memory answers the policy question only; an ``ask`` tool still
     needs its (tool, op) consent."""
-    cg.grants().remember_paths("session", "asker", "c", "/p", ["src.py"])
+    cg.grants().remember_paths("project", "asker", "c", "/p", ["src.py"])
     assert await _asks(_Asker, "asker", "t1")
-    cg.grants().remember("session", "asker", "*", "c")
+    cg.grants().remember("project", "asker", "*", "c")
     assert not await _asks(_Asker, "asker", "t2"), "both covered: no ask"
 
 
 def test_floor_paths_are_never_remembered(tmp_path):
     g = cg.GrantCache()
     root = str(tmp_path)
-    g.remember_paths("session", "w", "c", root, [".git/config", "../outside.txt"])
+    g.remember_paths("project", "w", "c", root, [".git/config", "../outside.txt"])
     assert not g.covers_paths("w", "c", root, [".git/config"])
     assert not g.covers_paths("w", "c", root, ["../outside.txt"])
-    g.remember_paths("session", "w", "c", root, ["src.py"])
+    g.remember_paths("project", "w", "c", root, ["src.py"])
     assert g.covers_paths("w", "c", root, ["src.py"])
     assert g.covers_paths("w", "c", root, ["./src.py"]), "matching is on the realpath"
     assert not g.covers_paths("w", "c", str(tmp_path / "sub"), ["src.py"]), "bound to its root"
@@ -408,7 +408,7 @@ def test_a_remembered_path_that_becomes_a_symlink_out_is_not_covered(tmp_path):
     root.mkdir()
     (root / "f.txt").write_text("x")
     g = cg.GrantCache()
-    g.remember_paths("session", "w", "c", str(root), ["f.txt"])
+    g.remember_paths("project", "w", "c", str(root), ["f.txt"])
     assert g.covers_paths("w", "c", str(root), ["f.txt"])
     (root / "f.txt").unlink()
     (tmp_path / "secret").write_text("s")

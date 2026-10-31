@@ -38,7 +38,7 @@ const rec = (id: string, conv = 'conv-1', tool = 'git', op = 'commit') => ({
   conversation_id: conv,
   tool_id: 't-' + id,
   payload: { kind: 'tool_call', tool, op, args: { message: 'x' }, preflight: { staged: ['a.py'] } },
-  scopes: ['once', 'conversation', 'session', 'always'],
+  scopes: ['once', 'conversation', 'project'],
   opened_at: 1,
   answer: null,
   closed: false,
@@ -168,29 +168,112 @@ describe('ConsentPanel', () => {
     expect(screen.getByText('Allow git commit?')).toBeInTheDocument();
   });
 
-  // design/scope-consent.md: a write outside the write policy names its paths,
-  // says the grant is for this call only, and shows the proposed change.
-  it('marks paths outside the write policy and shows the diff on its own', async () => {
-    render(<ConsentPanel conversationId="conv-1" />);
-    const r = rec('conv:conv-1:t5', 'conv-1', 'file_write', '*');
+  // design/scope-consent.md D1: a write outside the write policy names its
+  // paths, offers the scope ladder, and states the rule a choice would store.
+  const LADDER = [
+    { kind: 'file', paths: ['src/pkg/src.py'],
+      rules: { conversation: 'RULE file conv', project: 'RULE file proj' } },
+    { kind: 'dir', path: 'src/pkg', files: 3,
+      rules: { conversation: 'RULE pkg conv', project: 'RULE pkg proj' } },
+    { kind: 'dir', path: 'src', files: 40, files_capped: false,
+      rules: { conversation: 'RULE src conv', project: 'RULE src proj' } },
+    { kind: 'project', path: '', files: 5000, files_capped: true,
+      rules: { conversation: 'RULE all conv', project: 'RULE all proj' } },
+  ];
+  const outsideRec = (id: string, extra: Record<string, unknown> = {}) => {
+    const r = rec(id, 'conv-1', 'file_write', '*');
     r.payload = {
       ...r.payload,
-      preflight: { op: 'write', path: 'src.py', diff: '--- a/src.py\n+++ b/src.py\n-x = 1\n+x = 2\n',
-                   outside_policy: [{ path: 'src.py', reason: 'blocked' }] } as any,
-      outside_policy: [{ path: 'src.py', reason: 'blocked' }],
+      preflight: { op: 'write', path: 'src/pkg/src.py',
+                   diff: '--- a/src/pkg/src.py\n+++ b/src/pkg/src.py\n-x = 1\n+x = 2\n',
+                   outside_policy: [{ path: 'src/pkg/src.py', reason: 'blocked' }] } as any,
+      outside_policy: [{ path: 'src/pkg/src.py', reason: 'blocked' }],
+      scope_ladder: LADDER,
+      ...extra,
     } as any;
-    open(r);
+    return r;
+  };
+  const postBody = () => {
+    const post = fetchMock.mock.calls.find(c => c[1]?.method === 'POST');
+    return post ? JSON.parse(post[1].body) : null;
+  };
+  // antd Select copies aria-label onto both the wrapper div and the inner
+  // input, so anchor on the combobox role (the input) rather than the label.
+  const select = (label: RegExp | string) => screen.getByRole('combobox', { name: label });
+  const pick = async (label: RegExp, option: RegExp) => {
+    fireEvent.mouseDown(select(label).closest('.ant-select')!.querySelector('.ant-select-selector')!);
+    fireEvent.click(await screen.findByText(option));
+  };
+
+  it('marks paths outside the write policy and shows the diff on its own', async () => {
+    render(<ConsentPanel conversationId="conv-1" />);
+    open(outsideRec('conv:conv-1:t5'));
     expect(await screen.findByText('Allow file_write outside the write policy?')).toBeInTheDocument();
-    const alert = screen.getByRole('alert', { name: /outside the write policy/i });
-    expect(alert).toHaveTextContent('src.py');
-    expect(alert).toHaveTextContent(/once.*this call only/i);
-    // A standing scope remembers the shown files (design/scope-consent.md C2).
-    expect(alert).toHaveTextContent(/remembers these exact files/i);
-    expect(alert).not.toHaveTextContent(/not to these paths/i);
+    expect(screen.getByLabelText(/outside the write policy/i)).toHaveTextContent('src/pkg/src.py');
+    // The old paragraph of fine print is gone: the rule line says it when it matters.
+    expect(screen.queryByText(/remembers these exact files/i)).toBeNull();
+    expect(screen.queryByRole('note', { name: /what approving remembers/i })).toBeNull();
     const diff = screen.getByLabelText('Proposed change');
     expect(diff).toHaveTextContent('+x = 2');
-    // The diff is not repeated inside the JSON block.
     expect(screen.queryByText(/"diff":/)).toBeNull();
+  });
+
+  it('defaults to the file for this call only and sends no path_scope', async () => {
+    render(<ConsentPanel conversationId="conv-1" />);
+    open(outsideRec('conv:conv-1:t5a'));
+    await screen.findByText('Approve');
+    expect(select('Path scope')).toBeInTheDocument();
+    expect(select('Approval duration')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => expect(postBody()).toEqual({ decision: 'approve', scope: 'once', answer: '' }));
+  });
+
+  it('walking up the ladder and picking a duration shows the server rule and sends path_scope', async () => {
+    render(<ConsentPanel conversationId="conv-1" />);
+    open(outsideRec('conv:conv-1:t5b'));
+    await screen.findByText('Approve');
+    await pick(/approval duration/i, /^this conversation$/);
+    // Rung still the file: the file rule, verbatim from the payload.
+    expect(screen.getByRole('note', { name: /what approving remembers/i })).toHaveTextContent('RULE file conv');
+    await pick(/path scope/i, /^src\/$/);
+    expect(screen.getByRole('note', { name: /what approving remembers/i })).toHaveTextContent('RULE src conv');
+    await pick(/approval duration/i, /^this project$/);
+    expect(screen.getByRole('note', { name: /what approving remembers/i })).toHaveTextContent('RULE src proj');
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => expect(postBody()).toEqual({
+      decision: 'approve', scope: 'project', answer: '', path_scope: 'src' }));
+  });
+
+  it('the whole-project rung sends path_scope "" (not omitted)', async () => {
+    render(<ConsentPanel conversationId="conv-1" />);
+    open(outsideRec('conv:conv-1:t5c'));
+    await screen.findByText('Approve');
+    await pick(/path scope/i, /whole project/);
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => expect(postBody()).toEqual({
+      decision: 'approve', scope: 'once', answer: '', path_scope: '' }));
+  });
+
+  // D3: the panel opens at the rung this conversation last chose.
+  it('preselects the suggested rung from the payload', async () => {
+    render(<ConsentPanel conversationId="conv-1" />);
+    open(outsideRec('conv:conv-1:t5d', { suggested_scope: 'src/pkg' }));
+    await screen.findByText('Approve');
+    expect(select('Path scope').closest('.ant-select')).toHaveTextContent('src/pkg/');
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => expect(postBody()).toEqual({
+      decision: 'approve', scope: 'once', answer: '', path_scope: 'src/pkg' }));
+  });
+
+  it('an ask-mode tool without outside paths has no path dropdown but states its op rule', async () => {
+    render(<ConsentPanel conversationId="conv-1" />);
+    const r = rec('conv:conv-1:t5e');
+    r.payload = { ...r.payload, op_rules: { conversation: 'RULE commit conv', project: 'RULE commit proj' } } as any;
+    open(r);
+    await screen.findByText('Approve');
+    expect(screen.queryByRole('combobox', { name: 'Path scope' })).toBeNull();
+    await pick(/approval duration/i, /^this project$/);
+    expect(screen.getByRole('note', { name: /what approving remembers/i })).toHaveTextContent('RULE commit proj');
   });
 
   it('renders the proposed change through the read-only chat diff viewer, normalized', async () => {
