@@ -4781,53 +4781,20 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['*']
   });
 
-  registerPreprocessor((def: string, type: string) => {
-    // Add explicit shape definitions for states that might be causing issues
-    const lines = def.split('\n');
-    const states = new Set<string>();
+  // No stateDiagram "shape" pass: inserting `X: X` gives every state a
+  // description, which mermaid draws as a titled box with the name repeated
+  // below a divider (and attaches a description to composites).  See
+  // __tests__/mermaidStateNoInjectedDescriptions.test.ts.
 
-    // First pass: collect all state names
-    for (const line of lines) {
-      // Skip if not a state diagram type, but allow processing if it looks like one
-      if (type && type !== 'stateDiagram' && type !== 'stateDiagram-v2' && !line.match(/^\s*stateDiagram/i)) {
-        continue;
-      }
-      // Match state definitions and transitions
-      const stateMatches = line.match(/\b(\w+)\b\s*:/g) || [];
-      const transitionMatches = line.match(/\b(\w+)\b\s*-->/g) || [];
-
-      stateMatches.forEach(match => {
-        const state = match.replace(/\s*:$/, '').trim();
-        states.add(state);
-      });
-
-      transitionMatches.forEach(match => {
-        const state = match.replace(/\s*-->$/, '').trim();
-        states.add(state);
-      });
-    }
-
-    // Second pass: ensure all states have a shape definition
-    const result = [...lines];
-    const stateDefSection = lines.findIndex(line =>
-      line.trim().match(/^stateDiagram(?:-v2)?/i)
-    );
-
-    if (stateDefSection !== -1) {
-      // Add state style definitions after the diagram type declaration
-      const stateStyles = Array.from(states)
-        .map(state => `    ${state}: ${state}`)
-        .join('\n');
-
-      if (stateStyles) {
-        result.splice(stateDefSection + 1, 0, stateStyles);
-      }
-    }
-
-    return result.join('\n');
-  }, {
-    name: 'state-shape-fix',
-    priority: 90,
+  // Escape colons / prose semicolons in stateDiagram label text (transition
+  // labels, state descriptions, single-line notes).  Mermaid's state lexer
+  // ends label text at the first `:` or `;`, so "05:54:19" in a note fails
+  // with "got 'DESCR'".  Runs after the wildcard passes so none of them can
+  // touch the `#58;` / `#59;` entities.
+  registerPreprocessor(
+    (definition: string): string => escapeStateLabelText(definition), {
+    name: 'state-label-text-escape',
+    priority: 40,
     diagramTypes: ['statediagram', 'statediagram-v2']
   });
 
