@@ -1718,6 +1718,19 @@ class StreamingToolExecutor:
         # Build set of tool names where every input param is optional
         optional_only_tools: set = set()
         for _t in all_tools:
+            _name = getattr(_t, 'name', '')
+            # External MCP tools (SecureMCPTool) carry the server's real JSON
+            # schema only in metadata['input_schema']; their args_schema is
+            # the pydantic model LangChain infers from _run(tool_input, ...),
+            # whose required 'tool_input' would misclassify every external
+            # tool as argument-requiring. Consult the dict schema first.
+            _meta = getattr(_t, 'metadata', None)
+            _dict_schema = _meta.get('input_schema') if isinstance(_meta, dict) else None
+            if isinstance(_dict_schema, dict):
+                if not _dict_schema.get('required'):
+                    optional_only_tools.add(_name)
+                    optional_only_tools.add(self._normalize_tool_name(_name))
+                continue
             # Builtin tools are wrapped in DirectMCPTool, which carries the
             # pydantic schema on .tool_instance.InputSchema / .args_schema —
             # NOT on the wrapper itself. Probe all three so builtins (beads,
@@ -1734,7 +1747,10 @@ class StreamingToolExecutor:
                 # inherently zero-arg, so it belongs here too. Only exclude
                 # when there is at least one *required* field.
                 if all(not f.is_required() for f in _fields.values()):
-                    optional_only_tools.add(getattr(_t, 'name', ''))
+                    # The gate compares against the mcp_-stripped name, so
+                    # register both spellings.
+                    optional_only_tools.add(_name)
+                    optional_only_tools.add(self._normalize_tool_name(_name))
 
         # Convert and deduplicate tools
         converted_tools = [self._convert_tool_schema(tool) for tool in all_tools]
