@@ -99,6 +99,10 @@ _OWNED_BY_RUNTIME: Dict[str, str] = {
     "lmstudio": "lmstudio",      # documented (also identified via /api/v0/models)
     "sglang": "sglang",          # documented, unverified
     "localai": "localai",        # documented
+    # oMLX (Apple-silicon MLX server): ModelInfo.owned_by defaults to "omlx"
+    # in omlx/api/openai_models.py; /v1/models also carries vLLM-style
+    # max_model_len.  Read from source 2026-10-18, not yet seen live.
+    "omlx": "omlx",
 }
 
 RUNTIME_LABELS: Dict[str, str] = {
@@ -109,8 +113,19 @@ RUNTIME_LABELS: Dict[str, str] = {
     "vllm": "vLLM",
     "sglang": "SGLang",
     "localai": "LocalAI",
+    "omlx": "oMLX",
     "openai-compatible": "OpenAI-compatible",
 }
+
+# Runtimes with a native per-model metadata API beyond the /v1/models entry.
+# register_local_endpoints probes each of these per model after the free
+# enrichment from the listing.
+_RUNTIMES_WITH_NATIVE_PROBE = frozenset({"ollama", "lmstudio", "omlx"})
+
+# oMLX model types that answer /v1/chat/completions.  Its /v1/models also
+# lists embedding, reranker, STT/TTS, decision and the "MarkItDown" document
+# converter, none of which a chat picker should offer.
+_OMLX_CHAT_MODEL_TYPES = frozenset({"llm", "vlm"})
 
 # Runtimes whose context window is fixed at launch/load and NOT taken per
 # request. Only Ollama takes options.num_ctx.
@@ -182,32 +197,179 @@ def local_token_cap() -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
+# Runtime-specific port discovery
+# ---------------------------------------------------------------------------
+
+def _omlx_settings(environ: Optional[Dict[str, str]] = None,
+                   home: Optional[str] = None) -> Optional[dict]:
+    """oMLX's ``settings.json`` as a dict, or None when absent/malformed.
+
+    ``<base>`` is resolved the way omlx/settings.py does it: ``OMLX_BASE_PATH``
+    if set, else the one-line bootstrap file the macOS app writes at
+    ``~/Library/Application Support/oMLX/base-path``, else ``~/.omlx``.  No
+    network.
+    """
+    env = os.environ if environ is None else environ
+    home_dir = home or os.path.expanduser("~")
+    base = (env.get("OMLX_BASE_PATH") or "").strip()
+    if not base:
+        bootstrap = os.path.join(home_dir, "Library", "Application Support", "oMLX", "base-path")
+        try:
+            with open(bootstrap, encoding="utf-8") as fh:
+                base = fh.read().strip()
+        except OSError:
+            base = ""
+    if not base:
+        base = os.path.join(home_dir, ".omlx")
+    base = os.path.expanduser(base)
+    try:
+        with open(os.path.join(base, "settings.json"), encoding="utf-8") as fh:
+            settings = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return settings if isinstance(settings, dict) else None
+
+
+def omlx_configured_port(environ: Optional[Dict[str, str]] = None,
+                         home: Optional[str] = None) -> Optional[int]:
+    """The port a locally installed oMLX serves on, if it is not the default.
+
+    oMLX's default (:8000) is already in KNOWN_LOCAL_PORTS; this recovers a
+    moved server.  Resolution mirrors the CLI's ``CLI arg > env >
+    settings.json > default`` order, minus the CLI arg we cannot see:
+    ``OMLX_PORT``, then ``{"server": {"port": N}}`` in settings.json (see
+    _omlx_settings).  None when nothing is configured -- the caller then
+    relies on the port scan alone.
+    """
+    env = os.environ if environ is None else environ
+    raw = (env.get("OMLX_PORT") or "").strip()
+    if raw.isdigit() and 0 < int(raw) < 65536:
+        return int(raw)
+    settings = _omlx_settings(environ, home)
+    server = settings.get("server") if settings else None
+    port = server.get("port") if isinstance(server, dict) else None
+    if isinstance(port, int) and 0 < port < 65536:
+        return port
+    return None
+
+
+def omlx_configured_api_key(environ: Optional[Dict[str, str]] = None,
+                            home: Optional[str] = None) -> Optional[str]:
+    """The main API key an installed oMLX requires, if one is set.
+
+    With a key configured, oMLX answers ``GET /v1/models`` with 401 "API key
+    required" (``verify_inference_api_key``), so an unauthenticated scan
+    reads the port as empty and the server vanishes from the picker.  The
+    key is where the server itself keeps it -- ``OMLX_API_KEY`` or
+    ``{"auth": {"api_key": "..."}}`` in settings.json -- so a Ziya on the same
+    host needs no configuration of its own.
+    """
+    env = os.environ if environ is None else environ
+    raw = (env.get("OMLX_API_KEY") or "").strip()
+    if raw:
+        return raw
+    settings = _omlx_settings(environ, home)
+    auth = settings.get("auth") if settings else None
+    key = auth.get("api_key") if isinstance(auth, dict) else None
+    return key.strip() if isinstance(key, str) and key.strip() else None
+
+
+def local_api_key_candidates() -> List[str]:
+    """Keys to offer a local server that refuses an unauthenticated listing,
+    in order: ``ZIYA_LOCAL_API_KEY`` (any runtime), then the oMLX key read
+    from its own configuration.  Only sent to loopback/configured local
+    servers, and only after the keyless attempt was refused."""
+    keys: List[str] = []
+    explicit = (os.environ.get("ZIYA_LOCAL_API_KEY") or "").strip()
+    if explicit:
+        keys.append(explicit)
+    omlx = omlx_configured_api_key()
+    if omlx and omlx not in keys:
+        keys.append(omlx)
+    return keys
+
+
+def extra_scan_ports() -> List[int]:
+    """Ports beyond KNOWN_LOCAL_PORTS that an installed runtime's own
+    configuration says it listens on.  Each is scanned like a known port;
+    a stale config costs one 1-second connection refusal."""
+    ports: List[int] = []
+    omlx = omlx_configured_port()
+    if omlx and omlx not in KNOWN_LOCAL_PORTS:
+        ports.append(omlx)
+    return ports
+
+
+# ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
 
-def _http_json(method: str, url: str, body: Optional[dict] = None,
-               timeout: float = PROBE_TIMEOUT_S) -> Optional[Any]:
+def _http_json_status(method: str, url: str, body: Optional[dict] = None,
+                      timeout: float = PROBE_TIMEOUT_S,
+                      api_key: Optional[str] = None) -> tuple:
+    """``(http_status, parsed_body)``.  Status is None when no HTTP answer
+    came back at all (refused, timeout, unparseable); a 4xx/5xx keeps its
+    code so a caller can tell "nothing there" from "there, but refused"."""
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     if data is not None:
         req.add_header("Content-Type", "application/json")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode() or "null")
+            return resp.status, json.loads(resp.read().decode() or "null")
+    except urllib.error.HTTPError as exc:
+        logger.debug("local model probe %s %s: HTTP %s", method, url, exc.code)
+        return exc.code, None
     except (urllib.error.URLError, OSError, ValueError) as exc:
         logger.debug("local model probe %s %s failed: %s", method, url, exc)
-        return None
+        return None, None
 
 
-def _list_v1_models(base_url: str, timeout: float = PROBE_TIMEOUT_S) -> Optional[list]:
-    """``GET /v1/models`` -> the ``data`` list, or None if the server did not
-    answer with an OpenAI-shaped model list."""
-    body = _http_json("GET", f"{base_url.rstrip('/')}/models", timeout=timeout)
+def _http_json(method: str, url: str, body: Optional[dict] = None,
+               timeout: float = PROBE_TIMEOUT_S,
+               api_key: Optional[str] = None) -> Optional[Any]:
+    return _http_json_status(method, url, body, timeout, api_key)[1]
+
+
+def _models_from_body(body: Any) -> Optional[list]:
     if isinstance(body, dict) and isinstance(body.get("data"), list):
         return body["data"]
     if isinstance(body, list):
         return body
     return None
+
+
+def _list_v1_models(base_url: str, timeout: float = PROBE_TIMEOUT_S,
+                    api_key: Optional[str] = None) -> Optional[list]:
+    """``GET /v1/models`` -> the ``data`` list, or None if the server did not
+    answer with an OpenAI-shaped model list."""
+    body = _http_json("GET", f"{base_url.rstrip('/')}/models", timeout=timeout, api_key=api_key)
+    return _models_from_body(body)
+
+
+def _list_v1_models_auth(base_url: str, timeout: float = PROBE_TIMEOUT_S) -> tuple:
+    """``(entries, api_key_used, refused)`` for the scan.
+
+    Keyless first; if the server answers 401/403 the candidate keys are
+    offered in turn and the one that works is remembered for the endpoint.
+    ``refused`` is True when the server is there but every attempt was
+    rejected -- logged at the scan so the user learns why a running server
+    is missing instead of seeing it silently skipped."""
+    url = f"{base_url.rstrip('/')}/models"
+    status, body = _http_json_status("GET", url, timeout=timeout)
+    entries = _models_from_body(body)
+    if entries is not None:
+        return entries, None, False
+    if status not in (401, 403):
+        return None, None, False
+    for key in local_api_key_candidates():
+        status, body = _http_json_status("GET", url, timeout=timeout, api_key=key)
+        entries = _models_from_body(body)
+        if entries is not None:
+            return entries, key, False
+    return None, None, True
 
 
 def list_server_models(base_url: str) -> List[str]:
@@ -237,6 +399,7 @@ class LocalServer:
     base_url: str           # ".../v1"
     model_ids: tuple        # server order
     entries: tuple          # raw /v1/models entries, for per-model enrichment
+    api_key: Optional[str] = None   # the key the server accepted, if it needed one
 
     @property
     def root(self) -> str:
@@ -298,6 +461,7 @@ def _assign_ids(servers: List[dict]) -> List[LocalServer]:
         out.append(LocalServer(
             endpoint_id=eid, runtime=runtime, label=_make_label(runtime, base),
             base_url=base, model_ids=tuple(s["ids"]), entries=tuple(s["entries"]),
+            api_key=s.get("api_key"),
         ))
     return out
 
@@ -321,18 +485,78 @@ def _dedupe_aliases(runtime: str, entries: list, ids: List[str]) -> List[str]:
     return kept or ids
 
 
+def _omlx_status_models(root: str, timeout: float = PROBE_TIMEOUT_S,
+                        api_key: Optional[str] = None) -> Optional[list]:
+    """``GET /v1/models/status`` -> oMLX's per-model status list, or None when
+    the server did not answer in that shape (older build, or the endpoint is
+    behind the main API key while ``/v1/models`` is not)."""
+    body = _http_json("GET", f"{root}/v1/models/status", timeout=timeout, api_key=api_key)
+    if isinstance(body, dict) and isinstance(body.get("models"), list):
+        return body["models"]
+    return None
+
+
+def _omlx_status_entry(models: list, name: str) -> Optional[dict]:
+    """The status entry for a ``/v1/models`` id.  The listing shows a
+    model's ``model_alias`` when one is set; status keys by the physical id
+    and carries the alias as a field, so both are matched."""
+    for m in models:
+        if isinstance(m, dict) and (m.get("id") == name or m.get("model_alias") == name):
+            return m
+    return None
+
+
+def _chat_models_only(runtime: str, root: str, ids: List[str],
+                      api_key: Optional[str] = None) -> List[str]:
+    """Drop ids that cannot serve chat.  oMLX lists its embedding, reranker,
+    speech, decision and MarkItDown models next to the LLMs/VLMs on
+    ``/v1/models``; ``/v1/models/status`` names each one's ``model_type``.
+    An id the status does not describe is kept -- failing open keeps a model
+    the server might serve rather than hiding one it does."""
+    if runtime != "omlx":
+        return ids
+    status = _omlx_status_models(root, timeout=SCAN_TIMEOUT_S, api_key=api_key)
+    if not status:
+        return ids
+    kept: List[str] = []
+    for mid in ids:
+        entry = _omlx_status_entry(status, mid)
+        mtype = entry.get("model_type") if entry else None
+        if mtype is None or mtype in _OMLX_CHAT_MODEL_TYPES:
+            kept.append(mid)
+        else:
+            logger.debug("local: omlx %s is a %s model; not offered for chat", mid, mtype)
+    return kept
+
+
 _scan_cache: Optional[tuple] = None   # (List[LocalServer], monotonic time)
 
 
-def scan_local_servers(refresh: bool = False) -> List[LocalServer]:
+def scan_is_stale(max_age: Optional[float]) -> bool:
+    """True when there is no cached scan, or ``max_age`` seconds have passed
+    since it ran.  ``None`` means "a cached hit never goes stale", which is
+    the request-path contract."""
+    if _scan_cache is None:
+        return True
+    if max_age is None:
+        return False
+    import time
+    return time.monotonic() - _scan_cache[1] > max_age
+
+
+def scan_local_servers(refresh: bool = False,
+                       max_age: Optional[float] = None) -> List[LocalServer]:
     """Every local server that answers ``GET /v1/models``: the well-known
     loopback ports plus ``ZIYA_LOCAL_MODEL_URL`` if set. Memoised; an empty
     result is retried after SCAN_MISS_TTL_S so a server started after Ziya
-    is picked up without a restart."""
+    is picked up without a restart, and a non-empty one is re-read when the
+    caller passes a ``max_age`` it has outlived (the model picker does; see
+    SCAN_UI_MAX_AGE_S).  Until 2026-10-20 a non-empty scan was kept for the
+    life of the process, so a model added to oMLX never reached the picker."""
     global _scan_cache
     import time
     now = time.monotonic()
-    if not refresh and _scan_cache is not None:
+    if not refresh and _scan_cache is not None and not scan_is_stale(max_age):
         found, when = _scan_cache
         if found or now - when < SCAN_MISS_TTL_S:
             return list(found)
@@ -341,7 +565,7 @@ def scan_local_servers(refresh: bool = False) -> List[LocalServer]:
     configured = configured_local_url()
     if configured:
         candidates.append(configured)
-    for port in KNOWN_LOCAL_PORTS:
+    for port in (*KNOWN_LOCAL_PORTS, *extra_scan_ports()):
         url = f"http://127.0.0.1:{port}/v1"
         if url not in candidates and not (
             configured and _port_of(configured) == port and is_loopback_url(configured)
@@ -349,14 +573,24 @@ def scan_local_servers(refresh: bool = False) -> List[LocalServer]:
             candidates.append(url)
 
     raw: List[dict] = []
+    refused: List[str] = []
     for base in candidates:
-        entries = _list_v1_models(base, timeout=SCAN_TIMEOUT_S)
+        entries, key, was_refused = _list_v1_models_auth(base, timeout=SCAN_TIMEOUT_S)
         if entries is None:
+            if was_refused:
+                refused.append(base)
             continue
         root = base[: -len("/v1")]
         runtime = _identify_runtime(root, entries)
         ids = _dedupe_aliases(runtime, entries, _ids_from_entries(entries))
-        raw.append({"runtime": runtime, "base_url": base, "ids": ids, "entries": entries})
+        ids = _chat_models_only(runtime, root, ids, api_key=key)
+        raw.append({"runtime": runtime, "base_url": base, "ids": ids,
+                    "entries": entries, "api_key": key})
+    if refused:
+        logger.warning(
+            "local: %s answered but require an API key Ziya does not have; set "
+            "ZIYA_LOCAL_API_KEY (oMLX: OMLX_API_KEY or auth.api_key in its "
+            "settings.json is read automatically)", ", ".join(refused))
 
     servers = _assign_ids(raw)
     _scan_cache = (servers, now)
@@ -365,7 +599,8 @@ def scan_local_servers(refresh: bool = False) -> List[LocalServer]:
                     "; ".join(f"{s.endpoint_id} {s.base_url} {list(s.model_ids)}" for s in servers))
     else:
         logger.info("local: no OpenAI-compatible server answered on ports %s%s",
-                    list(KNOWN_LOCAL_PORTS), f" or at {configured}" if configured else "")
+                    [*KNOWN_LOCAL_PORTS, *extra_scan_ports()],
+                    f" or at {configured}" if configured else "")
     return list(servers)
 
 
@@ -438,6 +673,18 @@ def local_endpoint_runtime(endpoint: str) -> str:
         return "openai-compatible"
 
 
+def local_endpoint_api_key(endpoint: str) -> str:
+    """The bearer token to send to this local endpoint's server: the key the
+    scan found it needed, else the placeholder the OpenAI SDK insists on
+    (ignored by keyless servers)."""
+    endpoint = resolve_local_alias(endpoint)
+    server = local_servers_by_id().get(endpoint)
+    if server and server.api_key:
+        return server.api_key
+    explicit = (os.environ.get("ZIYA_LOCAL_API_KEY") or "").strip()
+    return explicit or LOCAL_PLACEHOLDER_API_KEY
+
+
 def local_endpoint_is_loopback(endpoint: str) -> bool:
     """Whether this local endpoint's server is on this machine. Fails closed
     (False) for an id the scan does not know."""
@@ -479,6 +726,10 @@ class DiscoveredModel:
     loaded: Optional[bool] = None
     supports_reasoning_effort: Optional[bool] = None
     max_output_tokens: Optional[int] = None
+    # The effort levels the server accepts, when it names them (oMLX
+    # ``reasoning_efforts``).  None = not reported; apply_discovery then
+    # falls back to the DwarfStar ladder for a server that takes the knob.
+    supported_efforts: Optional[tuple] = None
 
 
 # Keys under which /v1/models entries have been seen to carry the served
@@ -519,8 +770,9 @@ def model_from_v1_entry(runtime: str, item: dict) -> DiscoveredModel:
     )
 
 
-def _probe_v1_models(root: str, name: str, runtime: str = "openai-compatible") -> Optional[DiscoveredModel]:
-    data = _list_v1_models(_with_v1(root))
+def _probe_v1_models(root: str, name: str, runtime: str = "openai-compatible",
+                     api_key: Optional[str] = None) -> Optional[DiscoveredModel]:
+    data = _list_v1_models(_with_v1(root), api_key=api_key)
     if data is None:
         return None
     for item in data:
@@ -572,18 +824,60 @@ def _probe_lmstudio(root: str, name: str) -> Optional[DiscoveredModel]:
     )
 
 
-def discover_local_model(name: str, root: str, runtime: Optional[str] = None) -> Optional[DiscoveredModel]:
+def _probe_omlx(root: str, name: str, api_key: Optional[str] = None) -> Optional[DiscoveredModel]:
+    """``GET /v1/models/status`` -- per model: ``loaded``, ``model_type``
+    (``vlm`` = vision), ``max_context_window`` (the effective, configured
+    window; falls back to the checkpoint's ``model_context_length``),
+    ``max_tokens`` (effective output cap), ``reasoning_efforts`` and
+    ``thinking_default``.  Shape read from omlx/server.py and
+    omlx/engine_pool.py ``get_status``; tool support is not reported (it
+    depends on the chat template), so it is left for the model entry."""
+    models = _omlx_status_models(root, api_key=api_key)
+    if models is None:
+        return None
+    info = _omlx_status_entry(models, name)
+    if info is None:
+        return None
+    ctx = info.get("max_context_window")
+    if not (isinstance(ctx, int) and ctx > 0):
+        ctx = info.get("model_context_length")
+    max_out = info.get("max_tokens")
+    efforts = info.get("reasoning_efforts")
+    has_efforts = isinstance(efforts, list) and len(efforts) > 0
+    mtype = info.get("model_type")
+    thinking_default = info.get("thinking_default")
+    return DiscoveredModel(
+        runtime="omlx", name=name,
+        context_length=ctx if isinstance(ctx, int) and ctx > 0 else None,
+        supports_tools=None,
+        supports_vision=(mtype == "vlm") if isinstance(mtype, str) else None,
+        # A model whose thinking can be toggled (default reported either way)
+        # can think; one the server reports nothing for stays unknown.
+        supports_thinking=True if thinking_default is not None else None,
+        loaded=info.get("loaded") if isinstance(info.get("loaded"), bool) else None,
+        supports_reasoning_effort=True if has_efforts else None,
+        max_output_tokens=max_out if isinstance(max_out, int) and max_out > 0 else None,
+        supported_efforts=tuple(str(e) for e in efforts) if has_efforts else None,
+    )
+
+
+def discover_local_model(name: str, root: str, runtime: Optional[str] = None,
+                         api_key: Optional[str] = None) -> Optional[DiscoveredModel]:
     """Ask the server at ``root`` about ``name``, using its native API when
-    the runtime has one and the ``/v1/models`` entry otherwise."""
+    the runtime has one and the ``/v1/models`` entry otherwise.  ``api_key``
+    is the bearer token the server accepted at scan time, if it needed one."""
     forced = (os.environ.get("ZIYA_LOCAL_RUNTIME") or "").strip().lower()
     runtime = forced or runtime
     if runtime == "ollama":
-        return _probe_ollama(root, name) or _probe_v1_models(root, name, "ollama")
+        return _probe_ollama(root, name) or _probe_v1_models(root, name, "ollama", api_key)
     if runtime == "lmstudio":
-        return _probe_lmstudio(root, name) or _probe_v1_models(root, name, "lmstudio")
+        return _probe_lmstudio(root, name) or _probe_v1_models(root, name, "lmstudio", api_key)
+    if runtime == "omlx":
+        return _probe_omlx(root, name, api_key) or _probe_v1_models(root, name, "omlx", api_key)
     if runtime:
-        return _probe_v1_models(root, name, runtime)
-    return _probe_ollama(root, name) or _probe_lmstudio(root, name) or _probe_v1_models(root, name)
+        return _probe_v1_models(root, name, runtime, api_key)
+    return (_probe_ollama(root, name) or _probe_lmstudio(root, name)
+            or _probe_omlx(root, name, api_key) or _probe_v1_models(root, name, api_key=api_key))
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +1014,9 @@ def discover_and_apply(name: Optional[str] = None, *, endpoint: Optional[str] = 
     runtime = local_endpoint_runtime(endpoint)
     key = (root, name)
     if refresh or key not in _discovery_cache:
-        found = discover_local_model(name, root, runtime)
+        server = local_servers_by_id().get(endpoint)
+        found = discover_local_model(name, root, runtime,
+                                     api_key=server.api_key if server else None)
         _discovery_cache[key] = found
         if found is None:
             logger.info("local model %s at %s: no metadata answered; placeholder context "
