@@ -772,8 +772,11 @@ class MCPClient:
                 return False
                 
         except FileNotFoundError as e:
-            logger.error(f"MCP server executable not found: {str(e)}")
-            self.logs.append(f"ERROR: Executable not found - {str(e)}")
+            # create_subprocess_exec raises without a filename; name it here,
+            # with the PATH the server was launched under.
+            missing = e.filename or self.server_config.get("command")
+            logger.error(f"MCP server executable not found: {missing!r} ({e.strerror}); PATH={os.environ.get('PATH', '')}")
+            self.logs.append(f"ERROR: Executable not found - {missing!r} is not on Ziya's PATH")
             self.is_connected = False
             return False
         except Exception as e:  # Intentionally broad: subprocess/transport failures vary by OS and server type
