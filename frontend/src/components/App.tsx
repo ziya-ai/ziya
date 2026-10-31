@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, Suspense } from 'react';import { FolderTree } from './FolderTree';
 import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
-import { Button, Tooltip, ConfigProvider, Spin, message } from "antd";
+import { Button, Tooltip, ConfigProvider, Spin, message, Dropdown } from "antd";
 import {
     MenuFoldOutlined,
     MenuUnfoldOutlined,
@@ -15,10 +15,14 @@ import {
     ToolOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
+import { AppearancePopover } from './AppearancePopover';
+import { SCHEDULES_OPEN_EVENT } from './TaskCard/scheduleCadence';
+import { useConversationList } from '../context/ConversationListContext';
 import PanelResizer from './PanelResizer';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useScrollContext } from '../context/ScrollContext';
 import { useStreamingContext } from '../context/StreamingContext';
+import { StreamedContentLengthWatcher } from '../context/StreamedContentContext';
 import { ProjectProvider } from '../context/ProjectContext';
 import { useProject } from '../context/ProjectContext';
 import { ProfilerWrapper } from './ProfilerWrapper';
@@ -30,6 +34,11 @@ import { EphemeralChatBanner } from './EphemeralChatBanner';
 import { useScrollManager } from '../hooks/useScrollManager';
 import { TASK_CARD_OPEN_EVENT } from '../hooks/useTaskBindings';
 import { ScrollIndicator } from './ScrollIndicator';
+import {
+    CONVERSATION_JUMP_EVENT,
+    ConversationJumpDetail,
+    conversationJumpEdge,
+} from '../utils/conversationJump';
 import { FeedbackRecoveryWatcher } from './FeedbackRecoveryWatcher';
 import { ChatTurnReattachWatcher } from './ChatTurnReattachWatcher';
 import HandoffDrawerHost from './HandoffDrawerHost';
@@ -38,6 +47,7 @@ import { useHeaderAttention } from '../hooks/useHeaderAttention';
 import { attentionButtonStyle, attentionTooltip, mergeAttention } from '../utils/headerAttention';
 import { layoutViewportWidth } from '../utils/uiScale';
 import Conversation from "./Conversation";
+import { CollapsedPanelStrip } from './CollapsedPanelStrip';
 const ShellConfigModal = lazyWithRetry(() => import("./ShellConfigModal"));
 const MCPStatusModal = lazyWithRetry(() => import("./MCPStatusModal"));
 const MCPRegistryModal = lazyWithRetry(() => import("./MCPRegistryModal"));
@@ -168,7 +178,7 @@ const PANEL_WIDTH_KEY = 'ZIYA_PANEL_WIDTH';
 
 export const App: React.FC = () => {
     const {
-        streamedContentMap, currentMessages, startNewChat, startNewEphemeralChat, currentConversationId,
+        currentMessages, startNewChat, startNewEphemeralChat, currentConversationId,
     } = useActiveChat();
     const {
         isTopToBottom, setIsTopToBottom, userHasScrolled, setUserHasScrolled, recordManualScroll,
@@ -176,6 +186,9 @@ export const App: React.FC = () => {
     const { streamingConversations } = useStreamingContext();
     const enableCodeApply = window.enableCodeApply === 'true';
     const { currentProject } = useProject();
+    const { conversations } = useConversationList();
+    const currentConversationTitle = currentConversationId
+        ? conversations.find(c => c.id === currentConversationId)?.title : undefined;
     const [graphPanelOpen, setGraphPanelOpen] = useState(false);
     const [astEnabled, setAstEnabled] = useState(false);
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(() => {
@@ -215,6 +228,9 @@ export const App: React.FC = () => {
     }), []);
     const [showExportModal, setShowExportModal] = useState(false);
     const [showTaskCards, setShowTaskCards] = useState(false);
+    // Tab the deck opens on; "Manage schedules" links open it on Schedules.
+    // Cleared on close so a later manual open starts on Cards.
+    const [taskCardInitialView, setTaskCardInitialView] = useState<'cards' | 'schedules' | undefined>(undefined);
     // Card to focus when the deck opens via an inline tile's "Edit card"
     // backlink (TASK_CARD_OPEN_EVENT).  Cleared on close so a later manual
     // deck-open starts at the list, not the last-edited card.
@@ -233,13 +249,16 @@ export const App: React.FC = () => {
         scrollToActiveEnd,
         scrollToStart,
         scrollToEnd,
-        clearIndicators
+        clearIndicators,
+        notifyContentLength,
     } = useScrollManager({
         containerRef: chatContainerRef,
         sentinelRef,
         isTopToBottom,
         isStreaming: streamingConversations.has(currentConversationId),
-        contentLength: (streamedContentMap.get(currentConversationId) || '').length
+        // No contentLength: reading the streamed map here re-rendered App
+        // (and everything under it) on every streaming flush.  The watcher
+        // rendered below reports the length instead.
     });
 
     // Check MCP status on mount
@@ -423,6 +442,23 @@ export const App: React.FC = () => {
     // ref; listing them keeps the handler honest without re-binding per render.
     }, [scrollToStart, scrollToEnd]);
 
+    // Composer arrow keys (SendChatContainer): Left in an empty composer
+    // jumps to the conversation's first message, Right to its latest.  The
+    // first message's DOM edge depends on the display order.
+    useEffect(() => {
+        const onJump = (e: Event) => {
+            const target = (e as CustomEvent<ConversationJumpDetail>).detail?.target;
+            if (target === 'end') {
+                scrollToActiveEnd();
+            } else if (target === 'beginning') {
+                if (conversationJumpEdge('beginning', isTopToBottom) === 'start') scrollToStart();
+                else scrollToEnd();
+            }
+        };
+        window.addEventListener(CONVERSATION_JUMP_EVENT, onJump);
+        return () => window.removeEventListener(CONVERSATION_JUMP_EVENT, onJump);
+    }, [scrollToActiveEnd, scrollToStart, scrollToEnd, isTopToBottom]);
+
     // Inline card tile "Edit card" backlink → open the deck on that card.
     useEffect(() => {
         const onOpenCard = (e: Event) => {
@@ -433,6 +469,12 @@ export const App: React.FC = () => {
         };
         window.addEventListener(TASK_CARD_OPEN_EVENT, onOpenCard);
         return () => window.removeEventListener(TASK_CARD_OPEN_EVENT, onOpenCard);
+    }, []);
+    // "Manage schedules" link → open the deck on its Schedules tab.
+    useEffect(() => {
+        const onOpen = () => { setTaskCardInitialView('schedules'); setShowTaskCards(true); };
+        window.addEventListener(SCHEDULES_OPEN_EVENT, onOpen);
+        return () => window.removeEventListener(SCHEDULES_OPEN_EVENT, onOpen);
     }, []);
 
     const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
@@ -452,13 +494,21 @@ export const App: React.FC = () => {
                 </Suspense>
                 <StreamedContent key="stream" />
             </div>
-            <SendChatContainer fixed={true} />
+            {/* Dock: the collapsed-panel strip rides with the composer so it
+                never scrolls away from it (design/visual-refresh.md). */}
+            <div className="ziya-composer-dock">
+                {isPanelCollapsed && <CollapsedPanelStrip />}
+                <SendChatContainer fixed={true} />
+            </div>
             <div ref={sentinelRef} style={{ height: '1px', width: '100%' }} />
         </div>
     ) : (
         <div className="chat-content-with-fixed-input">
             <div ref={sentinelRef} style={{ height: '1px', width: '100%' }} />
-            <SendChatContainer fixed={true} />
+            <div className="ziya-composer-dock">
+                <SendChatContainer fixed={true} />
+                {isPanelCollapsed && <CollapsedPanelStrip />}
+            </div>
             <StreamedContent key="stream" />
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <div className="bottom-up-content" ref={bottomUpContentRef}>
@@ -477,13 +527,20 @@ export const App: React.FC = () => {
                 <SafariWarning />
                 <FeedbackRecoveryWatcher />
                 <ChatTurnReattachWatcher />
+                <StreamedContentLengthWatcher
+                    conversationId={currentConversationId}
+                    onLength={notifyContentLength}
+                />
                 <ConfigProvider
                     theme={{
                         algorithm: themeAlgorithm,
                         token: {
                             borderRadius: 6,
-                            colorBgContainer: isDarkMode ? '#141414' : '#ffffff',
-                            colorText: isDarkMode ? '#ffffff' : '#000000',
+                            // design/visual-refresh.md: teal is the one accent;
+                            // surfaces follow the --z-* ladder in theme-tokens.css.
+                            colorPrimary: isDarkMode ? '#2dd4bf' : '#0d9488',
+                            colorBgContainer: isDarkMode ? '#252930' : '#fcfbf9',
+                            colorText: isDarkMode ? '#e8eaed' : '#1a1b1e',
                         },
                     }}
                 >
@@ -492,12 +549,9 @@ export const App: React.FC = () => {
                         type="primary"
                         onClick={togglePanel}
                         size="small"
-                        style={{
-                            padding: '4px 8px',
-                            color: isDarkMode ? undefined : (isPanelCollapsed ? '#ffffff' : '#1890ff'),
-                            backgroundColor: isDarkMode ? undefined : (isPanelCollapsed ? '#1890ff' : undefined),
-                        }}
-                        ghost={!isDarkMode || !isPanelCollapsed}
+                        aria-label={isPanelCollapsed ? 'Expand panel' : 'Collapse panel'}
+                        title={isPanelCollapsed ? 'Expand panel' : 'Collapse panel · drag the edge to resize'}
+                        data-testid="panel-toggle"
                     >{isPanelCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}</Button>
 
                     <PanelResizer
@@ -552,6 +606,14 @@ export const App: React.FC = () => {
                                     backgroundClip: 'text',
                                     color: 'transparent',
                                 }}>iya</span>
+                                {currentProject && (
+                                    <span className="ziya-breadcrumb" data-testid="header-breadcrumb"
+                                        title={currentConversationTitle ? `${currentProject.name} / ${currentConversationTitle}` : currentProject.name}>
+                                        <span>{currentProject.name}</span>
+                                        {currentConversationTitle && <span className="ziya-breadcrumb-sep">/</span>}
+                                        {currentConversationTitle && <span className="ziya-breadcrumb-title">{currentConversationTitle}</span>}
+                                    </span>
+                                )}
                                 {isEphemeralMode && (
                                     <Tooltip title="Ephemeral mode: No data persisted after closing. Each browser tab has independent, non-shared state.">
                                         <span
@@ -566,61 +628,62 @@ export const App: React.FC = () => {
                                     </Tooltip>
                                 )}
                             </h2>
-                            <div style={{ position: 'absolute', left: '10px', display: 'flex', gap: '10px' }}>
-                                <Tooltip title={`Switch to ${isTopToBottom ? 'bottom-up' : 'top-down'} view`}>
-                                    <Button
-                                        icon={<SwapOutlined rotate={90} />}
-                                        onClick={toggleDirection}
-                                        type={isTopToBottom ? 'primary' : 'default'}
-                                    >
-                                        {isTopToBottom ? 'Top-Down' : 'Bottom-Up'}
-                                    </Button>
-                                </Tooltip>
-                            </div>
-                            <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '10px' }}>
-                                <Tooltip title="Toggle theme">
-                                    <Button icon={<BulbOutlined />} onClick={toggleTheme} />
-                                </Tooltip>
+                            <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
                                 {/* One button for skills, MCP servers, registry and shell: the
                                     Bench carries the shell + MCP attention its panels used to. */}
                                 <Tooltip title={attentionTooltip('Bench — skills and MCP servers for this conversation',
                                                                  mergeAttention(headerAttention.shell, headerAttention.mcp))}>
-                                    <Button icon={<ToolOutlined />} onClick={() => setShowBench(true)} data-testid="bench-button"
+                                    <Button className="ziya-header-btn" icon={<ToolOutlined />} onClick={() => setShowBench(true)} data-testid="bench-button"
                                         style={attentionButtonStyle(mergeAttention(headerAttention.shell, headerAttention.mcp).level)}
-                                        data-attention={mergeAttention(headerAttention.shell, headerAttention.mcp).level} />
+                                        data-attention={mergeAttention(headerAttention.shell, headerAttention.mcp).level}>
+                                        <span className="ziya-header-btn-label">Bench</span>
+                                    </Button>
                                 </Tooltip>
                                 {/* Shell Configuration keeps a direct toolbar button; folding it
                                     into the Bench left it reachable only via the environment row. */}
                                 <Tooltip title={attentionTooltip('Shell Configuration', headerAttention.shell)}>
-                                    <Button icon={<SettingOutlined />} onClick={handleOpenShellConfig} data-testid="shell-config-button"
+                                    <Button className="ziya-header-btn" icon={<SettingOutlined />} onClick={handleOpenShellConfig} data-testid="shell-config-button"
                                         style={attentionButtonStyle(headerAttention.shell.level)}
-                                        data-attention={headerAttention.shell.level} />
+                                        data-attention={headerAttention.shell.level}>
+                                        <span className="ziya-header-btn-label">Shell</span>
+                                    </Button>
                                 </Tooltip>
                                 <Tooltip title={attentionTooltip('Task Cards', headerAttention.taskCards)}>
-                                    <Button icon={<AppstoreOutlined />} onClick={() => setShowTaskCards(true)}
+                                    <Button className="ziya-header-btn" icon={<AppstoreOutlined />} onClick={() => setShowTaskCards(true)}
                                         style={attentionButtonStyle(headerAttention.taskCards.level)}
-                                        data-attention={headerAttention.taskCards.level} />
+                                        data-attention={headerAttention.taskCards.level}>
+                                        <span className="ziya-header-btn-label">Tasks</span>
+                                    </Button>
                                 </Tooltip>
                                 {memoryEnabled && (
                                     <Tooltip title="Memory Browser">
-                                        <Button icon={<NodeIndexOutlined />} onClick={() => setShowMemoryBrowser(true)} />
+                                        <Button className="ziya-header-btn" icon={<NodeIndexOutlined />} onClick={() => setShowMemoryBrowser(true)}>
+                                            <span className="ziya-header-btn-label">Memory</span>
+                                        </Button>
                                     </Tooltip>
                                 )}
-                                <Tooltip title="New Ephemeral Chat (not saved, lost on reload)">
-                                    <Button
-                                        icon={<PlusOutlined />}
-                                        onClick={() => startNewEphemeralChat()}
-                                        type="dashed"
-                                        style={{
-                                            opacity: 0.55,
-                                            fontStyle: 'italic',
-                                        }}
-                                        aria-label="New ephemeral chat"
-                                    />
+                                {/* Message order: a low-emphasis icon beside Appearance.  It
+                                    used to be a labelled primary button alone at the left edge. */}
+                                <Tooltip title={`Switch to ${isTopToBottom ? 'bottom-up' : 'top-down'} view`}>
+                                    <Button className="ziya-header-btn" type="text" icon={<SwapOutlined rotate={90} />}
+                                        onClick={toggleDirection} aria-label="Toggle message order" data-testid="order-toggle" />
                                 </Tooltip>
-                                <Tooltip title="New Chat">
-                                    <Button icon={<PlusOutlined />} onClick={() => startNewChat()} />
-                                </Tooltip>
+                                <AppearancePopover />
+                                {/* Body click = new chat (the common case, one click).  The caret
+                                    is the only way to reach the ephemeral variant. */}
+                                <Dropdown.Button
+                                    className="ziya-header-btn ziya-new-chat"
+                                    type="primary"
+                                    onClick={() => startNewChat()}
+                                    data-testid="new-chat-button"
+                                    menu={{ items: [
+                                        { key: 'new', label: <span>New chat<span className="ziya-menu-sub">Saved to this project</span></span>, onClick: () => startNewChat() },
+                                        { key: 'ephemeral', label: <span>New ephemeral chat<span className="ziya-menu-sub">Not saved; lost on reload. Each tab keeps its own state.</span></span>,
+                                          onClick: () => startNewEphemeralChat() },
+                                    ] }}
+                                >
+                                    <PlusOutlined /> New
+                                </Dropdown.Button>
                             </div>
                         </div>
                     <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
@@ -703,12 +766,22 @@ export const App: React.FC = () => {
                                 />}
                             </>
                         )}
+                    </Suspense>
+                    </LazyChunkBoundary>
+
+                    {/* Its own boundary: the MCP modals above open FROM the Bench.
+                        Sharing one, a modal's lazy chunk suspended it, which hid the
+                        Bench and re-appended its portal after the new modal's --
+                        same z-index, so the opened panel landed behind the Bench. */}
+                    <LazyChunkBoundary onDismiss={() => setShowBench(false)}>
+                    <Suspense fallback={<ChunkLoadingFallback />}>
                         {showBench && <BenchModal
                             visible={showBench}
                             onClose={() => { setShowBench(false); headerAttention.refresh(); }}
                             projectId={currentProject?.id}
                             conversationId={currentConversationId || null}
                             shellAttention={headerAttention.shell}
+                            mcpAttention={headerAttention.mcp}
                             onOpenShellConfig={handleOpenShellConfig}
                             actions={mcpEnabled ? benchActions : {}}
                         />}
@@ -727,11 +800,12 @@ export const App: React.FC = () => {
                             onClose={() => setShowMemoryBrowser(false)} />
                     </Suspense></LazyChunkBoundary>}
 
-                    {showTaskCards && <LazyChunkBoundary onDismiss={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); }}><Suspense fallback={<ChunkLoadingFallback />}>
+                    {showTaskCards && <LazyChunkBoundary onDismiss={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); setTaskCardInitialView(undefined); }}><Suspense fallback={<ChunkLoadingFallback />}>
                         <TaskCardsLibrary
                             visible={showTaskCards}
-                            onClose={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); headerAttention.refresh(); }}
+                            onClose={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); setTaskCardInitialView(undefined); headerAttention.refresh(); }}
                             initialCardId={taskCardInitialId}
+                            initialView={taskCardInitialView}
                             chatId={currentConversationId || undefined}
                             anchorMessageId={
                                 currentMessages.length > 0

@@ -12,6 +12,7 @@ import { AudioOutlined, SendOutlined, PictureOutlined, PaperClipOutlined } from 
 import { ImageAttachment, DocumentAttachment } from '../utils/types';
 import { DocumentChip } from './FileChip';
 import ShadowSessionChip, { useAttachedShadowSessions } from './ShadowSessionChip';
+import WriteGrantsChip from './WriteGrantsChip';
 import { useTheme } from '../context/ThemeContext';
 import StopStreamButton from './StopStreamButton';
 import BeadTree from './BeadTree';
@@ -20,8 +21,26 @@ import { detectIncompleteResponse } from '../utils/responseUtils';
 import { parseSlashCommand, dispatchCommand } from '../services/commandApi';
 import { useServerStatus } from '../context/ServerStatusContext';
 import { v4 as uuidv4 } from 'uuid';
-import { COMPOSER_INJECT_EVENT, ComposerInjectDetail } from '../utils/composerInject';
-import { captureEditorRange, chooseRecordingMimeType, insertTranscript } from '../utils/voiceInput';
+import { COMPOSER_INJECT_EVENT, ComposerInjectDetail, dispatchComposerInject } from '../utils/composerInject';
+import {
+  buildComposerHistory,
+  stepComposerHistory,
+  caretOnBoundaryLine,
+  caretAtEnd,
+  setEditorPlainText,
+} from '../utils/composerHistory';
+import { dispatchConversationJump } from '../utils/conversationJump';
+import {
+  captureEditorRange,
+  chooseRecordingMimeType,
+  formatByteSize,
+  formatFileTranscript,
+  insertTranscript,
+  MAX_TRANSCRIPTION_BYTES,
+  partitionAudioFiles,
+  transcribableAudioType,
+} from '../utils/voiceInput';
+import { cancelTranscriptionJob, runTranscriptionJob } from '../utils/transcriptionJobs';
 import {
   recordSentFeedback,
   retireDeliveredFeedback,
@@ -48,14 +67,20 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const [voiceStatus, setVoiceStatus] = useState<{
     available: boolean;
     install_hint?: string | null;
+    max_bytes?: number;
   } | null>(null);
   const [voiceState, setVoiceState] = useState<'idle' | 'installing' | 'recording' | 'transcribing'>('idle');
+  // Conversation the current recording / transcription belongs to.  A
+  // 30-minute file takes minutes; only that conversation's Send waits on it.
+  const [voiceConversationId, setVoiceConversationId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const microphoneStreamRef = useRef<MediaStream | null>(null);
   const recordingRangeRef = useRef<Range | null>(null);
   const recordingConversationRef = useRef<string | null>(null);
+  // Stops polling an in-flight transcription job on unmount.
+  const transcriptionAbortRef = useRef<AbortController | null>(null);
   const draftsRef = useRef<Map<string, string>>(new Map());
   // Pending composer injections keyed by conversation id — a resume/branch
   // pickup message targeting a conversation we haven't finished switching
@@ -71,11 +96,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   // Conversation the status chip below the composer currently describes. The
   // chip is one shared slot, so a conversation switch must re-derive it.
   const feedbackChipConvRef = useRef<string | null>(null);
+  // Up/Down input-history browsing. `recalled` is the serialized text the
+  // editor held when the entry was recalled; once the editor text differs
+  // (the user edited it), browsing ends and arrows behave normally.
+  const historyNavRef = useRef<{ index: number | null; recalled: string }>({ index: null, recalled: '' });
 
   const {
     currentConversationId,
     currentMessages,
-    streamedContentMap,
     setStreamedContentMap,
     setReasoningContentMap,
     setIsStreaming,
@@ -85,6 +113,15 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     updateProcessingState,
     addMessageToConversation,
   } = useActiveChat();
+
+  // Live conversation id for async work that outlives a render (a long
+  // transcription job); a closure only holds the id it was created with.
+  const liveConversationIdRef = useRef(currentConversationId);
+  liveConversationIdRef.current = currentConversationId;
+
+  useEffect(() => {
+    historyNavRef.current = { index: null, recalled: '' };
+  }, [currentConversationId]);
 
   const { setUserHasScrolled } = useScrollContext();
   const { checkedKeys } = useFolderContext();
@@ -103,8 +140,11 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   // Disabled when: no content, OR this conversation is streaming, OR server is unreachable
   const isDisabled = useMemo(() =>
     (!inputValue.trim() && attachedImages.length === 0 && attachedDocuments.length === 0)
-      || isCurrentlyStreaming || !isServerReachable || voiceState !== 'idle',
-    [inputValue, attachedImages.length, attachedDocuments.length, isCurrentlyStreaming, isServerReachable, voiceState]
+      || isCurrentlyStreaming || !isServerReachable
+      || (voiceState !== 'idle'
+        && (voiceConversationId === null || voiceConversationId === currentConversationId)),
+    [inputValue, attachedImages.length, attachedDocuments.length, isCurrentlyStreaming,
+      isServerReachable, voiceState, voiceConversationId, currentConversationId]
   );
 
   // Memoized button title for accessibility
@@ -750,20 +790,6 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     }
   }, [supportsVision, processImageFiles, isTextFile, isDocumentFile, getLanguageFromFilename, processDocumentFiles]);
 
-  const handleFileSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (files && files.length > 0) await ingestFiles(files);
-    // Reset file input so same file can be selected again
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [ingestFiles]);
-
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingOver(false);
-    await ingestFiles(e.dataTransfer.files);
-  }, [ingestFiles]);
-
   // Serialize editor content to text with image markers and extract image order
   const serializeEditorContent = useCallback((): { text: string; orderedImages: ImageAttachment[]; } => {
     if (!editorRef.current) return { text: '', orderedImages: [] };
@@ -827,6 +853,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const transcribeRecording = useCallback(async (
     blob: Blob,
     targetConversationId: string,
+    filename?: string,
   ) => {
     if (!blob.size) {
       setVoiceState('idle');
@@ -834,43 +861,81 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     }
 
     setVoiceState('transcribing');
+    setVoiceConversationId(targetConversationId);
     const loadingKey = `voice-transcription-${targetConversationId}`;
-    message.loading({
-      content: 'Transcribing locally…',
+    const label = filename ? `Transcribing ${filename} locally` : 'Transcribing locally';
+    const controller = new AbortController();
+    transcriptionAbortRef.current = controller;
+    let jobId: string | null = null;
+    // Before the upload returns there is no job to cancel; abort the request.
+    const cancel = () => {
+      if (jobId) void cancelTranscriptionJob(jobId);
+      else controller.abort();
+    };
+    const showProgress = (detail: string) => message.loading({
+      content: (
+        <span>
+          {label}{detail}
+          <a onClick={cancel} style={{ marginLeft: 10 }}>Cancel</a>
+        </span>
+      ),
       key: loadingKey,
       duration: 0,
     });
+    showProgress('…');
+
+    const extension = blob.type.includes('ogg')
+      ? 'ogg'
+      : blob.type.includes('mp4')
+        ? 'mp4'
+        : 'webm';
 
     try {
-      const formData = new FormData();
-      const extension = blob.type.includes('ogg')
-        ? 'ogg'
-        : blob.type.includes('mp4')
-          ? 'mp4'
-          : 'webm';
-      formData.append('file', blob, `recording.${extension}`);
-
-      const response = await fetch('/api/transcribe', {
-        method: 'POST',
-        body: formData,
+      const job = await runTranscriptionJob(blob, filename || `recording.${extension}`, {
+        signal: controller.signal,
+        onProgress: snapshot => {
+          jobId = snapshot.job_id;
+          showProgress(
+            snapshot.cancel_requested ? ' — cancelling…'
+              : snapshot.state === 'queued' ? ' — preparing…'
+                : ` — ${Math.round(snapshot.progress * 100)}%`,
+          );
+        },
       });
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || 'Voice transcription failed');
+
+      if (job.state === 'cancelled') {
+        message.info({ content: 'Transcription cancelled', key: loadingKey });
+        return;
+      }
+      if (job.state === 'error') {
+        throw new Error(job.error || 'Voice transcription failed');
       }
 
-      const result = await response.json();
-      if (targetConversationId !== currentConversationId) {
-        message.warning({
-          content: 'The conversation changed before transcription completed; the transcript was not inserted.',
+      const spoken = job.text || '';
+      if (!spoken.trim()) {
+        message.info({ content: 'No speech detected', key: loadingKey });
+        return;
+      }
+      // A file's transcript carries a one-line header naming its source, so
+      // several dropped files stay distinguishable.  Dictation goes in bare.
+      const text = filename ? formatFileTranscript(filename, spoken) : spoken;
+
+      // A long job can finish after the user has moved to another
+      // conversation.  Keep the transcript for the conversation it was
+      // started in: the composer-inject channel applies it on return.
+      if (liveConversationIdRef.current !== targetConversationId) {
+        dispatchComposerInject(targetConversationId, text, { preserveExisting: true });
+        message.success({
+          content: `${filename || 'Transcription'} finished; the text is waiting in the composer of the conversation it was started in.`,
           key: loadingKey,
+          duration: 6,
         });
         return;
       }
 
       if (
         editorRef.current
-        && insertTranscript(editorRef.current, result.text || '', recordingRangeRef.current)
+        && insertTranscript(editorRef.current, text, recordingRangeRef.current, { block: Boolean(filename) })
       ) {
         handleInput();
         message.success({ content: 'Transcription added', key: loadingKey });
@@ -878,16 +943,62 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         message.info({ content: 'No speech detected', key: loadingKey });
       }
     } catch (error) {
+      // Cancelled during upload, or unmounted: polling stopped and the job
+      // (if any) was cancelled.  Close the toast rather than leave it spinning.
+      if (controller.signal.aborted) {
+        message.destroy(loadingKey);
+        return;
+      }
       message.error({
         content: error instanceof Error ? error.message : 'Voice transcription failed',
         key: loadingKey,
       });
     } finally {
+      if (transcriptionAbortRef.current === controller) transcriptionAbortRef.current = null;
       recordingRangeRef.current = null;
       recordingConversationRef.current = null;
       setVoiceState('idle');
+      setVoiceConversationId(null);
     }
-  }, [currentConversationId, handleInput]);
+  }, [handleInput]);
+
+  // Install the local transcription dependency on first use.  Shared by the
+  // microphone and by dropped audio files.  On success voiceState is left at
+  // 'installing' for the caller to move on; on failure it returns to 'idle'.
+  const ensureTranscriptionBackend = useCallback(async (): Promise<boolean> => {
+    setVoiceState('installing');
+    const loadingKey = 'voice-backend-install';
+    message.loading({
+      content: 'Installing local transcription support…',
+      key: loadingKey,
+      duration: 0,
+    });
+    try {
+      const response = await fetch('/api/transcribe/install', { method: 'POST' });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Unable to install local transcription support');
+      }
+      const status = await response.json();
+      setVoiceStatus(prev => ({ ...(prev || {}), available: true }));
+      message.success({
+        content: status.installed
+          ? 'Local transcription installed'
+          : 'Local transcription is ready',
+        key: loadingKey,
+      });
+      return true;
+    } catch (error) {
+      setVoiceState('idle');
+      message.error({
+        content: error instanceof Error
+          ? error.message
+          : 'Unable to install local transcription support',
+        key: loadingKey,
+      });
+      return false;
+    }
+  }, []);
 
   const startVoiceRecording = useCallback(async () => {
     if (voiceState !== 'idle' || voiceStatus === null) {
@@ -899,38 +1010,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       return;
     }
 
-    if (!voiceStatus.available) {
-      setVoiceState('installing');
-      const loadingKey = 'voice-backend-install';
-      message.loading({
-        content: 'Installing local transcription support…',
-        key: loadingKey,
-        duration: 0,
-      });
-      try {
-        const response = await fetch('/api/transcribe/install', { method: 'POST' });
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({}));
-          throw new Error(error.detail || 'Unable to install local transcription support');
-        }
-        const status = await response.json();
-        setVoiceStatus({ available: true });
-        message.success({
-          content: status.installed
-            ? 'Local transcription installed'
-            : 'Local transcription is ready',
-          key: loadingKey,
-        });
-      } catch (error) {
-        setVoiceState('idle');
-        message.error({
-          content: error instanceof Error
-            ? error.message
-            : 'Unable to install local transcription support',
-          key: loadingKey,
-        });
-        return;
-      }
+    if (!voiceStatus.available && !(await ensureTranscriptionBackend())) {
+      return;
     }
 
     try {
@@ -967,6 +1048,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
 
       recorder.start();
       setVoiceState('recording');
+      setVoiceConversationId(targetConversationId);
     } catch (error) {
       setVoiceState('idle');
       message.error(
@@ -975,7 +1057,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           : 'Unable to access the microphone',
       );
     }
-  }, [currentConversationId, transcribeRecording, voiceState, voiceStatus]);
+  }, [currentConversationId, ensureTranscriptionBackend, transcribeRecording, voiceState, voiceStatus]);
 
   const stopVoiceRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current;
@@ -985,7 +1067,77 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     }
   }, []);
 
+  // Transcribe dropped or picked audio files (.m4a, .wav) through the same
+  // local route the microphone uses, inserting each transcript at the
+  // composer cursor in the order the files arrived.  No microphone or
+  // MediaRecorder is involved, so this works where recording does not.
+  const transcribeAudioFiles = useCallback(async (files: File[]) => {
+    if (!files.length) return;
+    if (voiceState !== 'idle') {
+      message.warning('Local transcription is busy; add the audio again when it finishes');
+      return;
+    }
+
+    const maxBytes = voiceStatus?.max_bytes || MAX_TRANSCRIPTION_BYTES;
+    const accepted: File[] = [];
+    for (const file of files) {
+      if (file.size === 0) {
+        message.warning(`${file.name} is empty`);
+      } else if (file.size > maxBytes) {
+        message.warning(
+          `${file.name} is too large to transcribe (${formatByteSize(file.size)}, limit ${formatByteSize(maxBytes)})`,
+        );
+      } else {
+        accepted.push(file);
+      }
+    }
+    if (!accepted.length) return;
+
+    // voiceStatus is null until the status probe answers; the install
+    // endpoint reports an already-present backend without reinstalling.
+    if (!voiceStatus?.available && !(await ensureTranscriptionBackend())) {
+      return;
+    }
+
+    const targetConversationId = currentConversationId;
+    for (const file of accepted) {
+      recordingRangeRef.current = editorRef.current
+        ? captureEditorRange(editorRef.current)
+        : null;
+      const uploadType = transcribableAudioType(file) || file.type;
+      await transcribeRecording(
+        new Blob([file], { type: uploadType }),
+        targetConversationId,
+        file.name,
+      );
+    }
+  }, [currentConversationId, ensureTranscriptionBackend, transcribeRecording, voiceState, voiceStatus]);
+
+  // Every file entry point -- the attach button and a drop -- routes
+  // through here: audio to local transcription, everything else to
+  // ingestFiles.  One router so the two entry points cannot diverge.
+  const routeIncomingFiles = useCallback(async (files: FileList | File[]) => {
+    const { audio, other } = partitionAudioFiles(files);
+    if (other.length) await ingestFiles(other);
+    if (audio.length) await transcribeAudioFiles(audio);
+  }, [ingestFiles, transcribeAudioFiles]);
+
+  const handleFileSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files && files.length > 0) await routeIncomingFiles(files);
+    // Reset file input so same file can be selected again
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [routeIncomingFiles]);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    await routeIncomingFiles(e.dataTransfer.files);
+  }, [routeIncomingFiles]);
+
   useEffect(() => () => {
+    transcriptionAbortRef.current?.abort();
     const recorder = mediaRecorderRef.current;
     if (recorder) {
       recorder.onstop = null;
@@ -1249,6 +1401,53 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       return;
     }
 
+    // Input history (like the CLI): Up in an empty composer recalls the
+    // previous message sent in this conversation; Up/Down keep cycling while
+    // the recalled text is unedited and the caret is on the first/last line.
+    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown')
+      && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
+      && !(e.nativeEvent as any).isComposing) {
+      const editor = editorRef.current;
+      if (editor) {
+        const nav = historyNavRef.current;
+        const { text } = serializeEditorContent();
+        const browsing = nav.index !== null && text === nav.recalled;
+        if (!browsing) nav.index = null;
+        const isUp = e.key === 'ArrowUp';
+        const empty = text.trim() === '';
+        if (empty || (browsing && caretOnBoundaryLine(editor, isUp ? 'first' : 'last'))) {
+          const step = stepComposerHistory(
+            buildComposerHistory(currentMessages), nav.index, isUp ? 'up' : 'down');
+          if (step) {
+            e.preventDefault();
+            setEditorPlainText(editor, step.text);
+            nav.index = step.index;
+            nav.recalled = serializeEditorContent().text;
+            handleInput();
+            return;
+          }
+        }
+      }
+    }
+
+    // Conversation jumps: Left in an empty composer goes to the first
+    // message; Right in an empty composer, or with the caret at the end of
+    // the input, goes to the latest.  Elsewhere the arrows move the caret.
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+      && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
+      && !(e.nativeEvent as any).isComposing) {
+      const editor = editorRef.current;
+      if (editor) {
+        const empty = serializeEditorContent().text.trim() === '';
+        const isLeft = e.key === 'ArrowLeft';
+        if (isLeft ? empty : (empty || caretAtEnd(editor))) {
+          e.preventDefault();
+          dispatchConversationJump(isLeft ? 'beginning' : 'end');
+          return;
+        }
+      }
+    }
+
     // Handle Backspace / Delete over inline images (contentEditable='false' elements
     // are not natively removable via keyboard in most browsers)
     if (e.key === 'Backspace' || e.key === 'Delete') {
@@ -1308,7 +1507,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         removeImageElement(targetImg);
       }
     }
-  }, [shouldSendAsFeedback, sendToolFeedback, handleSend, removeImageElement, handleInput]);
+  }, [shouldSendAsFeedback, sendToolFeedback, handleSend, removeImageElement, handleInput,
+    serializeEditorContent, currentMessages]);
 
   return (
     <div
@@ -1371,6 +1571,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
             ))}
           </div>
         )}
+        {/* Standing consent grants (design/scope-consent.md D4): what this chat may write without asking */}
+        <WriteGrantsChip conversationId={currentConversationId} />
         {/* Document attachment chips */}
         {attachedDocuments.length > 0 && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
