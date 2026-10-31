@@ -11,6 +11,9 @@ from botocore.config import Config as BotoConfig
 from dataclasses import dataclass
 from typing import Dict, Any, List, AsyncGenerator, Optional
 from app.utils.logging_utils import get_mode_aware_logger
+# Module level on purpose: when the install dir is pruned under a running
+# server, a lazy import inside the error handler would itself fail.
+from app.utils.install_integrity import missing_install_message
 from app.config.env_registry import ziya_env
 from app.utils.sanitizer_util import sanitize_message_content
 from app.hallucination import scannable_line_indices
@@ -1912,6 +1915,26 @@ class StreamingToolExecutor:
         """
         from app.plugins import get_active_auth_provider
         from app.utils.custom_exceptions import KnownCredentialException
+
+        # A missing CA bundle (install removed under a running server, or a
+        # bad AWS_CA_BUNDLE) also says "SSL validation failed", which the
+        # read-timeout list below treats as a dropped connection: it was
+        # retried 5x and shown as a throttling error.  Only a restart (or a
+        # path fix) helps, so stop and say that.
+        _install_msg = missing_install_message(error_str)
+        if _install_msg:
+            return {
+                'type': 'generic',
+                'should_retry': False,
+                'delay': 0,
+                'reduced_max_tokens': None,
+                'error_message': _install_msg,
+                'error_chunk': {
+                    'type': 'error', 'error_type': 'installation_changed',
+                    'content': _install_msg, 'detail': error_str,
+                    'can_retry': False,
+                },
+            }
         
         is_throttling = any(ind in error_str for ind in [
             "ThrottlingException", "Too many tokens", "Too many requests", "Rate exceeded"])

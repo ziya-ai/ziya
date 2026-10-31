@@ -38,6 +38,9 @@ from app.providers.base import (
     UsageEvent,
 )
 from app.utils.logging_utils import get_mode_aware_logger
+# Module level on purpose: when the install dir is pruned under a running
+# server, a lazy import of this module inside _classify_error would fail.
+from app.utils.install_integrity import is_missing_ca_file_error
 from app.providers.bedrock_region_router import BedrockRegionRouter
 from app.utils import service_tier as _service_tier
 
@@ -1440,6 +1443,12 @@ class BedrockProvider(LLMProvider):
             return ErrorType.AUTH
         if any(s in error_str for s in ("Read timed out", "ReadTimeoutError")) or "timeout" in lowered:
             return ErrorType.READ_TIMEOUT
+        # "SSL validation failed ... [Errno 2] No such file or directory": the
+        # CA bundle file is gone (typically the install was removed by an
+        # upgrade while the server ran).  Not a connection drop; retrying
+        # cannot help.  Must precede the "SSL validation failed" match below.
+        if is_missing_ca_file_error(error_str):
+            return ErrorType.UNKNOWN
         # Connection-quality drops (flaky/unreliable networks): TLS socket severed
         # mid-handshake or mid-stream. Transient and retriable, NOT auth failures.
         if any(s in error_str for s in (
