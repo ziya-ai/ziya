@@ -2,6 +2,7 @@
 Official MCP Registry Provider (registry.modelcontextprotocol.io).
 """
 
+import asyncio
 import json
 import subprocess
 from datetime import datetime
@@ -413,7 +414,8 @@ class OfficialMCPRegistryProvider(RegistryProvider):
                 package = validate_package_identifier(
                     package, source=f"official-mcp:{service_id}",
                 )
-                install_result = InstallationHelper.install_pypi_package(package)
+                install_result = await asyncio.to_thread(
+                    InstallationHelper.install_pypi_package, package, install_dir)
                 if not install_result['success']:
                     raise RuntimeError(install_result['error'])
                 command_array = install_result['command']
