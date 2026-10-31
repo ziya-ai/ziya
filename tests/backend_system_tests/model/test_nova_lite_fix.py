@@ -1,7 +1,7 @@
 """
 Tests for NovaWrapper message formatting.
 
-Updated: NovaWrapper moved from app.agents.nova_wrapper_fix to
+Updated: NovaWrapper moved from app.agents.wrappers.nova_wrapper_fix to
 app.agents.wrappers.nova_wrapper. Single module now, no separate
 "fix" variant.
 """

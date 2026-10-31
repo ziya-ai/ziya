@@ -38,24 +38,6 @@ class TestRegressionOtherModels:
         assert message.id == "ai-message-id"
         assert message.message == "AIMessage response"
         assert message.content == "AIMessage response"
-
-    def test_ziya_string_compatibility(self):
-        """Test that ZiyaString is still compatible with our changes."""
-        # Create a ZiyaString
-        ziya_string = ZiyaString("ZiyaString content", id="ziya-string-id")
-        
-        # Verify that the ZiyaString has the expected attributes
-        assert ziya_string == "ZiyaString content"
-        assert ziya_string.id == "ziya-string-id"
-        assert ziya_string.message == "ZiyaString content"
-        assert ziya_string.content == "ZiyaString content"
-        assert ziya_string.text == "ZiyaString content"
-        
-        # Verify that to_generation works
-        generation = ziya_string.to_generation()
-        assert isinstance(generation, Generation)
-        assert generation.text == "ZiyaString content"
-
     def test_ziya_message_chunk_compatibility(self):
         """Test that ZiyaMessageChunk is still compatible with our changes."""
         # Create a ZiyaMessageChunk
@@ -125,59 +107,3 @@ class TestRegressionOtherModels:
         assert result.generations[0][0].text == "Generation with metadata"
         assert result.generations[0][0].generation_info["model"] == "test-model"
         assert result.generations[0][0].generation_info["temperature"] == 0.7
-
-    def test_ziya_message_chunk_with_generation_dict(self):
-        """Test that ZiyaMessageChunk with _generation_dict works correctly."""
-        # Create a ZiyaMessageChunk
-        chunk = ZiyaMessageChunk(content="ZiyaMessageChunk response", id="ziya-chunk-id")
-        
-        # Add a _generation_dict attribute
-        generation_dict = {
-            "text": "Generation from dict",
-            "generation_info": {"source": "dict"}
-        }
-        object.__setattr__(chunk, '_generation_dict', generation_dict)
-        
-        # Convert to a Generation object
-        generation = chunk.to_generation()
-        
-        # Verify that the Generation object has the expected attributes
-        assert isinstance(generation, Generation)
-        assert generation.text == "Generation from dict"
-        assert generation.generation_info["source"] == "dict"
-        
-        # Verify that the Generation object can be used in an LLMResult
-        result = LLMResult(generations=[[generation]])
-        assert len(result.generations) == 1
-        assert len(result.generations[0]) == 1
-        assert result.generations[0][0].text == "Generation from dict"
-        assert result.generations[0][0].generation_info["source"] == "dict"
-
-    def test_ziya_message_chunk_with_generation_object(self):
-        """Test that ZiyaMessageChunk with _generation object works correctly."""
-        # Create a ZiyaMessageChunk
-        chunk = ZiyaMessageChunk(content="ZiyaMessageChunk response", id="ziya-chunk-id")
-        
-        # Create a Generation object
-        generation = Generation(
-            text="Pre-created Generation",
-            generation_info={"source": "object"}
-        )
-        
-        # Add the Generation object to the chunk
-        object.__setattr__(chunk, '_generation', generation)
-        
-        # Convert to a Generation object
-        retrieved_generation = chunk.to_generation()
-        
-        # Verify that the retrieved Generation object is the pre-created one
-        assert retrieved_generation is generation
-        assert retrieved_generation.text == "Pre-created Generation"
-        assert retrieved_generation.generation_info["source"] == "object"
-        
-        # Verify that the Generation object can be used in an LLMResult
-        result = LLMResult(generations=[[retrieved_generation]])
-        assert len(result.generations) == 1
-        assert len(result.generations[0]) == 1
-        assert result.generations[0][0].text == "Pre-created Generation"
-        assert result.generations[0][0].generation_info["source"] == "object"

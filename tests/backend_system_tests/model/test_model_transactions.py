@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import patch
 
 import app.config as config
+from app.config.models_config import MODEL_ALIASES
 from app.agents.models import ModelManager
 
 
@@ -56,7 +57,9 @@ def test_model_transaction(endpoint, model):
 
 @pytest.mark.transaction
 @pytest.mark.parametrize("model_id", [
-    config.MODEL_CONFIGS["bedrock"]["sonnet"]["model_id"]["us"],
+    # "sonnet" is an alias since Bedrock retired the Claude 3 entry; resolve
+    # it rather than indexing MODEL_CONFIGS, which broke collection.
+    config.MODEL_CONFIGS["bedrock"][MODEL_ALIASES["bedrock"]["sonnet"]]["model_id"]["us"],
     "anthropic.claude-3-sonnet-20240229-v1:0",
 ])
 def test_model_id_override_transaction(model_id):
