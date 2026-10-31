@@ -34,7 +34,7 @@ def get_current_version() -> str:
     except (ImportError, PackageNotFoundError):
         pass  # Not installed via pip — try other methods
 
-    # Try environment variable (set by wrappers like toolbox)
+    # Try environment variable (set by launcher wrapper scripts)
     env_version = os.environ.get('ZIYA_VERSION', '')
     if env_version:
         return env_version
