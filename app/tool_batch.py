@@ -331,11 +331,13 @@ async def run_tool_batch(
     inter_tool_delay: dict,
     outcome: BatchOutcome,
     cancel_event: Optional[asyncio.Event] = None,
+    prestarted: Any = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Execute the batch of tool calls ``ctxs`` and stream their events.
 
     Reads in a group overlap; a non-read-only call is a barrier.  Results are
-    emitted in arrival order.  Populates ``outcome`` with what happened."""
+    emitted in arrival order.  Populates ``outcome`` with what happened.
+    ``prestarted``: calls already running (app/utils/tool_prestart.py)."""
     if not ctxs:
         return  # empty batch: outcome.executed stays False
 
@@ -351,7 +353,7 @@ async def run_tool_batch(
 
     groups = plan_groups(ctxs)
     for gi, group in enumerate(groups):
-        async for evt in _run_group(group, outcome):
+        async for evt in _run_group(group, outcome, prestarted):
             yield evt
         outcome.executed = True
 
