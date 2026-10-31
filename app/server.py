@@ -901,7 +901,9 @@ async def lifespan(app: FastAPI):
             # Shut down headless diagram renderer if running
             from app.services.diagram_renderer import shutdown_diagram_renderer
             await shutdown_diagram_renderer()
-        except (ImportError, OSError, RuntimeError) as e:
+        except Exception as e:  # noqa: BLE001 — must not skip the MCP shutdown below
+            # Playwright raises its own Error (an Exception subclass) when the
+            # driver has already died, e.g. after Ctrl-C reached it first.
             logger.debug(f"Diagram renderer shutdown: {e}")
 
         try:
