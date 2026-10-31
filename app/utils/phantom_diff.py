@@ -55,6 +55,11 @@ _REFERENCE_PATTERNS = [
 ]
 
 
+# Quoted or inline-code spans, single-line and bounded so an unbalanced
+# quote cannot swallow the rest of the response.
+_QUOTED_RE = re.compile(r'"[^"\n]{1,200}"|\u201c[^\u201d\n]{1,200}\u201d|`[^`\n]{1,200}`')
+
+
 def _prose_only(content: str) -> str:
     """Response text with reasoning and every fenced block removed.
 
@@ -66,9 +71,13 @@ def _prose_only(content: str) -> str:
     text = _THINKING_RE.sub(" ", content or "")
     try:
         from app.hallucination.region_extraction import scannable_text
-        return scannable_text(text)
+        text = scannable_text(text)
     except Exception:  # noqa: BLE001 -- fall back to the raw text
-        return text
+        pass
+    # A phrase in quotes or inline code is being MENTIONED, not asserted:
+    # 'covers the case where the model says "apply the diff above"' describes
+    # the detector itself and tripped it (2026-10-27).
+    return _QUOTED_RE.sub(" ", text)
 
 
 def has_diff_fence(content: str) -> bool:

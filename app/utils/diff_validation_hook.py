@@ -69,6 +69,20 @@ def reader_reason(validation_result: Dict[str, Any]) -> str:
                 kinds.append(kind)
         noun = "hunk" if len(failed) == 1 else "hunks"
         ids = ", ".join(str(h) for h in failed)
+        if kinds == ["language_validation"]:
+            # Every hunk APPLIED; the patched file then failed the language
+            # check and was rolled back.  "did not match the current file"
+            # sent the model hunting for a context mismatch that was not there.
+            first = ""
+            for hunk_id in failed:
+                err = (details.get(str(hunk_id)) or {}).get("error_details")
+                msg = str(err.get("message") or "") if isinstance(err, dict) else ""
+                first = next((ln for ln in msg.splitlines() if "error" in ln.lower()), "")
+                if first:
+                    break
+            first = re.sub(r"^.*?([\w.-]+\.\w+\(\d+,\d+\))", r"\1", first.strip())
+            base = "the patch applied, but the patched file fails the language check"
+            return f"{base}: {first[:140]}" if first else base
         base = f"{noun} {ids} of {total} did not match the current file"
         return f"{base} ({'; '.join(kinds)[:120]})" if kinds else base
     feedback = str(validation_result.get("model_feedback") or "")

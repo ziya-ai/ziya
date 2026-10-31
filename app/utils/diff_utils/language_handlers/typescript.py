@@ -11,6 +11,21 @@ from .base import LanguageHandler
 from .javascript import JavaScriptHandler, JsonContentHandler
 
 
+
+def _is_ts_syntax_code(code: str, config_codes) -> bool:
+    """True for a TypeScript SYNTAX diagnostic: the 4-digit TS1000-TS1999
+    range, minus the config-only codes.
+
+    Matching on the leading "1" alone also caught the 5-digit TS18xxx
+    semantic codes -- TS18004 "No value exists in scope for the shorthand
+    property", TS18048 "possibly undefined" -- so a diff whose only fault
+    was a type error, or a symbol introduced by a sibling diff in the same
+    response, was rejected as a syntax break (2026-10-25: three rejections in
+    one session, each reported as "hunks did not match the current file").
+    Semantic errors are not this check's business; it runs with --noResolve.
+    """
+    return len(code) == 4 and code.startswith('1') and code not in config_codes
+
 class TypeScriptHandler(LanguageHandler):
     """Handler for TypeScript files."""
     
@@ -120,7 +135,7 @@ class TypeScriptHandler(LanguageHandler):
                         return False
                     msg2 = (r2.stdout.strip() or r2.stderr.strip())
                     codes2 = _re.findall(r'TS(\d+)', msg2)
-                    return any(c.startswith('1') and c not in {'1323', '1378', '1375', '1432', '1208'}
+                    return any(_is_ts_syntax_code(c, {'1323', '1378', '1375', '1432', '1208'})
                                for c in codes2)
                 finally:
                     os.unlink(p2)
@@ -167,7 +182,7 @@ class TypeScriptHandler(LanguageHandler):
                     # complaint is about isolated-validation flags we
                     # can't fully replicate.  Don't fail the file for these.
                     CONFIG_TS1_CODES = {'1323', '1378', '1375', '1432', '1208'}
-                    has_syntax_error = any(c.startswith('1') and c not in CONFIG_TS1_CODES
+                    has_syntax_error = any(_is_ts_syntax_code(c, CONFIG_TS1_CODES)
                                            for c in diag_codes)
 
                     if has_syntax_error:
