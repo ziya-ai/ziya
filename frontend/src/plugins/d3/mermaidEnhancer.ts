@@ -2785,8 +2785,12 @@ export function initMermaidEnhancer(): void {
       lines.shift(); // Remove the diagram type line from processing
     }
 
-    // Enhanced regex to handle links with labels containing brackets
-    const linkWithTargetDefRegex = /^(\s*)(\w+)\s*(--+>?)\s*(\|.*?\|)?\s*(\w+)(\[[^\]]*\])(\s*)$/gm;
+    // Enhanced regex to handle links with labels containing brackets.
+    // The label may not contain "|": with ".*?" a chained line
+    // ("A -->|x| B[[b]] -.-x|y| C[c]") matched with the whole middle as the
+    // "label", hoisting C[c] above the chain.  Literal pipes inside labels
+    // are already escaped by edge-label-pipe-escape.
+    const linkWithTargetDefRegex = /^(\s*)(\w+)\s*(--+>?)\s*(\|[^|\n]*\|)?\s*(\w+)(\[[^\]]*\])(\s*)$/gm;
 
     // Process remaining lines
     const processedLines = lines.join('\n').replace(linkWithTargetDefRegex, (match, indent, source, link, label, targetId, targetLabel) => {
