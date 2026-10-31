@@ -565,11 +565,26 @@ export function mergeServerChat(
     // state churn (once corrected, the counts match and this is a no-op).
     const scBead = sc.openBeadCount ?? 0;
     const scWork = sc.openWorkItemCount ?? 0;
-    if (scBead !== (local.openBeadCount ?? 0) || scWork !== (local.openWorkItemCount ?? 0)) {
+    // Lineage the local record never had but the server knows.  A window
+    // that minted a fresh record for a continuation (first send before the
+    // sync landed) carries no branchedFrom / lineageKind, and because it is
+    // newer it wins here every cycle — the sidebar then can neither nest
+    // the segment nor mark it ⛓.  Filling only ABSENT fields never
+    // overrides a deliberate local value.
+    const lineageFill: Partial<typeof local> = {};
+    for (const k of ['branchedFrom', 'branchedAtMessageIndex', 'branchedFromLabel',
+                     'lineageKind', 'handedOffTo'] as const) {
+        if ((local as any)[k] == null && (sc as any)[k] != null) (lineageFill as any)[k] = (sc as any)[k];
+    }
+    const needsLineage = Object.keys(lineageFill).length > 0;
+    if (needsLineage
+        || scBead !== (local.openBeadCount ?? 0)
+        || scWork !== (local.openWorkItemCount ?? 0)) {
         return {
             action: 'set',
             record: {
                 ...local,
+                ...lineageFill,
                 openBeadCount: scBead,
                 openWorkItemCount: scWork,
             },
