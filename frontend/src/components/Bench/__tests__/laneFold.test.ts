@@ -62,3 +62,44 @@ it('expanded shows everything, built-ins last', () => {
     expect(spaceFolded).toEqual([]); expect(builtinFolded).toEqual([]);
     expect(shown.map(i => i.key).slice(-2)).toEqual(['skill:builtinA', 'skill:npxB']);
 });
+
+// -- recency in "within reach" and "shelved" --------------------------------
+// Most recently used first; never-used items after them in the order above.
+const used = (item: ReturnType<typeof mk>, at: number | null) => ({ ...item, last_used: at });
+const recencyLane = () => [
+    used(mk('skill:old', { def: 'off', provenance: 'user' }), 1_000),
+    used(mk('skill:pinnedNever', { project: 'off', def: 'ondemand' }), null),
+    used(mk('skill:newest', { def: 'off', provenance: 'user' }), 9_000),
+    used(mk('skill:mineNever', { def: 'off', provenance: 'project' }), null),
+    used(mk('mcp:mid', { user: 'off', provenance: 'user' }), 5_000),
+];
+
+describe('recency ordering', () => {
+    it.each(['off', 'ondemand'] as const)('%s lane: most recent use first, never-used after by deliberateness', lane => {
+        expect(orderForLane(recencyLane(), lane).map(i => i.key)).toEqual(
+            ['skill:newest', 'mcp:mid', 'skill:old', 'skill:pinnedNever', 'skill:mineNever']);
+    });
+
+    it('on-hand lane keeps the deliberateness order', () => {
+        expect(orderForLane(recencyLane(), 'always').map(i => i.key)).toEqual(
+            ['skill:pinnedNever', 'skill:mineNever', 'mcp:mid', 'skill:old', 'skill:newest']);
+        // ...as does a call that names no lane.
+        expect(orderForLane(recencyLane()).map(i => i.key)).toEqual(
+            orderForLane(recencyLane(), 'always').map(i => i.key));
+    });
+
+    it('foldLane applies it to shown, space-folded and the built-in row', () => {
+        const cards = [
+            ...recencyLane(),
+            used(mk('skill:bOld', { def: 'off' }), 2_000),
+            used(mk('skill:bNew', { def: 'off' }), 8_000),
+        ];
+        const { shown, spaceFolded, builtinFolded } = foldLane(cards, 4, false, 'off');
+        expect([...shown, ...spaceFolded].map(i => i.key)).toEqual(
+            ['skill:newest', 'mcp:mid', 'skill:old', 'skill:pinnedNever', 'skill:mineNever']);
+        expect(shown.length).toBeGreaterThan(0);
+        expect(builtinFolded.map(i => i.key)).toEqual(['skill:bNew', 'skill:bOld']);
+        expect(foldLane(cards, null, true, 'off').shown.map(i => i.key).slice(0, 2))
+            .toEqual(['skill:newest', 'skill:bNew']);
+    });
+});

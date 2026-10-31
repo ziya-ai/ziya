@@ -8,9 +8,15 @@
  *   * Everything else (MCP servers, project- and user-installed skills) folds
  *     to SPACE: as many cards as fit the lane's height, least deliberate last.
  *
+ * Within reach and shelved list the most recently used first (``last_used``,
+ * app/utils/capability_usage.py); never-used cards follow in the order below.
+ *
  * Pure, so order and cut are asserted without a DOM.
  */
 import type { BenchItemView } from '../../hooks/useBench';
+import type { PlacementState } from '../../utils/activation';
+
+const RECENCY_LANES: ReadonlySet<PlacementState> = new Set<PlacementState>(['ondemand', 'off']);
 
 export function isBuiltinDefault(item: BenchItemView): boolean {
     return item.kind === 'skill' && item.provenance === 'builtin' && item.origin === 'default';
@@ -24,10 +30,12 @@ export function deliberateness(item: BenchItemView): number {
     return 3;                                                   // at its default
 }
 
-export function orderForLane(cards: BenchItemView[]): BenchItemView[] {
+export function orderForLane(cards: BenchItemView[], lane?: PlacementState): BenchItemView[] {
+    const byRecency = lane !== undefined && RECENCY_LANES.has(lane);
     return cards
-        .map((c, i) => ({ c, i, d: deliberateness(c), t: c.kind === 'mcp' ? -c.tokens : 0 }))
-        .sort((a, b) => a.d - b.d || a.t - b.t || a.i - b.i)
+        .map((c, i) => ({ c, i, u: byRecency ? (c.last_used ?? -1) : 0,
+                          d: deliberateness(c), t: c.kind === 'mcp' ? -c.tokens : 0 }))
+        .sort((a, b) => b.u - a.u || a.d - b.d || a.t - b.t || a.i - b.i)
         .map(x => x.c);
 }
 
@@ -42,10 +50,12 @@ export interface FoldedLane {
  * ``expanded`` shows everything (the lane scrolls).  The built-in row takes a
  * slot when present; so does the "N more" row.  Never space-folds exactly one.
  */
-export function foldLane(cards: BenchItemView[], capacity: number | null, expanded = false): FoldedLane {
-    if (expanded) return { shown: orderForLane(cards), spaceFolded: [], builtinFolded: [] };
-    const builtin = cards.filter(isBuiltinDefault);
-    const rest = orderForLane(cards.filter(c => !isBuiltinDefault(c)));
+export function foldLane(
+    cards: BenchItemView[], capacity: number | null, expanded = false, lane?: PlacementState,
+): FoldedLane {
+    if (expanded) return { shown: orderForLane(cards, lane), spaceFolded: [], builtinFolded: [] };
+    const builtin = orderForLane(cards.filter(isBuiltinDefault), lane);
+    const rest = orderForLane(cards.filter(c => !isBuiltinDefault(c)), lane);
     const slots = capacity === null ? Infinity : Math.max(0, capacity - (builtin.length ? 1 : 0));
     if (rest.length <= slots) return { shown: rest, spaceFolded: [], builtinFolded: builtin };
     const cut = Math.max(0, Math.min(slots - 1, rest.length - 2));

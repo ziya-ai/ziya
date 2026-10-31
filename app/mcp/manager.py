@@ -2513,6 +2513,9 @@ class MCPManager:
                     "message": f"Tool '{internal_tool_name}' is currently disabled. You can enable it in MCP Server Settings.",
                     "code": -32001
                 }
+            # Ordering signal for the bench's within-reach / shelved lanes.
+            from app.utils.capability_usage import record_mcp_use
+            record_mcp_use(tool_server)
         
         # Check for repetitive calls (conversation-aware)
         # Fall back to the request-scoped ContextVar when the caller did not

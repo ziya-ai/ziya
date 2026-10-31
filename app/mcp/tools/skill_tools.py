@@ -110,6 +110,8 @@ class GetSkillDetailsTool(BaseMCPTool):
                     ds_kw = [skill_key(k) for k in (ds.keywords or [])]
                     if skill_matches(skill_id, ds) or want_key in ds_kw:
                         logger.info(f"🎓 SKILL_ACTIVATED ({ds.source}): {ds.name}")
+                        from app.utils.capability_usage import record_skill_use
+                        record_skill_use(ds.name)
                         # agentskills.io: give the skill's directory and list
                         # its bundled files so relative references in the
                         # body ("scripts/x.py") resolve.
@@ -132,6 +134,8 @@ class GetSkillDetailsTool(BaseMCPTool):
             }
 
         logger.info(f"🎓 SKILL_ACTIVATED: {skill['id']} — {skill['name']}")
+        from app.utils.capability_usage import record_skill_use
+        record_skill_use(skill['name'])
 
         return {
             "content": (
