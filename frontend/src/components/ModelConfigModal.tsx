@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Modal, Form, Radio, Checkbox, Slider, Switch, Button, Typography, Tooltip, Select, message, Space } from 'antd';
+import { Modal, Form, Radio, Checkbox, Slider, Switch, Button, Typography, Tooltip, Select, message, Space, Tag } from 'antd';
 import { SettingOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
+import { useProject } from '../context/ProjectContext';
+import UsageCostModal from './UsageCostModal';
 import {
   selectorValue, applySelection, coerceThinkingSettings, reasoningIsOff, DEFAULT_THINKING_DISPLAY,
 } from '../utils/thinkingDisplay';
@@ -11,6 +13,9 @@ const { Text } = Typography; // Keep existing import
 export interface ModelInfo {
   id: string;
   name: string;
+  /** Local servers: true when the server currently holds this model in
+   *  memory, false when it does not, null/undefined when not reported. */
+  loaded?: boolean | null;
 }
 
 /** An endpoint this install is permitted to use (from /api/endpoints). */
@@ -221,6 +226,11 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   // Scope for the model change: server default vs project/conversation
   // pin.  Re-seeded from initialScope each time the modal opens.
   const [pinScope, setPinScope] = useState<ModelScope>(initialScope || 'server');
+  // Usage & cost view.  Reached from here, not from a top-level link: dollar
+  // figures stay out of prominent view until a user goes looking.  The
+  // ledger is global; the current project only sets the initial scope.
+  const [showUsageCost, setShowUsageCost] = useState(false);
+  const { currentProject } = useProject();
   // Whether the pin should be saved (persists across tabs & restarts) vs
   // tab-only.  Re-seeded from the active pin's layer on open.
   const [persist, setPersist] = useState<boolean>(!!initialPersistent);
@@ -622,9 +632,13 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
           <Select
             onChange={handleModelSelect}
             options={
-              // Custom sort: newest to oldest within each model family
+              // Loaded models (local servers) first: on a one-model-at-a-time
+              // server picking anything else swaps it out.  Then newest to
+              // oldest within each model family.
               [...availableModels]
                 .sort((a, b) => {
+                  if ((a.loaded === true) !== (b.loaded === true)) return a.loaded === true ? -1 : 1;
+
                   // Extract model family and version for both models
                   const extractFamilyAndVersion = (name: string): { family: string; version: number; subVersion: number } => {
                     // Handle patterns like "opus4.5", "sonnet3.7", "nova-pro", etc.
@@ -669,7 +683,9 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                   return bInfo.subVersion - aInfo.subVersion;
                 })
                 .map(model => ({
-                  label: model.name,
+                  label: model.loaded === true
+                    ? <span>{model.name} <Tag color="green" style={{ marginLeft: 6 }}>loaded</Tag></span>
+                    : model.name,
                   value: typeof model.id === 'object' ? JSON.stringify(model.id) : model.id
                 }))
             }
@@ -923,8 +939,21 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
               <Text type="secondary" style={{ wordBreak: 'break-all' }}>{inferenceEndpoint}</Text>
             </div>
           )}
+          <div style={{ marginTop: 8 }}>
+            <a
+              style={{ fontSize: 12 }}
+              onClick={e => { e.preventDefault(); setShowUsageCost(true); }}
+            >
+              Usage &amp; cost…
+            </a>
+          </div>
         </div>
       </Form>
+      <UsageCostModal
+        visible={showUsageCost}
+        onClose={() => setShowUsageCost(false)}
+        projectId={currentProject?.id}
+      />
     </Modal>
   );
 };

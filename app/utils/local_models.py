@@ -72,6 +72,12 @@ DEFAULT_OUTPUT_CEILING = 8192
 PROBE_TIMEOUT_S = 3.0      # per-model metadata probes
 SCAN_TIMEOUT_S = 1.0       # per-port /v1/models during the scan
 SCAN_MISS_TTL_S = 30.0     # a scan that found nothing is retried after this
+# A scan that found servers is kept until a caller asks for a fresher one.
+# The model-picker routes pass this as ``max_age`` so opening the modal
+# re-reads the server (new models, which one is loaded) while the several
+# requests one open makes share a single scan.  Request-time callers never
+# pass it, so a chat turn is never stalled by a port probe.
+SCAN_UI_MAX_AGE_S = 2.0
 
 # The OpenAI SDK refuses to construct a client with no key even though local
 # servers ignore it.
@@ -666,14 +672,28 @@ def apply_discovery(entry: Dict[str, Any], found: DiscoveredModel) -> Dict[str, 
         entry["supports_vision"] = found.supports_vision
     if found.supports_thinking is not None:
         entry["supports_thinking"] = found.supports_thinking
+    if found.loaded is not None:
+        # Whether the server currently holds this model in memory (oMLX
+        # /v1/models/status ``loaded``, LM Studio ``state``).  Surfaced by
+        # /api/available-models so the picker can mark and prefer it: on a
+        # one-model-at-a-time server, choosing anything else swaps ~100 GB.
+        entry["loaded"] = found.loaded
     if found.supports_reasoning_effort is not None:
         entry["supports_reasoning_effort"] = found.supports_reasoning_effort
         if found.supports_reasoning_effort:
             # DwarfStar: thinking on by default, effort low..xhigh, `max` =
             # Think Max (falls back to normal thinking when ctx is short).
             entry.setdefault("supports_thinking", True)
-            entry.setdefault("supported_efforts", ["low", "medium", "high", "xhigh", "max"])
-            entry.setdefault("thinking_effort_default", "medium")
+            if found.supported_efforts:
+                # The server named its ladder (oMLX reasoning_efforts); a
+                # level it did not list would be rejected or ignored.
+                efforts = list(found.supported_efforts)
+                entry["supported_efforts"] = efforts
+                entry.setdefault("thinking_effort_default",
+                                 "medium" if "medium" in efforts else efforts[0])
+            else:
+                entry.setdefault("supported_efforts", ["low", "medium", "high", "xhigh", "max"])
+                entry.setdefault("thinking_effort_default", "medium")
             # A server that advertises reasoning_effort streams reasoning on
             # delta.reasoning_content, and the DeepSeek family REQUIRES that
             # text echoed back on assistant history when tools are present
@@ -725,10 +745,11 @@ def discover_and_apply(name: Optional[str] = None, *, endpoint: Optional[str] = 
 # Endpoint registration: one endpoint per server
 # ---------------------------------------------------------------------------
 
-def choose_default_model(server_ids: list) -> str:
+def choose_default_model(server_ids: list, loaded_ids: Optional[list] = None) -> str:
     """Default model for one server: ZIYA_LOCAL_MODEL if the server has it;
-    a single-model server's one model; the reference model if present; else
-    the first."""
+    a single-model server's one model; the model the server already has
+    loaded (``loaded_ids``, in listing order); the reference model if
+    present; else the first."""
     explicit = (os.environ.get("ZIYA_LOCAL_MODEL") or "").strip()
     if explicit and explicit in server_ids:
         return explicit
@@ -736,6 +757,9 @@ def choose_default_model(server_ids: list) -> str:
         return explicit or DEFAULT_LOCAL_MODEL
     if len(server_ids) == 1:
         return server_ids[0]
+    for mid in loaded_ids or ():
+        if mid in server_ids:
+            return mid
     if DEFAULT_LOCAL_MODEL in server_ids:
         return DEFAULT_LOCAL_MODEL
     return server_ids[0]
@@ -751,7 +775,8 @@ def _endpoint_defaults_for(server: LocalServer) -> Dict[str, Any]:
 _registered_for: Optional[tuple] = None
 
 
-def register_local_endpoints(*, refresh: bool = False) -> List[str]:
+def register_local_endpoints(*, refresh: bool = False,
+                             max_age: Optional[float] = None) -> List[str]:
     """Make every scanned server a Ziya endpoint and return their ids.
 
     For each server: ``ENDPOINT_DEFAULTS[id]`` (local defaults + base_url,
@@ -762,10 +787,16 @@ def register_local_endpoints(*, refresh: bool = False) -> List[str]:
     in use, which must not vanish under a running conversation. The
     ``local`` alias table is left in place; consumers listing endpoints hide
     it when concrete ids exist (see local_endpoint_ids_for_listing).
+
+    ``refresh`` forces a rescan; ``max_age`` rescans only when the cached
+    scan is older than that many seconds.  Either way a rescan also re-runs
+    per-model discovery, since the model list can be unchanged while which
+    model is *loaded* has changed.
     """
     global _registered_for
     from app.config import models_config as mc
 
+    refresh = refresh or scan_is_stale(max_age)
     servers = scan_local_servers(refresh=refresh)
     signature = tuple((s.endpoint_id, s.base_url, s.model_ids) for s in servers)
     if not refresh and _registered_for == signature:
@@ -794,17 +825,21 @@ def register_local_endpoints(*, refresh: bool = False) -> List[str]:
             if mid not in table:
                 table[mid] = synthesize_local_model_entry(mid)
                 mine.add(mid)
-        default = choose_default_model(list(s.model_ids))
-        mc.DEFAULT_MODELS[s.endpoint_id] = default
-        mc.DEFAULT_SERVICE_MODELS[s.endpoint_id] = default
         # Enrich from the /v1/models entry first (free), then the runtime's
-        # native API where it has one.
+        # native API where it has one.  A rescan re-probes so a changed
+        # ``loaded`` state is seen, not the first answer for the process.
         for item in s.entries:
             if isinstance(item, dict) and item.get("id") in table:
                 apply_discovery(table[item["id"]], model_from_v1_entry(s.runtime, item))
-        if s.runtime in ("ollama", "lmstudio"):
+        if s.runtime in _RUNTIMES_WITH_NATIVE_PROBE:
             for mid in s.model_ids:
-                discover_and_apply(mid, endpoint=s.endpoint_id)
+                discover_and_apply(mid, endpoint=s.endpoint_id, refresh=refresh)
+        # The default follows what the server already holds in memory, so
+        # switching to this endpoint in the picker does not evict a model.
+        loaded_ids = [mid for mid in s.model_ids if table.get(mid, {}).get("loaded") is True]
+        default = choose_default_model(list(s.model_ids), loaded_ids)
+        mc.DEFAULT_MODELS[s.endpoint_id] = default
+        mc.DEFAULT_SERVICE_MODELS[s.endpoint_id] = default
 
     # Keep the alias table pointing at the resolved server's default so a
     # caller that still asks about "local" gets a real answer.

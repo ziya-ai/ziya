@@ -79,10 +79,15 @@ def get_available_models(endpoint: Optional[str] = None):
         if is_local_endpoint(endpoint):
             # A local endpoint's catalog is whatever its server reports, not
             # the import-time placeholder; register (memoised) and resolve
-            # the alias before listing.
+            # the alias before listing.  The picker is the one place a
+            # stale scan is wrong (models added to the server, a different
+            # one loaded), so ask for one no older than SCAN_UI_MAX_AGE_S;
+            # the other requests this modal open makes reuse it.
             try:
-                from app.utils.local_models import register_local_endpoints, resolve_local_alias
-                register_local_endpoints()
+                from app.utils.local_models import (
+                    SCAN_UI_MAX_AGE_S, register_local_endpoints, resolve_local_alias,
+                )
+                register_local_endpoints(max_age=SCAN_UI_MAX_AGE_S)
                 endpoint = resolve_local_alias(endpoint)
             except Exception as e:
                 logger.warning(f"local endpoint registration failed: {e}")
@@ -111,7 +116,11 @@ def get_available_models(endpoint: Optional[str] = None):
                 "name": name,
                 "alias": name,
                 "display_name": display_name,
-                "preferred_region": config.get("region", None)  # Include preferred region if available
+                "preferred_region": config.get("region", None),  # Include preferred region if available
+                # Local servers only: whether the server holds this model in
+                # memory now (None = not reported).  The picker marks and
+                # sorts loaded models first.
+                "loaded": config.get("loaded"),
             })
             
         # Log the models being returned
@@ -148,8 +157,10 @@ def get_endpoints():
     """
     active = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
     try:
-        from app.utils.local_models import register_local_endpoints, local_endpoint_label
-        local_ids = register_local_endpoints()
+        from app.utils.local_models import (
+            SCAN_UI_MAX_AGE_S, register_local_endpoints, local_endpoint_label,
+        )
+        local_ids = register_local_endpoints(max_age=SCAN_UI_MAX_AGE_S)
     except Exception as e:
         logger.warning(f"local endpoint registration failed: {e}")
         local_ids, local_endpoint_label = [], (lambda _ep: None)  # noqa: E731
@@ -448,7 +459,12 @@ def _set_model_sync(request: SetModelRequest):
         # Get current endpoint
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         current_model = os.environ.get("ZIYA_MODEL")
-        current_region = os.environ.get("AWS_REGION") or ModelManager._state.get('aws_region', 'us-west-1')
+        # _state always carries the 'aws_region' key (as None until Bedrock
+        # init), so dict.get's default never fired; on a local endpoint with
+        # no AWS_REGION this was None and .startswith() below raised 500.
+        current_region = (os.environ.get("AWS_REGION")
+                          or ModelManager._state.get('aws_region')
+                          or 'us-west-1')
 
         logger.info(f"Current state - Endpoint: {endpoint}, Model: {current_model}")
 
