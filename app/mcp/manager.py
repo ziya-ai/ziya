@@ -2238,7 +2238,7 @@ class MCPManager:
                 return arguments["tool_input"]
             
             # Case 3: Auto-nest stray parameters into 'input' sub-object
-            # Some MCP servers (e.g., enterprise-mcp TicketingReadActions) use an
+            # Some MCP servers (e.g., some enterprise ticketing tools) use an
             # {action, input: {params...}} pattern. Models frequently flatten
             # the params to root level. Detect and restructure.
             if (isinstance(arguments, dict) and
