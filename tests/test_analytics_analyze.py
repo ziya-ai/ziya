@@ -72,6 +72,34 @@ def test_path_input_is_registered_first(home):
     assert ds.load_meta(entry["id"])["source"]["kind"] == "file"
 
 
+def test_path_with_member_selector_reads_one_array_of_a_json_object(home):
+    """``inputs={"d": "backlog.json#defects"}`` — the shape gfx_ledger writes."""
+    (home / "proj").mkdir()
+    (home / "proj" / "backlog.json").write_text(json.dumps({
+        "schema": 2,
+        "defects": [{"id": "D-1", "engine": "mermaid"}, {"id": "D-2", "engine": "mermaid"},
+                    {"id": "D-3", "engine": "d3"}],
+        "merges": [{"from": "D-9", "into": "D-1"}],
+    }))
+    r = _call(home / "proj",
+              "SELECT engine, count(*) AS n FROM d GROUP BY engine ORDER BY n DESC",
+              inputs={"d": "backlog.json#defects"})
+    assert r["rows"] == [{"engine": "mermaid", "n": 2}, {"engine": "d3", "n": 1}]
+    (entry,) = r["lineage"]["inputs"]
+    assert entry["record_path"] == "defects"
+    assert ds.load_meta(entry["id"])["source"]["record_path"] == "defects"
+
+
+def test_json_object_of_objects_is_queryable_by_key(home):
+    (home / "proj").mkdir()
+    (home / "proj" / "by_id.json").write_text(json.dumps({
+        "D-1": {"sev": 2}, "D-2": {"sev": 1}, "D-3": {"sev": 2},
+    }))
+    r = _call(home / "proj", "SELECT _key FROM b WHERE sev = 2 ORDER BY _key",
+              inputs={"b": "by_id.json"})
+    assert r["rows"] == [{"_key": "D-1"}, {"_key": "D-3"}]
+
+
 def test_path_outside_allowed_dirs_is_refused(home):
     (home / "proj").mkdir()
     r = _call(home / "proj", "SELECT 1", inputs={"x": "../out.csv"})
