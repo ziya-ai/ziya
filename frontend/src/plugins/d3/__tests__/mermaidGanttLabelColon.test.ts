@@ -9,8 +9,14 @@
  *   TypeError: Cannot read properties of undefined (reading 'type')
  * which surfaces as an empty SVG / "parsing failed" in the plugin.
  *
- * The preprocessor substitutes a fullwidth colon (U+FF1A) for colons that
- * appear in the label portion only, leaving the data section untouched.
+ * Label colons are escaped as `#58;` (mermaid's entity decoding renders it
+ * back as ":"), leaving the data section untouched.  Two passes share this
+ * contract: gantt-task-name-colon-escape (priority 140, strict data grammar)
+ * runs first, and gantt-label-colon-fix (priority 135, looser plausibility
+ * check) is the fallback.  Until 2026-10-16 the fallback emitted a fullwidth
+ * colon (U+FF1A) and this suite asserted that glyph, so it went red the day
+ * the stricter pass landed ahead of it.  The assertions here are on the
+ * chain's output, whichever pass fires.
  */
 
 import { preprocessDefinition, initMermaidEnhancer } from '../mermaidEnhancer';
@@ -19,7 +25,8 @@ beforeAll(() => {
   initMermaidEnhancer();
 });
 
-const FULLWIDTH_COLON = '\uFF1A';
+const ESCAPED_COLON = '#58;';
+const FULLWIDTH_COLON = '\uFF1A'; // the retired encoding; must never reappear
 
 // The definition from the reported failure.
 const FAILING_GANTT = `gantt
@@ -87,8 +94,9 @@ describe('gantt task-label colon preprocessor', () => {
 
   it('substitutes the label colon rather than deleting the task', () => {
     const result = preprocessDefinition(FAILING_GANTT, 'gantt');
-    expect(result).toContain(`Gap${FULLWIDTH_COLON} launch to next cycle`);
+    expect(result).toContain(`Gap${ESCAPED_COLON} launch to next cycle`);
     expect(result).not.toContain('Gap: launch to next cycle');
+    expect(result).not.toContain(FULLWIDTH_COLON);
     // Data section is preserved verbatim.
     expect(result).toMatch(/:done,\s*gap,\s*2026-10-20,\s*163d/);
   });
@@ -97,6 +105,7 @@ describe('gantt task-label colon preprocessor', () => {
     const result = preprocessDefinition(FAILING_GANTT, 'gantt');
     expect(result).toContain('Launch                          :milestone, ml, 2026-10-20, 0d');
     expect(result).toContain('15 senior departures            :crit, dep, 2026-05-21, 91d');
+    expect(result).not.toContain(`Launch${ESCAPED_COLON}`);
     expect(result).not.toContain(`Launch${FULLWIDTH_COLON}`);
   });
 
@@ -108,6 +117,7 @@ describe('gantt task-label colon preprocessor', () => {
     Standup :done, su, 10:30, 15m`;
     const result = preprocessDefinition(input, 'gantt');
     expect(result).toContain('Standup :done, su, 10:30, 15m');
+    expect(result).not.toContain(ESCAPED_COLON);
     expect(result).not.toContain(FULLWIDTH_COLON);
   });
 
@@ -120,6 +130,7 @@ describe('gantt task-label colon preprocessor', () => {
     section Notes
     Note: see the attached doc`;
     const result = preprocessDefinition(input, 'gantt');
+    expect(result).not.toContain(ESCAPED_COLON);
     expect(result).not.toContain(FULLWIDTH_COLON);
     expect(result).toContain('Note');
   });
@@ -130,7 +141,7 @@ describe('gantt task-label colon preprocessor', () => {
     section Phases
     Phase1:Design work :active, d1, 2026-01-01, 5d`;
     const result = preprocessDefinition(input, 'gantt');
-    expect(result).toContain(`Phase1${FULLWIDTH_COLON}Design work :active, d1, 2026-01-01, 5d`);
+    expect(result).toContain(`Phase1${ESCAPED_COLON}Design work :active, d1, 2026-01-01, 5d`);
     expect(mermaidDataFieldCount(taskLines(result)[0])).toBe(3);
   });
 
@@ -140,9 +151,23 @@ describe('gantt task-label colon preprocessor', () => {
     section Phases
     Step 2: verification :crit, s2, after s1, 10d`;
     const result = preprocessDefinition(input, 'gantt');
-    expect(result).toContain(`Step 2${FULLWIDTH_COLON} verification`);
+    expect(result).toContain(`Step 2${ESCAPED_COLON} verification`);
     expect(result).toMatch(/:crit,\s*s2,\s*after s1,\s*10d/);
     expect(mermaidDataFieldCount(taskLines(result)[0])).toBe(3);
+  });
+
+  it('the fallback pass still fires, with the same encoding, when the strict pass declines the data', () => {
+    // `s.2` is not an id under mermaidGanttTaskColons' grammar, so
+    // gantt-task-name-colon-escape returns the line unchanged and only the
+    // plausibility-based gantt-label-colon-fix can rescue it.  It must agree
+    // on `#58;`; a fullwidth colon here means the two passes have diverged.
+    const input = `gantt
+    dateFormat YYYY-MM-DD
+    section Phases
+    Step: two :crit, s.2, 2026-01-01, 5d`;
+    const result = preprocessDefinition(input, 'gantt');
+    expect(result).toContain(`Step${ESCAPED_COLON} two :crit, s.2, 2026-01-01, 5d`);
+    expect(result).not.toContain(FULLWIDTH_COLON);
   });
 
   it('does not alter the title directive, which may legitimately contain a colon', () => {
@@ -159,6 +184,7 @@ describe('gantt task-label colon preprocessor', () => {
     const input = `sequenceDiagram
     Alice->>Bob: Status: green`;
     const result = preprocessDefinition(input, 'sequenceDiagram');
+    expect(result).not.toContain(ESCAPED_COLON);
     expect(result).not.toContain(FULLWIDTH_COLON);
   });
 });
