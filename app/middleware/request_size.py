@@ -4,6 +4,7 @@ Middleware for limiting request size.
 
 from fastapi import Request, Response
 import json
+import re
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp
 from starlette.responses import JSONResponse
@@ -12,14 +13,54 @@ import os
 from app.utils.logging_utils import logger
 # Middleware for handling request size limits and model settings
 
+# Conversation sync.  The browser batches it to ~8 MB
+# (conversationSyncApi.planBulkSyncBatches), so only one conversation larger
+# than the default limit lands here; under the default it would be refused
+# on every sync and never reach the server.  A prefix rule cannot name this
+# route because the project id sits in the middle of the path.
+BULK_SYNC_PATH_PATTERN = r"/api/v1/projects/[^/]+/chats/bulk-sync"
+
+
+def bulk_sync_request_limit() -> int:
+    """Largest bulk-sync request body, from ZIYA_BULK_SYNC_MAX_MB."""
+    return int(ziya_env("ZIYA_BULK_SYNC_MAX_MB")) * 1024 * 1024
+
+
 class RequestSizeMiddleware(BaseHTTPMiddleware):
     """Middleware for limiting request size."""
     
-    def __init__(self, app: ASGIApp, default_max_size_mb: int = 10):
+    def __init__(
+        self,
+        app: ASGIApp,
+        default_max_size_mb: int = 10,
+        path_limits: dict[str, int] | None = None,
+        path_patterns: dict[str, int] | None = None,
+    ):
         super().__init__(app)
         logger.debug(f"RequestSizeLimiter initialized with default {default_max_size_mb}MB limit")
         self.max_size = default_max_size_mb * 1024 * 1024  # Convert to bytes
+        # Path-prefix overrides, in bytes, longest prefix first.  The default
+        # bounds bodies a handler may buffer in memory; a route that streams
+        # its body to disk and enforces its own ceiling (local transcription
+        # of hour-long recordings) needs far more.
+        self.path_limits = sorted(
+            (path_limits or {}).items(), key=lambda item: len(item[0]), reverse=True
+        )
+        # Full-match regex overrides, in bytes, for routes whose distinguishing
+        # part follows a path parameter.  Checked before the prefix rules.
+        self.path_patterns = [
+            (re.compile(pattern), limit) for pattern, limit in (path_patterns or {}).items()
+        ]
         logger.info(f"RequestSizeLimiter initialized with default {default_max_size_mb}MB limit")
+
+    def _limit_for(self, path: str) -> int:
+        for pattern, limit in self.path_patterns:
+            if pattern.fullmatch(path):
+                return limit
+        for prefix, limit in self.path_limits:
+            if path.startswith(prefix):
+                return limit
+        return self.max_size
     
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
@@ -27,14 +68,15 @@ class RequestSizeMiddleware(BaseHTTPMiddleware):
         """Limit request size."""
         # Get content length from headers
         content_length = request.headers.get("content-length")
+        max_size = self._limit_for(request.url.path)
 
         # If content length is provided, check if it exceeds the limit
         if content_length:
             content_length = int(content_length)
-            if content_length > self.max_size:
-                logger.warning(f"Request size {content_length} exceeds limit {self.max_size}")
+            if content_length > max_size:
+                logger.warning(f"Request size {content_length} exceeds limit {max_size}")
                 return Response(
-                    content=f"Request size {content_length} exceeds limit {self.max_size}",
+                    content=f"Request size {content_length} exceeds limit {max_size}",
                     status_code=413,
                     media_type="text/plain"
                 )  
