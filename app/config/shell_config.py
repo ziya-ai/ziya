@@ -42,6 +42,10 @@ DEFAULT_SHELL_CONFIG = {
         "do", "done",
         "case", "esac", "in",
         "function", "return", "break", "continue",
+        # The read builtin only assigns variables from stdin.  Both sh -c
+        # routes run with stdin=DEVNULL, so it reads only what the command
+        # itself pipes or redirects in (``... | while read line; do``).
+        "read",
         "true", "false", "test", "[", "[[", "]", "]]"
     ],
     "gitOperationsEnabled": True,
