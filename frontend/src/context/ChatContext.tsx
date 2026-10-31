@@ -23,7 +23,7 @@ import { loadHeldMessages, saveHeldMessages, clearHeldMessages, heldMessagesKey 
 import { dispatchComposerInject } from '../utils/composerInject';
 import { useTheme } from './ThemeContext';
 import { useConfig } from './ConfigContext';
-import { useProject } from './ProjectContext';
+import { useProject, readLastProjectId } from './ProjectContext';
 import { projectSync } from '../utils/projectSync';
 import { isInstanceHalted, onInstanceHalt } from '../utils/instanceIdentity';
 import { selectDirtyConversations, flushPendingDirtyOnPagehide } from '../utils/pagehideFlush';
@@ -261,8 +261,21 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // This must run AFTER config is loaded AND after conversations are initialized
     // CRITICAL: Only run ONCE to prevent overwriting user's current conversation
     useEffect(() => {
-        if (!isEphemeralMode && isInitialized && conversations.length > 0 && !conversationIdRestored.current && !currentConversationId) {
+        // A placeholder id does not count as a selection.  With no IndexedDB
+        // shells, init ends with an empty list, the empty-list effect sets a
+        // placeholder, and the server sync fills the list only afterwards;
+        // requiring an empty id skipped this restore for good and left the
+        // tab on a conversation that does not exist.  Once the user has used
+        // the placeholder (it is in the list) it is real and is kept.
+        const holdsPlaceholder = !!currentConversationId
+            && currentConversationId === placeholderConversationIdRef.current
+            && !conversations.some(c => c.id === currentConversationId);
+        if (!isEphemeralMode && isInitialized && conversations.length > 0 && !conversationIdRestored.current && (!currentConversationId || holdsPlaceholder)) {
             conversationIdRestored.current = true; // Mark as restored to prevent re-running
+            // loadConversation, not a bare setCurrentConversationId: the
+            // restored entry is often a shell the first sync deferred, and
+            // shells hydrate "on open" -- which never comes for the
+            // conversation already on screen.
             try {
                 const savedCurrentId = getTabState('ZIYA_CURRENT_CONVERSATION_ID');
                 if (savedCurrentId) {
@@ -270,21 +283,21 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const conversationExists = conversations.some(c => c.id === savedCurrentId);
                     if (conversationExists) {
                         console.log('🔄 RESTORED: Last active conversation ID:', savedCurrentId);
-                        setCurrentConversationId(savedCurrentId);
+                        void loadConversation(savedCurrentId);
                     } else {
                         console.warn('⚠️ Saved conversation ID not found in loaded conversations:', savedCurrentId);
                         // Use the most recent conversation instead
                         const mostRecent = conversations.reduce((a, b) =>
                             (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
                         );
-                        setCurrentConversationId(mostRecent.id);
+                        void loadConversation(mostRecent.id);
                     }
                 } else if (conversations.length > 0) {
                     // No saved ID, use most recent
                     const mostRecent = conversations.reduce((a, b) =>
                         (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
                     );
-                    setCurrentConversationId(mostRecent.id);
+                    void loadConversation(mostRecent.id);
                 }
             } catch (e) {
                 console.warn('Failed to restore current conversation ID:', e);
@@ -2450,10 +2463,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // — legacy/untagged entries that the migration step will assign.
             // ProjectContext restores its state asynchronously, so currentProject
             // is typically still undefined when this init effect fires. Read the
-            // persisted project id directly from localStorage (same key that
-            // ProjectContext uses: LAST_PROJECT_KEY = 'ZIYA_LAST_PROJECT_ID') so
-            // the filter engages on the very first render after refresh.
-            const startupPid = currentProject?.id || (() => { try { return localStorage.getItem('ZIYA_LAST_PROJECT_ID') || undefined; } catch { return undefined; } })();
+            // persisted project id through ProjectContext's instance-scoped key
+            // so the filter engages on the very first render after refresh.
+            // (The unscoped key read here before is never written.)
+            const startupPid = currentProject?.id || readLastProjectId();
             const scopedShells = startupPid
                 ? savedConversations.filter(c => !c.projectId || c.projectId === startupPid || conversationIsEffectivelyGlobal(c, startupFolders))
                 : savedConversations;
@@ -2603,8 +2616,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Don't wait for the 30s sync cycle — fetch immediately so the
             // conversation list isn't blank for users with a corrupted IDB.
             try {
-                const startupPid = currentProject?.id ||
-                    (() => { try { return localStorage.getItem('ZIYA_LAST_PROJECT_ID') || undefined; } catch { return undefined; } })();
+                const startupPid = currentProject?.id || readLastProjectId();
                 if (startupPid && isServerReachable) {
                     const serverChats = await syncApi.listChats(startupPid, false);
                     if (serverChats.length > 0) {
@@ -4523,16 +4535,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
             projectSync.off('streaming-state', handleStreamingState);
             projectSync.off('streaming-ended', handleStreamingEnded);
             projectSync.off('streaming-probe', handleStreamingProbe);
+            window.removeEventListener('conversationOrganizedFromBackend', handleOrganizedFromBackend);
         };
     }, [currentProject?.id, isInitialized, mergeConversations, updateProcessingState, removeStreamingConversation]);
 
 
     useEffect(() => {
-        // Only create a new conversation ID if we're initialized and still don't have one
-        // This prevents creating IDs before conversations are loaded from the database
+        // Only set a placeholder ID if we're initialized and still don't have one.
+        // No conversation record is created; the restore effect replaces the
+        // placeholder if a saved conversation turns up in the list later.
         if (!currentConversationId && isInitialized && conversations.length === 0) {
             console.log('📝 No conversations loaded, creating initial conversation');
-            setCurrentConversationId(uuidv4());
+            const placeholderId = uuidv4();
+            placeholderConversationIdRef.current = placeholderId;
+            setCurrentConversationId(placeholderId);
         }
         // REMOVED: The else-if branch that auto-selected mostRecent whenever
         // conversations.length changed.  This was triggered by sync adding
