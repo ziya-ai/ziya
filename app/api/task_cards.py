@@ -387,8 +387,10 @@ def _escalation_rows(
         denial_reason = None
         if check_approvals:
             try:
+                # Read-only "is it signed yet?" query, re-polled on every
+                # window focus; the runtime gate logs real denials.
                 authorized, denial_reason = sa.is_scope_authorized_with_reason(
-                    block_id, scope)
+                    block_id, scope, log=False)
             except Exception as e:  # noqa: BLE001 — must never 500 the editor
                 logger.warning(f"scope-status check failed for {block_id}: {e}")
                 authorized = False

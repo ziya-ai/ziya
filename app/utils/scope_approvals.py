@@ -92,7 +92,7 @@ def save_record(record: Dict[str, Any]) -> Path:
     return path
 
 
-def _within_policy_bound(record: Dict[str, Any]) -> tuple:
+def _within_policy_bound(record: Dict[str, Any], log: bool = True) -> tuple:
     """True iff *record* satisfies the enterprise approval-TTL policy.
 
     No policy bound (None) -> always True (open-source default; approvals may
@@ -118,16 +118,18 @@ def _within_policy_bound(record: Dict[str, Any]) -> tuple:
         return True, None
     exp = record.get("expires_at")
     if exp is None:
-        logger.info("🔒 SCOPE_AUTHZ: approval is unbounded but policy requires "
-                    f"expiry within {max_ttl}s — escalation denied")
+        if log:
+            logger.info("🔒 SCOPE_AUTHZ: approval is unbounded but policy requires "
+                        f"expiry within {max_ttl}s — escalation denied")
         return False, f"unbounded_approval_requires_expiry:{max_ttl}"
     try:
         lifetime = int(exp) - int(record["approved_at"])
     except (KeyError, TypeError, ValueError):
         return False, "malformed_expiry"
     if lifetime > max_ttl:
-        logger.info(f"🔒 SCOPE_AUTHZ: approval lifetime {lifetime}s exceeds "
-                    f"policy bound {max_ttl}s — escalation denied")
+        if log:
+            logger.info(f"🔒 SCOPE_AUTHZ: approval lifetime {lifetime}s exceeds "
+                        f"policy bound {max_ttl}s — escalation denied")
         return False, f"approval_lifetime_exceeds_policy:{lifetime}>{max_ttl}"
     return True, None
 
@@ -154,8 +156,19 @@ def is_scope_authorized(task_id: str, *scopes: Any,
 
 
 def is_scope_authorized_with_reason(task_id: str, *scopes: Any,
-                                    public_key_path: Optional[str] = None) -> tuple:
+                                    public_key_path: Optional[str] = None,
+                                    log: bool = True) -> tuple:
     """Same predicate as ``is_scope_authorized``, returning ``(ok, reason)``.
+
+    ``log=False`` suppresses the "escalation denied" log lines.  They are
+    meant for the RUNTIME gate, where a denial means a task actually tried
+    to use an unsigned escalation.  The read-only UI queries
+    (``/task-cards/signature-summary`` and ``/{id}/scope-status``) call this
+    for every escalating block of every card to ask "is it signed yet?",
+    and the header re-polls on every window focus; with the default they
+    wrote one denial line per unsigned block per poll per tab — dozens of
+    identical lines every few seconds (2026-10-20) for checks that
+    enforced nothing.  The caller still gets the reason code either way.
 
     ``reason`` is ``None`` when authorized, else a short machine-readable code:
       - ``no_record``           — nothing has been signed for this task_id
@@ -178,22 +191,25 @@ def is_scope_authorized_with_reason(task_id: str, *scopes: Any,
 
     record = get_record(task_id)
     if record is None:
-        logger.info(f"🔒 SCOPE_AUTHZ: no approval record for task {task_id!r} "
-                    f"(hash {current_hash[:12]}…) — escalation denied")
+        if log:
+            logger.info(f"🔒 SCOPE_AUTHZ: no approval record for task {task_id!r} "
+                        f"(hash {current_hash[:12]}…) — escalation denied")
         return False, "no_record"
 
     if record.get("scope_hash") != current_hash:
-        logger.info(f"🔒 SCOPE_AUTHZ: approval for task {task_id!r} is for a "
-                    f"different scope (stored {str(record.get('scope_hash'))[:12]}… "
-                    f"!= current {current_hash[:12]}…) — escalation denied")
+        if log:
+            logger.info(f"🔒 SCOPE_AUTHZ: approval for task {task_id!r} is for a "
+                        f"different scope (stored {str(record.get('scope_hash'))[:12]}… "
+                        f"!= current {current_hash[:12]}…) — escalation denied")
         return False, "scope_hash_mismatch"
 
     if not sc.verify_approval_record(record, public_key_path):
-        logger.warning(f"🔒 SCOPE_AUTHZ: approval record for task {task_id!r} "
-                       f"failed signature verification — escalation denied")
+        if log:
+            logger.warning(f"🔒 SCOPE_AUTHZ: approval record for task {task_id!r} "
+                           f"failed signature verification — escalation denied")
         return False, "signature_invalid"
 
-    bound_ok, bound_reason = _within_policy_bound(record)
+    bound_ok, bound_reason = _within_policy_bound(record, log=log)
     if not bound_ok:
         return False, bound_reason
     return True, None
