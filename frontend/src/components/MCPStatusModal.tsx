@@ -799,7 +799,10 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                         />
                     )}
 
-                    {/* Builtin Tools Section */}
+                    {/* External servers first, then builtin tools and servers. Each
+                        section is built here and emitted in that order below. */}
+                    {(() => {
+                    const builtinSection = (
                     <div>
                         <Divider orientation="left">
                             <Space>
@@ -1110,9 +1113,10 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                             />
                         )}
                     </div>
-                    
-                    {/* MCP Servers Section */}
-                    {(() => {
+                    );
+
+                    // External MCP Servers section
+                    const externalSection = (() => {
                         // Only show MCP Servers section if there are non-builtin servers
                         const nonBuiltinServers = status.servers && status.server_configs ? 
                             Object.keys(status.server_configs).filter(name => !status.servers[name]?.builtin) : [];
@@ -1546,12 +1550,21 @@ ${serverDetails[name]?.preflight_failure?.searched?.join('\n')}`}
                     </Collapse>
                             </>
                         );
-                    })()}
-                    
-                    {/* Show message if no external servers configured */}
-                    {status.servers && Object.keys(status.servers).filter(name => !status.servers[name]?.builtin).length === 0 && (
+                    })();
+
+                    // Shown in place of the external section when there are none.
+                    const noExternalAlert = status.servers && Object.keys(status.servers).filter(name => !status.servers[name]?.builtin).length === 0 && (
                         <Alert message="No external MCP servers configured" type="info" showIcon style={{ marginTop: 16 }} />
-                    )}
+                    );
+
+                    return (
+                        <>
+                            {externalSection}
+                            {noExternalAlert}
+                            {builtinSection}
+                        </>
+                    );
+                    })()}
                 </Space>
             ) : (
                 <Alert message="Failed to load MCP status" type="error" />
