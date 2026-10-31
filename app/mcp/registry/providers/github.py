@@ -19,6 +19,7 @@ from app.mcp.registry.interface import (
 from app.mcp.registry.command_policy import (
     validate_package_identifier, validate_run_command,
 )
+from app.mcp.registry.installation_helper import InstallationHelper
 from app.utils.logging_utils import logger
 
 
@@ -217,6 +218,9 @@ class GitHubRegistryProvider(RegistryProvider):
             install_dir = Path.home() / ".ziya" / "mcp_services" / service_id
             install_dir.mkdir(parents=True, exist_ok=True)
             
+            # Set when a pip package was installed into the service's venv.
+            pip_command = None
+
             # npm package installation
             if 'npm_package' in service.provider_metadata:
                 npm_package = service.provider_metadata['npm_package']
@@ -235,11 +239,12 @@ class GitHubRegistryProvider(RegistryProvider):
                 pip_package = validate_package_identifier(
                     pip_package, source=f"github:{service_id}",
                 )
-                result = await asyncio.to_thread(
-                    subprocess.run, ['pip', 'install', pip_package],
-                    capture_output=True, text=True)
-                if result.returncode != 0:
-                    raise RuntimeError(f"pip install failed: {result.stderr}")
+                # Into the service's own venv, never Ziya's interpreter.
+                install_result = await asyncio.to_thread(
+                    InstallationHelper.install_pypi_package, pip_package, install_dir)
+                if not install_result['success']:
+                    raise RuntimeError(install_result['error'])
+                pip_command = install_result['command']
             
             # git clone installation
             elif service.repository_url:
@@ -253,7 +258,10 @@ class GitHubRegistryProvider(RegistryProvider):
             server_name = f"github_{service.service_id}"
             config_entries = {
                 "command": validate_run_command(
-                    self._build_command_array(instructions, str(install_dir)),
+                    InstallationHelper.resolve_in_venv(
+                        pip_command if pip_command and not instructions.get('command')
+                        else self._build_command_array(instructions, str(install_dir)),
+                        install_dir),
                     source=f"github:{service_id}",
                     install_dir=install_dir,
                 ),
