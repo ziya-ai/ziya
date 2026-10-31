@@ -90,8 +90,9 @@ def diagnose_retention_gate(model_id: str, session_region: str, profile: Optiona
         diag["errors"].append(f"credentials: {e}")
         return diag
     try:
-        diag["account"] = session.client("sts", region_name=session_region) \
-            .get_caller_identity().get("Account")
+        ident = session.client("sts", region_name=session_region).get_caller_identity()
+        diag["account"] = ident.get("Account")
+        diag["caller"] = ident.get("Arn")
     except Exception as e:  # noqa: BLE001
         diag["errors"].append(f"sts: {type(e).__name__}")
 
@@ -148,6 +149,84 @@ def user_summary(diag: Dict[str, Any]) -> str:
     elif diag.get("modes") and ANY_REGION in routes:
         bits.append("every listed region is set, so the call likely ran in an unlisted one")
     return ("Diagnosis: " + "; ".join(bits) + ".") if bits else ""
+
+
+RETENTION_IAM_POLICY = (
+    '{"Effect": "Allow", "Action": ["bedrock:GetAccountDataRetention", '
+    '"bedrock:PutAccountDataRetention"], "Resource": "*"}'
+)
+
+_AWS_REVIEW_MEANING = (
+    "'aws_review' lets AWS keep prompts and completions for up to 30 days for "
+    "review inside AWS; they are not shared with the model provider"
+)
+
+
+def describe_principal(arn: Optional[str]) -> str:
+    """'IAM role NAME in account N' for an assumed-role ARN, else the ARN."""
+    if not arn:
+        return "the AWS identity Ziya is using"
+    parts = arn.split(":")
+    if len(parts) >= 6 and parts[5].startswith("assumed-role/"):
+        role = parts[5].split("/")[1]
+        return f"IAM role '{role}' in account {parts[4]}"
+    if len(parts) >= 6 and parts[5].startswith("user/"):
+        return f"IAM user '{parts[5].split('/', 1)[1]}' in account {parts[4]}"
+    return arn
+
+
+def _denial(err: str, action: str) -> Optional[str]:
+    """How *action* was denied in an AWS error text: 'scp', 'explicit', 'missing' or None."""
+    if action not in err or "not authorized" not in err:
+        return None
+    low = err.lower()
+    if "explicit deny" in low and ("service control policy" in low or "scp" in low):
+        return "scp"
+    if "explicit deny" in low:
+        return "explicit"
+    return "missing"
+
+
+def remediation_hint(diag: Optional[Dict[str, Any]], restore_err: Optional[str],
+                     model_id: str, region: str, required_mode: str) -> str:
+    """What someone on their own AWS account can do about a rejection.
+
+    Built from the automatic restore's error (which names the denied IAM
+    action) and the diagnosis (caller, regions below the requirement).
+    Generic AWS advice: no internal tooling.  Empty when no action is known.
+    """
+    diag = diag or {}
+    err = restore_err or ""
+    put = _denial(err, "PutAccountDataRetention")
+    get = _denial(err, "GetAccountDataRetention")
+    if not get and any("HTTP 403" in str(m) for m in (diag.get("modes") or {}).values()):
+        get = "missing"
+    if not (put or get):
+        return ""
+
+    who = describe_principal(diag.get("caller"))
+    if put == "scp":
+        return (f"What to do: a service control policy in your AWS organization denies "
+                f"bedrock:PutAccountDataRetention, so {model_id} cannot be enabled in this "
+                f"account. Choose a model that does not require '{required_mode}', or ask "
+                f"your organization's administrators about the policy.")
+
+    regions = list(dict.fromkeys([region, *(diag.get("unsatisfied") or [])]))
+    deny_word = "explicitly denied" if "explicit" in (put, get) else "not allowed"
+    if put:
+        lead = f"{who} is {deny_word} to change the data retention setting"
+    else:
+        lead = (f"{who} is {deny_word} to read the data retention setting, so Ziya "
+                f"cannot check it")
+    return (
+        f"What to do: {lead}. Ask an administrator of this AWS account either to set "
+        f"the mode to '{required_mode}' in {', '.join(regions)} (one setting per region: "
+        f"PUT https://bedrock.<region>.amazonaws.com/data-retention with body "
+        f'{{"mode": "{required_mode}"}}), or to add this statement to {who}\'s policy '
+        f"so Ziya can set it and restore it automatically: {RETENTION_IAM_POLICY}. "
+        f"Note: {_AWS_REVIEW_MEANING}, and the setting applies to the whole account in "
+        f"that region."
+    )
 
 
 def log_retention_diagnosis(model_id: str, session_region: str, profile: Optional[str],

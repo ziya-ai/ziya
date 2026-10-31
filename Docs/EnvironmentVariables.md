@@ -41,10 +41,11 @@ Behind a TLS-intercepting egress proxy (Netskope, Zscaler, etc.) you typically n
 | `ZIYA_ENDPOINT` | str | `bedrock` | `--endpoint` | Model provider: `bedrock`, `google`, `openai`, `anthropic`, `zai`, `meta`, or `local` |
 | `ZIYA_MODEL` | str | — | `--model` | Model alias (e.g. `sonnet4.0`, `gemini-3.1-pro`) |
 | `ZIYA_MODEL_ID_OVERRIDE` | str | — | `--model-id` | Override the resolved model ID directly (advanced) |
-| `ZIYA_LOCAL_MODEL_URL` | str | (scanned) | — | **Adds** a local OpenAI-compatible server the port scan cannot see (another port, another host). Unset: the loopback ports `:11434` (Ollama), `:8000` (DwarfStar), `:1234` (LM Studio), `:8080` (llama-server) are probed and **each** answering server becomes an endpoint (`local-ollama`, `local-dwarfstar`, …; runtime from `/api/tags`, `/api/v0/models`, or the `owned_by` field of `/v1/models`). `/v1` is appended if missing. With several servers, `--endpoint local` resolves to this URL's server when set |
+| `ZIYA_LOCAL_MODEL_URL` | str | (scanned) | — | **Adds** a local OpenAI-compatible server the port scan cannot see (another port, another host). Unset: the loopback ports `:11434` (Ollama), `:8000` (DwarfStar, oMLX), `:1234` (LM Studio), `:8080` (llama-server) are probed — plus the port an installed oMLX is configured for (`OMLX_PORT`, else `server.port` in `settings.json` under `OMLX_BASE_PATH` / the macOS app's `~/Library/Application Support/oMLX/base-path` / `~/.omlx`) — and **each** answering server becomes an endpoint (`local-ollama`, `local-omlx`, …; runtime from `/api/tags`, `/api/v0/models`, or the `owned_by` field of `/v1/models`). `/v1` is appended if missing. With several servers, `--endpoint local` resolves to this URL's server when set |
 | `ZIYA_LOCAL_MODEL` | str | (from server) | — | Default model on each local endpoint when its server lists it. Unset: a single-model server's one model, else `qwen2.5-coder:7b` if present, else the first listed |
-| `ZIYA_LOCAL_TOKEN_LIMIT` | int | — | — | Optional **ceiling** on the local model's context window. By default Ziya reads the model's full context length from the server (Ollama `/api/show`, LM Studio `/api/v0/models`) and uses all of it, sending Ollama `options.num_ctx` to match so the server allocates what Ziya budgets. Set this only when the full window's KV cache does not fit in memory; it never raises the limit above what the server reports |
-| `ZIYA_LOCAL_RUNTIME` | str | — | — | Force the runtime used for metadata discovery: `ollama` or `lmstudio`. Auto-detected when unset |
+| `ZIYA_LOCAL_TOKEN_LIMIT` | int | — | — | Optional **ceiling** on the local model's context window. By default Ziya reads the model's full context length from the server (Ollama `/api/show`, LM Studio `/api/v0/models`, oMLX `/v1/models/status`) and uses all of it, sending Ollama `options.num_ctx` to match so the server allocates what Ziya budgets. Set this only when the full window's KV cache does not fit in memory; it never raises the limit above what the server reports |
+| `ZIYA_LOCAL_RUNTIME` | str | — | — | Force the runtime used for metadata discovery: `ollama`, `lmstudio` or `omlx`. Auto-detected when unset |
+| `ZIYA_LOCAL_API_KEY` | str | — | — | Bearer token for a local server that requires one. The scan tries `GET /v1/models` without a key first; on 401/403 it offers this key, then an oMLX key read from `OMLX_API_KEY` or `auth.api_key` in oMLX's own `settings.json` — so on the host running oMLX nothing needs setting. The key that worked is sent on chat requests and metadata probes for that endpoint; a server that refuses every key is named in a startup warning instead of silently skipped |
 
 ### Provider API keys
 
@@ -115,6 +116,14 @@ The mode is **per-region**: `us-east-1` and `us-west-2` carry independent settin
 
 Organisations that must forbid human review can enforce it with an SCP on `bedrock:PutAccountDataRetention`; affected models then report `status: "unavailable"`.
 
+**If the switch is lowered while a session is running**, Ziya raises it again and retries the call once (at most once a minute per profile and region). This needs `bedrock:PutAccountDataRetention`, and `bedrock:GetAccountDataRetention` lets Ziya check the setting first and diagnose which regions are short. When your credentials lack them, the error ends with a **What to do** line that names the IAM role, the regions to fix, and the policy statement to grant:
+
+```json
+{"Effect": "Allow", "Action": ["bedrock:GetAccountDataRetention", "bedrock:PutAccountDataRetention"], "Resource": "*"}
+```
+
+An account administrator can alternatively set the mode once per region (`PUT https://bedrock.<region>.amazonaws.com/data-retention` with body `{"mode": "aws_review"}`). A `global.` inference profile can run in any commercial region, so set every region it may route to, not only your session region.
+
 Retention can be scoped to a Bedrock *project* instead of the account, but **not for these models**. Per [AWS's Projects documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/projects.html), projects can only be created on the `bedrock-mantle` endpoint; `bedrock-runtime` requests resolve to the account's default project, whose retention setting "always inherits from the account". Fable 5.1 is served by `bedrock-runtime`, so the account switch is the only scope available to it — project-scoping is structurally unavailable rather than merely unimplemented.
 
 ## MCP (Model Context Protocol)
@@ -144,7 +153,10 @@ Retention can be scoped to a Bedrock *project* instead of the account, but **not
 | `ZIYA_WHISPER_MODEL` | str | `base` | — | Local faster-whisper model used for voice transcription |
 | `ZIYA_WHISPER_DEVICE` | str | `cpu` | — | Voice-transcription device: `cpu`, `cuda`, or `auto` |
 | `ZIYA_WHISPER_COMPUTE_TYPE` | str | `int8` | — | CTranslate2 compute type used for voice transcription |
+| `ZIYA_TRANSCRIBE_MAX_MB` | int | `1024` | — | Largest audio file accepted for voice transcription, in MB (fits a 30-minute 48 kHz stereo WAV) |
+| `ZIYA_BULK_SYNC_MAX_MB` | int | `256` | — | Largest request body accepted by the conversation sync endpoint (`/chats/bulk-sync`), in MB. Every other route keeps the 20 MB limit. The browser batches sync requests to about 8 MB, so only a single conversation larger than 20 MB (typically one carrying many images) needs this |
 | `ZIYA_NATIVE_DRAG` | str | unset | — | Set to `0` to not spawn the macOS native drag helper (`ziya-install-extras --drag`), which rewrites the drag pasteboard so a diagram or table dragged out of the chat drops into Slack desktop as a PNG file |
+| `ZIYA_EXTRAS_AUTO_REFRESH` | str | unset | — | Set to `0` to stop startup from re-installing optional extras you had opted into that went missing after an upgrade (e.g. the Chromium build after a Playwright bump). They are then only announced in the log and on the System Information page |
 
 ## Memory (post-conversation extraction)
 
@@ -218,6 +230,7 @@ unconditional path, a conversation the regex would have skipped.
 | `ZIYA_CONTEXT_DEBUG` | bool | `false` | Detailed capture for the "Submitted context (debug)" panel: per-iteration payload char counts plus on-disk snapshots under `~/.ziya/debug/context_snapshots/` (so the history survives the crash you want to inspect). The cheap in-memory tier of provider-reported token counts is always on regardless. Overrides the panel toggle when set |
 | `ZIYA_CONTEXT_PAYLOAD_DEBUG` | bool | `false` | Retain the **full submitted request** per iteration — the pre-serialisation system prompt and conversation, exactly as handed to the provider — under `~/.ziya/debug/context_payloads/`. Frames are megabytes each, so retention is a rolling window of the 3 most recent rounds per conversation (4 conversations, plus a total-bytes ceiling); a round that failed is kept regardless. Frames contain your entire submitted context including source code, and are written `0600` in a `0700` directory. Overrides the panel toggle when set |
 | `ZIYA_DISABLE_PROMPT_CACHE` | bool | `false` | Disable Bedrock prompt caching |
+| `ZIYA_DISABLE_TRIBUTARY_FOLD` | bool | `false` | Never replay a multi-call "quest" turn as its final prose with the calls folded behind a `tb-…` handle, even when the project's `contextManagement.fold_tributaries` is on (see ArchitectureOverview → Tool Results in Replayed History and `design/tributary-fold.md`). Read directly from the environment, not the registry |
 | `ZIYA_DISABLE_TOOL_HISTORY_REWRITE` | bool | `false` | Replay rendered tool-result blocks in assistant history verbatim instead of rewriting them into `‹tool_result›` envelopes (see ArchitectureOverview → Tool Results in Replayed History). Diagnostic only: the raw format is what teaches the model to fabricate tool output late in long conversations. Read directly from the environment, not the registry |
 | `ZIYA_DISABLE_THINKING_PASSBACK` | bool | `false` | Stop echoing signed extended-thinking blocks back inside a tool chain. Passback keeps the model's reasoning across tool round-trips instead of making it re-derive the plan each iteration; disable it to isolate a provider or gateway that rejects round-tripped thinking blocks |
 | `ZIYA_DUMP_REQUEST_PARTS` | str | — | Directory to dump the assembled system prompt, tool schemas and request params on the first request |
