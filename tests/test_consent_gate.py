@@ -138,14 +138,20 @@ async def test_conversation_scope_is_remembered_per_op_and_per_conversation():
 
 
 @pytest.mark.asyncio
-async def test_always_scope_is_a_session_grant_flagged_pending_signature():
+async def test_project_scope_spans_conversations_and_carries_its_rule():
     gen = cg.consent_gate(tool_name="git", tool_id="t5", args={"op": "commit"},
                           conversation_id="c1", tool=_GitLike())
     opened = await gen.__anext__()
-    cg.ledger().record_answer(opened["request_id"], "approve", scope="always")
+    assert opened["scopes"] == ["once", "conversation", "project"]
+    assert "session" not in opened["scopes"] and "always" not in opened["scopes"]
+    assert set(opened["payload"]["op_rules"]) == {"conversation", "project"}
+    cg.ledger().record_answer(opened["request_id"], "approve", scope="project")
     rest = await asyncio.wait_for(_drain(gen), 5)
-    assert rest[0]["always_pending_signature"] is True
-    assert cg.grants().covers("git", "commit", "c-other"), "session scope spans conversations"
+    answered = rest[0]
+    assert "always_pending_signature" not in answered
+    assert answered["rule"] == opened["payload"]["op_rules"]["project"]
+    assert "every conversation of this project" in answered["rule"]
+    assert cg.grants().covers("git", "commit", "c-other"), "project scope spans conversations"
 
 
 @pytest.mark.asyncio

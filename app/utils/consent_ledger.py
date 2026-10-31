@@ -41,7 +41,10 @@ from typing import Any, Callable, Dict, List, Optional, Protocol
 logger = logging.getLogger(__name__)
 
 DECISIONS = ("approve", "reject")
-SCOPES = ("once", "conversation", "session", "always")
+# ``session`` and ``always`` were retired (design/scope-consent.md D2):
+# "session" meant "until the process dies" and "always" was never staged
+# anywhere.  A ``project`` grant persists in .ziya/consent-grants.json.
+SCOPES = ("once", "conversation", "project")
 
 # How often the wait loop re-reads the record.  A human answer arrives on a
 # scale of minutes; polling faster only rewrites nothing more often.
@@ -101,10 +104,15 @@ class ConsentRecord:
 def make_answer(
     decision: str, *, scope: str = "once", answer: str = "", answered_by: str = "",
     edits: Optional[Dict[str, str]] = None,
+    path_scope: Optional[str] = None,
 ) -> Dict[str, Any]:
     """``edits`` are argument values the human replaced before approving
     (e.g. a commit message).  Kept only on an approval; which keys a tool
-    accepts is enforced by the gate and the API, not here."""
+    accepts is enforced by the gate and the API, not here.
+
+    ``path_scope`` is the scope-ladder rung the human approved at: a
+    project-relative directory, "" for the whole project, or None for the
+    exact files shown.  The gate checks it against the ladder it offered."""
     decision = (decision or "").strip().lower()
     if decision not in DECISIONS:
         raise ValueError(f"decision must be one of {DECISIONS}, got {decision!r}")
@@ -120,6 +128,8 @@ def make_answer(
     }
     if edits and decision == "approve":
         out["edits"] = dict(edits)
+    if path_scope is not None and decision == "approve":
+        out["path_scope"] = str(path_scope)
     return out
 
 
@@ -373,11 +383,12 @@ class ConsentLedger:
         self, request_id: str, decision: str, *, scope: str = "once",
         answer: str = "", answered_by: str = "",
         edits: Optional[Dict[str, str]] = None,
+        path_scope: Optional[str] = None,
     ) -> Optional[ConsentRecord]:
         return self.store.record_answer(
             request_id,
             make_answer(decision, scope=scope, answer=answer, answered_by=answered_by,
-                        edits=edits),
+                        edits=edits, path_scope=path_scope),
         )
 
     def close(self, request_id: str) -> Optional[ConsentRecord]:

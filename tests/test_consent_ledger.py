@@ -101,7 +101,7 @@ def test_unknown_request_is_none(ledger_and_id):
 
 
 def test_reject_forces_scope_once():
-    a = make_answer("reject", scope="always")
+    a = make_answer("reject", scope="project")
     assert a["scope"] == "once", "a rejection is never sticky"
     with pytest.raises(ValueError):
         make_answer("maybe")
@@ -123,12 +123,12 @@ def test_run_store_projects_onto_pending_ask_and_ask_answers(run_storage, run):
     assert reread.pending_ask["choices"] == ["ship", "hold"]
     assert "opened_at" in reread.pending_ask
 
-    ledger.record_answer(rid, "approve", scope="session", answer="go", answered_by="ann")
+    ledger.record_answer(rid, "approve", scope="project", answer="go", answered_by="ann")
     reread = run_storage.get(run.id)
     entry = reread.ask_answers["b1"]
     assert entry["decision"] == "approve" and entry["answer"] == "go"
     assert entry["answered_by"] == "ann" and "answered_at" in entry
-    assert entry["scope"] == "session"
+    assert entry["scope"] == "project"
 
     ledger.close(rid)
     reread = run_storage.get(run.id)
@@ -142,7 +142,7 @@ def test_run_store_does_not_stamp_scope_onto_a_settled_answer(run_storage, run):
     run_storage.open_ask(run.id, "b1", "Q?", [])
     run_storage.record_ask_answer(run.id, "b1", "reject", "nope", "endpoint")
     ledger = ConsentLedger(TaskRunConsentStore(run_storage))
-    rec = ledger.record_answer(run_request_id(run.id, "b1"), "approve", scope="always")
+    rec = ledger.record_answer(run_request_id(run.id, "b1"), "approve", scope="project")
     assert rec.answer["decision"] == "reject"
     assert "scope" not in run_storage.get(run.id).ask_answers["b1"]
 

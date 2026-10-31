@@ -26,14 +26,17 @@ The op of a call is ``args[tool.consent_op_key]`` when the tool declares
 ``consent_op_key`` (the git tool declares ``"op"``), else ``"*"``.  Grants are
 per (tool, op): approving ``commit`` never approves ``push``.
 
-Scope ladder for an approval:
+Durations for an approval (design/scope-consent.md D2):
 
     once          this call only
-    conversation  in-memory, keyed on conversation id; a fork starts cold
-    session       in-memory, this server process (the relay/session lifetime)
-    always        recorded as a *session* grant here; staging it onto the
-                  signed path (permissions.json ``enabled/always``) is step 4
-                  and the answer event says so.
+    conversation  keyed on conversation id; a fork starts cold
+    project       every conversation of the project, until revoked
+
+Both standing durations persist in ``<root>/.ziya/consent-grants.json``
+(``app/utils/consent_grants.py``).  For a write outside the policy the human
+also picks a *path scope* from the ladder the gate offers on
+``consent_opened`` (the file, an ancestor directory, the whole project); the
+rule sentence shown for that choice is the one stored on the grant.
 
 Every function here is defensive: a failure inside the gate must degrade to
 "no gate" (the pre-existing behaviour), never to a stuck turn.
@@ -62,9 +65,8 @@ _MODES = (MODE_OFF, MODE_ASK, MODE_ALWAYS)
 
 SCOPE_ONCE = "once"
 SCOPE_CONVERSATION = "conversation"
-SCOPE_SESSION = "session"
-SCOPE_ALWAYS = "always"
-SCOPES = (SCOPE_ONCE, SCOPE_CONVERSATION, SCOPE_SESSION, SCOPE_ALWAYS)
+SCOPE_PROJECT = "project"
+SCOPES = (SCOPE_ONCE, SCOPE_CONVERSATION, SCOPE_PROJECT)
 
 # An unanswered chat consent expires as a reject after this long, so a held
 # turn ends deterministically (design §Open: proposed 24 h).
@@ -201,80 +203,9 @@ def op_for_call(tool_instance: Any, args: Dict[str, Any],
 
 # ── standing grants ───────────────────────────────────────────────────────
 
-class GrantCache:
-    """In-memory grants for the ``conversation`` and ``session`` scopes.
-
-    Process-lifetime by construction: a restart clears every grant, which is
-    the conservative reading of "this session".  ``always`` is not held here;
-    it lives in permissions.json (step 4).
-    """
-
-    def __init__(self) -> None:
-        self._conversation: Set[Tuple[str, str, str]] = set()
-        self._session: Set[Tuple[str, str]] = set()
-        # Approved out-of-policy paths (design/scope-consent.md C2), keyed
-        # per tool on the exact realpath: (conv, tool, root, path) and
-        # (tool, root, path).  Not per op: the paths are what was shown.
-        self._conversation_paths: Set[Tuple[str, str, str, str]] = set()
-        self._session_paths: Set[Tuple[str, str, str]] = set()
-
-    def covers(self, tool: str, op: str, conversation_id: Optional[str]) -> bool:
-        if (tool, op) in self._session:
-            return True
-        return bool(conversation_id) and (conversation_id, tool, op) in self._conversation
-
-    def remember(self, scope: str, tool: str, op: str, conversation_id: Optional[str]) -> None:
-        if scope == SCOPE_CONVERSATION and conversation_id:
-            self._conversation.add((conversation_id, tool, op))
-        elif scope in (SCOPE_SESSION, SCOPE_ALWAYS):
-            self._session.add((tool, op))
-
-    def remember_paths(self, scope: str, tool: str, conversation_id: Optional[str],
-                       root: Optional[str], paths: list) -> None:
-        """Remember approved paths for *scope*.  ``once`` remembers nothing;
-        floor paths are never remembered (``write_grants.grant_key``)."""
-        if scope not in (SCOPE_CONVERSATION, SCOPE_SESSION, SCOPE_ALWAYS):
-            return
-        from app.utils.write_grants import grant_key
-        for p in paths or ():
-            key = grant_key(p, root)
-            if key is None:
-                continue
-            if scope == SCOPE_CONVERSATION:
-                if conversation_id:
-                    self._conversation_paths.add((conversation_id, tool, *key))
-            else:
-                self._session_paths.add((tool, *key))
-
-    def covers_paths(self, tool: str, conversation_id: Optional[str],
-                     root: Optional[str], paths: list) -> bool:
-        """True only when EVERY path is remembered for this tool.  The floor
-        is re-checked here, so a path that became floor (e.g. now a symlink
-        out of the project) is not covered."""
-        if not paths:
-            return False
-        from app.utils.write_grants import grant_key
-        for p in paths:
-            key = grant_key(p, root)
-            if key is None:
-                return False
-            if (tool, *key) in self._session_paths:
-                continue
-            if conversation_id and (conversation_id, tool, *key) in self._conversation_paths:
-                continue
-            return False
-        return True
-
-    def forget_conversation(self, conversation_id: str) -> None:
-        self._conversation = {k for k in self._conversation if k[0] != conversation_id}
-        self._conversation_paths = {k for k in self._conversation_paths if k[0] != conversation_id}
-
-    def reset(self) -> None:
-        self._conversation.clear()
-        self._session.clear()
-        self._conversation_paths.clear()
-        self._session_paths.clear()
-
+# Standing grants live in app/utils/consent_grants.py (persistent, prefix
+# matching).  ``GrantCache`` stays as the name callers and tests know.
+from .consent_grants import GrantStore as GrantCache  # noqa: E402
 
 _grants = GrantCache()
 
@@ -301,10 +232,22 @@ def ledger() -> ConsentLedger:
     return _ledger
 
 
+# Set by reset_for_tests: the project root the gate falls back to when a
+# call carries none.  Grants persist under <root>/.ziya, so a test that ran
+# the gate without a root used to write into the repo's own .ziya.
+_test_root: Optional[str] = None
+
+
 def reset_for_tests(base_dir: Optional[Path] = None) -> None:
-    global _ledger
+    global _ledger, _test_root
     _ledger = ConsentLedger(FileConsentStore(base_dir)) if base_dir else None
     _grants.reset()
+    if base_dir:
+        root = Path(base_dir) / "project"
+        root.mkdir(parents=True, exist_ok=True)
+        _test_root = str(root)
+    else:
+        _test_root = None
 
 
 # ── preflight ─────────────────────────────────────────────────────────────
@@ -384,6 +327,8 @@ def _outside_policy(preflight: Any) -> list:
 def _grant_root(project_root: Optional[str]) -> Optional[str]:
     if project_root:
         return project_root
+    if _test_root:
+        return _test_root
     try:
         from app.context import get_project_root
         return get_project_root()
@@ -514,8 +459,9 @@ async def consent_gate(
     human_only = op in human_only_ops(inst)
     if human_only:
         mode = MODE_ASK
+    root = _grant_root(project_root)
     needs_ask = mode == MODE_ASK and (
-        human_only or not _grants.covers(tool_name, op, conversation_id))
+        human_only or not _grants.covers(tool_name, op, conversation_id, root))
     preflight: Optional[Dict[str, Any]] = None
     if needs_ask or _wants_scope_preflight(inst):
         preflight = await _preflight(inst, args, project_root)
@@ -529,17 +475,17 @@ async def consent_gate(
         yield {"type": DECISION_EVENT, "approved": False, "answer": answer, "asked": False}
         return
 
-    # A call that writes outside the write policy asks unless the human
-    # already approved EXACTLY these paths for this tool with a standing
-    # scope (conversation / session).  No consent mode, (tool, op) grant or
-    # autonomous project skips it, because approving the paths is the
-    # widening.  A remembered approval still yields only a per-call grant.
+    # A call that writes outside the write policy asks unless a standing
+    # grant (conversation / project) for this tool covers every path: the
+    # exact file, an ancestor directory, or the whole project, as approved.
+    # No consent mode, (tool, op) grant or autonomous project skips it,
+    # because approving the paths is the widening.  A remembered approval
+    # still yields only a per-call grant for exactly these paths.
     outside = _outside_policy(preflight)
     if not outside and not needs_ask:
         yield {"type": DECISION_EVENT, "approved": True, "answer": None, "asked": False}
         return
     if outside and not needs_ask:
-        root = _grant_root(project_root)
         out_paths = [o["path"] for o in outside]
         if _grants.covers_paths(tool_name, conversation_id, root, out_paths):
             yield {"type": DECISION_EVENT, "approved": True, "answer": None, "asked": False,
@@ -572,8 +518,22 @@ async def consent_gate(
         "preflight": preflight,
         "tool_id": tool_id,
     }
+    from app.utils import consent_grants as _cg
+    ladder: list = []
     if outside:
         payload["outside_policy"] = outside
+        out_paths = [o["path"] for o in outside]
+        # D1/D3: the rungs the human may approve at, each with the rule it
+        # would store, and the rung this conversation last chose for this
+        # tool when it still contains these paths.
+        ladder = _cg.ladder_with_rules(_cg.scope_ladder(root, out_paths), tool_name)
+        payload["scope_ladder"] = ladder
+        suggested = _grants.suggested_rung(conversation_id, tool_name, root, out_paths)
+        if suggested is not None:
+            payload["suggested_scope"] = suggested
+    if needs_ask and not human_only:
+        payload["op_rules"] = {
+            lvl: _cg.rule_sentence(tool_name, lvl, None, None, op) for lvl in _cg.LEVELS}
     editable = editable_args(inst, op)
     if editable:
         payload["editable"] = editable
@@ -622,17 +582,30 @@ async def consent_gate(
         # Nothing standing is recorded for these ops, whatever the client
         # sent: the next call asks again.
         scope = SCOPE_ONCE
+    if scope not in SCOPES:
+        scope = SCOPE_ONCE
     approved = decision == "approve"
-    if approved:
-        # The standing scope covers the (tool, op), and for a conversation /
-        # session / always scope also the exact out-of-policy paths shown.
-        # The grant handed to the executor is still for THIS call only.
-        _grants.remember(scope, tool_name, op, conversation_id)
+    rule = ""
+    if approved and needs_ask:
+        # A standing duration covers the (tool, op) from now on.  Only an
+        # ``ask`` tool records this: a policy-only ask (file_write) has no
+        # (tool, op) consent to remember.
+        rule = _cg.rule_sentence(tool_name, scope, None, None, op)
+        _grants.remember(scope, tool_name, op, conversation_id, root, rule)
     write_grant = None
     if approved and outside:
-        write_grant = {"root": _grant_root(project_root), "paths": [o["path"] for o in outside]}
+        # The grant handed to the executor is for THIS call and exactly
+        # these paths.  What is remembered is the rung the human chose,
+        # checked against the ladder that was offered.
+        write_grant = {"root": root, "paths": [o["path"] for o in outside]}
+        rung = _cg.rung_for(ladder, answer.get("path_scope"))
+        rung_path = rung.get("path") if rung is not None else None
+        _grants.note_rung(conversation_id, tool_name, root, rung_path)
+        files = ladder[0]["paths"] if ladder and rung is None else None
+        rule = _cg.rule_sentence(tool_name, scope, rung, files)
         _grants.remember_paths(scope, tool_name, conversation_id,
-                               write_grant["root"], write_grant["paths"])
+                               write_grant["root"], write_grant["paths"],
+                               rung=rung_path, rule=rule)
     # Edits apply to THIS call only; a standing grant never carries them.
     arg_edits = sanitize_edits(answer.get("edits"), editable) if approved else {}
 
@@ -645,9 +618,10 @@ async def consent_gate(
         "scope": scope,
         "answered_by": answer.get("answered_by") or "",
         "answer": answer.get("answer") or "",
-        # ``always`` is honoured as a session grant here; making it durable
-        # is the signed widening in step 4.
-        "always_pending_signature": bool(approved and scope == SCOPE_ALWAYS),
+        # The rule now standing, verbatim as the panel showed it ("" when
+        # nothing was remembered).
+        "rule": rule if approved else "",
+        "path_scope": answer.get("path_scope") if approved else None,
         "write_grant_paths": list(write_grant["paths"]) if write_grant else [],
         "edited_args": sorted(arg_edits),
         "at": time.time(),

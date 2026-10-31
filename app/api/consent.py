@@ -4,6 +4,8 @@ Consent API (design/consent-runtime.md step 3).
     POST /api/consent/{request_id}          answer an open tool-consent request
     GET  /api/consent/open?conversation_id= open requests for a conversation
     GET  /api/consent/{request_id}          one record (for a panel to refresh)
+    GET  /api/consent/grants[?conversation_id=]  standing grants (design/scope-consent.md D4)
+    DELETE /api/consent/grants/{grant_id}   revoke one standing grant
 
 ``request_id`` is ``conv:{conversation_id}:{tool_call_id}`` for chat tool
 consents.  Task-run Ask blocks keep their existing endpoint
@@ -42,13 +44,19 @@ _answer_lock = threading.Lock()
 
 class ConsentAnswer(BaseModel):
     decision: str = Field(..., description="approve | reject")
-    scope: str = Field("once", description="once | conversation | session | always")
+    scope: str = Field("once", description="once | conversation | project")
     answer: str = ""
     answered_by: str = ""
     edits: Dict[str, str] = Field(
         default_factory=dict,
         description="Argument values the human rewrote before approving; only "
                     "keys the request lists in payload.editable are accepted.",
+    )
+    path_scope: Optional[str] = Field(
+        None,
+        description="The scope-ladder rung approved at (design/scope-consent.md D1): a "
+                    "project-relative directory, \"\" for the whole project, or omitted "
+                    "for the exact files shown.  Ignored on a reject.",
     )
 
 
@@ -91,6 +99,34 @@ def list_open_consents(conversation_id: str = Query(...)) -> List[Dict[str, Any]
         return []
 
 
+def _grant_root() -> Optional[str]:
+    """The project root whose grants this API lists: the gate's own resolution."""
+    return consent_gate._grant_root(None)
+
+
+@router.get("/grants")
+def list_grants(conversation_id: Optional[str] = Query(None)) -> List[Dict[str, Any]]:
+    """Standing grants visible to a conversation: its own plus the project's.
+
+    Without ``conversation_id`` only project grants are listed.  Declared
+    before the ``{request_id:path}`` routes, which would otherwise read
+    ``/grants`` as a consent lookup and 404.
+    """
+    try:
+        return consent_gate.grants().list(conversation_id, _grant_root())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"consent grants list failed: {exc}")
+        return []
+
+
+@router.delete("/grants/{grant_id}")
+def revoke_grant(grant_id: str) -> Dict[str, Any]:
+    """Revoke one standing grant.  The next call it covered asks again."""
+    if not consent_gate.grants().revoke(grant_id, _grant_root()):
+        raise HTTPException(status_code=404, detail="No such grant")
+    return {"revoked": grant_id}
+
+
 @router.get("/{request_id:path}")
 def get_consent(request_id: str) -> Dict[str, Any]:
     rec = consent_gate.ledger().get(request_id)
@@ -124,7 +160,7 @@ def answer_consent(request_id: str, body: ConsentAnswer) -> Dict[str, Any]:
         settled = led.record_answer(
             request_id, body.decision, scope=body.scope,
             answer=body.answer, answered_by=body.answered_by,
-            edits=edits,
+            edits=edits, path_scope=body.path_scope,
         )
         if settled is None:
             raise HTTPException(status_code=404, detail="No such consent request")

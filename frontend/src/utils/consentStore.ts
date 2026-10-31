@@ -13,8 +13,22 @@
  * chat StreamedContent panel and any future tile can share it.
  */
 
-export type ConsentScope = 'once' | 'conversation' | 'session' | 'always';
+/** Durations.  ``session`` and ``always`` were retired (design/scope-consent.md D2). */
+export type ConsentScope = 'once' | 'conversation' | 'project';
 export type ConsentDecision = 'approve' | 'reject';
+
+/** One rung of the path-scope ladder (design/scope-consent.md D1), narrowest first. */
+export interface ScopeRung {
+  kind: 'file' | 'dir' | 'project';
+  /** file rung: the exact paths shown. */
+  paths?: string[];
+  /** dir / project rung: project-relative directory, '' for the whole project. */
+  path?: string;
+  files?: number;
+  files_capped?: boolean;
+  /** The rule each standing duration would store, verbatim from the server. */
+  rules?: Partial<Record<ConsentScope, string>>;
+}
 
 export interface ToolCallPayload {
   kind: 'tool_call';
@@ -27,6 +41,12 @@ export interface ToolCallPayload {
   outside_policy?: { path: string; reason?: string }[];
   /** Argument names the human may rewrite before approving (e.g. a commit message). */
   editable?: string[];
+  /** Rungs the human may approve at; empty means nothing here is grantable. */
+  scope_ladder?: ScopeRung[];
+  /** D3: the rung this conversation last chose, when it still contains the paths. */
+  suggested_scope?: string;
+  /** For an ask-mode tool: the (tool, op) rule each duration would store. */
+  op_rules?: Partial<Record<ConsentScope, string>>;
 }
 
 export interface QuestionPayload {
@@ -55,7 +75,10 @@ export interface ConsentAnsweredEvent {
   request_id: string;
   decision: ConsentDecision;
   scope: ConsentScope;
-  always_pending_signature?: boolean;
+  /** The rule now standing, verbatim as the panel showed it; '' when nothing was remembered. */
+  rule?: string;
+  path_scope?: string | null;
+  write_grant_paths?: string[];
 }
 
 export const CONSENT_OPENED_EVENT = 'ziyaConsentOpened';
@@ -107,13 +130,45 @@ export function describe(rec: ConsentRecord): string {
 }
 
 export const SCOPE_LABELS: Record<ConsentScope, string> = {
-  once: 'Once',
-  conversation: 'This conversation',
-  session: 'This session',
-  // ``always`` is honoured as a session grant until the signed widening
-  // (design/consent-runtime.md step 4) makes it durable.
-  always: 'Always (session now; stages for signing)',
+  once: 'this call only',
+  conversation: 'this conversation',
+  project: 'this project',
 };
+
+/** Index of the rung ``suggested_scope`` names, else 0 (the file). */
+export function suggestedRungIndex(ladder: ScopeRung[], suggested?: string | null): number {
+  if (suggested === undefined || suggested === null) return 0;
+  const want = suggested === '.' ? '' : suggested.replace(/\/+$/, '');
+  const i = ladder.findIndex(r => r.kind !== 'file' && (r.path ?? '') === want);
+  return i < 0 ? 0 : i;
+}
+
+/** The ``path_scope`` a rung sends: undefined (omitted) for the file, '' for the project. */
+export function pathScopeOf(rung: ScopeRung | undefined): string | undefined {
+  if (!rung || rung.kind === 'file') return undefined;
+  return rung.path ?? '';
+}
+
+/** What the scope dropdown shows for a rung. */
+export function rungLabel(rung: ScopeRung): string {
+  if (rung.kind === 'project') return 'whole project';
+  if (rung.kind === 'file') {
+    const ps = rung.paths ?? [];
+    return ps.length === 1 ? ps[0] : `these ${ps.length} files`;
+  }
+  return `${rung.path}/`;
+}
+
+/**
+ * The rule a (rung, duration) would store, or null when nothing is
+ * remembered.  A path rule wins over the (tool, op) rule, as on the server.
+ */
+export function ruleFor(
+  p: ToolCallPayload, rung: ScopeRung | undefined, scope: ConsentScope,
+): string | null {
+  if (scope === 'once') return null;
+  return rung?.rules?.[scope] ?? p.op_rules?.[scope] ?? null;
+}
 
 export async function fetchOpenConsents(conversationId: string): Promise<ConsentRecord[]> {
   try {
@@ -132,11 +187,14 @@ export async function answerConsent(
   scope: ConsentScope = 'once',
   answer = '',
   edits: Record<string, string> = {},
+  pathScope?: string,
 ): Promise<{ ok: boolean; status: number; detail?: string }> {
   try {
     const body: Record<string, unknown> = { decision, scope: decision === 'reject' ? 'once' : scope, answer };
     // Edits only ride an approval; a reject runs nothing.
     if (decision === 'approve' && Object.keys(edits).length > 0) body.edits = edits;
+    // The rung approved at; omitted for the exact files, '' for the whole project.
+    if (decision === 'approve' && pathScope !== undefined) body.path_scope = pathScope;
     const res = await fetch(`/api/consent/${encodeURIComponent(requestId)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

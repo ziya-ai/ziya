@@ -92,6 +92,57 @@ as consent rather than as strong as a signature. That trade was accepted for
 the experience. What still holds: the floor, one call per grant, and shell
 writes (still signed escalation only).
 
+## Implemented (2026-10-16): path-scope ladder, durable grants
+
+Observed: the panel's scope choice felt like it learned nothing. Three
+causes, all by construction above: C2 remembers the *exact* path only (every
+new file asks again); `GrantCache` is process memory (a restart drops every
+grant, "always" included); and the dropdown asks *how long* while the fine
+print silently fixes *what*. Nothing on screen states the rule being stored.
+
+**D1. Two small controls, one rule sentence.** `Approve · for [scope ▾]
+[duration ▾]`. The scope dropdown lists the ancestors of the path being
+written, from the file itself up to the project root (each rung with its
+file count); walking up the tree is walking down the list. Duration is
+`this call only` · `this conversation` · `this project`. Defaults: the file,
+this call. Whenever the choice would remember anything, one line under the
+buttons states the resulting rule verbatim ("`file_write` may write
+`frontend/src/components/` for the rest of this conversation without
+asking"), coloured by width (file → teal, directory/subtree → amber, whole
+project → red). The sentence is produced server-side and carried on
+`consent_opened`/`consent_answered`, so what is shown is what is stored.
+
+**D2. Grants match by prefix and persist.** A grant is
+`(tool, root, level, [conversation_id], op | path+kind ∈ {file, dir,
+project}, rule, used)` (`app/utils/consent_grants.py`). Every directory rung
+is recursive, so there is no separate "subtree" kind. `covers_paths` matches
+by prefix; the floor is still re-checked per path at lookup. Both levels
+live in `<root>/.ziya/consent-grants.json`, keyed by conversation id for
+conversation grants (a fork has a new id and starts cold; `forget_conversation`
+drops them) — not on the chat record as first proposed, which would have
+threaded consent through chat storage for no gain. Grants made without a
+project root stay in memory. `session` and `always` leave `SCOPES` (the
+API 422s them): "session" meant "until the process dies", and "always" was
+held as a session grant and never staged anywhere.
+
+**D3. The panel remembers your rung.** Within a conversation the scope
+dropdown opens preselected at the widest rung you last chose that contains
+the new path. A standing grant at that rung means the panel never opens.
+
+**D4. Grants are visible and revocable.** A chip in the input-box row
+("3 write grants · `frontend/src/**` +2") opens a table: tool, paths, scope,
+granted when / used N×, Revoke. A project grant can be promoted to the
+write policy from there.
+
+Decided: `this project` is unsigned. It is equivalent to editing the write
+policy, but inside the project root with the floor intact and surfaced in
+the grants chip. The `path_scope` a client sends is accepted only if it is a
+rung of the ladder the gate offered on `consent_opened`; anything else falls
+back to the exact files. Promote-to-write-policy from the chip is not built.
+
+Tests: `tests/test_consent_grants.py` (store, ladder, rules, gate seam),
+`tests/test_consent_grants_api.py`, `ConsentPanel.test.tsx`.
+
 ## Not done
 
 - The shell server's writes don't go through this. They run in another
