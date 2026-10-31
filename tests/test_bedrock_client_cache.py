@@ -113,6 +113,63 @@ class TestRegionFallback(unittest.TestCase):
         self.assertIsNotNone(region)
 
 
+class TestCredentialPreflightClassification(unittest.TestCase):
+    """The STS pre-flight must tell "offline" from "re-authenticate".
+
+    2026-10-19: with DNS down, sts.get_caller_identity raised
+    EndpointConnectionError, the cache rewrapped it as
+    "AWS credentials check failed: ..." and, because is_auth_failure treats
+    every KnownCredentialException as authoritative, the chat showed the
+    re-authenticate banner for a network outage.
+    """
+
+    def _run_preflight(self, sts_error):
+        from app.providers import bedrock_client_cache as bcc
+        bcc.clear_cache()
+        sts = MagicMock()
+        sts.get_caller_identity.side_effect = sts_error
+        session = MagicMock()
+        session.client.return_value = sts
+        with patch("app.utils.aws_utils.create_fresh_boto3_session", return_value=session), \
+             patch("app.utils.aws_utils.get_current_region", return_value="us-west-2"), \
+             patch("app.providers.bedrock_client_cache.time.sleep"):
+            bcc.get_persistent_bedrock_client("default", "us-west-2", "model-x", {})
+
+    def test_network_failure_is_not_an_auth_failure(self):
+        from botocore.exceptions import EndpointConnectionError
+        from app.utils.custom_exceptions import (
+            KnownCredentialException, ProviderUnreachableException)
+        from app.utils.infra_errors import is_auth_failure
+        err = EndpointConnectionError(endpoint_url="https://sts.us-west-2.amazonaws.com/")
+        with self.assertRaises(ProviderUnreachableException) as cm:
+            self._run_preflight(err)
+        exc = cm.exception
+        msg = str(exc)
+        # Still a KnownCredentialException so initialize_model's handler keeps the server up.
+        self.assertIsInstance(exc, KnownCredentialException)
+        self.assertFalse(is_auth_failure(exc, None))
+        self.assertIn("sts.us-west-2.amazonaws.com", msg)
+        self.assertIn("network", msg.lower())
+        # The frontend's isAuthError keys on this substring; it must be absent.
+        self.assertNotIn("credential", msg.lower())
+        # Original botocore text kept so the frontend's isConnectionError text match fires.
+        self.assertIn("Could not connect to the endpoint", msg)
+
+    def test_invalid_token_is_still_an_auth_failure(self):
+        from botocore.exceptions import ClientError
+        from app.utils.custom_exceptions import (
+            KnownCredentialException, ProviderUnreachableException)
+        from app.utils.infra_errors import is_auth_failure
+        err = ClientError(
+            {"Error": {"Code": "InvalidClientTokenId", "Message": "The security token included in the request is invalid."}},
+            "GetCallerIdentity")
+        with self.assertRaises(KnownCredentialException) as cm:
+            self._run_preflight(err)
+        self.assertNotIsInstance(cm.exception, ProviderUnreachableException)
+        self.assertTrue(is_auth_failure(cm.exception, None))
+        self.assertIn("AWS credentials check failed", str(cm.exception))
+
+
 class TestClearCache(unittest.TestCase):
     """clear_cache must reset module-level state."""
 

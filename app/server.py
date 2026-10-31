@@ -2454,7 +2454,8 @@ async def stream_chunks(body):
                 # provider, so a plugin override cannot label an outage "auth".
                 from app.plugins import get_active_auth_provider
                 auth_provider = get_active_auth_provider()
-                from app.utils.custom_exceptions import KnownCredentialException
+                from app.utils.custom_exceptions import (
+                    KnownCredentialException, ProviderUnreachableException)
                 from app.utils.infra_errors import is_auth_failure, is_network_failure_text
                 is_auth_error = is_auth_failure(e, auth_provider)
                 
@@ -2468,6 +2469,14 @@ async def stream_chunks(body):
                     else:
                         error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
                     yield f"data: {json.dumps({'error': error_message, 'error_type': 'authentication_error', 'can_retry': True})}\n\n"
+                    return
+                
+                # The credential pre-flight could not reach STS at all.  Its
+                # message is specific (host, cause, "check your network"), and
+                # 'connection_error' is the type the frontend renders as a
+                # "Connection Failed" banner with a retry button.
+                if isinstance(e, ProviderUnreachableException):
+                    yield f"data: {json.dumps({'error': str(e), 'error_type': 'connection_error', 'can_retry': True})}\n\n"
                     return
                 
                 # Check for connectivity errors

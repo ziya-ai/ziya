@@ -3,7 +3,7 @@
 2026-09-28 13:45: a connectivity blip during ada's midway credential refresh
 surfaced in chat as "Authentication Required — run mwinit" and paused memory
 as ``authentication_error``.  The base AuthProvider.is_auth_error excluded
-the network shape, but the enterprise EnterpriseAuthProvider overrides that
+the network shape, but an enterprise auth plugin overrides that
 method with a bare indicator list ('credential', 'sso-idp',
 'CredentialRetrievalError') and the core trusted its answer.  Pinned here:
 the exclusion is applied by the core (``is_auth_failure``) regardless of
@@ -19,7 +19,7 @@ IIBS_NETWORK = (
     "CredentialRetrievalError: Error when retrieving credentials from custom-process: "
     "2026/09/28 13:45:50 Failed to force refresh the credentials: failed to initialize "
     "iibs client: Request to IDP URL https://sso-idp.example.com/SSO/redirect?"
-    "redirect_uri=https%3A%2F%2Fsso-broker.example.com%2F&client_id=..."
+    "redirect_uri=https%3A%2F%2Fbroker.example.com%2F&client_id=..."
 )
 EXPIRED = "CredentialRetrievalError: Error when retrieving credentials from custom-process: midway token expired, please run 'mwinit -o'"
 
@@ -80,6 +80,20 @@ def test_known_credential_exception_is_auth_without_provider():
         if callable(getattr(KnownCredentialException, "__init__", None)) else KnownCredentialException()
     assert is_auth_failure(exc, None) is True
     assert is_auth_failure(RuntimeError("some model error"), None) is False
+
+
+def test_provider_unreachable_is_not_auth_even_though_it_is_a_credential_exception():
+    """bedrock_client_cache raises this subclass when STS could not be reached
+    (2026-10-19: DNS down -> EndpointConnectionError).  The base class is
+    authoritative-auth; the subclass must not be, regardless of what an
+    enterprise-style provider says about its text."""
+    from app.utils.custom_exceptions import KnownCredentialException, ProviderUnreachableException
+    exc = ProviderUnreachableException(
+        "Cannot reach AWS STS at sts.us-west-2.amazonaws.com (DNS or network failure). "
+        "Underlying error: Could not connect to the endpoint URL")
+    assert isinstance(exc, KnownCredentialException)
+    assert is_auth_failure(exc, None) is False
+    assert is_auth_failure(exc, _EnterpriseLikeProvider()) is False
 
 
 def test_base_provider_interface_uses_shared_exclusion():

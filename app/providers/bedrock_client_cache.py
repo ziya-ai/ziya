@@ -90,12 +90,27 @@ def get_persistent_bedrock_client(
             if is_transient and not is_permanent and attempt < max_retries - 1:
                 time.sleep(retry_delays[attempt])
             else:
-                from app.utils.custom_exceptions import KnownCredentialException
+                from app.utils.custom_exceptions import (
+                    KnownCredentialException, ProviderUnreachableException)
+                from app.utils.infra_errors import is_network_failure_text
                 # When creds are simply absent (vs expired/invalid), surface the
                 # full multi-provider setup guide instead of a raw boto3 error.
                 if "Unable to locate credentials" in err:
                     from app.utils.provider_detection import build_setup_help
                     msg = build_setup_help()
+                elif is_network_failure_text(f"{type(cred_error).__name__}: {err}"):
+                    # STS was never reached (DNS, refused, connect timeout).
+                    # This is an outage, not a credential problem, so it must
+                    # not say "credentials": the stream classifier and the
+                    # frontend both key on that word to show the
+                    # re-authenticate banner.
+                    msg = (
+                        f"Cannot reach AWS STS at sts.{region}.amazonaws.com "
+                        f"(DNS or network failure, not an authentication problem). "
+                        f"Check your network or VPN connection and retry. "
+                        f"Underlying error: {cred_error}"
+                    )
+                    raise ProviderUnreachableException(msg, is_server_startup=False)
                 else:
                     msg = f"AWS credentials check failed: {cred_error}"
                 raise KnownCredentialException(msg, is_server_startup=False)

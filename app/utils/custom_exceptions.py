@@ -94,3 +94,22 @@ class KnownCredentialException(Exception):
         
     def __str__(self):
         return self.message
+
+
+class ProviderUnreachableException(KnownCredentialException):
+    """The pre-flight credential check could not reach the provider at all.
+
+    Raised by ``bedrock_client_cache`` when ``sts.get_caller_identity()``
+    fails for a network reason (DNS resolution, connection refused, connect
+    timeout) rather than because the credentials are missing or expired.
+    Observed 2026-10-19: an offline machine surfaced as "AWS credentials
+    check failed: Could not connect to the endpoint URL" and the chat showed
+    the re-authenticate banner, when the fix was to reconnect.
+
+    Subclasses ``KnownCredentialException`` so the startup and
+    ``initialize_model`` handlers that catch the base class keep treating it
+    as "no model yet, keep the server up"; ``is_auth_failure`` checks this
+    class first so the stream reports ``connection_error`` instead of
+    ``authentication_error``.
+    """
+    is_network = True

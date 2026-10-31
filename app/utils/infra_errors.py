@@ -41,10 +41,10 @@ INFRA_MESSAGE = re.compile(
 
 # A credential *retrieval* that failed for a network reason.  botocore wraps
 # a credential_process failure in CredentialRetrievalError, whose message
-# contains "credentials" and, for the Amazon provider, "sso-idp"; the
+# contains "credentials" and, for an enterprise SSO provider, its IdP host; the
 # ada/iibs client reports a dropped network as "failed to initialize iibs
-# client: Request to IDP URL https://sso-idp...".  Every auth classifier
-# that keys on those words (the enterprise EnterpriseAuthProvider.is_auth_error
+# client: Request to IDP URL https://<idp-host>...".  Every auth classifier
+# that keys on those words (an enterprise auth plugin's is_auth_error
 # does exactly that) calls this an expired credential and tells the user to
 # run mwinit, when the fix is to wait for the network.  Observed 2026-09-28
 # 13:45: a connectivity blip surfaced as "Authentication Required" in chat
@@ -64,7 +64,7 @@ INFRA_MESSAGE = re.compile(
 #     'failed to initialize iibs client: Get "": unsupported protocol scheme ""'.
 #     Happens before any auth exchange, so it is a client-init glitch.
 #   - "request to idp url": the same client dying mid-redirect on a dropped
-#     network (2026-09-28 13:45), whose message also carries "sso-idp".
+#     network (2026-09-28 13:45), whose message also carries the IdP host.
 #   - botocore connection classes are matched by lowercased type name
 #     ("endpointconnectionerror", "connecttimeouterror", "readtimeouterror")
 #     because infra_kind() feeds the type name into the text it checks.
@@ -92,15 +92,22 @@ def is_auth_failure(error: BaseException, auth_provider: Any = None) -> bool:
     an authentication failure the user must fix (re-authenticate), as
     opposed to an outage to wait out?
 
-    A ``KnownCredentialException`` is authoritative.  Otherwise a network-
-    shaped message is never auth, and only then is the active auth
-    provider's own ``is_auth_error`` consulted.  Centralised because the
-    core previously trusted the provider's answer directly, and the
-    enterprise provider's override had no network exclusion.
+    A ``KnownCredentialException`` is authoritative, except for its
+    ``ProviderUnreachableException`` subclass: that is the credential
+    pre-flight failing to reach STS on the network (DNS, refused, connect
+    timeout), raised as a credential-class exception only so the startup
+    handlers keep the server up.  Otherwise a network-shaped message is
+    never auth, and only then is the active auth provider's own
+    ``is_auth_error`` consulted.  Centralised because the core previously
+    trusted the provider's answer directly, and the enterprise provider's
+    override had no network exclusion.
     """
     error_str = str(error)
     try:
-        from app.utils.custom_exceptions import KnownCredentialException
+        from app.utils.custom_exceptions import (
+            KnownCredentialException, ProviderUnreachableException)
+        if isinstance(error, ProviderUnreachableException):
+            return False
         if isinstance(error, KnownCredentialException):
             return True
     except ImportError:  # pragma: no cover
