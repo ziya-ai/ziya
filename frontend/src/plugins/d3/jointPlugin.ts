@@ -2917,15 +2917,15 @@ export const jointPlugin: D3RenderPlugin = {
             elements.forEach((e: any) => { if (e && e.id != null) jointSpecById.set(String(e.id), e); });
             const jointPageBg = jointPageBackground(theme);
 
-            console.log('🔧 JOINT-DEBUG: Starting element creation');
-            console.log('🔧 JOINT-DEBUG: Shape registry keys:', Object.keys(shapeRegistry));
+            console.info('🔧 JOINT-DEBUG: Starting element creation');
+            console.info('🔧 JOINT-DEBUG: Shape registry keys:', Object.keys(shapeRegistry));
 
             elements.forEach(elementSpec => {
                 try {
                     // Use shape registry for enhanced shapes
                     const shapeType = elementSpec.type || elementSpec.shape || 'rect';
 
-                    console.log(`🔧 JOINT-DEBUG: Processing element ${elementSpec.id}:`, {
+                    console.info(`🔧 JOINT-DEBUG: Processing element ${elementSpec.id}:`, {
                         type: elementSpec.type,
                         shape: elementSpec.shape,
                         shapeType: shapeType,
@@ -2957,7 +2957,7 @@ export const jointPlugin: D3RenderPlugin = {
                         const col = elementIndex % gridCols;
                         const row = Math.floor(elementIndex / gridCols);
                         defaultPosition = [startX + col * elementSpacing, startY + row * 120];
-                        console.log(`🔧 JOINT-DEBUG: Auto-positioning element ${elementSpec.id} at grid (${col}, ${row}) -> (${defaultPosition[0]}, ${defaultPosition[1]})`);
+                        console.info(`🔧 JOINT-DEBUG: Auto-positioning element ${elementSpec.id} at grid (${col}, ${row}) -> (${defaultPosition[0]}, ${defaultPosition[1]})`);
                     }
 
                     const elementWithDefaults = {
@@ -3004,7 +3004,7 @@ export const jointPlugin: D3RenderPlugin = {
                         }
                         graph.addCell(element);
                         jointElements.push(element);
-                        console.log(`🔧 JOINT-DEBUG: ✓ Created element ${elementSpec.id}`);
+                        console.info(`🔧 JOINT-DEBUG: ✓ Created element ${elementSpec.id}`);
                     }
                 } catch (error) {
                     console.warn(`Failed to create element ${elementSpec.id}:`, error);

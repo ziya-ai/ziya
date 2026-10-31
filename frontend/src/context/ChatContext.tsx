@@ -798,11 +798,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // this creates a Promise chain that pegs the CPU for minutes.
         const _fastPathIds = new Set(options.changedIds || []);
         if (_fastPathIds.size > 0 && !options.isRecoveryAttempt && !options.skipValidation) {
-            if (!(window as any).__fastPathTraced) {
-                (window as any).__fastPathTraced = true;
-                console.trace('📋 FAST_PATH caller:', options.changedIds);
-                setTimeout(() => { (window as any).__fastPathTraced = false; }, 100);
-            }
             const toWrite = validatedConversations.filter(c => _fastPathIds.has(c.id));
             if (toWrite.length > 0) {
                 const nonShells = toWrite.filter(c => !(c as any)._isShell);
@@ -869,7 +864,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
 
         saveQueue.current = saveQueue.current.then(async () => {
-            console.trace('📋 saveQueue.then called, changedIds:', options.changedIds?.length, 'bypassDebounce:', options._bypassDebounce);
             const { retryCount = 0 } = options;
             const maxRetries = 3;
 
@@ -1152,20 +1146,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
             message = { ...message, id: mintedId };
         }
 
-        // Temporary: unconditional trace to identify spam caller
-        if (!(window as any).__addMsgTraced) {
-            (window as any).__addMsgTraced = true;
-            console.trace('📝 addMessageToConversation first call stack');
-            setTimeout(() => { (window as any).__addMsgTraced = false; }, 100);
-        }
-
         // If adding message to non-current conversation, don't trigger any scroll
         if (conversationId !== currentConversationId) {
             console.debug('📝 Adding message to non-current conversation - scroll preservation mode');
         }
-
-        // Diagnostic: trace who is calling addMessageToConversation during idle.
-        // TODO: Remove this console.trace once the idle-spam caller is identified.
 
         // Check if this is an assistant message and if it appears incomplete
         if (message.role === 'assistant' && message.content) {
@@ -2913,7 +2897,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const projectId = currentProject.id;
         const tEffect = performance.now();
         console.log(`⏱️ SWITCH[${projectId.substring(0, 8)}]: project-switch effect fired`);
-        const logSwitchTotal = (label: string) => console.log(`⏱️ SWITCH[${projectId.substring(0, 8)}]: ${label} at +${(performance.now() - tEffect).toFixed(0)}ms`);
+        const logSwitchTotal = (label: string) => { console.log(`⏱️ SWITCH[${projectId.substring(0, 8)}]: ${label} at +${(performance.now() - tEffect).toFixed(0)}ms`); };
 
         // Bump the epoch as the very first thing this effect does.  Every
         // sync invocation captures it locally; if a later project switch
@@ -5361,16 +5345,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     // Temporary debug command
     useEffect(() => {
-        // Enhanced debug helper to diagnose history corruption
+        // Enhanced debug helper to diagnose history corruption.  These print
+        // through console.info: production builds strip console.log
+        // (craco.config.js), and these helpers exist to be called there.
         (window as any).debugChatContext = () => {
-            console.log('=== CHAT CONTEXT DEBUG ===');
-            console.log('Current Conversation ID:', currentConversationId);
-            console.log('Total conversations in memory:', conversations.length);
-            console.log('Active conversations in memory:', conversations.filter(c => c.isActive !== false).length);
-            console.log('Inactive conversations in memory:', conversations.filter(c => c.isActive === false).length);
+            console.info('=== CHAT CONTEXT DEBUG ===');
+            console.info('Current Conversation ID:', currentConversationId);
+            console.info('Total conversations in memory:', conversations.length);
+            console.info('Active conversations in memory:', conversations.filter(c => c.isActive !== false).length);
+            console.info('Inactive conversations in memory:', conversations.filter(c => c.isActive === false).length);
 
             const currentConv = conversations.find(c => c.id === currentConversationId);
-            console.log('Current conversation in memory:', currentConv ? {
+            console.info('Current conversation in memory:', currentConv ? {
                 id: currentConv.id,
                 title: currentConv.title,
                 isActive: currentConv.isActive,
@@ -5378,9 +5364,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 messageCount: currentConv.messages.length
             } : 'NOT FOUND IN MEMORY');
 
-            console.log('\n=== CONVERSATION LIST ===');
+            console.info('\n=== CONVERSATION LIST ===');
             conversations.forEach((conv, idx) => {
-                console.log(`${idx + 1}. ${conv.id.substring(0, 8)} - "${conv.title.substring(0, 30)}" - isActive: ${conv.isActive}, messages: ${conv.messages.length}`);
+                console.info(`${idx + 1}. ${conv.id.substring(0, 8)} - "${conv.title.substring(0, 30)}" - isActive: ${conv.isActive}, messages: ${conv.messages.length}`);
             });
 
             return { conversations, currentConversationId, currentConv };
@@ -5388,15 +5374,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         // Debug helper to check IndexedDB directly
         (window as any).debugIndexedDB = async () => {
-            console.log('=== INDEXEDDB DEBUG ===');
+            console.info('=== INDEXEDDB DEBUG ===');
             try {
                 const dbConversations = await db.getConversations();
-                console.log('Total conversations in IndexedDB:', dbConversations.length);
-                console.log('Active in IndexedDB:', dbConversations.filter(c => c.isActive !== false).length);
-                console.log('Inactive in IndexedDB:', dbConversations.filter(c => c.isActive === false).length);
+                console.info('Total conversations in IndexedDB:', dbConversations.length);
+                console.info('Active in IndexedDB:', dbConversations.filter(c => c.isActive !== false).length);
+                console.info('Inactive in IndexedDB:', dbConversations.filter(c => c.isActive === false).length);
 
                 const currentInDB = dbConversations.find(c => c.id === currentConversationId);
-                console.log('Current conversation in IndexedDB:', currentInDB ? {
+                console.info('Current conversation in IndexedDB:', currentInDB ? {
                     id: currentInDB.id,
                     title: currentInDB.title,
                     isActive: currentInDB.isActive,
@@ -5404,9 +5390,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     messageCount: currentInDB.messages.length
                 } : 'NOT FOUND IN INDEXEDDB');
 
-                console.log('\n=== INDEXEDDB CONVERSATION LIST ===');
+                console.info('\n=== INDEXEDDB CONVERSATION LIST ===');
                 dbConversations.forEach((conv, idx) => {
-                    console.log(`${idx + 1}. ${conv.id.substring(0, 8)} - "${conv.title.substring(0, 30)}" - isActive: ${conv.isActive}, messages: ${conv.messages.length}`);
+                    console.info(`${idx + 1}. ${conv.id.substring(0, 8)} - "${conv.title.substring(0, 30)}" - isActive: ${conv.isActive}, messages: ${conv.messages.length}`);
                 });
 
                 return { dbConversations, currentInDB };

@@ -58,7 +58,7 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversation_id: conversationId }),
       })
-        .then(response => console.log('Abort API response:', response.status))
+        .then(response => { console.log('Abort API response:', response.status); })
         .catch(e => console.warn('Error sending abort notification to server:', e));
     } catch (e) { }
 

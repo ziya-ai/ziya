@@ -55,6 +55,37 @@ module.exports = {
         };
       }
 
+      // Production: drop console.log / debug / trace.  ~1,500 log calls
+      // shipped (vegaLitePlugin alone has 320), several on per-flush and
+      // per-save paths; once DevTools has been opened the console keeps
+      // every logged object alive for the page's lifetime, and
+      // console.trace captures a stack per call.  pure_funcs drops only the
+      // call: arguments with side effects are still evaluated.  warn,
+      // error and info are kept -- the window.debug* helpers print through
+      // console.info for that reason.
+      //
+      // pure_funcs drops a call only when its VALUE is unused and only when
+      // it is the literal console.log: `m => console.log(m)` (returned) and
+      // `debug ? console.log : noop` (aliased) both survive.  Write those
+      // with a block body; consoleStripBuild.test.ts scans for both shapes.
+      // Groups are stripped too: their logs are gone, so they'd print empty.
+      if (webpackConfig.mode === 'production') {
+        const STRIP = ['console.log', 'console.debug', 'console.trace',
+          'console.group', 'console.groupCollapsed', 'console.groupEnd'];
+        for (const plugin of (webpackConfig.optimization && webpackConfig.optimization.minimizer) || []) {
+          // terser-webpack-plugin v5 keeps terserOptions here.
+          const terserOptions = plugin && plugin.options && plugin.options.minimizer
+            && plugin.options.minimizer.options;
+          if (!terserOptions || plugin.constructor.name !== 'TerserPlugin') continue;
+          const compress = terserOptions.compress && typeof terserOptions.compress === 'object'
+            ? terserOptions.compress : {};
+          terserOptions.compress = {
+            ...compress,
+            pure_funcs: Array.from(new Set([...(compress.pure_funcs || []), ...STRIP])),
+          };
+        }
+      }
+
       return webpackConfig;
     },
   },

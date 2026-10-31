@@ -87,7 +87,7 @@ export function deduplicateLegendDomains(spec: any): number {
     const uniqueDomain = new Set(colorScale.domain);
     if (uniqueDomain.size === colorScale.domain.length) return; // all unique
 
-    console.log(`🔧 LEGEND-DEDUP-FIX: Layer ${layerIndex} has duplicate legend domain entries:`, colorScale.domain);
+    console.info(`🔧 LEGEND-DEDUP-FIX: Layer ${layerIndex} has duplicate legend domain entries:`, colorScale.domain);
 
     const isSyntheticLegend =
       (layer.mark?.opacity === 0 || layer.mark?.size === 0) ||

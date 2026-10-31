@@ -861,7 +861,7 @@ export function convertManualLogAxes(spec: any): string[] {
     const axisSpec = spec.encoding?.[axis];
     if (axisSpec?.field !== logFieldName || axisSpec.type !== 'quantitative') return;
     if (axisSpec.axis && typeof axisSpec.axis === 'object' && axisSpec.axis.labelExpr) {
-      console.log(`🔧 LOG-SCALE-FIX: Left pre-logged ${axis} axis alone (it has a labelExpr)`);
+      console.info(`🔧 LOG-SCALE-FIX: Left pre-logged ${axis} axis alone (it has a labelExpr)`);
       return;
     }
     const domain = axisSpec.scale?.domain;
@@ -961,7 +961,7 @@ export function expandRepeatRefsInTransforms(spec: any): any {
     // Wrapping form: refs are `{repeat: "repeat"}`.
     container.concat = repeat.map((val: string) => buildCell({ repeat: String(val) }));
     if (spec.columns != null) container.columns = spec.columns;
-    console.log(`🔧 VEGA-PREPROCESS: expanded transform-position repeat (wrapping, ${repeat.length} cells) — D-315`);
+    console.info(`🔧 VEGA-PREPROCESS: expanded transform-position repeat (wrapping, ${repeat.length} cells) — D-315`);
     return container;
   }
 
@@ -980,7 +980,7 @@ export function expandRepeatRefsInTransforms(spec: any): any {
     // Unknown repeat shape — leave untouched rather than guess.
     return spec;
   }
-  console.log('🔧 VEGA-PREPROCESS: expanded transform-position repeat (grid) — D-315');
+  console.info('🔧 VEGA-PREPROCESS: expanded transform-position repeat (grid) — D-315');
   return container;
 }
 
@@ -996,7 +996,7 @@ export const fixDatumFieldSwap = (encoding: any) => {
     const prim = encoding[primary];
     const sec = encoding[secondary];
     if (prim && sec && 'datum' in prim && 'field' in sec) {
-      console.log(`🔧 DATUM-SWAP-FIX: Swapping ${primary} (datum) with ${secondary} (field) to satisfy Vega-Lite channel requirements`);
+      console.info(`🔧 DATUM-SWAP-FIX: Swapping ${primary} (datum) with ${secondary} (field) to satisfy Vega-Lite channel requirements`);
       encoding[primary] = sec;
       encoding[secondary] = prim;
     }
@@ -1035,7 +1035,7 @@ export const fixInvalidColorSchemeInArcs = (spec: any): any => {
       if (channelSpec?.scale?.scheme &&
         typeof channelSpec.scale.scheme === 'string' &&
         channelSpec.scale.scheme.startsWith('#')) {
-        console.log(`🔧 ARC-COLOR-FIX: Converting invalid hex scheme "${channelSpec.scale.scheme}" to color range in ${channel} channel`);
+        console.info(`🔧 ARC-COLOR-FIX: Converting invalid hex scheme "${channelSpec.scale.scheme}" to color range in ${channel} channel`);
         const hexColor = channelSpec.scale.scheme;
         delete channelSpec.scale.scheme;
         channelSpec.scale.range = generateColorPalette(hexColor, dataLength);
@@ -1165,7 +1165,7 @@ export const fixLayeredChartsWithMismatchedScales = (spec: any): any => {
         const span2 = ranges[j].max - ranges[j].min || 1;
         const ratio = Math.max(span1 / span2, span2 / span1);
         if (ratio > 3) {
-          console.log(`🔧 DUAL-AXIS-FIX: "${ranges[i].field}" (${ranges[i].min}–${ranges[i].max}) and "${ranges[j].field}" (${ranges[j].min}–${ranges[j].max}) differ by ${ratio.toFixed(1)}x`);
+          console.info(`🔧 DUAL-AXIS-FIX: "${ranges[i].field}" (${ranges[i].min}–${ranges[i].max}) and "${ranges[j].field}" (${ranges[j].min}–${ranges[j].max}) differ by ${ratio.toFixed(1)}x`);
           return true;
         }
       }
@@ -1174,12 +1174,12 @@ export const fixLayeredChartsWithMismatchedScales = (spec: any): any => {
   })();
 
   if (yFields.length > 1 && (hasScaleTypeMismatch || hasRangeMismatch)) {
-    console.log('🔧 DUAL-AXIS-FIX: Detected layered chart with mismatched y-axis scales');
+    console.info('🔧 DUAL-AXIS-FIX: Detected layered chart with mismatched y-axis scales');
 
     // CRITICAL: Remove problematic domains that cause scale conflicts
     spec.layer.forEach((layer: any, index: number) => {
       if (layer.encoding?.y?.scale?.domain) {
-        console.log(`🔧 DUAL-AXIS-FIX: Removing conflicting domain from layer ${index}`);
+        console.info(`🔧 DUAL-AXIS-FIX: Removing conflicting domain from layer ${index}`);
         delete layer.encoding.y.scale.domain;
       }
     });
@@ -1193,7 +1193,7 @@ export const fixLayeredChartsWithMismatchedScales = (spec: any): any => {
 
     // For nominal x-axis with log y-axis, ensure proper positioning
     if (spec.layer.some(layer => layer.encoding?.x?.type === 'nominal' && layer.encoding?.y?.scale?.type === 'log')) {
-      console.log('🔧 DUAL-AXIS-FIX: Converting nominal x-axis to ordinal for better log scale compatibility');
+      console.info('🔧 DUAL-AXIS-FIX: Converting nominal x-axis to ordinal for better log scale compatibility');
       spec.layer.forEach(layer => {
         if (layer.encoding?.x?.type === 'nominal') {
           layer.encoding.x.type = 'ordinal';
@@ -1213,7 +1213,7 @@ export const fixLayeredChartsWithMismatchedScales = (spec: any): any => {
       }
     });
 
-    console.log('🔧 DUAL-AXIS-FIX: Added independent y-axis scaling');
+    console.info('🔧 DUAL-AXIS-FIX: Added independent y-axis scaling');
   }
 
   return spec;
@@ -1315,7 +1315,7 @@ export const fixBarLogScaleBaseline = (s: any): any => {
   };
   delete result.mark;
 
-  console.log(
+  console.info(
     `🔧 BAR-LOG-FIX: Converted bar+log to tick+text layers ` +
     `(${logAxis}-axis, field: "${field}", range: ${minVal}–${maxVal})`
   );
@@ -1702,7 +1702,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // at the top level and vega-embed renders them natively via the $schema URL.
       if (spec.$schema && typeof spec.$schema === 'string' &&
         spec.$schema.includes('/vega/') && !spec.$schema.includes('/vega-lite/')) {
-        console.log('🔧 VEGA-PREPROCESS: Vega v5 spec — skipping Vega-Lite preprocessing');
+        console.info('🔧 VEGA-PREPROCESS: Vega v5 spec — skipping Vega-Lite preprocessing');
         return spec;
       }
 
@@ -1722,7 +1722,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       }
 
-      console.log('🔧 VEGA-PREPROCESS: Starting comprehensive preprocessing');
+      console.info('🔧 VEGA-PREPROCESS: Starting comprehensive preprocessing');
 
       // Fix 0.02 (D-315): a repeat operator whose inner spec places a
       // `{repeat: ...}` reference in a TRANSFORM position (e.g. a regression /
@@ -1768,7 +1768,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           const hasValidGradient = val.gradient === 'linear' || val.gradient === 'radial';
 
           if (hasStops && !hasValidGradient) {
-            console.log(`🔧 GRADIENT-FIX: Detected malformed gradient in mark.${prop}`);
+            console.info(`🔧 GRADIENT-FIX: Detected malformed gradient in mark.${prop}`);
 
             // Try to salvage: build a proper gradient from the stops
             const cleanGradient: any = {
@@ -1784,12 +1784,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
             if (cleanGradient.stops.length >= 2) {
               markObj[prop] = cleanGradient;
-              console.log(`🔧 GRADIENT-FIX: Repaired gradient in mark.${prop}`);
+              console.info(`🔧 GRADIENT-FIX: Repaired gradient in mark.${prop}`);
             } else {
               // Fall back to first valid color from stops
               const fallback = val.stops.find((s: any) => typeof s.color === 'string')?.color || '#888888';
               markObj[prop] = fallback;
-              console.log(`🔧 GRADIENT-FIX: Gradient in mark.${prop} not repairable; using flat ${fallback}`);
+              console.info(`🔧 GRADIENT-FIX: Gradient in mark.${prop} not repairable; using flat ${fallback}`);
             }
           }
         }
@@ -1825,7 +1825,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             .filter((v: any, i: number, arr: any[]) => arr.indexOf(v) === i);
           if (dataOrder.length > 1 && dataOrder.length <= 100) {
             spec.encoding.x.sort = dataOrder;
-            console.log(`🔧 NOMINAL-SORT-FIX: Preserved data order for x-axis field "${xField}":`, dataOrder);
+            console.info(`🔧 NOMINAL-SORT-FIX: Preserved data order for x-axis field "${xField}":`, dataOrder);
           }
         }
       }
@@ -1851,14 +1851,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
         if (markType === 'area' && hasFold && hasColorEncoding) {
           // Sub-fix A: nominal → ordinal for area marks
           if (spec.encoding?.x?.type === 'nominal') {
-            console.log('🔧 AREA-FOLD-FIX: Converting x-axis from nominal to ordinal for area mark');
+            console.info('🔧 AREA-FOLD-FIX: Converting x-axis from nominal to ordinal for area mark');
             spec.encoding.x.type = 'ordinal';
           }
 
           // Sub-fix B: remove explicit y-domain that breaks area paths
           const yEnc = spec.encoding?.y;
           if (yEnc?.scale?.domain && (spec.encoding?.x?.type === 'ordinal' || spec.encoding?.x?.type === 'nominal')) {
-            console.log(`🔧 AREA-FOLD-FIX: Removing explicit y-domain ${JSON.stringify(yEnc.scale.domain)} that breaks area rendering with fold+categorical x`);
+            console.info(`🔧 AREA-FOLD-FIX: Removing explicit y-domain ${JSON.stringify(yEnc.scale.domain)} that breaks area rendering with fold+categorical x`);
             delete yEnc.scale.domain;
             // Clean up empty scale object
             if (yEnc.scale && Object.keys(yEnc.scale).length === 0) {
@@ -1868,7 +1868,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
           // Sub-fix C: disable default stacking for overlapping areas
           if (yEnc && yEnc.stack !== false && yEnc.stack !== null) {
-            console.log('🔧 AREA-FOLD-FIX: Disabling stacking for area+fold chart');
+            console.info('🔧 AREA-FOLD-FIX: Disabling stacking for area+fold chart');
             yEnc.stack = null;
           }
         }
@@ -1899,7 +1899,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             const minSampleSize = Math.min(...Object.values(facetCounts));
             const avgSampleSize = Object.values(facetCounts).reduce((a, b) => a + b, 0) / Object.keys(facetCounts).length;
 
-            console.log('🔧 FACET-BIN-FIX: Histogram with faceting detected', {
+            console.info('🔧 FACET-BIN-FIX: Histogram with faceting detected', {
               facetField,
               facetCounts,
               minSampleSize,
@@ -1908,7 +1908,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
             // If any facet has < 3 points, or average is < 5, convert to overlay
             if (minSampleSize < 3 || avgSampleSize < 5) {
-              console.log('🔧 FACET-BIN-FIX: Small sample sizes detected, converting to overlay layout for better visibility');
+              console.info('🔧 FACET-BIN-FIX: Small sample sizes detected, converting to overlay layout for better visibility');
 
               const countAxis = xHasBin ? 'y' : 'x';
               const binAxis = xHasBin ? 'x' : 'y';
@@ -1962,7 +1962,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 }
               };
 
-              console.log('🔧 FACET-BIN-FIX: Converted to overlay layout - all categories will be visible');
+              console.info('🔧 FACET-BIN-FIX: Converted to overlay layout - all categories will be visible');
               return preprocessVegaSpec(newSpec);
             }
           }
@@ -1971,13 +1971,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Fix 0.5: Auto-detect and fix fold transforms missing 'as' parameter  
       if (spec.transform && spec.transform.some((t: any) => t.fold && !t.as)) {
-        console.log('🔧 VEGA-PREPROCESS: Found fold transform without "as" parameter');
+        console.info('🔧 VEGA-PREPROCESS: Found fold transform without "as" parameter');
 
         const foldTransform = spec.transform.find((t: any) => t.fold && !t.as);
         if (foldTransform && spec.data?.values && Array.isArray(spec.data.values) && spec.data.values.length > 0) {
           // Get fields available in the original data
           const originalDataFields = new Set(Object.keys(spec.data.values[0]));
-          console.log('🔧 FOLD-AS-FIX: Original data fields:', Array.from(originalDataFields));
+          console.info('🔧 FOLD-AS-FIX: Original data fields:', Array.from(originalDataFields));
 
           // Collect all field names referenced in encodings
           const referencedFields = new Set<string>();
@@ -2002,7 +2002,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             });
           }
 
-          console.log('🔧 FOLD-AS-FIX: Referenced fields in encodings:', Array.from(referencedFields));
+          console.info('🔧 FOLD-AS-FIX: Referenced fields in encodings:', Array.from(referencedFields));
 
           // Find fields that are referenced but don't exist in original data
           // These are likely the intended output fields from the fold transform
@@ -2010,7 +2010,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             field => !originalDataFields.has(field)
           );
 
-          console.log('🔧 FOLD-AS-FIX: Fields referenced but not in data:', missingFields);
+          console.info('🔧 FOLD-AS-FIX: Fields referenced but not in data:', missingFields);
 
           // If we found missing fields, use them as the 'as' parameter
           if (missingFields.length > 0) {
@@ -2027,20 +2027,20 @@ export const vegaLitePlugin: D3RenderPlugin = {
             const valueField = valueFieldCandidates[0] || missingFields[1] || 'value';
 
             foldTransform.as = [keyField, valueField];
-            console.log(`🔧 FOLD-AS-FIX: Added 'as' parameter to fold transform: ["${keyField}", "${valueField}"]`);
+            console.info(`🔧 FOLD-AS-FIX: Added 'as' parameter to fold transform: ["${keyField}", "${valueField}"]`);
           } else {
-            console.log('🔧 FOLD-AS-FIX: No missing fields found in encoding, adding default ["key", "value"]');
+            console.info('🔧 FOLD-AS-FIX: No missing fields found in encoding, adding default ["key", "value"]');
             foldTransform.as = ['key', 'value'];
           }
         }
       }
 
       // Fix 3.8: pre-logged field on a small domain -> real log scale (see convertManualLogAxes).
-      convertManualLogAxes(spec).forEach(msg => console.log(`🔧 LOG-SCALE-FIX: ${msg}`));
+      convertManualLogAxes(spec).forEach(msg => { console.info(`🔧 LOG-SCALE-FIX: ${msg}`); });
 
       // Fix 1: Remove problematic shape encodings entirely - this is the most common cause
       if (spec.encoding?.shape) {
-        console.log('🔧 VEGA-PREPROCESS: Found shape encoding, analyzing...');
+        console.info('🔧 VEGA-PREPROCESS: Found shape encoding, analyzing...');
         const shapeEnc = spec.encoding.shape;
 
         // Remove shape encoding in these problematic cases:
@@ -2050,23 +2050,23 @@ export const vegaLitePlugin: D3RenderPlugin = {
           const fieldValues = spec.data.values.map((d: any) => d[shapeEnc.field]).filter((v: any) => v !== undefined);
           const isNumeric = fieldValues.length > 0 && fieldValues.every((v: any) => typeof v === 'number');
           if (isNumeric) {
-            console.log('🔧 VEGA-PREPROCESS: Removing ordinal shape encoding with numeric data');
+            console.info('🔧 VEGA-PREPROCESS: Removing ordinal shape encoding with numeric data');
             shouldRemoveShape = true;
           }
         }
 
         if (shapeEnc.scale?.range?.some((s: any) => typeof s === 'string' && s.includes('triangle'))) {
-          console.log('🔧 VEGA-PREPROCESS: Removing shape encoding with problematic triangle shapes');
+          console.info('🔧 VEGA-PREPROCESS: Removing shape encoding with problematic triangle shapes');
           shouldRemoveShape = true;
         }
 
         if (!shapeEnc.field || !spec.data?.values) {
-          console.log('🔧 VEGA-PREPROCESS: Removing shape encoding with missing field or data');
+          console.info('🔧 VEGA-PREPROCESS: Removing shape encoding with missing field or data');
           shouldRemoveShape = true;
         }
 
         if (shouldRemoveShape) {
-          console.log('🔧 VEGA-PREPROCESS: Removing problematic shape encoding');
+          console.info('🔧 VEGA-PREPROCESS: Removing problematic shape encoding');
           delete spec.encoding.shape;
         }
       }
@@ -2083,17 +2083,17 @@ export const vegaLitePlugin: D3RenderPlugin = {
             if (channelSpec && channelSpec.field) {
               // Fix "value" -> actual value field name from fold transform
               if (channelSpec.field === 'value' && valueField !== 'value') {
-                console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "value" -> "${valueField}" in ${channel} encoding`);
+                console.info(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "value" -> "${valueField}" in ${channel} encoding`);
                 channelSpec.field = valueField;
               }
               // Fix "key" -> actual key field name from fold transform
               if (channelSpec.field === 'key' && keyField !== 'key') {
-                console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "key" -> "${keyField}" in ${channel} encoding`);
+                console.info(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "key" -> "${keyField}" in ${channel} encoding`);
                 channelSpec.field = keyField;
               }
               // Fix "dimension" -> actual key field name from fold transform (common in parallel coordinates)
               if (channelSpec.field === 'dimension' && keyField !== 'dimension') {
-                console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "dimension" -> "${keyField}" in ${channel} encoding`);
+                console.info(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "dimension" -> "${keyField}" in ${channel} encoding`);
                 channelSpec.field = keyField;
               }
             }
@@ -2108,11 +2108,11 @@ export const vegaLitePlugin: D3RenderPlugin = {
         const foldTransform = spec.transform.find((t: any) => t.fold && t.as);
         if (foldTransform && spec.encoding && spec.data?.values && spec.data.values.length > 0) {
           const [foldKeyField, foldValueField] = foldTransform.as;
-          console.log(`🔧 FOLD-FIELD-MAP-FIX: Fold transform outputs ["${foldKeyField}", "${foldValueField}"]`);
+          console.info(`🔧 FOLD-FIELD-MAP-FIX: Fold transform outputs ["${foldKeyField}", "${foldValueField}"]`);
 
           // Get fields available in original data (before fold)
           const originalDataFields = new Set(Object.keys(spec.data.values[0]));
-          console.log('🔧 FOLD-FIELD-MAP-FIX: Original data fields:', Array.from(originalDataFields));
+          console.info('🔧 FOLD-FIELD-MAP-FIX: Original data fields:', Array.from(originalDataFields));
 
           // Check each encoding channel for non-existent field references
           Object.keys(spec.encoding).forEach(channel => {
@@ -2125,7 +2125,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             if (!originalDataFields.has(referencedField) &&
               referencedField !== foldKeyField &&
               referencedField !== foldValueField) {
-              console.log(`🔧 FOLD-FIELD-MAP-FIX: Channel "${channel}" references non-existent field "${referencedField}"`);
+              console.info(`🔧 FOLD-FIELD-MAP-FIX: Channel "${channel}" references non-existent field "${referencedField}"`);
 
               // Determine if this should map to key or value field
               // Heuristic: fields that sound like categories/types -> key field
@@ -2142,16 +2142,16 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
               if (looksLikeCategory && !looksLikeValue) {
                 // Map to key field
-                console.log(`🔧 FOLD-FIELD-MAP-FIX: Mapping "${referencedField}" -> "${foldKeyField}" (category pattern)`);
+                console.info(`🔧 FOLD-FIELD-MAP-FIX: Mapping "${referencedField}" -> "${foldKeyField}" (category pattern)`);
                 channelSpec.field = foldKeyField;
               } else if (looksLikeValue || channel === 'x' || channel === 'y') {
                 // Map to value field (also default for x/y axes)
-                console.log(`🔧 FOLD-FIELD-MAP-FIX: Mapping "${referencedField}" -> "${foldValueField}" (value pattern)`);
+                console.info(`🔧 FOLD-FIELD-MAP-FIX: Mapping "${referencedField}" -> "${foldValueField}" (value pattern)`);
                 channelSpec.field = foldValueField;
               } else {
                 // Default fallback: color/detail -> key, x/y -> value
                 const mappedField = ['color', 'detail', 'row', 'column'].includes(channel) ? foldKeyField : foldValueField;
-                console.log(`🔧 FOLD-FIELD-MAP-FIX: Mapping "${referencedField}" -> "${mappedField}" (channel default)`);
+                console.info(`🔧 FOLD-FIELD-MAP-FIX: Mapping "${referencedField}" -> "${mappedField}" (channel default)`);
                 channelSpec.field = mappedField;
               }
             }
@@ -2170,7 +2170,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           });
           return newRow;
         });
-        console.log('🔧 VEGA-PREPROCESS: Converted boolean values to strings');
+        console.info('🔧 VEGA-PREPROCESS: Converted boolean values to strings');
       }
 
       // Fix 1.8: Convert boolean values in hconcat/vconcat/layer specs
@@ -2215,7 +2215,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             if (Array.isArray(domain) && domain.some((v: any) => typeof v === 'boolean')) {
               view.encoding[channel].scale.domain = domain.map((v: any) =>
                 typeof v === 'boolean' ? (v ? 'Yes' : 'No') : v);
-              console.log(
+              console.info(
                 `🔧 VEGA-PREPROCESS: Converted boolean ${channel} scale domain ` +
                 `to strings to match the converted data values`
               );
@@ -2240,12 +2240,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
             channelSpec.forEach(c => {
               if (c?.type === 'ordinal') {
                 c.type = 'nominal';
-                console.log(`🔧 VEGA-PREPROCESS: Converted ${channel} type from ordinal to nominal`);
+                console.info(`🔧 VEGA-PREPROCESS: Converted ${channel} type from ordinal to nominal`);
               }
             });
           } else if (channelSpec?.type === 'ordinal') {
             channelSpec.type = 'nominal';
-            console.log(`🔧 VEGA-PREPROCESS: Converted ${channel} type from ordinal to nominal`);
+            console.info(`🔧 VEGA-PREPROCESS: Converted ${channel} type from ordinal to nominal`);
           }
         });
       };
@@ -2292,7 +2292,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             if (JSON.stringify([...unique].sort()) === JSON.stringify(numeric)) return;
 
             channelSpec.sort = numeric;
-            console.log(
+            console.info(
               `🔧 VEGA-PREPROCESS: Sorted ${channel} nominal domain numerically ` +
               `(lexical order put larger values out of sequence)`
             );
@@ -2318,7 +2318,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           if (channelSpec?.field && channelSpec?.type === 'nominal') {
             // Respect explicit identity mapping (scale: null) and hidden legends (legend: null)
             if (channelSpec.scale === null || channelSpec.legend === null) {
-              console.log(`🔧 LEGEND-LABEL-FIX: Skipping ${channel} - has explicit scale:null or legend:null`);
+              console.info(`🔧 LEGEND-LABEL-FIX: Skipping ${channel} - has explicit scale:null or legend:null`);
               return;
             }
             // Check if the field contains literal color values (hex codes)
@@ -2328,7 +2328,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             );
 
             if (hasHexColors) {
-              console.log(`🔧 LEGEND-LABEL-FIX: Color field "${channelSpec.field}" contains hex codes, switching to meaningful field for legend`);
+              console.info(`🔧 LEGEND-LABEL-FIX: Color field "${channelSpec.field}" contains hex codes, switching to meaningful field for legend`);
 
               // Find a more meaningful field for legend labels
               const meaningfulFields = ['rating', 'label', 'name', 'category', 'type', 'status', 'group'];
@@ -2357,7 +2357,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                   type: 'ordinal'
                 };
 
-                console.log(`🔧 LEGEND-LABEL-FIX: Switched to meaningful field "${labelField}" with color mapping:`,
+                console.info(`🔧 LEGEND-LABEL-FIX: Switched to meaningful field "${labelField}" with color mapping:`,
                   uniqueLabels.map((label, i) => `${label} -> ${colorRange[i]}`));
               }
             }
@@ -2392,10 +2392,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // legend. Delegates to the exported, unit-tested hideRedundantColorLegend.
       const removeRedundantColorLegends = (encoding: any) => {
         if (hideRedundantColorLegend(encoding)) {
-          console.log(`🔧 LEGEND-REMOVE-FIX: Color field "${encoding.color.field}" is redundant with axis, hiding legend`);
+          console.info(`🔧 LEGEND-REMOVE-FIX: Color field "${encoding.color.field}" is redundant with axis, hiding legend`);
         } else if (encoding?.color?.field && encoding.color.legend !== undefined &&
           (encoding.color.field === encoding.x?.field || encoding.color.field === encoding.y?.field)) {
-          console.log(`🔧 LEGEND-REMOVE-FIX: Color field "${encoding.color.field}" is redundant with axis, but an explicit legend was authored — preserving it`);
+          console.info(`🔧 LEGEND-REMOVE-FIX: Color field "${encoding.color.field}" is redundant with axis, but an explicit legend was authored — preserving it`);
         }
       };
 
@@ -2419,7 +2419,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           if (channelSpec?.field && channelSpec?.type === 'nominal') {
             // Respect explicit identity mapping (scale: null)
             if (channelSpec.scale === null) {
-              console.log(`🔧 LITERAL-COLOR-FIX: Skipping ${channel} - has explicit scale:null (identity mapping)`);
+              console.info(`🔧 LITERAL-COLOR-FIX: Skipping ${channel} - has explicit scale:null (identity mapping)`);
               return;
             }
             // Check if the field contains literal color values (hex codes)
@@ -2429,7 +2429,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             );
 
             if (hasHexColors) {
-              console.log(`🔧 LITERAL-COLOR-FIX: Converting literal color field "${channelSpec.field}" in ${channel} channel`);
+              console.info(`🔧 LITERAL-COLOR-FIX: Converting literal color field "${channelSpec.field}" in ${channel} channel`);
 
               // Create a proper scale mapping the field values to themselves as colors
               channelSpec.scale = {
@@ -2466,7 +2466,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                   channelSpec.scale.range = uniqueLabels.map(label => labelToColor.get(label));
                   channelSpec.field = labelField;
 
-                  console.log(`🔧 LITERAL-COLOR-FIX: Switched to meaningful field "${labelField}" with proper color mapping`);
+                  console.info(`🔧 LITERAL-COLOR-FIX: Switched to meaningful field "${labelField}" with proper color mapping`);
                 }
               }
             }
@@ -2487,7 +2487,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
         if (!hasGridCoordinates) return;
 
-        console.log('🔧 GRID-LAYOUT-FIX: Detected grid-based layout with overlapping elements');
+        console.info('🔧 GRID-LAYOUT-FIX: Detected grid-based layout with overlapping elements');
 
         // Check for layers that use the same x/y fields but with different ranges (causing overlap)
         const hasOverlappingRanges = spec.layer.some((layer, i) => {
@@ -2506,7 +2506,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         });
 
         if (hasOverlappingRanges) {
-          console.log('🔧 GRID-LAYOUT-FIX: Found overlapping ranges, standardizing positioning');
+          console.info('🔧 GRID-LAYOUT-FIX: Found overlapping ranges, standardizing positioning');
 
           // Get unique x and y values to determine grid dimensions
           const uniqueX = [...new Set(dataValues.map(d => d.x))].sort((a, b) => (a as number) - (b as number));
@@ -2523,7 +2523,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             dataValues.every(d => d.y !== undefined && d[field] !== undefined)
           ) || 'y';
 
-          console.log('🔧 GRID-LAYOUT-FIX: Grid dimensions:', { uniqueX, uniqueY, xLabelField, yLabelField });
+          console.info('🔧 GRID-LAYOUT-FIX: Grid dimensions:', { uniqueX, uniqueY, xLabelField, yLabelField });
 
           // Calculate proper spacing for grid
           const cellWidth = Math.max(100, (spec.width || 600) / (uniqueX.length + 1));
@@ -2541,7 +2541,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 type: 'rect'
               };
 
-              console.log('🔧 GRID-LAYOUT-FIX: Removed explicit width/height from rect mark to use ordinal bands');
+              console.info('🔧 GRID-LAYOUT-FIX: Removed explicit width/height from rect mark to use ordinal bands');
             }
 
             // Update encoding for any layer using x/y coordinates
@@ -2587,7 +2587,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
               const textField = layer.encoding?.text?.field;
               if (textField && textField !== xLabelField && textField !== yLabelField) {
                 // This is a symbol/data text layer - preserve it but fix its positioning
-                console.log('🔧 GRID-LAYOUT-FIX: Preserving symbol text layer', index, 'field:', textField);
+                console.info('🔧 GRID-LAYOUT-FIX: Preserving symbol text layer', index, 'field:', textField);
 
                 // Update positioning to match the rectangle layer
                 layer.encoding.x = {
@@ -2609,7 +2609,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                   layer.mark.fontSize = 12;
                 }
               } else {
-                console.log('🔧 GRID-LAYOUT-FIX: Removing redundant text layer', index);
+                console.info('🔧 GRID-LAYOUT-FIX: Removing redundant text layer', index);
                 layer._remove = true;
               }
             }
@@ -2618,7 +2618,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           // Remove marked layers
           spec.layer = spec.layer.filter((layer: any) => !layer._remove);
 
-          console.log('🔧 GRID-LAYOUT-FIX: Applied consistent grid positioning');
+          console.info('🔧 GRID-LAYOUT-FIX: Applied consistent grid positioning');
         }
       };
 
@@ -2631,20 +2631,20 @@ export const vegaLitePlugin: D3RenderPlugin = {
             const uniqueValues = [...new Set(dataValues.map(d => d[channelSpec.field]))].filter(v => v !== null && v !== undefined).sort();
             if (uniqueValues.length > 0) {
               channelSpec.scale.domain = uniqueValues;
-              console.log(`🔧 VEGA-PREPROCESS: Added domain ${JSON.stringify(uniqueValues)} for ${channel} channel`);
+              console.info(`🔧 VEGA-PREPROCESS: Added domain ${JSON.stringify(uniqueValues)} for ${channel} channel`);
 
               // Fix range length to match domain length
               if (Array.isArray(channelSpec.scale.range) && channelSpec.scale.range.length !== uniqueValues.length) {
                 if (uniqueValues.length === 1) {
                   channelSpec.scale.range = [channelSpec.scale.range[channelSpec.scale.range.length - 1]];
-                  console.log(`🔧 VEGA-PREPROCESS: Adjusted ${channel} range to match single-value domain`);
+                  console.info(`🔧 VEGA-PREPROCESS: Adjusted ${channel} range to match single-value domain`);
                 } else if (channelSpec.scale.range.length < uniqueValues.length) {
                   // Extend range by repeating last value
                   const lastValue = channelSpec.scale.range[channelSpec.scale.range.length - 1];
                   while (channelSpec.scale.range.length < uniqueValues.length) {
                     channelSpec.scale.range.push(lastValue);
                   }
-                  console.log(`🔧 VEGA-PREPROCESS: Extended ${channel} range to match domain length`);
+                  console.info(`🔧 VEGA-PREPROCESS: Extended ${channel} range to match domain length`);
                 }
               }
             }
@@ -2688,7 +2688,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           });
         }
 
-        console.log('🔧 VEGA-PREPROCESS: Preprocessing complete');
+        console.info('🔧 VEGA-PREPROCESS: Preprocessing complete');
         fixGridLayoutIssues(spec);
       }
       if (spec.hconcat) {
@@ -2735,7 +2735,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             const isKnown = tKeys.some(k => knownTransformTypes.has(k));
             if (!isKnown) {
               hasUnknownTransformOutputs = true;
-              console.log(`🔧 VEGA-PREPROCESS: Transform with keys [${tKeys.join(', ')}] has unpredictable output fields`);
+              console.info(`🔧 VEGA-PREPROCESS: Transform with keys [${tKeys.join(', ')}] has unpredictable output fields`);
             }
           });
         }
@@ -2747,34 +2747,34 @@ export const vegaLitePlugin: D3RenderPlugin = {
               // Add fields created by fold transform
               availableFields.push(t.as[0]);
               availableFields.push(t.as[1]);
-              console.log(`🔧 VEGA-PREPROCESS: Fold transform will create fields: ${t.as[0]}, ${t.as[1]}`);
+              console.info(`🔧 VEGA-PREPROCESS: Fold transform will create fields: ${t.as[0]}, ${t.as[1]}`);
             }
             // Add fields created by calculate transforms
             if (t.calculate && t.as) {
               availableFields.push(t.as);
-              console.log(`🔧 VEGA-PREPROCESS: Calculate transform will create field: ${t.as}`);
+              console.info(`🔧 VEGA-PREPROCESS: Calculate transform will create field: ${t.as}`);
             }
             // Add fields created by window transforms
             if (t.window && Array.isArray(t.window)) {
               t.window.forEach((w: any) => {
                 if (w.as) {
                   availableFields.push(w.as);
-                  console.log(`🔧 VEGA-PREPROCESS: Window transform will create field: ${w.as}`);
+                  console.info(`🔧 VEGA-PREPROCESS: Window transform will create field: ${w.as}`);
                 }
               });
             }
           });
         }
 
-        console.log('🔧 VEGA-PREPROCESS: Available fields:', availableFields);
+        console.info('🔧 VEGA-PREPROCESS: Available fields:', availableFields);
 
         if (hasUnknownTransformOutputs) {
-          console.log('🔧 VEGA-PREPROCESS: Skipping field validation — transforms with unpredictable outputs detected');
+          console.info('🔧 VEGA-PREPROCESS: Skipping field validation — transforms with unpredictable outputs detected');
         } else {
           Object.keys(spec.encoding).forEach(channel => {
             const channelSpec = spec.encoding[channel];
             if (channelSpec?.field && !availableFields.includes(channelSpec.field)) {
-              console.log(`🔧 VEGA-PREPROCESS: Removing ${channel} encoding with invalid field: ${channelSpec.field}`);
+              console.info(`🔧 VEGA-PREPROCESS: Removing ${channel} encoding with invalid field: ${channelSpec.field}`);
               delete spec.encoding[channel];
             }
           });
@@ -2788,7 +2788,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           if (Array.isArray(domain)) {
             const cleanDomain = domain.filter(v => v !== null && v !== undefined);
             if (cleanDomain.length !== domain.length) {
-              console.log(`🔧 VEGA-PREPROCESS: Cleaned null values from ${channel} domain`);
+              console.info(`🔧 VEGA-PREPROCESS: Cleaned null values from ${channel} domain`);
               if (cleanDomain.length > 0) {
                 spec.encoding[channel].scale.domain = cleanDomain;
               } else {
@@ -2852,7 +2852,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 channelSpec.scale?.type === 'log' &&
                 channelSpec.stack === undefined) {
               channelSpec.stack = null;
-              console.log(
+              console.info(
                 `🔧 VEGA-PREPROCESS: Disabled implicit stacking on ${channel} ` +
                 `(log scale bars baseline at 0, which is undefined on a log axis)`
               );
@@ -2891,7 +2891,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 scale.domain.every((v: any) => typeof v === 'number') &&
                 scale.nice === undefined) {
               scale.nice = false;
-              console.log(
+              console.info(
                 `🔧 VEGA-PREPROCESS: Disabled nice-ing on ${channel} to preserve ` +
                 `the authored domain ${JSON.stringify(scale.domain)}`
               );
@@ -2913,7 +2913,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // appears blank. Clip such marks to the plot area.
       const clippedMarks = clipZeroBaselineMarksToDomain(spec);
       if (clippedMarks > 0) {
-        console.log(
+        console.info(
           `🔧 VEGA-PREPROCESS: Set clip:true on ${clippedMarks} zero-baselined ` +
           `mark(s) whose explicit scale domain excludes 0`
         );
@@ -2924,7 +2924,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         spec.$schema = 'https://vega.github.io/schema/vega-lite/v5.json';
       }
 
-      console.log('🔧 VEGA-PREPROCESS: Preprocessing complete');
+      console.info('🔧 VEGA-PREPROCESS: Preprocessing complete');
       return spec;
     };
 
@@ -2948,7 +2948,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           }
         }
 
-        console.log('🔧 AXIS-DOMAIN-FIX: Checking for axis domain extrapolation issues');
+        console.info('🔧 AXIS-DOMAIN-FIX: Checking for axis domain extrapolation issues');
 
         ['x', 'y'].forEach(axis => {
           {
@@ -2977,7 +2977,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             if (domainMin < dataMin) {
               {
                 axisSpec.scale.domain[0] = dataMin;
-                console.log(`🔧 AXIS-DOMAIN-FIX: Adjusted ${axis}-axis domain minimum from ${domainMin} to ${dataMin} (data range starts here)`);
+                console.info(`🔧 AXIS-DOMAIN-FIX: Adjusted ${axis}-axis domain minimum from ${domainMin} to ${dataMin} (data range starts here)`);
                 adjusted = true;
               }
             }
@@ -2987,7 +2987,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
               { // Allow 10% padding
                 const newMax = dataMax * 1.05; // Use 5% padding
                 axisSpec.scale.domain[1] = newMax;
-                console.log(`🔧 AXIS-DOMAIN-FIX: Adjusted ${axis}-axis domain maximum from ${domainMax} to ${newMax} (data range ends at ${dataMax})`);
+                console.info(`🔧 AXIS-DOMAIN-FIX: Adjusted ${axis}-axis domain maximum from ${domainMax} to ${newMax} (data range ends at ${dataMax})`);
                 adjusted = true;
               }
             }
@@ -3005,7 +3005,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Check if we have a fixed y value that would cause stacking
       if (spec.encoding?.y?.value !== undefined && spec.encoding?.x?.field) {
-        console.log('🔧 RECT-Y-FIX: Detected rect chart with fixed y value, converting to proper visualization');
+        console.info('🔧 RECT-Y-FIX: Detected rect chart with fixed y value, converting to proper visualization');
 
         // Analyze the data to determine what kind of chart this should be
         if (spec.data?.values && Array.isArray(spec.data.values)) {
@@ -3018,7 +3018,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
           // If we have calculated fields or multiple numeric fields, this should probably be a bar chart
           if (numericFields.length > 0) {
-            console.log(`🔧 RECT-Y-FIX: Converting to bar chart using field: ${numericFields[0]}`);
+            console.info(`🔧 RECT-Y-FIX: Converting to bar chart using field: ${numericFields[0]}`);
 
             // Convert to bar chart
             spec.mark = 'bar';
@@ -3032,7 +3032,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
             // If there are multiple numeric fields and transforms, suggest using fold transform
             if (numericFields.length > 1 && !spec.transform?.some((t: any) => t.fold)) {
-              console.log('🔧 RECT-Y-FIX: Multiple numeric fields detected, might benefit from fold transform');
+              console.info('🔧 RECT-Y-FIX: Multiple numeric fields detected, might benefit from fold transform');
             }
           }
         }
@@ -3047,7 +3047,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.mark && (spec.mark.type === 'area' || spec.mark === 'area' || spec.mark.type === 'line' || spec.mark === 'line') &&
         spec.transform && spec.encoding?.x && !spec.encoding?.y) {
 
-        console.log('🔧 MISSING-Y-FIX: Detected area/line chart with transforms but missing y-axis encoding');
+        console.info('🔧 MISSING-Y-FIX: Detected area/line chart with transforms but missing y-axis encoding');
 
         // Look for window transforms that create calculated fields
         const windowTransform = spec.transform.find((t: any) => t.window);
@@ -3055,7 +3055,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           const calculatedField = windowTransform.window.find((w: any) => w.as && w.field);
 
           if (calculatedField?.as) {
-            console.log(`🔧 MISSING-Y-FIX: Adding y-axis encoding using calculated field: ${calculatedField.as}`);
+            console.info(`🔧 MISSING-Y-FIX: Adding y-axis encoding using calculated field: ${calculatedField.as}`);
             spec.encoding.y = {
               field: calculatedField.as,
               type: 'quantitative',
@@ -3069,7 +3069,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           // Find any calculated field from the window transform
           const windowOp = windowTransform.window.find((w: any) => w.as);
           if (windowOp?.as) {
-            console.log(`🔧 MISSING-Y-FIX: Using window transform output field: ${windowOp.as}`);
+            console.info(`🔧 MISSING-Y-FIX: Using window transform output field: ${windowOp.as}`);
             spec.encoding.y = {
               field: windowOp.as,
               type: 'quantitative',
@@ -3094,7 +3094,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       const thetaIsStacked = spec.encoding?.theta?.stack !== false;
       if (spec.encoding?.theta && !spec.encoding?.theta2) {
         if (!thetaIsStacked) {
-          console.log('🔧 ARC-THETA2-FIX: Adding theta2 encoding for non-stacked arc segments');
+          console.info('🔧 ARC-THETA2-FIX: Adding theta2 encoding for non-stacked arc segments');
           spec.encoding.theta2 = { value: 0 };
         }
       }
@@ -3112,7 +3112,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.transform?.some((t: any) => t.fold) && spec.encoding?.y &&
         (!spec.encoding?.x || !spec.encoding?.color)) {
 
-        console.log('🔧 RECT-FOLD-FIX: Detected rect chart with fold transform missing x/color encodings');
+        console.info('🔧 RECT-FOLD-FIX: Detected rect chart with fold transform missing x/color encodings');
 
         const foldTransform = spec.transform.find((t: any) => t.fold);
         const keyField = foldTransform?.as?.[0] || 'key';    // skill_level
@@ -3136,7 +3136,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           };
         }
 
-        console.log(`🔧 RECT-FOLD-FIX: Added x="${valueField}" and color="${keyField}" encodings`);
+        console.info(`🔧 RECT-FOLD-FIX: Added x="${valueField}" and color="${keyField}" encodings`);
       }
 
       return spec;
@@ -3148,7 +3148,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         return spec;
       }
 
-      console.log('🔧 Y-DOMAIN-FIX: Checking layered chart y-axis domains');
+      console.info('🔧 Y-DOMAIN-FIX: Checking layered chart y-axis domains');
 
       spec.layer.forEach((layer: any, index: number) => {
         if (layer.encoding?.y?.scale?.domain && layer.encoding.y.field) {
@@ -3164,7 +3164,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
             // If the domain is much larger than the data range, remove it to use auto-scaling
             if (domainMax > maxVal * 5 || domainMin < minVal - (maxVal - minVal)) {
-              console.log(`🔧 Y-DOMAIN-FIX: Removing inappropriate y-axis domain [${domainMin}, ${domainMax}] for field "${yField}" with range [${minVal}, ${maxVal}]`);
+              console.info(`🔧 Y-DOMAIN-FIX: Removing inappropriate y-axis domain [${domainMin}, ${domainMax}] for field "${yField}" with range [${minVal}, ${maxVal}]`);
               delete layer.encoding.y.scale.domain;
             }
           }
@@ -3184,7 +3184,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.transform?.some((t: any) => t.fold) && spec.encoding?.x &&
         (!spec.encoding?.y || !spec.encoding?.color)) {
 
-        console.log('🔧 POINT-FOLD-FIX: Detected point chart with fold transform missing encodings');
+        console.info('🔧 POINT-FOLD-FIX: Detected point chart with fold transform missing encodings');
 
         const foldTransform = spec.transform.find((t: any) => t.fold);
         const keyField = foldTransform?.as?.[0] || 'key';     // skill_type
@@ -3208,7 +3208,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           };
         }
 
-        console.log(`🔧 POINT-FOLD-FIX: Added y="${valueField}" and color="${keyField}" encodings`);
+        console.info(`🔧 POINT-FOLD-FIX: Added y="${valueField}" and color="${keyField}" encodings`);
       }
 
       return spec;
@@ -3224,7 +3224,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.transform?.some((t: any) => t.fold) && spec.encoding?.y &&
         (!spec.encoding?.x || !spec.encoding?.color || !spec.encoding?.yOffset)) {
 
-        console.log('🔧 BAR-FOLD-FIX: Detected bar chart with fold transform missing x/color encodings');
+        console.info('🔧 BAR-FOLD-FIX: Detected bar chart with fold transform missing x/color encodings');
 
         const foldTransform = spec.transform.find((t: any) => t.fold);
         const keyField = foldTransform?.as?.[0] || 'key';     // period (before/after)
@@ -3253,10 +3253,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
           spec.encoding.yOffset = {
             field: keyField
           };
-          console.log(`🔧 BAR-FOLD-FIX: Added yOffset="${keyField}" encoding for grouped bars`);
+          console.info(`🔧 BAR-FOLD-FIX: Added yOffset="${keyField}" encoding for grouped bars`);
         }
 
-        console.log(`🔧 BAR-FOLD-FIX: Added x="${valueField}" and color="${keyField}" encodings`);
+        console.info(`🔧 BAR-FOLD-FIX: Added x="${valueField}" and color="${keyField}" encodings`);
       }
 
       return spec;
@@ -3266,7 +3266,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
     const fixTooltipEncodings = (spec: any): any => {
       if (!spec.encoding?.tooltip) return spec;
 
-      console.log('🔧 TOOLTIP-FIX: Fixing tooltip encodings that may cause destructuring errors');
+      console.info('🔧 TOOLTIP-FIX: Fixing tooltip encodings that may cause destructuring errors');
 
       // If tooltip is an array, validate each item
       if (Array.isArray(spec.encoding.tooltip)) {
@@ -3275,7 +3275,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           if (typeof tooltipItem === 'object' && tooltipItem !== null) {
             // If missing required properties, fix them
             if (!tooltipItem.field && !tooltipItem.aggregate && !tooltipItem.value) {
-              console.log(`🔧 TOOLTIP-FIX: Removing invalid tooltip item at index ${index}:`, tooltipItem);
+              console.info(`🔧 TOOLTIP-FIX: Removing invalid tooltip item at index ${index}:`, tooltipItem);
               return null; // Mark for removal
             }
 
@@ -3283,7 +3283,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             if (tooltipItem.field && !tooltipItem.type) {
               // Infer type from field name or data
               tooltipItem.type = tooltipItem.field.includes('cases') || tooltipItem.field === 'complexity' ? 'quantitative' : 'nominal';
-              console.log(`🔧 TOOLTIP-FIX: Added missing type '${tooltipItem.type}' to tooltip field '${tooltipItem.field}'`);
+              console.info(`🔧 TOOLTIP-FIX: Added missing type '${tooltipItem.type}' to tooltip field '${tooltipItem.field}'`);
             }
           }
           return tooltipItem;
@@ -3301,7 +3301,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
     // Fix 5: Improve LLM-generated chart compatibility
     const fixLLMGeneratedCharts = (spec: any): any => {
-      console.log('🔧 LLM-CHART-FIX: Starting LLM-generated chart fixes');
+      console.info('🔧 LLM-CHART-FIX: Starting LLM-generated chart fixes');
 
       // Fix 5.1: Convert sequential numeric fields with nominal type to proper ordinal
       if (spec.encoding && spec.data?.values) {
@@ -3316,7 +3316,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             );
 
             if (looksLikeYears && channel === 'x') {
-              console.log(`🔧 LLM-CHART-FIX: Converting numeric years in ${channel} from nominal to ordinal`);
+              console.info(`🔧 LLM-CHART-FIX: Converting numeric years in ${channel} from nominal to ordinal`);
               channelSpec.type = 'ordinal';
               // Convert numeric years to strings for better ordinal handling
               spec.data.values = spec.data.values.map((row: any) => ({
@@ -3331,7 +3331,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
               Math.max(...fieldValues) - Math.min(...fieldValues) === fieldValues.length - 1;
 
             if (looksLikeSequence && channel === 'x') {
-              console.log(`🔧 LLM-CHART-FIX: Converting sequential numbers in ${channel} from nominal to ordinal`);
+              console.info(`🔧 LLM-CHART-FIX: Converting sequential numbers in ${channel} from nominal to ordinal`);
               channelSpec.type = 'ordinal';
             }
           }
@@ -3340,7 +3340,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Fix 5.2: Ensure line charts have proper mark configuration
       if (spec.mark === 'line' && spec.encoding?.x && spec.encoding?.y) {
-        console.log('🔧 LLM-CHART-FIX: Adding points to line chart for better visibility');
+        console.info('🔧 LLM-CHART-FIX: Adding points to line chart for better visibility');
         spec.mark = {
           type: 'line',
           point: true,
@@ -3476,7 +3476,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       const upperBound = maxVal * 2;
 
       yEnc.scale.domain = [lowerBound, upperBound];
-      console.log(`🔧 AREA-LOG-FIX: Set log scale domain to [${lowerBound}, ${upperBound}] for area/line mark (field: "${field}")`);
+      console.info(`🔧 AREA-LOG-FIX: Set log scale domain to [${lowerBound}, ${upperBound}] for area/line mark (field: "${field}")`);
 
       return s;
     };
@@ -3535,7 +3535,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           key.endsWith('_rate') && typeof firstRow[key] === 'number'
         );
 
-        console.log('🔧 XOFFSET-RATE-FIX: Checking bar chart with xOffset:', {
+        console.info('🔧 XOFFSET-RATE-FIX: Checking bar chart with xOffset:', {
           metricField,
           currentYField,
           rateFields,
@@ -3565,11 +3565,11 @@ export const vegaLitePlugin: D3RenderPlugin = {
             }
           });
 
-          console.log('🔧 XOFFSET-RATE-FIX: Metric to field mapping:', metricToFieldMap);
+          console.info('🔧 XOFFSET-RATE-FIX: Metric to field mapping:', metricToFieldMap);
 
           // If we found mappings for all metrics, apply the fix
           if (Object.keys(metricToFieldMap).length === metricValues.length && metricValues.length > 1) {
-            console.log('🔧 XOFFSET-RATE-FIX: Applying fix - adding calculate transform to select correct rate field');
+            console.info('🔧 XOFFSET-RATE-FIX: Applying fix - adding calculate transform to select correct rate field');
 
             // Build a conditional expression: datum.metric === 'X' ? datum.x_rate : datum.metric === 'Y' ? datum.y_rate : ...
             const conditions = metricValues.map((metricValue, idx) => {
@@ -3592,7 +3592,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             // Update y-axis to use the calculated field
             vegaSpec.encoding.y.field = 'calculated_rate';
 
-            console.log('🔧 XOFFSET-RATE-FIX: Updated y-axis to use calculated_rate field');
+            console.info('🔧 XOFFSET-RATE-FIX: Updated y-axis to use calculated_rate field');
           }
         }
       }
@@ -3659,7 +3659,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Apply this fix EARLY in the preprocessing pipeline
       // Additional post-preprocessing validations and fixes
-      console.log('🔧 VEGA-POST-PROCESS: Starting additional fixes');
+      console.info('🔧 VEGA-POST-PROCESS: Starting additional fixes');
 
       // Clamp unbounded axis labelLimit values.
       //
@@ -3692,7 +3692,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             const axis = view.encoding[channel]?.axis;
             if (axis && typeof axis.labelLimit === 'number' &&
                 (axis.labelLimit <= 0 || axis.labelLimit > labelLimitCap)) {
-              console.log(
+              console.info(
                 `🔧 VEGA-POST-PROCESS: Clamped ${channel} axis labelLimit ` +
                 `${axis.labelLimit} to ${labelLimitCap}`
               );
@@ -3714,20 +3714,20 @@ export const vegaLitePlugin: D3RenderPlugin = {
       {
         const sunk = sinkSecondaryChannels(vegaSpec);
         if (sunk.length) {
-          console.log(`🔧 VEGA-POST-PROCESS: Sank shared secondary channels to layers: ${sunk.join(', ')}`);
+          console.info(`🔧 VEGA-POST-PROCESS: Sank shared secondary channels to layers: ${sunk.join(', ')}`);
         }
       }
 
       // Fix layered charts with mismatched y-axis scales and missing legends
       if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
-        console.log('🔧 VEGA-POST-PROCESS: Fixing layered chart scales and legends');
+        console.info('🔧 VEGA-POST-PROCESS: Fixing layered chart scales and legends');
 
         // A layer that plots a folded field directly gets the pre-fold rows;
         // one that uses a transform output keeps the parent data (see
         // layersNeedingPreTransformData).
         if (vegaSpec.data?.values) {
           for (const index of layersNeedingPreTransformData(vegaSpec)) {
-            console.log(`🔧 FOLD-DATA-FIX: Layer ${index} plots a folded field directly; giving it the pre-fold rows`);
+            console.info(`🔧 FOLD-DATA-FIX: Layer ${index} plots a folded field directly; giving it the pre-fold rows`);
             vegaSpec.layer[index].data = { values: vegaSpec.data.values };
           }
         }
@@ -3761,7 +3761,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Fix faceted charts with bars using fixed y values instead of proper encodings
       if (vegaSpec.facet && vegaSpec.spec?.layer) {
-        console.log('🔧 VEGA-POST-PROCESS: Fixing faceted chart layer encodings');
+        console.info('🔧 VEGA-POST-PROCESS: Fixing faceted chart layer encodings');
 
         vegaSpec.spec.layer.forEach((layer, index) => {
           if (layer.mark?.type === 'bar' && layer.encoding?.y?.value !== undefined) {
@@ -3809,7 +3809,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // fill (w3-07). fixBogusColorNameValues anchors the palette-name
       // substitutions to a VALUE position, leaving gradient objects intact.
       vegaSpec = fixBogusColorNameValues(vegaSpec);
-      console.log('🔧 VEGA-POST-PROCESS: Applied color-name value fixes to spec');
+      console.info('🔧 VEGA-POST-PROCESS: Applied color-name value fixes to spec');
 
       // Validate the spec before rendering
       if (!vegaSpec || typeof vegaSpec !== 'object') {
@@ -3840,7 +3840,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // the full container, so the assembled view overflows it).
       const _sizing = applySizing(vegaSpec, availableWidth);
       if (_sizing.replacedWidth !== null) {
-        console.log(
+        console.info(
           `🔧 VEGA-WIDTH: Replaced authored width ${_sizing.replacedWidth} ` +
           `with '${_sizing.width}' (fixed widths are not used for inline charts)`
         );
@@ -3862,7 +3862,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // collision failure of the vertical form never arises. No-op for every
       // other chart shape (guarded on mark, channel types, cardinality, length).
       if (transposeLongLabelBarChart(vegaSpec, availableWidth)) {
-        console.log('🔧 VEGA-POST-PROCESS: transposed long-label bar chart to horizontal (D-309/D-500)');
+        console.info('🔧 VEGA-POST-PROCESS: transposed long-label bar chart to horizontal (D-309/D-500)');
       }
 
       // Axis label defaults, injected ONCE per channel. Extracted to
@@ -3871,7 +3871,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // per-layer default is correct and a single shared one is not.
       const axesDefaulted = applySharedAxisDefaults(vegaSpec);
       if (axesDefaulted.length > 0) {
-        console.log(`🔧 VEGA-POST-PROCESS: Applied axis label defaults to ${axesDefaulted.join(', ')}`);
+        console.info(`🔧 VEGA-POST-PROCESS: Applied axis label defaults to ${axesDefaulted.join(', ')}`);
       }
 
       // Ensure it has a schema if not present
@@ -5040,7 +5040,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             };
             console.log(`Added theta encoding with calculated field: "${calculatedField}"`);
           } else {
-            console.log(`🔧 ARC-THETA-SKIP: Skipping calculated field "${calculatedField}" - not numeric or is a reference field`);
+            console.info(`🔧 ARC-THETA-SKIP: Skipping calculated field "${calculatedField}" - not numeric or is a reference field`);
           }
         }
       }
@@ -5251,7 +5251,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // buried positive columns is present, so non-wrapped/operator specs are
       // untouched.
       if (hoistFacetColumns(vegaSpec)) {
-        console.log(`🔧 VEGA-FACET: hoisted wrapped-facet columns to top level (${vegaSpec.columns})`);
+        console.info(`🔧 VEGA-FACET: hoisted wrapped-facet columns to top level (${vegaSpec.columns})`);
       }
 
       // A facet OPERATOR reads its per-cell width/height from the INNER `spec`;
@@ -5264,7 +5264,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // to the inner spec where the operator honours it. No-op unless the
       // operator form is present with a usable top-level dimension.
       if (sinkFacetCellSize(vegaSpec)) {
-        console.log(
+        console.info(
           `🔧 VEGA-FACET: mirrored authored cell size to inner spec ` +
           `(w=${vegaSpec.spec?.width}, h=${vegaSpec.spec?.height})`
         );
@@ -5389,7 +5389,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             const limit = fitLabelLimit(orient, columns);
             if (limit > VEGA_DEFAULT_LEGEND_LABEL_LIMIT) {
               encoding[channel].legend = { ...authoredLegend, labelLimit: limit };
-              console.log(`🔧 LEGEND-FIT: ${channel} "${fieldName}" labelLimit ${VEGA_DEFAULT_LEGEND_LABEL_LIMIT} -> ${limit} (orient=${orient}, pane=${fitWidthPx}px)`);
+              console.info(`🔧 LEGEND-FIT: ${channel} "${fieldName}" labelLimit ${VEGA_DEFAULT_LEGEND_LABEL_LIMIT} -> ${limit} (orient=${orient}, pane=${fitWidthPx}px)`);
             }
           }
         };
@@ -5432,7 +5432,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         vegaSpec, estimateChartWidthPx(vegaSpec, _sizing.width), fitWidthPx,
       );
       if (relocatedLegend) {
-        console.log(
+        console.info(
           `🔧 VEGA-LEGEND: side legend (~${relocatedLegend.estimatedSideLegendPx}px) would push a ` +
           `${relocatedLegend.chartWidthPx}px chart past the ${relocatedLegend.paneWidthPx}px pane; ` +
           `moved below the plot in ${relocatedLegend.columns} column(s)`
@@ -5444,7 +5444,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // shifts every later panel right. Runs after the relocation above,
       // which can itself move a legend to the bottom.
       for (const fit of fitNarrowConcatCellLegends(vegaSpec)) {
-        console.log(
+        console.info(
           `🔧 VEGA-LEGEND: ${fit.channel} legend (~${fit.estimatedLegendPx}px) is wider than its ` +
           `${fit.cellWidthPx}px hconcat cell ${fit.cellIndex}; ${fit.columns} column(s)` +
           (fit.flushed ? ', row bounds flush' : '')
@@ -5456,7 +5456,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // are uniformly sampled down to a readable density. Theme-independent.
       const decluttered = declutterDenseTextMarks(vegaSpec);
       if (decluttered > 0) {
-        console.log(`🔧 VEGA-POST-PROCESS: Decluttered ${decluttered} dense text-mark layer(s) to reduce label overplot`);
+        console.info(`🔧 VEGA-POST-PROCESS: Decluttered ${decluttered} dense text-mark layer(s) to reduce label overplot`);
       }
 
       // Generic fix for specifications that have conflicting width/height with container
@@ -5482,7 +5482,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // via a matching formatLocale below. Prevents "invalid format" crashes.
       const currencySymbol = rewriteCurrencyFormats(vegaSpec);
       if (currencySymbol) {
-        console.log(`🔧 VEGA-POST-PROCESS: Rewrote currency symbol "${currencySymbol}" in format strings to "$" and installing matching formatLocale`);
+        console.info(`🔧 VEGA-POST-PROCESS: Rewrote currency symbol "${currencySymbol}" in format strings to "$" and installing matching formatLocale`);
       }
 
       // vega-embed's own width/height options OVERWRITE the spec's values, and
@@ -5503,7 +5503,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // authored string title/subtitle to the pane; an authored array or
       // `limit` is left alone.
       if (wrapSpecTitles(vegaSpec, fitWidthPx - 40)) {
-        console.log(`🔧 TITLE-FIT: wrapped title to ${fitWidthPx - 40}px`);
+        console.info(`🔧 TITLE-FIT: wrapped title to ${fitWidthPx - 40}px`);
       }
 
       // G-72 / D-260, D-265: ensure the categorical colour range is adequate.
@@ -5669,7 +5669,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (!isVegaV5) {
         delete embedSpec.$schema;
       }
-      console.log('🔧 VEGA-EMBED:', isVegaV5 ? 'Preserved $schema for Vega v5' : 'Removed $schema for compatibility');
+      console.info('🔧 VEGA-EMBED:', isVegaV5 ? 'Preserved $schema for Vega v5' : 'Removed $schema for compatibility');
 
       // Add timeout to detect hanging renders
       const embedPromise = vegaEmbed(renderContainer, embedSpec, embedOptions);
@@ -5772,7 +5772,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             if (!overflow.right && !overflow.left) return;
             try {
               const padding = growPadding(view.padding(), overflow);
-              console.log(
+              console.info(
                 `🔧 VEGA-POST-RENDER: text marks overflow by ` +
                 `${overflow.right}px right / ${overflow.left}px left; padding -> ` +
                 JSON.stringify(padding),
@@ -5835,7 +5835,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                   renderContainer.style.overflowX = 'auto';
                   renderContainer.style.maxWidth = '100%';
                 }
-                console.log(
+                console.info(
                   `🔧 VEGA-FACET-FIT: ~${model.slope.toFixed(0)} cell(s) across, ` +
                   `chrome ~${Math.round(model.chrome)}px → cell ${fit.cellWidth}px, ` +
                   `assembled ${Math.round(fit.assembledWidth ?? 0)}px in ${target}px` +
@@ -5868,7 +5868,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       const arcColorField: string = vegaSpec.__arcColorField;
       const arcColorScale: any = vegaSpec.__arcColorScale;
       if (arcDescFields && arcDescFields.length > 0 && vegaSpec.data?.values) {
-        console.log('🔧 ARC-DETAILS-PANEL: Building descriptive details panel');
+        console.info('🔧 ARC-DETAILS-PANEL: Building descriptive details panel');
 
         const dataValues: any[] = vegaSpec.data.values;
         const colorDomain: string[] = arcColorScale?.domain || dataValues.map((d: any) => d[arcColorField]);
@@ -5913,7 +5913,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
         detailsPanel.innerHTML = rows;
         container.appendChild(detailsPanel);
-        console.log('🔧 ARC-DETAILS-PANEL: Added details panel with', dataValues.length, 'entries');
+        console.info('🔧 ARC-DETAILS-PANEL: Added details panel with', dataValues.length, 'entries');
       }
 
       // Parent height propagation is owned SOLELY by the ResizeObserver in
@@ -6535,32 +6535,33 @@ ${svgData}`;
               scaleRatio: rect.width / vbWidth
             };
           },
+          // console.info, not log: production strips console.log (craco.config.js).
           inspect: () => {
-            console.log('=== Vega-Lite Debug Info ===');
-            console.log('Container:', container);
-            console.log('SVG Element:', svgElement);
-            console.log('Vega Embed Div:', vegaEmbedDiv);
+            console.info('=== Vega-Lite Debug Info ===');
+            console.info('Container:', container);
+            console.info('SVG Element:', svgElement);
+            console.info('Vega Embed Div:', vegaEmbedDiv);
 
             if (svgElement) {
-              console.log('SVG getBoundingClientRect():', svgElement.getBoundingClientRect());
-              console.log('SVG viewBox:', svgElement.getAttribute('viewBox'));
-              console.log('SVG style:', svgElement.style.cssText);
-              console.log('SVG computed style:', window.getComputedStyle(svgElement));
+              console.info('SVG getBoundingClientRect():', svgElement.getBoundingClientRect());
+              console.info('SVG viewBox:', svgElement.getAttribute('viewBox'));
+              console.info('SVG style:', svgElement.style.cssText);
+              console.info('SVG computed style:', window.getComputedStyle(svgElement));
             }
 
             if (vegaEmbedDiv) {
-              console.log('Embed div getBoundingClientRect():', vegaEmbedDiv.getBoundingClientRect());
-              console.log('Embed div style:', vegaEmbedDiv.style.cssText);
-              console.log('Embed div computed style:', window.getComputedStyle(vegaEmbedDiv));
+              console.info('Embed div getBoundingClientRect():', vegaEmbedDiv.getBoundingClientRect());
+              console.info('Embed div style:', vegaEmbedDiv.style.cssText);
+              console.info('Embed div computed style:', window.getComputedStyle(vegaEmbedDiv));
             }
 
-            console.log('Container getBoundingClientRect():', container.getBoundingClientRect());
+            console.info('Container getBoundingClientRect():', container.getBoundingClientRect());
 
             // Check if SVG is being clipped
             const svgRect = svgElement?.getBoundingClientRect();
             const containerRect = container.getBoundingClientRect();
             if (svgRect && containerRect) {
-              console.log('SVG overflow check:', {
+              console.info('SVG overflow check:', {
                 svgBottom: svgRect.bottom,
                 containerBottom: containerRect.bottom,
                 isOverflowing: svgRect.bottom > containerRect.bottom,
@@ -6573,7 +6574,7 @@ ${svgData}`;
             let level = 0;
             while (parent && level < 3) {
               const parentRect = parent.getBoundingClientRect();
-              console.log(`Parent level ${level}:`, {
+              console.info(`Parent level ${level}:`, {
                 element: parent,
                 className: parent.className,
                 rect: parentRect,
