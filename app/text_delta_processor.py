@@ -1035,10 +1035,17 @@ def process_text_delta(
             state.viz_buffer = text
             state.in_viz_block = True
         elif not state.in_viz_block:
-            # Flush optimizer before starting viz block
+            # Flush optimizer before starting viz block.  The flushed text
+            # must reach the fence tracker too: it may complete a line the
+            # tracker holds as an unterminated partial ("## What " + the
+            # "happened\n\n" sitting here).  Skipping it left that partial
+            # in place, the viz buffer was glued onto it as "## What ```mermaid",
+            # the opener went unrecognised and the closer opened a bare fence
+            # -- a complete reply was then "cut off mid-code-block".
             if hasattr(executor, '_content_optimizer'):
                 remaining = executor._content_optimizer.flush_remaining()
                 if remaining:
+                    executor._update_code_block_tracker(remaining, state.code_block_tracker)
                     events.append({'type': 'text', 'content': remaining, 'timestamp': ts})
             state.in_viz_block = True
             state.viz_buffer = text
