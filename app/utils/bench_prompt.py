@@ -66,20 +66,68 @@ def merge_bench_prompt(
     return bench.system_prompt_addition, overrides, tool_ids, set(bench.catalog_names)
 
 
-def withheld_mcp_for_root(project_root: Optional[str], conversation_id: Optional[str]) -> set:
-    """MCP servers the bench shelves for this request; empty when unknown.
+def mcp_placements_for_root(project_root: Optional[str], conversation_id: Optional[str]) -> Dict[str, str]:
+    """``{server: always|ondemand|off}`` for placeable MCP servers; ``{}`` when unknown.
 
     Fails open: a bench error must never strip tools from, or fail, a turn.
     """
     pid = project_id_for_root(project_root)
     if not pid:
-        return set()
+        return {}
     try:
-        from app.services.bench import withheld_mcp_servers
-        return withheld_mcp_servers(pid, conversation_id)
+        from app.services.bench import mcp_effective
+        return mcp_effective(pid, conversation_id)
     except Exception as e:  # noqa: BLE001
-        logger.warning("bench_prompt: MCP withhold lookup failed, tools unfiltered: %s", e)
+        logger.warning("bench_prompt: MCP placement lookup failed, tools unfiltered: %s", e)
+        return {}
+
+
+def servers_named_by_scope(tools: Optional[List[Any]], tool_allowlist) -> set:
+    """Servers a Task Card's ``scope.tools`` names a tool of.
+
+    Such a server counts as loaded for that run: otherwise a within-reach
+    server's tool named in the scope would be withheld before the scope
+    filter ever saw it (design/mcp-on-demand.md, open question 1).
+    """
+    if not tools or not tool_allowlist:
         return set()
+    from app.utils.task_tool_floor import normalize_tool_name
+    wanted = {normalize_tool_name(n) for n in tool_allowlist}
+    return {s for t in tools
+            if (s := _tool_server(t)) and normalize_tool_name(getattr(t, "name", "")) in wanted}
+
+
+def mcp_filter_for_root(project_root: Optional[str], conversation_id: Optional[str], *,
+                        tools=None, tool_allowlist=None):
+    """The request's MCP tool filter (app.utils.mcp_ondemand.McpFilter).
+
+    Shelved servers are withheld; within-reach servers are withheld except
+    for what the conversation has LOADED (the chat record's ``loadedMcp``
+    plus this process's sticky copy) or what the task scope names.  An empty
+    filter when unknown, so a bench error never strips tools.
+    """
+    from app.utils.mcp_ondemand import McpFilter, loaded_map, mcp_filter
+    placements = mcp_placements_for_root(project_root, conversation_id)
+    if not placements:
+        return McpFilter()
+    loaded = loaded_map(project_id_for_root(project_root), conversation_id)
+    return mcp_filter(placements, loaded, servers_named_by_scope(tools, tool_allowlist))
+
+
+def withheld_mcp_for_root(project_root: Optional[str], conversation_id: Optional[str], *,
+                          tools=None, tool_allowlist=None) -> set:
+    """Servers with NO tools in this request (whole-server view of the filter)."""
+    return mcp_filter_for_root(project_root, conversation_id,
+                               tools=tools, tool_allowlist=tool_allowlist).withheld
+
+
+def apply_mcp_filter(tools: List[Any], filt) -> Tuple[List[Any], int]:
+    """Drop what the filter withholds, then order: builtins, on-hand servers
+    by name, loaded within-reach servers in load order (a load appends).
+    Returns the new list and how many tools were dropped."""
+    from app.utils.mcp_ondemand import order_tools
+    kept = [t for t in tools if filt.allows(_tool_server(t), getattr(t, "name", ""))]
+    return order_tools(kept, _tool_server, filt.order), len(tools) - len(kept)
 
 
 def _tool_server(tool) -> Optional[str]:

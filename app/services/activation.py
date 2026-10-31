@@ -16,7 +16,8 @@ Rules, all from the design note:
     ``environment`` — and any stored entry for them is reported dropped;
   * a stored key that is not installed here is dropped and reported, so the
     UI can say *not installed here* rather than silently losing it;
-  * MCP ``ondemand`` is rejected on write and ignored on read until slice 9.
+  * MCP ``ondemand`` is accepted (slice 9): connected, tools withheld until
+    loaded (design/mcp-on-demand.md).
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from typing import Dict, Iterable, List, Mapping, Optional
 from app.models.activation import (
     PLACEMENT_STATES, WRITABLE_LAYERS,
     REASON_ENVIRONMENT, REASON_INVALID_LAYER, REASON_INVALID_STATE,
-    REASON_MCP_ONDEMAND, REASON_UNKNOWN_KEY,
+    REASON_UNKNOWN_KEY,
     DroppedEntry, ItemSpec, PlacementRejected, ResolveResult, ResolvedItem,
 )
 
@@ -55,8 +56,6 @@ def _rejection_reason(item: Optional[ItemSpec], state: Optional[str]) -> Optiona
         return None  # clearing a placement is always allowed
     if state not in PLACEMENT_STATES:
         return REASON_INVALID_STATE
-    if item.kind == "mcp" and state == "ondemand":
-        return REASON_MCP_ONDEMAND
     return None
 
 

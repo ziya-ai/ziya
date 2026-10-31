@@ -43,6 +43,10 @@ class Chat(BaseModel):
     # Bench conversation-layer placements, ``kind:name -> always|ondemand|off``
     # (design/capabilities-hub.md).  Absent means every item inherits.
     placements: Optional[Dict[str, Optional[str]]] = None
+    # Within-reach MCP servers this conversation has loaded (design/
+    # mcp-on-demand.md): ``server -> [tool, ...] | "*"``, insertion order
+    # = load order.  Written by load_server_tools; a fork copies it.
+    loadedMcp: Optional[Dict[str, Any]] = None
     additionalFiles: List[str] = []
     additionalPrompt: Optional[str] = None
     messages: List[Message] = []
@@ -116,6 +120,7 @@ class ChatUpdate(BaseModel):
     contextIds: Optional[List[str]] = None
     skillIds: Optional[List[str]] = None
     placements: Optional[Dict[str, Optional[str]]] = None
+    loadedMcp: Optional[Dict[str, Any]] = None
     additionalFiles: Optional[List[str]] = None
     additionalPrompt: Optional[str] = None
     messages: Optional[List[Message]] = None

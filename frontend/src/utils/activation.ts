@@ -83,7 +83,6 @@ function rejectionReason(item: ItemSpec | undefined, state: string | null | unde
     if (item.tier === 'environment') return REASON_ENVIRONMENT;
     if (state === null || state === undefined) return null;
     if (!(PLACEMENT_STATES as readonly string[]).includes(state)) return REASON_INVALID_STATE;
-    if (item.kind === 'mcp' && state === 'ondemand') return REASON_MCP_ONDEMAND;
     return null;
 }
 

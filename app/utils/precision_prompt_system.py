@@ -235,6 +235,31 @@ class PrecisionPromptSystem:
                         messages[0]["content"] += catalog_section
                 except (ImportError, RuntimeError, OSError) as e:
                     logger.debug("Skill catalog unavailable: %s", e)
+                # MCP servers within reach (design/mcp-on-demand.md): listed
+                # by name beside the skill catalog; load_server_tools loads one.
+                # Placement-derived only, so stable within a conversation.
+                try:
+                    from app.utils.mcp_ondemand import catalog_section_for_root, native_search_for
+                    from app.context import get_project_root_or_none
+                    # Anthropic-path models at 4.5+ get the API's own tool
+                    # search (deferred definitions, no prefix miss); the
+                    # section then names tool_search_tool_regex, not the
+                    # loader, which is absent from their tool list.  The
+                    # executor decides the same way (native_search_for).
+                    try:
+                        from app.agents.models import ModelManager
+                        _mcfg = ModelManager.get_model_config(
+                            model_info.get("endpoint"), model_info.get("model_name")) or {}
+                    except Exception:  # noqa: BLE001
+                        _mcfg = {}
+                    _native = native_search_for(model_info.get("endpoint"), _mcfg,
+                                                model_info.get("model_id") or _mcfg.get("model_id"))
+                    mcp_section = catalog_section_for_root(get_project_root_or_none(), conversation_id,
+                                                           native=_native)
+                    if mcp_section:
+                        messages[0]["content"] += mcp_section
+                except Exception as e:  # noqa: BLE001 -- prompt assembly must not fail a turn
+                    logger.debug("MCP within-reach catalog unavailable: %s", e)
 
             # Per-turn VOLATILE prompt pieces.  The system block is the
             # prompt-cache prefix, so anything that legitimately changes

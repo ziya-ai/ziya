@@ -5,7 +5,7 @@
  *
  * Rules:
  *   * environment items are never placed (they are not on the board at all);
- *   * MCP ``ondemand`` is refused until slice 9 — the lane shows "coming soon";
+ *   * MCP servers may sit within reach (slice 9, design/mcp-on-demand.md);
  *   * dropping an item on the lane it already occupies is a no-op;
  *   * dropping a PINNED item on the lane it would inherit (its ghost outline)
  *     CLEARS the pin rather than pinning the inherited value — a pin equal to
@@ -33,7 +33,6 @@ export type DropIntent =
 
 export function dropIntent(item: BenchItemView, lane: PlacementState): DropIntent {
     if (item.tier === 'environment') return { kind: 'rejected', reason: 'environment_not_placeable' };
-    if (item.kind === 'mcp' && lane === 'ondemand') return { kind: 'rejected', reason: 'mcp_ondemand_unsupported' };
     const v = item.atLens;
     if (lane === v.state) return { kind: 'noop' };
     if (!v.ghost && lane === v.inherited) return { kind: 'place', key: item.key, toState: null };
@@ -44,6 +43,8 @@ export interface MoveOption {
     label: string;
     intent: DropIntent;
     disabled: boolean;
+    /** Why a disabled option is disabled; shown as the menu item's tooltip. */
+    hint?: string;
 }
 
 /** The keyboard / context-menu equivalents of every drop the card allows. */
@@ -57,7 +58,7 @@ export function moveOptions(item: BenchItemView): MoveOption[] {
         out.push({
             label: intent.kind === 'place' && intent.toState === null
                 ? `Move to ${lane.label} (inherit)`
-                : intent.kind === 'rejected' ? `${lane.label} (coming soon)` : `Move to ${lane.label}`,
+                : intent.kind === 'rejected' ? `${lane.label} (not available)` : `Move to ${lane.label}`,
             intent,
             disabled: intent.kind === 'rejected',
         });
@@ -70,7 +71,6 @@ export function moveOptions(item: BenchItemView): MoveOption[] {
 }
 
 export function rejectionText(reason: string, name: string): string {
-    if (reason === 'mcp_ondemand_unsupported') return `${name}: on-demand MCP servers are coming soon`;
     if (reason === 'environment_not_placeable') return `${name} is part of the environment and is always available`;
     return `${name}: ${reason}`;
 }

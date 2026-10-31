@@ -23,6 +23,7 @@ import re
 from typing import Any, Dict, Optional
 
 SKILL_TOOL = "get_skill_details"
+MCP_LOADER_TOOL = "load_server_tools"
 _SKILL_HEADER = re.compile(r"\[Skill: ([^\]\n]+)\]")
 
 
@@ -34,13 +35,21 @@ def capability_used_event(chunk: Any) -> Optional[Dict[str, Any]]:
         return None
     name = str(chunk.get("tool_name") or "")
     # Builtins may arrive prefixed (``mcp_get_skill_details``).
-    if name != SKILL_TOOL and not name.endswith("_" + SKILL_TOOL):
+    is_skill = name == SKILL_TOOL or name.endswith("_" + SKILL_TOOL)
+    is_mcp = name == MCP_LOADER_TOOL or name.endswith("_" + MCP_LOADER_TOOL)
+    if not (is_skill or is_mcp):
         return None
     text = chunk.get("result")
     if not isinstance(text, str):
         text = chunk.get("content")
     if not isinstance(text, str):
         return None
+    if is_mcp:
+        # ``load_server_tools`` (design/mcp-on-demand.md): the success marker
+        # names the server; a refusal carries none.
+        from app.utils.mcp_ondemand import MARKER_RE
+        mm = MARKER_RE.search(text)
+        return {"type": "capability_used", "key": f"mcp:{mm.group(1).strip()}"} if mm else None
     m = _SKILL_HEADER.search(text)
     if not m:
         return None

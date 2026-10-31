@@ -145,10 +145,10 @@ def put_environment(project_id: str, body: EnvironmentRequest,
         raise HTTPException(status_code=404, detail=f"unknown builtin category: {body.category}")
     items = bench_service.collect_items(project_id)
     result = bench_service.resolve_bench(project_id, conversation_id, items)
-    vm = _view_model(items, result, conversation_id, bench_service.placement_meta(project_id))
+    vm = _view_model(project_id, items, result, conversation_id, bench_service.placement_meta(project_id))
     if body.category == bench_service.SKILLS_CATEGORY and not body.enabled:
-        vm["warning"] = ("Skill discovery is off: the model can no longer load within-reach skills, "
-                         "so their catalog entries are dead weight until it is re-enabled.")
+        vm["warning"] = ("On-demand discovery is off: the model can no longer load within-reach "
+                         "skills or MCP servers, so they are unreachable until it is re-enabled.")
     return vm
 
 
