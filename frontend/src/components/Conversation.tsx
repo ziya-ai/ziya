@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, memo, useCallback, useMemo, useState, Suspense } from "react";
 import { createPortal } from 'react-dom';
 import { useActiveChat } from '../context/ActiveChatContext';
+import { useStreamedContentPresence } from '../context/StreamedContentContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { useScrollContext } from '../context/ScrollContext';
 import { EditSection } from "./EditSection";
@@ -11,7 +12,7 @@ import { DocumentChip, ImageChip } from './FileChip';
 import ModelChangeNotification from './ModelChangeNotification';
 import LineageBar from './LineageBar';
 import HandoffBanner from './HandoffBanner';
-import HandoffNotice from './HandoffNotice';
+import HandoffNotice, { isSupersededHandoffNotice } from './HandoffNotice';
 import SeamRibbon from './SeamRibbon';
 import { getSeamHighlight, SEAM_HIGHLIGHT_EVENT, SeamHighlight } from '../utils/seamHighlight';
 import { useSetQuestion } from '../context/QuestionContext';
@@ -29,8 +30,13 @@ import { useTaskBindings } from '../hooks/useTaskBindings';
 import { isRunOver } from './TaskCard/runControls';
 import { placeUnanchoredBindings } from '../utils/taskBindingPlacement';
 import { TILE_SLOT_ATTR } from './TaskCard/taskSurfacing';
+import { placeRevisionMarkers } from '../utils/taskBindingRevisions';
+import { RevisedTileMarker } from './TaskCard/RevisedTileMarker';
 import TaskRail from './TaskCard/TaskRail';
 import TaskUpdateFeed from './TaskCard/TaskUpdateFeed';
+import { useConversationJobs } from '../hooks/useConversationJobs';
+import { scrollToMessage, turnIndexForTime } from './TaskCard/jobRail';
+import JobExitFeed from './TaskCard/JobExitFeed';
 import { MessageIdContext } from '../context/MessageIdContext';
 import { useCopyCleanup } from '../hooks/useCopyCleanup';
 import { getSharedScrollVelocityTracker } from '../utils/scrollVelocity';
@@ -505,10 +511,12 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         currentMessages,
         streamingConversations,
         currentConversationId,
-        streamedContentMap,
         currentDisplayMode,
         editingMessageIndex,
     } = useActiveChat();
+    // Which conversations have streamed content.  Changes only when content
+    // appears or is cleared, so Conversation does not re-render per flush.
+    const streamedPresence = useStreamedContentPresence();
     const {
         isLoadingConversation,
         isProjectSwitching,
@@ -629,6 +637,25 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // anchor is a render concern of the thread itself.
     const visibleBindings = useMemo(
         () => Array.from(bindingsByAnchor.values()).flat(), [bindingsByAnchor]);
+    // Where tiles the model has since revised (and moved down) used to sit;
+    // one "revised later" line each.  See utils/taskBindingRevisions.ts.
+    const revisionMarkers = useMemo(
+        () => placeRevisionMarkers(visibleBindings, (currentMessages || []) as any[]),
+        [visibleBindings, currentMessages]);
+    // Managed jobs (job_start) of this chat, for the rail's job chips.
+    // Polls fast only while one runs or the turn is streaming.  The rail
+    // shows current-turn jobs once they have run a few seconds; the exit
+    // feed reads the settled list so a job inside one turn posts no card.
+    const { jobs: conversationJobs, settledJobs: settledConversationJobs, refresh: refreshJobs } = useConversationJobs(
+        projectCtx.currentProject?.id, currentConversationId,
+        streamingConversations.has(currentConversationId));
+    // "Jump to the turn that started it": the job's started_at resolved
+    // against message timestamps, the rule task tiles are placed by.
+    const jumpToJobStart = useCallback((startedAtS: number) => {
+        const idx = turnIndexForTime((currentMessages || []) as any[], startedAtS);
+        if (idx == null) return;
+        scrollToMessage(idx);
+    }, [currentMessages]);
     // Bindings whose tile already sits at the thread's bottom need no
     // update card beneath themselves.
     const bottomBindingIds = useMemo(() => new Set(
@@ -668,8 +695,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // first, then memo on the booleans so downstream code doesn't re-render
     // 60 times/second during streaming.
     const rawIsStreaming = streamingConversations.has(currentConversationId);
-    const rawHasContent = streamedContentMap.has(currentConversationId) &&
-        streamedContentMap.get(currentConversationId) !== '';
+    const rawHasContent = streamedPresence.has(currentConversationId);
     const prevStreamingRef = useRef(false);
     const prevHasContentRef = useRef(false);
 
@@ -869,9 +895,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
 
     // Track which conversations have received streaming content
     const conversationHasStreamedContent = useCallback((conversationId: string) => {
-        return streamedContentMap.has(conversationId) &&
-            streamedContentMap.get(conversationId) !== '';
-    }, [streamedContentMap]);
+        return streamedPresence.has(conversationId);
+    }, [streamedPresence]);
 
     useEffect(() => {
         // Only log when message count changes significantly, not on every render
@@ -1019,7 +1044,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 {/* Sticky rail: live / waiting-on-you tasks of this chat,
                     one chip each, click to scroll to the tile.  Renders
                     nothing when no task is in flight. */}
-                <TaskRail bindings={visibleBindings} projectId={projectCtx.currentProject?.id ?? ''} />
+                <TaskRail bindings={visibleBindings} projectId={projectCtx.currentProject?.id ?? ''}
+                    jobs={conversationJobs} onJobsChanged={refreshJobs} onJumpToJobStart={jumpToJobStart} />
                 {/* Unanchored task tiles whose created_at predates the
                     earliest message in the chat (or the chat has no
                     messages at all).  Rendered at the head so the tile
@@ -1029,7 +1055,13 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         <TaskCardInlineTile binding={binding} />
                     </Suspense>
                 ))}
+                {revisionMarkers.head.map(m => (
+                    <RevisedTileMarker key={m.id} bindingId={m.bindingId} />
+                ))}
                 {displayMessages?.map((msg, index) => {
+                    // A 'drafted' handoff notice is redundant once the
+                    // 'handed_off' notice exists: both link to the same place.
+                    if (isSupersededHandoffNotice(msg, currentMessages)) return null;
                     // Convert display index to actual index for bottom-up mode
                     const windowOffset = currentMessages.length - windowedMessages.length;
                     const rawIndex = windowOffset + (isTopToBottom ? index : windowedMessages.length - 1 - index);
@@ -1247,6 +1279,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                             <TaskCardInlineTile binding={binding} />
                         </Suspense>
                     ))}
+                    {revisionMarkers.byMessageIdx.get(actualIndex)?.map(m => (
+                        <RevisedTileMarker key={m.id} bindingId={m.bindingId} />
+                    ))}
                     </React.Fragment>;
                 })}
 
@@ -1255,6 +1290,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     splicedUnanchored.byMessageIdx in the render loop).
                     Tiles stay visible after completion (collapsing to a
                     receipt 8 s after terminal) so the result is seen. */}
+                {revisionMarkers.tail.map(m => (
+                    <RevisedTileMarker key={m.id} bindingId={m.bindingId} />
+                ))}
                 {splicedUnanchored.tail.map(binding => tileSlot(binding,
                     <Suspense key={binding.id} fallback={null}>
                         <TaskCardInlineTile binding={binding} />
@@ -1278,6 +1316,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     projectId={projectCtx.currentProject?.id ?? ''}
                     bindings={visibleBindings}
                     atBottomIds={bottomBindingIds}
+                />
+                {/* A managed job the rail was showing has finished: one
+                    card with the outcome.  Reads the SETTLED list, so a
+                    job that came and went inside a turn posts nothing. */}
+                <JobExitFeed
+                    conversationId={currentConversationId}
+                    projectId={projectCtx.currentProject?.id ?? ''}
+                    jobs={settledConversationJobs}
+                    onJumpToJobStart={jumpToJobStart}
                 />
 
                 {/* Fallback for when no messages to display */}
