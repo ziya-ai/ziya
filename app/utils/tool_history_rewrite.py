@@ -69,12 +69,29 @@ on that turn.  This is accepted: the trade is one cache miss for a smaller
 prompt on every turn after.  With elision disabled the rewrite is a pure
 function of each message and cached prefixes are unaffected.
 
+Tributary fold
+--------------
+A "quest turn" — an assistant message with several tool calls and prose
+after the last one — is replayed as its pre-hunt prose, a placeholder, and
+its final prose, once enough further human turns exist (the grace).  The
+placeholder names the calls and a content-addressed ``tb-…`` handle under
+which ``recall_tributary`` returns the span from the record.  Unlike
+elision this reaches the interim narration between calls, which is the
+part of a hunt no other lever touches.  The rule is purely structural
+(``plan_folds``); nothing judges value, and the record is untouched.  See
+design/tributary-fold.md.  Blocks inside a folded span are not in the
+model's view, so ``plan_elisions`` must not use them as stand-ins for an
+earlier body — folds are planned first and passed in.
+
 Kill switches: ``ZIYA_DISABLE_TOOL_HISTORY_REWRITE=1`` (everything),
-``ZIYA_DISABLE_TOOL_RESULT_ELISION=1`` (elision only).  Elision is also a
-per-project setting, ``contextManagement.elide_redundant_tool_results``.
+``ZIYA_DISABLE_TOOL_RESULT_ELISION=1`` (elision only),
+``ZIYA_DISABLE_TRIBUTARY_FOLD=1`` (fold only).  Elision and folding are
+also per-project settings under ``contextManagement``; both default on.
+Recall of a folded span: app/utils/tributary_recall.py (``recall_tributary``).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -296,12 +313,19 @@ def render_envelope(block: ToolBlock, elision_note: Optional[str] = None) -> str
 
 
 def rewrite_assistant_text(text: str,
-                           elisions: Optional[Dict[int, str]] = None) -> str:
+                           elisions: Optional[Dict[int, str]] = None,
+                           fold: Optional["FoldSpan"] = None) -> str:
     """Replace every rendered tool block in one assistant message.
 
     ``elisions`` maps a block's ordinal (its index among the blocks of this
     text, as returned by ``_non_overlapping(find_tool_blocks(text))``) to
     the note that replaces its body.
+
+    ``fold`` replaces the whole span from the first to the last block —
+    calls, results and the prose between them — with its placeholder; the
+    prose before the first block and after the last is kept.  Ordinals are
+    used rather than offsets because the image/notice stripping below
+    shifts offsets but never adds or removes a block.
     """
     if not text:
         return text
@@ -314,6 +338,11 @@ def rewrite_assistant_text(text: str,
             and not _LOOKALIKE_RE.search(text)):
         return text
     blocks = _non_overlapping(find_tool_blocks(text)) if has_blocks else []
+    if fold is not None and len(blocks) > fold.last_ordinal:
+        a = blocks[fold.first_ordinal].start
+        z = blocks[fold.last_ordinal].end
+        folded = _defang(text[:a]) + fold.placeholder + _defang(text[z:])
+        return _ORPHAN_MARKER_RE.sub('', folded)
     # Prose between (and outside) real blocks is defanged too: an envelope
     # lookalike there is a fabrication the model wrote as bare text, and
     # replaying it verbatim teaches the model that the shape is accepted.
@@ -450,13 +479,21 @@ def _note_duplicate(n: int) -> str:
             f"it. Nothing was removed from the record.]")
 
 
-def plan_elisions(history: List[Any]) -> Dict[Tuple[int, int], Dict[int, str]]:
+def plan_elisions(history: List[Any],
+                  folds: Optional[Dict[Tuple[int, int], "FoldSpan"]] = None
+                  ) -> Dict[Tuple[int, int], Dict[int, str]]:
     """Decide which tool bodies are redundant with a later one.
 
     Returns ``{(msg_idx, seg_idx): {block_ordinal: note}}`` for every body
     that should be replaced.  Pure and side-effect free; exposed so the
     survey script and tests can inspect decisions directly.
+
+    ``folds`` (from ``plan_folds``) names spans that will not be replayed.
+    Blocks inside them are left out entirely: they cannot stand in for an
+    earlier body (the bytes are not downstream in the model's view) and a
+    decision about them would be moot.
     """
+    folds = folds or {}
     # (msg_idx, seg_idx, ordinal, tool, path|None, payload)
     entries: List[Tuple[int, int, int, str, Optional[str], str]] = []
     for mi, msg in enumerate(history):
@@ -465,7 +502,10 @@ def plan_elisions(history: List[Any]) -> Dict[Tuple[int, int], Dict[int, str]]:
         for si, text in enumerate(_text_segments(msg.get("content"))):
             if "tool:" not in text and "TOOL_BLOCK_START" not in text:
                 continue
+            fold = folds.get((mi, si))
             for oi, b in enumerate(_non_overlapping(find_tool_blocks(text))):
+                if fold is not None and fold.first_ordinal <= oi <= fold.last_ordinal:
+                    continue
                 entries.append((mi, si, oi, _norm_tool(b.tool),
                                 read_path_for_block(b), payload_for_block(b)))
 
@@ -486,6 +526,248 @@ def plan_elisions(history: List[Any]) -> Dict[Tuple[int, int], Dict[int, str]]:
         if note:
             plan.setdefault((mi, si), {})[oi] = note
     return plan
+
+
+# --- Planning: tributary folds (design/tributary-fold.md) ----------------
+
+_HUMAN_TYPES = frozenset({"human", "user"})
+FOLD_HANDLE_PREFIX = "tb-"
+
+# Conservative "returned nothing" shapes over the payload.  Undercounting
+# is fine; the count in the placeholder is informational.
+_EMPTY_RESULT_RE = re.compile(
+    r"^(?:\(no output\)|no output\.?|no match(?:es)?(?: found)?\.?|"
+    r"not found\.?|\[\]|\{\}|null|none)$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class FoldSettings:
+    enabled: bool = True      # default on since recall_tributary shipped
+    grace_turns: int = 2      # human messages that must follow a quest turn
+    min_calls: int = 2        # tool blocks required for a turn to be a quest
+    min_chars: int = 1500     # spans shorter than this are left alone
+    max_labels: int = 12      # call labels listed in the placeholder
+    # Nothing folds until the conversation's UNFOLDED replay would use this
+    # fraction of the context limit; then the oldest eligible spans fold,
+    # oldest first, until the projected size is back under the limit minus
+    # FOLD_PRESSURE_HYSTERESIS.  Below pressure a fold is pure cost: the
+    # model loses verbatim text (diff context lines, exact paths) it had in
+    # view and has to notice that it needs to recall it.  0 folds every
+    # eligible span regardless of pressure (the pre-gate behaviour).
+    pressure_ratio: float = 0.8
+
+
+# Fold down to (pressure_ratio - this) rather than to the threshold itself.
+# Each new fold rewrites one old message and so misses the prompt cache
+# from that message on; folding one span per turn while hovering at the
+# threshold would do that every turn.  A batch of folds, then a stretch of
+# stable replay, is the cheaper shape.
+FOLD_PRESSURE_HYSTERESIS = 0.15
+
+
+@dataclass(frozen=True)
+class FoldPressure:
+    """How full the context was on the previous turn, as if nothing had
+    been folded.  ``tokens`` is the assembled size plus what that turn's
+    folds saved, so it grows with the conversation and never drops because
+    a fold happened — which keeps the fold prefix monotone (see plan_folds)."""
+    tokens: int
+    limit: int
+
+
+def _chars_to_tokens(chars: int) -> int:
+    """Learned chars/token ratio for a DELTA (no fixed baseline), chars/4 fallback."""
+    if chars <= 0:
+        return 0
+    try:
+        from app.utils.token_calibrator import get_token_calibrator
+        return int(get_token_calibrator().estimate_tokens_from_chars(
+            chars, include_baseline=False))
+    except Exception:  # noqa: BLE001
+        return int(chars / 4)
+
+
+@dataclass(frozen=True)
+class FoldSpan:
+    """One folded tributary: which blocks of a text segment it covers and
+    the placeholder that replaces them.  Ordinals, not offsets — see
+    ``rewrite_assistant_text``."""
+    handle: str
+    first_ordinal: int
+    last_ordinal: int
+    span_chars: int
+    labels: Tuple[str, ...]
+    n_empty: int
+    n_notes: int
+    placeholder: str
+
+
+def fold_handle(span_text: str) -> str:
+    """Content address of a tributary: the exact record substring, hashed."""
+    digest = hashlib.sha1(span_text.encode("utf-8", "replace")).hexdigest()
+    return FOLD_HANDLE_PREFIX + digest[:10]
+
+
+def fold_placeholder(handle: str, labels: Tuple[str, ...], n_empty: int,
+                     n_notes: int, span_chars: int, max_labels: int) -> str:
+    """The text replayed in place of a folded span.
+
+    Absolute counts only — nothing relative to the message's age or
+    position — so the bytes never change once a span has folded and the
+    prompt-cache prefix is not invalidated on later turns.
+    """
+    shown = labels[:max_labels]
+    out = [f"[Ziya: tributary {handle} folded on replay — {len(labels)} tool "
+           f"calls ({n_empty} returned nothing), {n_notes} interim notes, "
+           f"~{span_chars / 4:,.0f} tokens. Calls:"]
+    out += [f"   {_defang(lab)[:160]}" for lab in shown]
+    if len(labels) > len(shown):
+        out.append(f"   … {len(labels) - len(shown)} more")
+    out.append(f' Full span: recall_tributary(handle="{handle}"); '
+               f'mode="commands" for the calls alone, mode="results" for '
+               f'bodies, grep= to slice. The text that follows was written '
+               f'with the whole span in view and stands.]')
+    return "\n".join(out)
+
+
+def _is_empty_result(b: ToolBlock) -> bool:
+    p = payload_for_block(b).strip()
+    return not p or bool(_EMPTY_RESULT_RE.match(p))
+
+
+def classify_fold(text: str, settings: FoldSettings) -> Optional[FoldSpan]:
+    """Apply the structural rule to one assistant text segment.
+
+    Returns a ``FoldSpan`` when the segment has at least ``min_calls``
+    blocks, non-empty prose after the last block, and a span of at least
+    ``min_chars``; otherwise None.  The grace is the caller's concern.
+    Works on the raw record text so the handle addresses the record.
+    """
+    if not text or ("tool:" not in text and "TOOL_BLOCK_START" not in text):
+        return None
+    blocks = _non_overlapping(find_tool_blocks(text))
+    if len(blocks) < settings.min_calls:
+        return None
+    if not text[blocks[-1].end:].strip():
+        return None  # ends on a block: aborted, or the result is the deliverable
+    span = text[blocks[0].start:blocks[-1].end]
+    if len(span) < settings.min_chars:
+        return None
+    n_notes = sum(1 for a, b in zip(blocks, blocks[1:])
+                  if text[a.end:b.start].strip())
+    labels = tuple(_clean_label(b.header) or _norm_tool(b.tool) for b in blocks)
+    n_empty = sum(1 for b in blocks if _is_empty_result(b))
+    handle = fold_handle(span)
+    return FoldSpan(
+        handle=handle, first_ordinal=0, last_ordinal=len(blocks) - 1,
+        span_chars=len(span), labels=labels, n_empty=n_empty, n_notes=n_notes,
+        placeholder=fold_placeholder(handle, labels, n_empty, n_notes,
+                                     len(span), settings.max_labels),
+    )
+
+
+def fold_saving_chars(span: FoldSpan) -> int:
+    """Characters a fold removes from replay, net of its placeholder."""
+    return max(0, span.span_chars - len(span.placeholder))
+
+
+def plan_folds(history: List[Any],
+               settings: FoldSettings,
+               pressure: Optional[FoldPressure] = None) -> Dict[Tuple[int, int], FoldSpan]:
+    """Decide which assistant segments replay as their reward only.
+
+    A segment is ELIGIBLE when ``classify_fold`` accepts it and at least
+    ``settings.grace_turns`` human messages follow it in ``history``.
+    Muted messages are never in ``history`` (the frontend drops them), so
+    counting here is counting the replayed history.  A message carrying
+    ``foldPinned`` is skipped.
+
+    With ``settings.pressure_ratio > 0`` eligibility is not enough: nothing
+    folds until ``pressure`` (the previous turn's unfolded size) reaches that
+    fraction of the limit, and then eligible spans fold OLDEST FIRST only
+    until the projected size is under ``pressure_ratio -
+    FOLD_PRESSURE_HYSTERESIS``.  Unknown pressure (``None``: first turn after
+    a restart, a caller with no conversation) folds nothing — unknown must
+    not read as "full".  Because the unfolded size only grows, the folded
+    set is a prefix that only extends, so a span folded once stays folded
+    and its placeholder bytes stay in the cached prompt prefix.
+
+    Pure; returns ``{}`` when disabled.
+    """
+    if not settings.enabled:
+        return {}
+    ratio = float(settings.pressure_ratio or 0)
+    if ratio > 0:
+        if pressure is None or pressure.limit <= 0:
+            return {}
+        if pressure.tokens < ratio * pressure.limit:
+            return {}
+    n = len(history)
+    humans_after = [0] * (n + 1)   # human messages strictly after index i
+    for i in range(n - 1, -1, -1):
+        msg = history[i]
+        is_human = isinstance(msg, dict) and msg.get("type") in _HUMAN_TYPES
+        humans_after[i] = humans_after[i + 1] + (1 if is_human else 0)
+
+    plan: Dict[Tuple[int, int], FoldSpan] = {}
+    for mi, msg in enumerate(history):
+        if not (isinstance(msg, dict) and msg.get("type") in _ASSISTANT_TYPES):
+            continue
+        if msg.get("foldPinned"):
+            continue
+        if humans_after[mi + 1] < settings.grace_turns:
+            continue
+        for si, text in enumerate(_text_segments(msg.get("content"))):
+            span = classify_fold(text, settings)
+            if span is not None:
+                plan[(mi, si)] = span
+    if ratio <= 0 or not plan:
+        return plan
+    # Oldest first (history order == dict insertion order), stopping once
+    # the projected size is under the low-water mark.
+    target = max(0.0, ratio - FOLD_PRESSURE_HYSTERESIS) * pressure.limit
+    remaining = float(pressure.tokens)
+    chosen: Dict[Tuple[int, int], FoldSpan] = {}
+    for key, span in plan.items():
+        if remaining <= target:
+            break
+        chosen[key] = span
+        remaining -= _chars_to_tokens(fold_saving_chars(span))
+    return chosen
+
+
+# conversation_id -> chars the most recent replay's folds removed.  Read
+# together with the handoff pressure cache (the assembled, i.e. folded,
+# size) to reconstruct the UNFOLDED size the gate compares against.
+_fold_savings: Dict[str, int] = {}
+
+
+def fold_pressure_for(conversation_id: Optional[str]) -> Optional[FoldPressure]:
+    """The previous turn's unfolded size for ``conversation_id``, or None
+    when no turn has been measured yet (server start, new conversation)."""
+    if not conversation_id:
+        return None
+    try:
+        from app.utils.handoff_prelude import get_context_pressure_detail
+        hit = get_context_pressure_detail(conversation_id)
+    except Exception:  # noqa: BLE001
+        return None
+    if not hit:
+        return None
+    tokens, limit = hit
+    saved = _fold_savings.get(conversation_id, 0)
+    return FoldPressure(tokens=int(tokens) + _chars_to_tokens(saved), limit=int(limit))
+
+
+def record_fold_savings(conversation_id: Optional[str], saved_chars: int) -> None:
+    if conversation_id:
+        _fold_savings[conversation_id] = max(0, int(saved_chars))
+
+
+def clear_fold_savings() -> None:
+    _fold_savings.clear()
 
 
 # --- Settings ------------------------------------------------------------
@@ -535,13 +817,60 @@ def resolve_elide_redundant(project_root: Optional[str] = None) -> bool:
         return default
 
 
+def resolve_fold_settings(project_root: Optional[str] = None) -> FoldSettings:
+    """Read the ``contextManagement.fold_*`` fields for the project.
+
+    Same resolution path as ``resolve_elide_redundant``; never raises.
+    Fields a ContextManagementSettings predates fall back to the
+    ``FoldSettings`` defaults.  The env kill switch wins over the setting.
+    """
+    if _env_truthy("ZIYA_DISABLE_TRIBUTARY_FOLD"):
+        return FoldSettings(enabled=False)
+    base = FoldSettings()
+    cm: Any = None
+    try:
+        from app.models.project import ContextManagementSettings
+        cm = ContextManagementSettings()  # model defaults
+        from app.context import get_project_root_or_none
+        from app.storage.projects import ProjectStorage
+        from app.utils.paths import get_ziya_home
+
+        root = (project_root or get_project_root_or_none()
+                or os.environ.get("ZIYA_USER_CODEBASE_DIR"))
+        if root:
+            project = ProjectStorage(get_ziya_home()).get_by_path(root)
+            if project and project.settings and project.settings.contextManagement:
+                cm = project.settings.contextManagement
+    except Exception as e:
+        logger.debug(f"resolve_fold_settings: {e}")
+
+    def _get(name: str, default: Any) -> Any:
+        val = getattr(cm, name, None) if cm is not None else None
+        return default if val is None else val
+
+    try:
+        return FoldSettings(
+            enabled=bool(_get("fold_tributaries", base.enabled)),
+            grace_turns=int(_get("fold_grace_turns", base.grace_turns)),
+            min_calls=int(_get("fold_min_calls", base.min_calls)),
+            min_chars=int(_get("fold_min_chars", base.min_chars)),
+            max_labels=int(_get("fold_placeholder_max_labels", base.max_labels)),
+            pressure_ratio=float(_get("fold_pressure_ratio", base.pressure_ratio)),
+        )
+    except (TypeError, ValueError) as e:
+        logger.debug(f"resolve_fold_settings: bad value, using defaults: {e}")
+        return base
+
+
 # --- Entry point ---------------------------------------------------------
 
 def _rewrite_content(content: Any,
-                     elisions_by_seg: Optional[Dict[int, Dict[int, str]]]) -> Any:
+                     elisions_by_seg: Optional[Dict[int, Dict[int, str]]],
+                     folds_by_seg: Optional[Dict[int, FoldSpan]] = None) -> Any:
+    el = elisions_by_seg or {}
+    fo = folds_by_seg or {}
     if isinstance(content, str):
-        return rewrite_assistant_text(
-            content, (elisions_by_seg or {}).get(0))
+        return rewrite_assistant_text(content, el.get(0), fo.get(0))
     if isinstance(content, list):
         new = []
         seg = 0
@@ -549,7 +878,7 @@ def _rewrite_content(content: Any,
             if isinstance(block, dict) and block.get("type") == "text" \
                     and isinstance(block.get("text"), str):
                 block = {**block, "text": rewrite_assistant_text(
-                    block["text"], (elisions_by_seg or {}).get(seg))}
+                    block["text"], el.get(seg), fo.get(seg))}
                 seg += 1
             new.append(block)
         return new
@@ -570,7 +899,10 @@ def _rewrite_content_images_only(content: Any) -> Any:
 
 
 def rewrite_tool_history(history: List[Any],
-                         elide_redundant: Optional[bool] = None) -> List[Any]:
+                         elide_redundant: Optional[bool] = None,
+                         fold: Optional[Any] = None,
+                         conversation_id: Optional[str] = None,
+                         pressure: Optional[FoldPressure] = None) -> List[Any]:
     """Rewrite tool blocks in every assistant message of ``history``.
 
     ``history`` is the processed_chat_history list built in
@@ -581,6 +913,16 @@ def rewrite_tool_history(history: List[Any],
     ``elide_redundant`` — replace bodies that are provably redundant with a
     later result (see module docstring).  ``None`` resolves the project
     setting; tests pass an explicit value.
+
+    ``fold`` — a ``FoldSettings``, a bool (enabled with defaults), or
+    ``None`` to resolve the project setting.  Folds are planned before
+    elisions so a body inside a folded span is never a stand-in.
+
+    ``conversation_id`` lets the fold gate read the previous turn's context
+    pressure for this conversation (``fold_pressure_for``) and records what
+    this replay's folds saved for the next turn's reading.  ``pressure``
+    overrides the lookup (tests).  With neither, pressure is unknown and a
+    pressure-gated setting folds nothing.
     """
     if not is_enabled():
         # The kill switch is for the block RE-ENCODING.  Replaying base64
@@ -601,7 +943,19 @@ def rewrite_tool_history(history: List[Any],
         ]
     if elide_redundant is None:
         elide_redundant = resolve_elide_redundant()
-    plan = plan_elisions(history) if elide_redundant else {}
+    if fold is None:
+        fold_settings = resolve_fold_settings()
+    elif isinstance(fold, bool):
+        fold_settings = FoldSettings(enabled=fold)
+    else:
+        fold_settings = fold
+    if pressure is None:
+        pressure = fold_pressure_for(conversation_id)
+    folds = plan_folds(history, fold_settings, pressure)
+    if conversation_id:
+        record_fold_savings(conversation_id,
+                            sum(fold_saving_chars(s) for s in folds.values()))
+    plan = plan_elisions(history, folds) if elide_redundant else {}
 
     out: List[Any] = []
     rewritten = 0
@@ -612,20 +966,34 @@ def rewrite_tool_history(history: List[Any],
             for (pmi, psi), notes in plan.items():
                 if pmi == mi:
                     by_seg[psi] = notes
-            new_content = _rewrite_content(content, by_seg or None)
+            fold_by_seg: Dict[int, FoldSpan] = {
+                psi: span for (pmi, psi), span in folds.items() if pmi == mi}
+            new_content = _rewrite_content(content, by_seg or None,
+                                           fold_by_seg or None)
             if new_content is not content:
                 rewritten += 1
                 msg = {**msg, "content": new_content}
         out.append(msg)
     if rewritten:
         n_elided = sum(len(v) for v in plan.values())
+        folded_chars = sum(s.span_chars for s in folds.values())
         logger.debug("🧹 TOOL_HISTORY_REWRITE: rewrote %d assistant message(s), "
-                     "elided %d redundant body(ies)", rewritten, n_elided)
+                     "elided %d redundant body(ies), folded %d tributary(ies) "
+                     "(%d chars)", rewritten, n_elided, len(folds), folded_chars)
     return out
 
 
 __all__ = [
     "ToolBlock",
+    "FoldSettings",
+    "FoldSpan",
+    "FoldPressure",
+    "FOLD_HANDLE_PREFIX",
+    "FOLD_PRESSURE_HYSTERESIS",
+    "fold_saving_chars",
+    "fold_pressure_for",
+    "record_fold_savings",
+    "clear_fold_savings",
     "INLINE_IMAGE_NOTE",
     "MIN_ELIDABLE_CHARS",
     "elide_inline_images",
@@ -633,6 +1001,11 @@ __all__ = [
     "read_path_for_block",
     "payload_for_block",
     "plan_elisions",
+    "plan_folds",
+    "classify_fold",
+    "fold_handle",
+    "fold_placeholder",
+    "resolve_fold_settings",
     "render_envelope",
     "rewrite_assistant_text",
     "rewrite_tool_history",

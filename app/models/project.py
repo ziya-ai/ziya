@@ -30,6 +30,24 @@ class ContextManagementSettings(BaseModel):
     # modified; only what is replayed to the model changes.  See
     # app/utils/tool_history_rewrite.py and design/tool-result-aging.md.
     elide_redundant_tool_results: bool = True
+    # Tributary fold (design/tributary-fold.md): an assistant turn with at
+    # least fold_min_calls tool blocks and prose after the last one is
+    # replayed, once fold_grace_turns further human messages exist, as its
+    # pre-hunt prose + a placeholder (call labels, counts, a content-
+    # addressed tb-… handle recoverable via recall_tributary) + its final
+    # prose.  Calls, results and interim narration are folded; the record
+    # is never modified.  Nothing folds until the conversation's unfolded
+    # replay reaches fold_pressure_ratio of the context limit; then the
+    # oldest eligible turns fold first, until the projected size is back
+    # under the limit minus tool_history_rewrite.FOLD_PRESSURE_HYSTERESIS.
+    # Below pressure a fold costs the model verbatim text it had in view
+    # for nothing.  0 folds every eligible turn regardless of pressure.
+    fold_tributaries: bool = True
+    fold_grace_turns: int = 2
+    fold_min_calls: int = 2
+    fold_min_chars: int = 1500
+    fold_placeholder_max_labels: int = 12
+    fold_pressure_ratio: float = 0.8
 
 class ProjectSettings(BaseModel):
     defaultContextIds: List[str] = []
