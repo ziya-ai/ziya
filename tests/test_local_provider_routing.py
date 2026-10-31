@@ -165,7 +165,7 @@ class TestLocalDiscovery:
         from app.config.models_config import MODEL_CONFIGS
         lm.reset_discovery_cache_for_tests()
         monkeypatch.delenv("ZIYA_LOCAL_TOKEN_LIMIT", raising=False)
-        monkeypatch.setattr(lm, "discover_local_model", lambda n, r=None, rt=None: _ollama(ctx=131072))
+        monkeypatch.setattr(lm, "discover_local_model", lambda n, r=None, rt=None, api_key=None: _ollama(ctx=131072))
         try:
             found = lm.discover_and_apply("probe-test:1b")
             assert found is not None
@@ -179,7 +179,7 @@ class TestLocalDiscovery:
     def test_server_down_leaves_placeholder(self, monkeypatch):
         from app.config.models_config import MODEL_CONFIGS
         lm.reset_discovery_cache_for_tests()
-        monkeypatch.setattr(lm, "discover_local_model", lambda n, r=None, rt=None: None)
+        monkeypatch.setattr(lm, "discover_local_model", lambda n, r=None, rt=None, api_key=None: None)
         try:
             assert lm.discover_and_apply("down-test:1b") is None
             entry = MODEL_CONFIGS["local"]["down-test:1b"]
@@ -309,7 +309,7 @@ class TestLocalFactoryRouting:
         nobody reads and Ollama silently stays at its 4k default."""
         from app.providers.factory import create_provider
         from app.providers.base import ProviderConfig
-        monkeypatch.setattr(lm, "discover_local_model", lambda n, r=None, rt=None: None)
+        monkeypatch.setattr(lm, "discover_local_model", lambda n, r=None, rt=None, api_key=None: None)
         lm.reset_discovery_cache_for_tests()
         name, cfg = self._cfg()
         cfg = {**cfg, "request_extra_body": {"options": {"num_ctx": 131072}}}
@@ -325,7 +325,7 @@ class TestLocalFactoryRouting:
         window, so the factory re-reads MODEL_CONFIGS after discovery."""
         from app.providers.factory import create_provider
         monkeypatch.delenv("ZIYA_LOCAL_TOKEN_LIMIT", raising=False)
-        monkeypatch.setattr(lm, "discover_local_model", lambda n, r=None, rt=None: _ollama(ctx=65536))
+        monkeypatch.setattr(lm, "discover_local_model", lambda n, r=None, rt=None, api_key=None: _ollama(ctx=65536))
         lm.reset_discovery_cache_for_tests()
         name, cfg = self._cfg()
         try:

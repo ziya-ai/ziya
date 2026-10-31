@@ -31,6 +31,7 @@ _encryption_providers = []
 _export_providers = []
 _extraction_pattern_providers = []
 _rate_plan_providers = []
+_info_providers = []
 # auth_type -> RemoteAuthProvider; a remote MCP server's "auth": {"type": X}
 # selects the handler that authenticates its HTTP transport.
 _remote_auth_providers = {}
@@ -177,6 +178,35 @@ def register_rate_plan_provider(provider):
     _rate_plan_providers.append(provider)
     _rate_plan_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
     logger.debug(f"Registered rate plan provider: {getattr(provider, 'provider_id', 'unknown')}")
+
+def register_info_provider(provider):
+    """Register a provider that adds a section to ``ziya --info``.
+
+    See InfoProvider in app/plugins/interfaces.py.
+    """
+    _info_providers.append(provider)
+    _info_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
+    logger.debug(f"Registered info provider: {getattr(provider, 'provider_id', 'unknown')}")
+
+def get_info_sections(args) -> List:
+    """Collect ``--info`` sections from every info provider, in priority order.
+
+    A provider that raises is reported as a one-row section under its
+    provider_id, so one broken diagnostic cannot hide the others or abort
+    ``--info``.
+    """
+    from app.plugins.interfaces import InfoSection
+    sections = []
+    for provider in _info_providers:
+        pid = getattr(provider, 'provider_id', 'unknown')
+        try:
+            section = provider.get_info_section(args)
+        except Exception as e:
+            logger.warning(f"Info provider {pid} failed: {e}")
+            section = InfoSection(title=pid, rows=[("Error", str(e)[:80])])
+        if section is not None:
+            sections.append(section)
+    return sections
 
 def get_all_config_providers() -> List:
     """Get all registered config providers (regardless of should_apply)."""

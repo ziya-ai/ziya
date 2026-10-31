@@ -662,6 +662,36 @@ class DirectoryScanProvider(ABC):
         return True
 
 
+@dataclass
+class InfoSection:
+    """One titled block of ``ziya --info`` output: ``title:`` then one
+    ``  label: value`` line per row."""
+    title: str
+    rows: List[Tuple[str, str]] = field(default_factory=list)
+
+
+class InfoProvider(ABC):
+    """
+    Contributes a section to ``ziya --info``.
+
+    For diagnostics that only make sense in one deployment (an enterprise
+    service endpoint, a company CLI on PATH).  The core prints whatever
+    sections are registered and knows nothing about their contents.
+
+    ``args`` is the parsed CLI namespace (profile, region, endpoint, ...).
+    Return None to contribute nothing.  Keep it fast: ``--info`` runs
+    every provider in turn, so bound any network call with a short timeout.
+    An exception is reported as a one-line error in place of the section.
+    """
+
+    provider_id: str = "base"
+    priority: int = 0
+
+    @abstractmethod
+    def get_info_section(self, args: Any) -> Optional[InfoSection]:
+        pass
+
+
 class RemoteAuthError(RuntimeError):
     """A remote-MCP authentication handler could not establish a session.
 
