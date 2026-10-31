@@ -62,7 +62,11 @@ import SortIcon from '@mui/icons-material/Sort';
 import CloseIcon from '@mui/icons-material/Close';
 import AddCommentIcon from '@mui/icons-material/AddComment';
 import RunStatusGears from './TaskCard/RunStatusGears';
+import JobStatusGlyphs from './TaskCard/JobStatusGlyphs';
+import { jobsSignature } from './TaskCard/jobStatusGlyph';
+import { readJobsSeen, markJobsSeen } from '../utils/jobSeen';
 import type { TaskBinding } from '../types/task_binding';
+import type { JobSummary } from '../services/taskRunApi';
 import { useRunStatusIndex } from '../hooks/useRunStatusIndex';
 import { toLayoutPx } from '../utils/uiScale';
 import { classifyRowGesture, hasSelectionWithin } from '../utils/rowGesture';
@@ -163,6 +167,14 @@ interface ChatTreeItemProps {
    * and the tile from disagreeing while a run is actively changing.
    */
   taskStatusCounts?: Record<string, number>;
+  /**
+   * Chat-started managed jobs (job_start) of this conversation, from the
+   * project-wide index.  Jobs owned by a task run are already that run's
+   * gear and are not in this list.
+   */
+  jobs?: ReadonlyArray<JobSummary>;
+  /** Epoch seconds the user last opened this conversation (utils/jobSeen). */
+  jobsSeenAt?: number;
   hasUnreadResponse?: boolean;
   conversationCount?: number;
   // Direct child folders (folder rows only) — shown in the trailing badge so
@@ -240,6 +252,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     isRunningTask = false,
     taskBindings,
     taskStatusCounts,
+    jobs,
+    jobsSeenAt,
     hasUnreadResponse = false,
     conversationCount = 0,
     subfolderCount = 0,
@@ -1114,6 +1128,24 @@ const MUIChatHistory = () => {
   // tab is visible; see the hook for the gating and why this is a cheap
   // projection rather than the run list.
   const { index: runStatusIndex } = useRunStatusIndex(currentProject?.id);
+  // Last-visit marks for the clear-on-visit rule on finished jobs.  A
+  // conversation is marked when opened AND when left: a job that finishes
+  // while the user is in it was shown by that chat's rail, so its row must
+  // not light up the moment they move on.
+  const [jobsSeen, setJobsSeen] = useState<Record<string, number>>(() => readJobsSeen(currentProject?.id));
+  useEffect(() => { setJobsSeen(readJobsSeen(currentProject?.id)); }, [currentProject?.id]);
+  const prevSeenConvRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!currentProject?.id) return;
+    const prev = prevSeenConvRef.current;
+    if (prev && prev !== currentConversationId) {
+      setJobsSeen(markJobsSeen(currentProject.id, prev));
+    }
+    if (currentConversationId) {
+      setJobsSeen(markJobsSeen(currentProject.id, currentConversationId));
+    }
+    prevSeenConvRef.current = currentConversationId ?? null;
+  }, [currentProject?.id, currentConversationId]);
   const [expandedNodes, setExpandedNodes] = useState<React.Key[]>([]);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -2932,6 +2964,11 @@ const MUIChatHistory = () => {
       const sig = Object.keys(counts).sort().map(s => `${s}=${counts[s]}`).join(',');
       activeConvIds.add('idx:' + id + ':' + sig);
     });
+    // Jobs likewise, plus the seen mark: a finished job clearing on visit
+    // is a visible change with no timestamp behind it.
+    Object.entries(runStatusIndex.jobs ?? {}).forEach(([id, jobs]) => {
+      activeConvIds.add('job:' + id + ':' + jobsSignature(jobs) + ':' + (jobsSeen[id] ?? 0));
+    });
     Array.from(activeConvIds).sort().forEach(id => oh.add('act:' + id));
     const sortHash = oh.value();
 
@@ -3464,7 +3501,7 @@ const MUIChatHistory = () => {
     } catch {}
 
     return result;
-  }, [conversations, folders, pinnedFolders, isProjectSwitching, currentProject?.id, streamingConversations, runningTaskConversations, conversationTaskBindings, runStatusIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [conversations, folders, pinnedFolders, isProjectSwitching, currentProject?.id, streamingConversations, runningTaskConversations, conversationTaskBindings, runStatusIndex, jobsSeen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Debounce treeData updates: during startup, conversations change 4+ times
   // in rapid succession. Only rebuild the flattened tree once things settle.
@@ -4260,6 +4297,9 @@ const MUIChatHistory = () => {
                 // conversation, which is every row but one.
                 const rowTaskCounts = convId
                   ? runStatusIndex.conversations[convId] : undefined;
+                // Chat-started jobs for this row, and when the user last opened it.
+                const rowJobs = convId ? runStatusIndex.jobs?.[convId] : undefined;
+                const rowJobsSeenAt = convId ? jobsSeen[convId] : undefined;
                 const conversationCount = isFolder ? node.conversationCount : 0;
                 const subfolderCount = isFolder ? countDirectSubfolders(node.children) : 0;
                 const openBeadCount = isFolder ? 0 : (node.conversation?.openBeadCount || 0);

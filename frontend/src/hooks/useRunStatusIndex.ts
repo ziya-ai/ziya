@@ -40,6 +40,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getRunStatusIndex, type RunStatusIndex } from '../services/taskRunApi';
+import { jobsSignature } from '../components/TaskCard/jobStatusGlyph';
 
 /**
  * 40 s.  Task runs are minutes-to-hours long, so a tighter interval buys no
@@ -51,9 +52,11 @@ import { getRunStatusIndex, type RunStatusIndex } from '../services/taskRunApi';
  */
 const POLL_MS = 40000;
 
-const EMPTY: RunStatusIndex = { conversations: {}, live: false, built_at: 0 };
+const EMPTY: RunStatusIndex = { conversations: {}, jobs: {}, live: false, built_at: 0 };
 
-/** Stable signature of the counts, for identity preservation. */
+/** Stable signature of the counts AND the jobs, for identity preservation.
+ *  Jobs are part of it: a job exiting in a conversation the user is not
+ *  looking at changes nothing in the run counts. */
 function signature(index: RunStatusIndex): string {
   const convs = Object.keys(index.conversations).sort();
   return convs
@@ -62,7 +65,7 @@ function signature(index: RunStatusIndex): string {
       return c + ':' + Object.keys(counts).sort()
         .map(s => `${s}=${counts[s]}`).join(',');
     })
-    .join('|');
+    .join('|') + '#' + jobsSignature(index.jobs);
 }
 
 export function useRunStatusIndex(projectId: string | null | undefined) {

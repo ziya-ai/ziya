@@ -8,6 +8,10 @@
  * failed run is announced once by TaskUpdateFeed instead, so the rail
  * stays a reading of "what is happening now" and disappears entirely
  * when the answer is nothing.  See taskSurfacing.ts for the policy.
+ *
+ * Managed jobs (job_start) of this chat get the same treatment: one chip
+ * per RUNNING job, with a tail popover and a kill (JobChip).  Finished
+ * jobs are the exit card's and the sidebar glyph's business.
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -16,6 +20,9 @@ import { DownOutlined, UpOutlined } from '@ant-design/icons';
 import type { TaskBinding } from '../../types/task_binding';
 import type { RunStatus } from '../../types/task_run';
 import { taskCardApi } from '../../services/taskCardApi';
+import type { JobRecord } from '../../services/jobsApi';
+import { railJobs } from './jobRail';
+import JobChip from './JobChip';
 import {
     RUN_STATUS_ANIMATES, RUN_STATUS_FG, RUN_STATUS_HINT, RUN_STATUS_LABEL,
 } from './runStatusVocabulary';
@@ -29,12 +36,17 @@ import './task-surfacing.css';
 interface Props {
     bindings: ReadonlyArray<TaskBinding>;
     projectId: string;
+    /** This chat's managed jobs; only running ones are shown. */
+    jobs?: ReadonlyArray<JobRecord>;
+    onJobsChanged?: () => void;
+    onJumpToJobStart?: (startedAtS: number) => void;
 }
 
 const COLLAPSED_KEY = 'ziya.taskRail.collapsed';
 
-export const TaskRail: React.FC<Props> = ({ bindings, projectId }) => {
+export const TaskRail: React.FC<Props> = ({ bindings, projectId, jobs, onJobsChanged, onJumpToJobStart }) => {
     const entries = useMemo(() => railEntries(bindings), [bindings]);
+    const liveJobs = useMemo(() => railJobs(jobs), [jobs]);
     const [names, setNames] = useState<Record<string, string>>({});
     const [progress, setProgress] = useState<Record<string, ChipProgress>>({});
     const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -70,7 +82,7 @@ export const TaskRail: React.FC<Props> = ({ bindings, projectId }) => {
         return () => window.removeEventListener(TASK_PROGRESS_EVENT, handler);
     }, []);
 
-    if (entries.length === 0) return null;
+    if (entries.length === 0 && liveJobs.length === 0) return null;
 
     const attention = entries.filter(e => e.kind === 'attention').length;
     const toggle = () => {
@@ -81,9 +93,11 @@ export const TaskRail: React.FC<Props> = ({ bindings, projectId }) => {
 
     return (
         <div className={`tc-rail-strip${collapsed ? ' tc-rail-strip--collapsed' : ''}`}
-            role="region" aria-label="Tasks in this conversation" data-testid="task-rail">
+            role="region" aria-label="Tasks and jobs in this conversation" data-testid="task-rail">
             <span className="tc-rail-strip__label">
-                TASKS · {entries.length}
+                {entries.length > 0 && <>TASKS · {entries.length}</>}
+                {entries.length > 0 && liveJobs.length > 0 && ' · '}
+                {liveJobs.length > 0 && <>JOBS · {liveJobs.length}</>}
                 {attention > 0 && (
                     <span className="tc-rail-strip__attn"> · {attention} waiting on you</span>
                 )}
@@ -119,6 +133,10 @@ export const TaskRail: React.FC<Props> = ({ bindings, projectId }) => {
                     </Tooltip>
                 );
             })}
+            {!collapsed && liveJobs.map(job => (
+                <JobChip key={job.job_id} job={job} projectId={projectId}
+                    onChanged={onJobsChanged} onJumpToJobStart={onJumpToJobStart} />
+            ))}
             <button type="button" className="tc-rail-strip__toggle" onClick={toggle}
                 aria-label={collapsed ? 'Show task chips' : 'Collapse task rail'}>
                 {collapsed ? <DownOutlined /> : <UpOutlined />}

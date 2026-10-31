@@ -33,13 +33,31 @@ router = APIRouter(
 )
 
 
-def _get_storage(project_id: str) -> TaskRunStorage:
+def _get_project(project_id: str):
     ziya_home = get_ziya_home()
     project_storage = ProjectStorage(ziya_home)
     project = project_storage.get(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def _get_storage(project_id: str) -> TaskRunStorage:
+    _get_project(project_id)
     return TaskRunStorage(get_project_dir(project_id))
+
+
+def _job_index(project_path: Optional[str]) -> Dict[str, Any]:
+    """Chat-started jobs per conversation (app/jobs/index.py).  Never lets a
+    job-runner fault take the task-run index down with it."""
+    if not project_path:
+        return {}
+    try:
+        from ..jobs.index import conversation_job_index
+        return conversation_job_index(project_path)
+    except Exception as e:  # noqa: BLE001 -- the gears must still render
+        logger.warning(f"job index unavailable for {project_path}: {e}")
+        return {}
 
 
 @router.get("", response_model=List[TaskRun])
@@ -69,11 +87,17 @@ def get_run_status_index(project_id: str) -> Dict[str, Any]:
     reports one gear rather than three.
 
     ``live`` tells the client whether to keep polling; when false nothing
-    can change without a user action, so it can stop.  ``built_at`` is the
-    memo's age, exposed for debugging a stale-looking sidebar.
+    can change without a user action, so it can stop.  A running managed
+    job keeps it true too: the same poll carries ``jobs`` (per conversation,
+    the chat-started jobs with state and times -- see app/jobs/index.py),
+    and a job finishing is exactly the change the sidebar must notice.
+    ``built_at`` is the memo's age, exposed for debugging a stale-looking
+    sidebar.
     """
     from ..utils.run_status_index import cache_for, has_live_runs
-    storage = _get_storage(project_id)
+    from ..jobs.index import has_running_jobs
+    project = _get_project(project_id)
+    storage = TaskRunStorage(get_project_dir(project_id))
     cache = cache_for(str(storage.runs_dir))
     # A PER-FILE reader, not ``list``: the cache re-reads only the records
     # whose own mtime moved.  Passing the zero-arg ``list`` here type-checks
@@ -82,9 +106,11 @@ def get_run_status_index(project_id: str) -> Dict[str, Any]:
     # and every run summarises to None, so the index comes back empty and
     # every gear on every unopened row is simply absent, with no error.
     index = cache.get(storage.read_run_file)
+    jobs = _job_index(getattr(project, "path", None))
     return {
         "conversations": index,
-        "live": has_live_runs(index),
+        "jobs": jobs,
+        "live": has_live_runs(index) or has_running_jobs(jobs),
         "built_at": cache.built_at,
     }
 
@@ -141,6 +167,39 @@ def get_task_run(project_id: str, run_id: str):
     if not run:
         raise HTTPException(status_code=404, detail="Task run not found")
     return run
+
+
+@router.get("/{run_id}/resources")
+def get_task_run_resources(project_id: str, run_id: str) -> Dict[str, Any]:
+    """Wall clock, model time, turns, tokens, cost, tool-side CPU and disk
+    for one run — the tile's Resources panel.  Joined at read time from
+    the usage ledger, the run record and the filesystem; see
+    app/utils/run_resources.py for what each figure means and what it
+    cannot see.  Works for historical runs: nothing here is in-memory.
+    """
+    from ..utils.run_resources import build_run_resources
+    storage = _get_storage(project_id)
+    run = storage.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    project = ProjectStorage(get_ziya_home()).get(project_id)
+    card_name = None
+    try:
+        from ..storage.task_cards import TaskCardStorage
+        card = TaskCardStorage(get_project_dir(project_id)).get(run.card_id)
+        card_name = (card.name if card else None) or (run.card_snapshot or {}).get("name")
+    except Exception as e:  # noqa: BLE001 - a name is cosmetic
+        logger.debug(f"run resources: card name unavailable: {e}")
+    try:
+        return build_run_resources(
+            run, project_id=project_id,
+            project_root=project.path if project else None,
+            project_dir=get_project_dir(project_id),
+            card_name=card_name,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"run resources failed for {run_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="run resources failed")
 
 
 @router.delete("/{run_id}", status_code=204)

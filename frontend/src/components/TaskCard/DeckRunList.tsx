@@ -16,7 +16,7 @@
  */
 
 import React from 'react';
-import { Empty, Tag, Tooltip } from 'antd';
+import { Tag, Tooltip } from 'antd';
 import { ExportOutlined } from '@ant-design/icons';
 import type { TaskRun } from '../../types/task_run';
 import { deckStatusColor, isLiveRun, needsAttention } from './deckRunIndex';
@@ -111,16 +111,16 @@ const RunRow: React.FC<{ run: TaskRun; onOpen: (r: TaskRun) => void }> = ({
 
 export const DeckRunList: React.FC<Props> = ({ runs, onOpen }) => {
   if (runs.length === 0) {
+    // A plain line, not antd <Empty>: even with image={null} Empty keeps
+    // its 100px image slot, so one sentence cost ~150px of a pane whose
+    // purpose is the editor above it.
     return (
-      <Empty
-        image={null}
-        description={
-          <span style={{ fontSize: 12, opacity: 0.6 }}>
-            No runs yet — this card has never run
-          </span>
-        }
-        style={{ margin: '10px 0' }}
-      />
+      <div
+        data-testid="deck-run-list-empty"
+        style={{ fontSize: 11, opacity: 0.55, padding: '2px 8px' }}
+      >
+        No runs yet — this card has never run
+      </div>
     );
   }
   return (

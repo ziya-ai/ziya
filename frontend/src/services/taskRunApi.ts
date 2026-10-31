@@ -57,11 +57,33 @@ export async function listTaskRuns(
   return res.json();
 }
 
+/** One chat-started managed job as the status index reports it. */
+export interface JobSummary {
+  job_id: string;
+  label?: string;
+  state: 'running' | 'exited' | 'lost';
+  exit_code?: number | null;
+  /** Signal number that ended the job (the wrapper records -returncode). */
+  signal?: number | null;
+  reason?: string | null;
+  /** Epoch seconds (server clock). */
+  started_at?: number;
+  ended_at?: number;
+  runtime_s?: number;
+  duration_s?: number;
+}
+
 /** Per-conversation run-status counts for the whole project. */
 export interface RunStatusIndex {
   /** conversation id -> { status: lineage count } */
   conversations: Record<string, Record<string, number>>;
-  /** True while something can still change on its own. */
+  /**
+   * conversation id -> chat-started managed jobs (job_start), newest
+   * first.  Jobs owned by a task run are omitted: that run's gear already
+   * shows them.  Absent from a server that predates the field.
+   */
+  jobs?: Record<string, JobSummary[]>;
+  /** True while something (a run or a job) can still change on its own. */
   live: boolean;
   /** When the server's memo was last rebuilt; for debugging staleness. */
   built_at: number;
@@ -85,7 +107,7 @@ export async function getRunStatusIndex(
     headers: projectHeaders(),
   });
   if (res.status === 404) {
-    return { conversations: {}, live: false, built_at: 0 };
+    return { conversations: {}, jobs: {}, live: false, built_at: 0 };
   }
   if (!res.ok) throw new Error(`getRunStatusIndex failed: ${res.status}`);
   return res.json();
