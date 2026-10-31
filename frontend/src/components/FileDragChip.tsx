@@ -9,16 +9,12 @@ interface FileDragChipProps {
 }
 
 /**
- * A small draggable chip in a file-operation block's header. Dragging it
- * out of the browser delivers the file itself (fetched from the server on
- * press) to Finder, Slack, Docs or an editor. It is a separate element so
- * the header text beside it stays selectable; a draggable ancestor would
- * swallow every press (see tableDrag.ts).
+ * Wire `ref`'s element as a drag source for `path` via attachFileDrag.
+ * Returns the fetch error, if any, so the element can say why it is inert.
  */
-export const FileDragChip: React.FC<FileDragChipProps> = ({ path, isDarkMode }) => {
+function useFileDrag(path: string) {
     const ref = useRef<HTMLSpanElement>(null);
     const [failed, setFailed] = useState<string | null>(null);
-
     useEffect(() => {
         const el = ref.current;
         if (!el) return;
@@ -30,6 +26,18 @@ export const FileDragChip: React.FC<FileDragChipProps> = ({ path, isDarkMode }) 
             },
         });
     }, [path]);
+    return { ref, failed };
+}
+
+/**
+ * A small draggable chip in a file-operation block's header. Dragging it
+ * out of the browser delivers the file itself (fetched from the server on
+ * press) to Finder, Slack, Docs or an editor. It is a separate element so
+ * the header text beside it stays selectable; a draggable ancestor would
+ * swallow every press (see tableDrag.ts).
+ */
+export const FileDragChip: React.FC<FileDragChipProps> = ({ path, isDarkMode }) => {
+    const { ref, failed } = useFileDrag(path);
 
     return (
         <span
@@ -47,6 +55,28 @@ export const FileDragChip: React.FC<FileDragChipProps> = ({ path, isDarkMode }) 
         >
             ⠿ {fileBasename(path)}
         </span>
+    );
+};
+
+/**
+ * The 📄 glyph in front of a shown document's path, as a drag source for
+ * that file.  Only the glyph is draggable, so the path text beside it stays
+ * selectable (same reason the chip is a separate element).
+ */
+export const FileDragIcon: React.FC<{ path: string }> = ({ path }) => {
+    const { ref, failed } = useFileDrag(path);
+    return (
+        <span
+            ref={ref}
+            className="file-drag-icon"
+            role="img"
+            aria-label={`Drag ${fileBasename(path)}`}
+            title={failed ? `Not draggable: ${failed}` : `Drag ${fileBasename(path)} out to another app`}
+            style={{
+                cursor: failed ? 'not-allowed' : 'grab', userSelect: 'none',
+                opacity: failed ? 0.5 : 1, marginRight: 4,
+            }}
+        >📄</span>
     );
 };
 
