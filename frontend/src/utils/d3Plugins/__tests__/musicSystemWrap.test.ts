@@ -233,11 +233,19 @@ describe('backward compatibility', () => {
   });
 
   it('an explicit width opts out of wrapping entirely', async () => {
-    const c = await draw({
+    // A roomy pinned width is honoured exactly.
+    const roomy = await draw({
+      type: 'music', timeSignature: '4/4', measures: bars(2), width: 900,
+    });
+    expect(systemsDrawn(roomy)).toBe(1);
+    expect(canvasWidth(roomy)).toBe(900);
+    // An undersized one still opts out of wrapping, but since D-140 the
+    // canvas grows to the music instead of crushing it into 900px.
+    const tight = await draw({
       type: 'music', timeSignature: '4/4', measures: bars(12), width: 900,
     });
-    expect(systemsDrawn(c)).toBe(1);
-    expect(canvasWidth(c)).toBe(900);
+    expect(systemsDrawn(tight)).toBe(1);
+    expect(canvasWidth(tight)).toBeGreaterThan(900);
   });
 });
 
@@ -245,11 +253,21 @@ describe('backward compatibility', () => {
 
 describe('T1 legibility warning', () => {
   it('warns when a pinned width forces an illegible system', async () => {
+    // A legible pin whose music outgrows it (D-140 grows the canvas) is the
+    // case that still renders one over-wide system, so it is reported.
     await draw({
-      type: 'music', timeSignature: '4/4', measures: bars(12), width: 6000,
+      type: 'music', timeSignature: '4/4', measures: bars(12), width: 900,
     });
     expect(warnings()).toMatch(/will scale to about \d+%/);
     expect(warnings()).toMatch(/Remove the explicit `width`/);
+  });
+
+  it('treats a pin past the legibility limit as unset and wraps instead (D-138)', async () => {
+    const c = await draw({
+      type: 'music', timeSignature: '4/4', measures: bars(12), width: 6000,
+    });
+    expect(warnings()).toMatch(/exceeds the ~\d+px single-system legibility limit/);
+    expect(systemsDrawn(c)).toBeGreaterThan(1);
   });
 
   it('does not warn about a normal-width score', async () => {

@@ -240,8 +240,20 @@ describe('bracket lift', () => {
       ...withTempoAndBracket,
       brackets: [{ from: 0, to: 3, text: '8', superscript: 'va', line: 6 }],
     });
-    const topY = (c: HTMLElement) => Math.min(...matching(c, BRACKET).map((p) => p.y));
-    expect(topY(raised)).toBeLessThan(topY(auto));
+    // Measured from each render's own stave top: a bracket raised past the
+    // tempo band also lifts the tempo and moves the first system down by the
+    // same amount (tempoBracketLiftPx), so absolute y no longer moves.
+    const staveTop = (c: HTMLElement) => Math.min(
+      ...Array.from(c.querySelectorAll('.vf-stave path'))
+        .map((p) => parseFloat((p.getAttribute('d') ?? '').match(/M\d+ ([\d.]+)/)?.[1] ?? 'NaN'))
+        .filter(Number.isFinite),
+    );
+    const offset = (c: HTMLElement) =>
+      staveTop(c) - Math.min(...matching(c, BRACKET).map((p) => p.y));
+    expect(offset(raised)).toBeGreaterThan(offset(auto));
+    // ...and the tempo is still above the raised bracket.
+    const tempoY = Math.max(...matching(raised, TEMPO).map((p) => p.y));
+    expect(tempoY).toBeLessThan(Math.min(...matching(raised, BRACKET).map((p) => p.y)));
   });
 
   it('leaves a below-staff bracket unraised', async () => {

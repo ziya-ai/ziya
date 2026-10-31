@@ -203,12 +203,14 @@ describe('chord symbols', () => {
   });
 
   it('reserves room below for a below-staff symbol', async () => {
-    const above = await draw({ type: 'music',
-      notes: [{ keys: ['c/4'], duration: 'q', chordSymbol: { text: 'I' } }] });
+    // Compared with a bare note, not an ABOVE symbol: since D-438 an above
+    // symbol reserves its own band too, so "below > above" no longer says
+    // anything about the below reserve.
+    const plain = await draw({ type: 'music', notes: [{ keys: ['c/4'], duration: 'q' }] });
     const below = await draw({ type: 'music',
       notes: [{ keys: ['c/4'], duration: 'q', chordSymbol: { text: 'I', position: 'below' } }] });
     const h = (c: HTMLElement) => Number(c.querySelector('svg')!.getAttribute('height'));
-    expect(h(below)).toBeGreaterThan(h(above));
+    expect(h(below)).toBeGreaterThan(h(plain));
   });
 
   it('warns about an unknown glyph rather than misstating the harmony', async () => {
