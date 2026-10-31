@@ -339,7 +339,9 @@ class TaskCardWriteInput(BaseModel):
             "(every block of that type).  set keys are Block fields "
             "(instructions, name, repeat_count, ...) or 'scope.<field>' "
             "for any TaskScope field (skills, tools, cwd, model_tier, "
-            "shell_timeout_secs, ...).  Grants (shell_commands, writable "
+            "shell_timeout_secs, ...), or 'state_variables.<name>' to set "
+            "one State variable without resending the others (null "
+            "removes it).  Grants (shell_commands, writable "
             "paths) may be kept or narrowed but not widened.  id, body and "
             "block_type are structural.  Preferred for any change to a "
             "large card."),
@@ -501,6 +503,27 @@ class TaskCardWriteTool(BaseMCPTool):
         }
         if resign_required:
             result["resign_required"] = resign_required
+        # Move this card's tile to the turn that revised it (or stage a
+        # new one if the card was only run here).  Otherwise the tile stays
+        # where it was first staged, possibly far up the chat, with nothing
+        # saying it changed.  See app/utils/task_card_revision.py.
+        try:
+            from app.context import get_conversation_id_or_none
+            from app.utils.paths import get_project_dir
+            from app.utils.task_card_revision import place_revised_card
+            placed = place_revised_card(get_project_dir(res["project_id"]),
+                                        get_conversation_id_or_none(), card_id)
+        except Exception as e:  # noqa: BLE001 -- the write itself succeeded
+            logger.warning(f"task_card_write: tile placement failed: {e}")
+            placed = None
+        if placed:
+            result["binding_id"] = placed["binding_id"]
+            result["tile"] = placed["action"]
+            result["message"] += (
+                " The card's tile now sits at this point in the conversation"
+                + (" with a Run button (the earlier run's tile is unchanged)."
+                   if placed["action"] == "created" else
+                   " and is marked revised; its old spot links here."))
         return result
 
 

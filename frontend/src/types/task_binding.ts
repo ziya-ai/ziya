@@ -48,6 +48,19 @@ export interface TaskBinding {
   has_open_ask?: boolean;
   /** Which project the binding actually lives in (cross-project globals). */
   project_id?: string;
+  /**
+   * Times the model revised this staged card (task_card_write), moving the
+   * tile to the revising turn.  Absent/0 for a tile never revised.  See
+   * app/utils/task_card_revision.py.
+   */
+  revision?: number;
+  /** Where the tile sat before each move; each gets a "revised later" marker. */
+  revisions?: Array<{ created_at: number; anchor_message_id?: string | null }>;
+  /**
+   * Set when this staged tile was created by a revision of a card that had
+   * only been run in this chat: the run it follows (its tile stays above).
+   */
+  revision_after_run_id?: string | null;
 }
 
 export interface TaskBindingCreateRequest {
