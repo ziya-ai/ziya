@@ -4,6 +4,8 @@ import { useTheme } from '../context/ThemeContext';
 import MCPRegistryModal from './MCPRegistryModal';
 import MarkdownRenderer from './MarkdownRenderer';
 import { summarizeServiceDescription } from '../utils/mcpDescriptionSummary';
+import { copyJsonToClipboard, handlePlainTextCopy } from '../utils/plainTextCopy';
+import { portableServerStanza } from '../utils/mcpStanza';
 import {
     CheckCircleOutlined,
     CloseCircleOutlined,
@@ -16,6 +18,7 @@ import {
     ExperimentOutlined,
     WarningOutlined,
     SettingOutlined,
+    CopyOutlined,
 } from '@ant-design/icons';
 
 const { Panel } = Collapse;
@@ -1383,18 +1386,39 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                 </TabPane>
                                                 <TabPane tab="Config Stanza" key="config">
                                                     <div>
-                                                        <Text type="secondary" style={{ fontSize: '12px', marginBottom: 8, display: 'block' }}>
-                                                            Configuration file: {status.config_path || '~/.ziya/mcp_config.json'}
-                                                        </Text>
-                                                        <pre style={{ 
+                                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                                            <Text type="secondary" style={{ fontSize: '12px' }}>
+                                                                Configuration file: {status.config_path || '~/.ziya/mcp_config.json'}
+                                                            </Text>
+                                                            <Button
+                                                                size="small"
+                                                                icon={<CopyOutlined />}
+                                                                data-testid="mcp-config-stanza-copy"
+                                                                onClick={() => {
+                                                                    copyJsonToClipboard(portableServerStanza(name, status.server_configs?.[name] || {})).then(ok =>
+                                                                        ok ? message.success('Config stanza copied as JSON')
+                                                                           : message.error('Clipboard is not available in this browser'));
+                                                                }}
+                                                            >
+                                                                Copy
+                                                            </Button>
+                                                        </div>
+                                                        {/* Plain text, never markdown: a selection is
+                                                            rewritten to clean text/plain so a paste into
+                                                            mcp_config.json cannot pick up U+00A0. */}
+                                                        <pre
+                                                            data-testid="mcp-config-stanza"
+                                                            onCopy={handlePlainTextCopy}
+                                                            style={{
                                                             backgroundColor: isDarkMode ? '#1f1f1f' : '#f5f5f5',
                                                             padding: '12px',
                                                             borderRadius: '4px',
                                                             fontSize: '12px',
                                                             overflow: 'auto',
-                                                            maxHeight: '300px'
+                                                            maxHeight: '300px',
+                                                            whiteSpace: 'pre',
                                                         }}>
-                                                            {JSON.stringify(status.server_configs?.[name] || {}, null, 2)}
+                                                            {JSON.stringify(portableServerStanza(name, status.server_configs?.[name] || {}), null, 2)}
                                                         </pre>
                                                     </div>
                                                 </TabPane>
