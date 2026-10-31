@@ -12,7 +12,7 @@ from app.utils.local_models import build_local_model_configs, local_model_name
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
-    "bedrock": "opus4.8",
+    "bedrock": "opus5.5",
     "google": "gemini-3.1-pro",
     "openai": "gpt-6.1-sol",
     "anthropic": "claude-sonnet-5-5",
@@ -119,7 +119,7 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
 #
 # The ladder has five rungs.  ``medium`` is the CENTER — it is the
 # default/average model and the fallback target, i.e. the same model the
-# top-level conversation uses (sonnet5 on Bedrock).  ``frontier`` is the
+# top-level conversation uses (sonnet5.5 on Bedrock).  ``frontier`` is the
 # rarely-warranted top: cutting-edge models that today run ~20x the cost
 # of ``large`` with heavy throttling, so reserve it for work that truly
 # needs it.  The rungs, cheapest → most capable:
@@ -1684,21 +1684,21 @@ MODEL_CONFIGS = {
         # 65,536-output model with caching, function calling and thinking
         # levels (3.7 and 3.8 reject the `minimal` level).
         "gemini-4-argon": {
-            # Announced 2026-09-30 (blog.google, "Gemini 4 Argon"): rolling
-            # out to the Fairwind cohort first, then paid API customers.
-            # The endpoint is NOT on the API models page yet, so this id is
-            # provisional — correct it when Google publishes one.  Output
-            # limit (1M) and introductory pricing come from the announcement;
-            # the input limit is assumed to match the rest of the line.  Not
-            # tier-tagged on purpose: no background task should be routed to
-            # a model most API keys cannot reach yet.
+            # Announced 2026-09-30 (blog.google, "Gemini 4 Argon").  Now
+            # listed on the API models page and serving generateContent
+            # (live-verified 2026-10-15), so the id is confirmed.  The models
+            # page publishes a 1,048,576-input / 32,768-output window; the
+            # earlier 1M output figure came from the announcement and is
+            # superseded here.  Introductory pricing still from the
+            # announcement.  Left untier-tagged on purpose: new/premium, keep
+            # it out of automatic background routing until cost is confirmed.
             "model_id": "gemini-4-argon",
             "token_limit": 1048576,
             # Same API surface as Gemini 3 (thinking_level, native tools);
             # the family name selects that surface, not the generation.
             "family": "gemini-3",
-            "max_output_tokens": 1000000,
-            "default_max_output_tokens": 32768,
+            "max_output_tokens": 32768,
+            "default_max_output_tokens": 16384,
             "convert_system_message_to_human": False,
             "supports_vision": True,
             "supports_function_calling": True,
@@ -1817,6 +1817,32 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
             "thinking_level": "medium"
         },
+        "gemini-flash-latest": {
+            # Rolling pointer to the newest GA Flash (live-verified 2026-10-15).
+            "model_id": "gemini-flash-latest",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium"
+        },
+        "gemini-flash-lite-latest": {
+            # Rolling pointer to the newest GA Flash-Lite (live-verified 2026-10-15).
+            "model_id": "gemini-flash-lite-latest",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "low"
+        },
         "gemini-3-flash": {
             "model_id": "gemini-3-flash-preview",
             "token_limit": 1048576,
@@ -1844,7 +1870,7 @@ MODEL_CONFIGS = {
             "model_id": "gemini-2.5-flash",
             "token_limit": 1048576,
             "family": "gemini-flash",
-            "max_output_tokens": 65535,
+            "max_output_tokens": 65536,
             "convert_system_message_to_human": False,
             "supports_vision": True,  # Gemini Flash supports vision
             "supports_function_calling": True,
