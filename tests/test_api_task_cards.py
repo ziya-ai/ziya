@@ -253,8 +253,11 @@ class TestLifecycleEvents:
         async def _stub(run_id, event):
             captured.append((run_id, event))
 
+        # The lifecycle emitter lives in the shared run driver
+        # (app/agents/run_driver.py), which both the launch endpoint and
+        # the scheduler use; app.api.task_cards no longer imports _relay.
         monkeypatch.setattr(
-            "app.api.task_cards._relay.safe_push", _stub,
+            "app.agents.run_driver._relay.safe_push", _stub,
         )
         return captured
 
