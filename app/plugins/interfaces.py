@@ -196,6 +196,16 @@ class ShellConfigProvider(ABC):
         """Return file-path glob patterns to add to allowed write patterns."""
         return []
 
+    def get_additional_sensitive_paths(self) -> List[str]:
+        """Return path fragments that name credential material.
+
+        A ``curl`` ``@file`` upload (``-d @path``, ``-F x=@path``) whose
+        expanded, lower-cased path contains any fragment is refused, on top of
+        the built-in set (``/.aws/``, ``/.ssh/``, ``id_rsa``, ...).  Use it for
+        deployment-specific secrets such as an SSO cookie directory.
+        """
+        return []
+
     def should_apply(self) -> bool:
         """Return True if this provider's additions should be applied."""
         return True
