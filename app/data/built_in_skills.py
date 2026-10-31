@@ -533,7 +533,11 @@ Orthogonal: `repeat_parallel: true|false`, `repeat_propagate: "none"|"last"|"all
 
 **Parallel** — runs its body blocks concurrently (different work, not copies
 of one block — that is Repeat's job).  Implicit sequence: stacking multiple
-blocks in any `body` runs them top-to-bottom.
+blocks in any `body` runs them top-to-bottom.  `repeat_max_concurrency`
+applies to a Parallel too: it caps how many children run at once (default
+8).  Set it lower when the children share one slow or rate-limited backend
+— a query proxy, one credential jar — so they do not serialize behind each
+other while also tripping its retry and re-login limits.
 
 ```
 { "block_type": "parallel", "name": "Fan out", "body": [ ] }
@@ -1176,6 +1180,61 @@ ceiling is 300 s and the command is killed mid-flight:
 ```
 "scope": {"shell_commands": ["npm"], "shell_timeout_secs": 1200}
 ```
+
+A different ceiling bounds the whole BLOCK: `scope.time_budget_secs`.  At
+the deadline the model stream is cut off and one closing turn runs with
+every tool but `emit_artifact` withheld, so the task writes what it has
+(a closing turn that overruns its grace — 10% of the budget, 60–300 s —
+fails the block with signature `time_budget_exceeded`).  It merges as a
+MINIMUM, so set it on a Parallel or Group and every child gets that much:
+
+```
+"scope": {"time_budget_secs": 7200}
+```
+
+## Data runs: before you press Run
+
+A card whose stages query a slow or shared data backend can burn a working
+day confirming what was already known.  Each check below is a failure an
+8-hour run actually had; do them BEFORE staging, and write the answers into
+the card's instructions.
+
+1. **Check the shelf first.**  `memory_search` the topic, `ls .ziya/` for
+   prior pulls, datasets, ledgers and scorecards, and locate existing
+   scripts or tooling (skill scripts, mounted volumes) with their
+   docstrings.  Re-implementing a detector from a document excerpt when
+   its source is already on disk is hours lost to nothing.
+2. **Pull once, join locally.**  One stage hits the source ONCE per
+   dataset, at the FINEST grain any later block will join on, and
+   registers it (`dataset_register`; Parquet under `.ziya/`).  Every later
+   lane is told, by dataset name, to use `analyze` against it and never the
+   live source.  "Lanes read the stage-1 tables" cannot be obeyed if the
+   tables are aggregates and the lanes need row-level joins — they will
+   re-pull, and a 48-slice re-pull per lane is the whole day.
+3. **Choose the instrument by the question, not by precedent.**  State
+   which source backs each data type and why.  A source with a documented
+   bias is disqualified for SIZING a result even where it still locates
+   one; keep mechanism claims (logs, code, telemetry) separate from size
+   claims so a wrong unit does not take the sound findings down with it.
+4. **Smoke before fan-out.**  Run one slice of one lane ad hoc and time
+   it, then multiply by slices × lanes × hypotheses.  If the product is a
+   day, the card is wrong, not the backend.
+5. **Budget every lane and define "sufficient".**  Put `time_budget_secs`
+   in the lane's (or the Parallel's) scope — the executor enforces it and
+   forces a "write what you have" closing turn — and ALSO give each lane a
+   query count in its instructions and state each hypothesis's falsifier
+   before its query runs.  A lane holding the controlled curve has its
+   answer; a lane at hour two of "cause not identified" should stop, and
+   with the budget set it will.
+6. **Cap concurrency on a shared backend.**  `repeat_max_concurrency` on
+   the Parallel (see above).  Ten slice jobs against one 64-second-capped
+   proxy serialize anyway and add session-collision failures.
+7. **No intermediate without a consumer.**  For every file a block
+   writes, name the block that reads it; drop the ones nobody does (a
+   500 MB list of every path change, when the lanes wanted only real
+   handoffs).  Prefer Parquet to CSV above a few MB.
+8. **Report in the unit the user feels.**  The closing stage restates
+   every size in that unit or leaves it out.
 
 ## Output format
 
