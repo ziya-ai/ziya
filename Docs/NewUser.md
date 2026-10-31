@@ -42,6 +42,26 @@ needs sudo). On Linux it runs the official TeX Live installer into `~/texlive`
 — no sudo — and tells you the one `PATH` line to add. Restart Ziya
 afterwards. The startup banner lists whichever of these is still missing.
 
+Three smaller extras pip-install into Ziya's own interpreter and are part of
+the default run: `--data` (DuckDB, for the `analyze` tool), `--stats`
+(statsmodels) and, on macOS, `--drag` (the native drag helper). Use a flag to
+install just one. When everything is already present the installer prints a
+single "already installed" line.
+
+**Upgrades.** Ziya remembers which extras you installed
+(`~/.ziya/extras_state.json`). Each Playwright release pins a different
+Chromium build, so after `pip install -U ziya` an installed browser can stop
+matching; at startup Ziya re-installs any extra you had opted into that has
+gone missing and needs no sudo (browser, data, stats, drag), and logs a line
+saying so. Launchers that make a fresh venv per version lose every
+pip extra on upgrade; Ziya looks in the previous version's venv for what you
+had and carries it over. TeX on macOS needs sudo, so it is only announced.
+Extras you never installed are never installed for you, only listed. Set
+`ZIYA_EXTRAS_AUTO_REFRESH=0` to turn the automatic refresh off. The System
+Information page (⚙️ → System Info) shows each extra's state, flags the ones
+new in this version, and has an Install button for the ones the server can
+add itself; the rest show the command to paste.
+
 Without the Chromium build the `render_diagram` tool is simply not offered to
 the model; nothing else is affected. PCAP analysis needs nothing extra —
 scapy ships with Ziya and reads capture files without libpcap.
@@ -93,10 +113,13 @@ ziya --endpoint local
 ```
 
 That is the whole setup. With nothing else configured Ziya scans the
-well-known loopback ports — Ollama `:11434`, DwarfStar `:8000`, LM Studio
-`:1234`, llama-server `:8080` — and **every server that answers becomes its
+well-known loopback ports — Ollama `:11434`, DwarfStar and oMLX `:8000`, LM
+Studio `:1234`, llama-server `:8080` (plus whatever port an installed oMLX
+has saved in its settings) — and **every server that answers becomes its
 own endpoint** in the model picker: *Local · DwarfStar (:8000)*, *Local ·
-Ollama (:11434)*, each listing exactly the models that server reports. Pick
+oMLX (:8000)*, *Local · Ollama (:11434)*, each listing exactly the chat
+models that server reports (oMLX's embedding, reranker and document-converter
+entries are left out). Pick
 a model and you have picked its server; nothing guesses. `--endpoint local`
 is shorthand for "the local server" — with one running it is that one, with
 several it takes the first and names the others in the log (pass one as
