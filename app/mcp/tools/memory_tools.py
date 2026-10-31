@@ -34,6 +34,55 @@ def _archive_record(rec: Dict[str, Any]) -> None:
     rec["status"] = "archived"
 
 
+def _probation_hits(query: str, limit: int) -> List[Dict[str, Any]]:
+    """Open probationary proposals matching every token of ``query``.
+
+    Records a ``search_hit`` signal on each hit.  A search hit is evidence
+    the knowledge is wanted, not proof it is correct, so the caller labels
+    these unverified; promotion stays with the lifecycle engine, which
+    promotes once the model both looked for the entry AND used it in a
+    response (search_hit + response_match).
+
+    Runs on EVERY search, not only on an active-store miss.  With ~5.5k
+    active memories the similarity search always returns something, so a
+    miss-only fallthrough was unreachable and rule 3b never fired; a fact
+    proposed twice (2026-10-20, 10-21) decayed both times while the model
+    answered from chat history instead.
+    """
+    hits: List[Dict[str, Any]] = []
+    if not query:
+        return hits
+    try:
+        from app.storage.memory import _tokenize
+        from app.storage.proposals import get_proposals_store
+        pstore = get_proposals_store()
+        q_tokens = set(_tokenize(query))
+        if not q_tokens:
+            return hits
+        for p in pstore.list_open():
+            hay = set(_tokenize(p.get("content", "")))
+            hay.update(t.lower() for t in (p.get("tags") or []))
+            # Conservative: every query token must appear, so a broad
+            # query does not dump the whole queue.
+            if q_tokens <= hay:
+                hits.append(p)
+                pstore.record_signal(p["id"], name="search_hit",
+                                     value={"query": query[:80]})
+                if len(hits) >= limit:
+                    break
+    except Exception as e:
+        logger.debug(f"Probationary search failed: {e}")
+    return hits
+
+
+def _format_probation_hit(p: Dict[str, Any]) -> str:
+    entry = (f"[{p['id']}] ({p.get('layer', 'domain_context')}) "
+             f"[probationary — unverified] {p.get('content', '')}")
+    if p.get("tags"):
+        entry += f"  tags: {', '.join(p['tags'])}"
+    return entry
+
+
 class _OffLoopMemoryBase(BaseMCPTool):
     """Runs a memory tool's body on a worker thread.
 
@@ -163,53 +212,20 @@ class MemorySearchTool(_OffLoopMemoryBase):
         else:
             results = store.list_memories(layer=layer, tags=tags)[:limit]
 
+        probation = _probation_hits(query, limit)
+
         if not results:
-            # Before giving up, check the probationary store.  A search
-            # hit is evidence the knowledge is wanted, but not proof it
-            # is correct — so surface the match (labelled) and record a
-            # ``search_hit`` signal.  Promotion stays with the lifecycle
-            # engine, which promotes once the model both looked for the
-            # entry AND used it in a response (search_hit + response_match).
-            # The previous path substring-matched the legacy proposals.json
-            # and promoted straight to active, bypassing probation.
-            hits = []
-            if query:
-                try:
-                    from app.storage.memory import _tokenize
-                    from app.storage.proposals import get_proposals_store
-                    pstore = get_proposals_store()
-                    q_tokens = set(_tokenize(query))
-                    if q_tokens:
-                        for p in pstore.list_open():
-                            hay = set(_tokenize(p.get("content", "")))
-                            hay.update(t.lower() for t in (p.get("tags") or []))
-                            # Conservative: every query token must appear,
-                            # so a broad query does not dump the whole queue.
-                            if q_tokens <= hay:
-                                hits.append(p)
-                                pstore.record_signal(p["id"], name="search_hit",
-                                                     value={"query": query[:80]})
-                                if len(hits) >= limit:
-                                    break
-                except Exception as e:
-                    logger.debug(f"Probationary search fallback failed: {e}")
-                if hits:
-                    formatted = []
-                    for p in hits:
-                        entry = (f"[{p['id']}] ({p.get('layer', 'domain_context')}) "
-                                 f"[probationary — unverified] {p.get('content', '')}")
-                        if p.get("tags"):
-                            entry += f"  tags: {', '.join(p['tags'])}"
-                        formatted.append(entry)
-                    return {
-                        "content": (
-                            "No active memories matched, but these probationary "
-                            "proposals do.  Treat as unverified; they promote "
-                            "automatically if used.\n\n" + "\n\n".join(formatted)
-                        ),
-                        "count": len(hits),
-                        "probationary": len(hits),
-                    }
+            if probation:
+                return {
+                    "content": (
+                        "No active memories matched, but these probationary "
+                        "proposals do.  Treat as unverified; they promote "
+                        "automatically if used.\n\n"
+                        + "\n\n".join(_format_probation_hit(p) for p in probation)
+                    ),
+                    "count": len(probation),
+                    "probationary": len(probation),
+                }
 
             # Out-of-domain detection with escalation hint
             has_mindmap = len(store.list_mindmap_nodes()) > 0
@@ -258,10 +274,19 @@ class MemorySearchTool(_OffLoopMemoryBase):
                 entry += f"  tags: {', '.join(mem.tags)}"
             formatted.append(entry)
 
-        return {
+        # Probationary matches follow the active hits, labelled, so a fact
+        # on probation is visible even when the active store has unrelated
+        # results for the same words.
+        for p in probation:
+            formatted.append(_format_probation_hit(p))
+
+        out: Dict[str, Any] = {
             "content": "\n\n".join(formatted),
-            "count": len(results),
+            "count": len(results) + len(probation),
         }
+        if probation:
+            out["probationary"] = len(probation)
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -432,17 +457,45 @@ class MemoryProposeTool(_OffLoopMemoryBase):
         except Exception:
             pass
         proposal.id = store.add(proposal, activity_count=current_activity_count())
+        # Provenance corroboration (app/utils/memory_provenance.py).  If this
+        # conversation recovered the fact by reading a prior conversation
+        # (chat_read) whose text supports the proposal, that prior
+        # conversation is an independent occurrence of the fact and is
+        # credited as a corroboration.  The projection ignores the
+        # proposing conversation itself and duplicates.
+        supporters: List[str] = []
+        try:
+            from app.utils.memory_provenance import provenance_for
+            supporters = provenance_for(_conversation_id, content)
+            for cid in supporters:
+                store.corroborate_by_id(proposal.id, conversation_id=cid)
+            if supporters:
+                store.record_signal(proposal.id, name="provenance",
+                                    value={"read_from": supporters[:5]})
+                logger.info(
+                    f"Proposal {proposal.id} corroborated by "
+                    f"{len(supporters)} conversation(s) read this session")
+        except Exception as e:
+            logger.debug(f"Provenance corroboration skipped: {e}")
         pending_count = len(store.list_open())
         _tags = proposal.tags
         if isinstance(_tags, str):
             _tags = [t.strip() for t in _tags.split(",") if t.strip()]
+        # The id is in the message line on purpose.  The frontend persists
+        # only the formatter's message text into the chat record
+        # (mcpFormatter.formatMemoryResult), and that text is what the
+        # model sees on later turns; with the id only in a sibling field,
+        # a proposal made last turn could not be named to
+        # memory_retract_proposal at all.
         return {
             "success": True,
-            "message": f"Memory proposed for review ({pending_count} pending).",
+            "message": f"Memory proposed for review as {proposal.id} "
+                       f"({pending_count} pending).",
             "proposal_id": proposal.id,
             "content": proposal.content,
             "layer": proposal.layer,
             "tags": list(_tags or []),
+            "corroborated_by_history": supporters,
             "pending_count": pending_count,
         }
 
@@ -586,11 +639,18 @@ class MemoryExpandTool(_OffLoopMemoryBase):
 
 class MemoryRetractProposalInput(BaseModel):
     """Input schema for memory_retract_proposal."""
-    proposal_id: str = Field(
-        ...,
+    proposal_id: Optional[str] = Field(
+        None,
         description="The prop_* id of a proposal THIS conversation created "
                     "(returned by memory_propose). Only own-session proposals "
-                    "may be retracted.",
+                    "may be retracted. Omit it and pass content instead if you "
+                    "no longer have the id.",
+    )
+    content: Optional[str] = Field(
+        None,
+        description="The proposed text (or a distinctive part of it) when the "
+                    "id is not at hand. Matched against proposals THIS "
+                    "conversation created.",
     )
 
 
@@ -616,7 +676,8 @@ class MemoryRetractProposalTool(_OffLoopMemoryBase):
         "Retract (dismiss) a memory proposal that YOU created earlier in "
         "THIS conversation — for example, a proposal you now realize was "
         "premature, redundant, or was in-flight work state rather than "
-        "durable knowledge. Pass the prop_* id returned by memory_propose. "
+        "durable knowledge. Pass the prop_* id returned by memory_propose, "
+        "or the proposal's content if you no longer have the id. "
         "You may only retract proposals from the current session; proposals "
         "from prior sessions are awaiting the user's review and are not "
         "yours to dismiss. This never approves a proposal — approval is "
@@ -624,25 +685,69 @@ class MemoryRetractProposalTool(_OffLoopMemoryBase):
     )
     InputSchema = MemoryRetractProposalInput
 
+    @staticmethod
+    def _own_open(store, conversation_id: Optional[str]) -> List[Dict[str, Any]]:
+        if not conversation_id:
+            return []
+        return [p for p in store.list_open()
+                if p.get("conversation_id") == conversation_id]
+
+    @classmethod
+    def _resolve_by_content(cls, store, content: str,
+                            conversation_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The open proposal ``content`` names, or None.
+
+        Ids are a hash of the content, so an exact (whitespace-trimmed)
+        match is deterministic.  Failing that, a unique case-insensitive
+        substring match among THIS conversation's open proposals — the
+        model usually remembers the gist, not the bytes.  Ambiguity is
+        reported rather than guessed.
+        """
+        from app.storage.proposals import _content_hash
+        exact = store.get(f"prop_{_content_hash(content)}")
+        if exact is not None and exact.get("status") == "open":
+            return exact
+        needle = content.strip().casefold()
+        if not needle:
+            return None
+        hits = [p for p in cls._own_open(store, conversation_id)
+                if needle in str(p.get("content", "")).casefold()]
+        return hits[0] if len(hits) == 1 else None
+
+    @classmethod
+    def _own_list_text(cls, store, conversation_id: Optional[str]) -> str:
+        own = cls._own_open(store, conversation_id)
+        if not own:
+            return " This conversation has no open proposals."
+        lines = [f"  {p['id']}: {str(p.get('content', ''))[:100]}" for p in own]
+        return " Open proposals from this conversation:\n" + "\n".join(lines)
+
     def _execute_sync(self, **kwargs) -> Dict[str, Any]:
         proposal_id = (kwargs.get("proposal_id") or "").strip()
+        content = (kwargs.get("content") or "").strip()
         _conversation_id = kwargs.pop("conversation_id", None)
-        if not proposal_id:
-            return {"error": True, "message": "proposal_id is required."}
+        if not proposal_id and not content:
+            return {"error": True,
+                    "message": "proposal_id or content is required."}
 
         from app.storage.proposals import get_proposals_store
         store = get_proposals_store()
 
         # ProposalsStore rows are plain dicts from the event-log projection,
         # not MemoryProposal objects, so field access is by key.
-        target = store.get(proposal_id)
+        target = store.get(proposal_id) if proposal_id else None
+        if (target is None or target.get("status") != "open") and content:
+            target = self._resolve_by_content(store, content, _conversation_id)
         if target is None or target.get("status") != "open":
+            what = f"id '{proposal_id}'" if proposal_id else f"content {content[:60]!r}"
             return {
                 "error": True,
-                "message": f"No pending proposal with id '{proposal_id}'. "
+                "message": f"No pending proposal with {what}. "
                            f"It may have already been approved, dismissed, "
-                           f"or never existed.",
+                           f"or never existed."
+                           + self._own_list_text(store, _conversation_id),
             }
+        proposal_id = target["id"]
 
         # Ownership gate: only the conversation that created the proposal
         # may retract it.  Fails closed — a missing stamp (legacy proposal,
