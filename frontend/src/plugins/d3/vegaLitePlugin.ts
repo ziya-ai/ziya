@@ -560,6 +560,143 @@ export function applyTemporalTickCountFix(spec: any): number {
   return changed;
 }
 
+// ── Ranged-bar normalisation (x/x2 or y/y2 interval marks) ─────────────────
+// Two Vega-Lite semantics models consistently get wrong when they draw an
+// interval bar (x = start, x2 = end):
+//
+//  1. A timeUnit on the primary channel is a BUCKETING transform, not a label
+//     format. It moves `x` into Vega-Lite's reference year (2012) while `x2`
+//     stays in the data's year, so the shared scale spans a decade and every
+//     bar is off-screen or hairline; and it floors sub-unit intervals (a 30-s
+//     episode under "hoursminutes" has zero width). The intent is an axis
+//     label format, so the timeUnit is translated to `axis.format` (+ a utc
+//     scale for utc* units) on EVERY view sharing that channel - a layer that
+//     kept the timeUnit would still live in 2012 on the shared scale. Units
+//     with no d3 format equivalent (week, quarter, dayofyear) are instead
+//     copied to the secondary channel so both ends at least share a year.
+//
+//  2. Once x2 is set, the bar is ranged on x and `y` becomes a POINT
+//     position: without `y2` each bar is a default-thickness sliver at
+//     y = value (and vanishes entirely with cornerRadius). A quantitative `y`
+//     on an x-ranged bar is "height", so `y2: {datum: 0}` is supplied.
+//     Only this orientation is anchored: a y-ranged bar with a quantitative x
+//     (a vertical whisker at a numeric position) legitimately wants the
+//     sliver, and a log y has no zero.
+//
+// Returns the number of encodings changed (for testing). Mutates in place.
+const TIME_UNIT_FORMATS: Record<string, string> = {
+  year: '%Y',
+  yearmonth: '%b %Y',
+  yearmonthdate: '%Y-%m-%d',
+  yearmonthdatehours: '%Y-%m-%d %H',
+  yearmonthdatehoursminutes: '%Y-%m-%d %H:%M',
+  yearmonthdatehoursminutesseconds: '%Y-%m-%d %H:%M:%S',
+  month: '%b',
+  monthdate: '%b %d',
+  monthdatehours: '%b %d %H',
+  date: '%d',
+  day: '%a',
+  hours: '%H',
+  hoursminutes: '%H:%M',
+  hoursminutesseconds: '%H:%M:%S',
+  minutes: '%M',
+  minutesseconds: '%M:%S',
+  seconds: '%S',
+};
+
+function parseTimeUnit(tu: any): { unit: string; utc: boolean } | null {
+  if (typeof tu === 'string') {
+    const utc = tu.startsWith('utc');
+    return { unit: utc ? tu.slice(3) : tu, utc };
+  }
+  if (tu && typeof tu === 'object' && typeof tu.unit === 'string') {
+    return parseTimeUnit(tu.utc ? `utc${tu.unit}` : tu.unit);
+  }
+  return null;
+}
+
+export function applyRangedBarFixes(spec: any): number {
+  if (!spec || typeof spec !== 'object') return 0;
+  let changed = 0;
+  const hasRef = (enc: any) => enc && typeof enc === 'object' && ('field' in enc || 'datum' in enc);
+  const isBar = (mark: any) => mark === 'bar' || (mark && typeof mark === 'object' && mark.type === 'bar');
+
+  // A "view group" is the set of encodings that share scales: a top-level
+  // encoding plus its layers. concat/facet children are separate groups.
+  const fixGroup = (view: any) => {
+    const members: { encoding: any; mark: any }[] = [];
+    if (view.encoding && typeof view.encoding === 'object') {
+      members.push({ encoding: view.encoding, mark: view.mark });
+    }
+    if (Array.isArray(view.layer)) {
+      for (const layer of view.layer) {
+        if (layer?.encoding && typeof layer.encoding === 'object') {
+          members.push({ encoding: layer.encoding, mark: layer.mark ?? view.mark });
+        }
+      }
+    }
+    if (members.length === 0) return;
+
+    for (const [primary, secondary] of [['x', 'x2'], ['y', 'y2']] as const) {
+      // (1) timeUnit on a ranged channel, anywhere in the group.
+      const ranged = members.find(m =>
+        hasRef(m.encoding[primary]) && m.encoding[primary].timeUnit && hasRef(m.encoding[secondary]));
+      if (ranged) {
+        const tu = ranged.encoding[primary].timeUnit;
+        const parsed = parseTimeUnit(tu);
+        const format = parsed ? TIME_UNIT_FORMATS[parsed.unit] : undefined;
+        for (const m of members) {
+          const p = m.encoding[primary];
+          const s = m.encoding[secondary];
+          if (!p || typeof p !== 'object' || JSON.stringify(p.timeUnit) !== JSON.stringify(tu)) continue;
+          if (format) {
+            delete p.timeUnit;
+            if (p.type === undefined) p.type = 'temporal';
+            if (p.axis !== null) {
+              const axis = p.axis && typeof p.axis === 'object' ? p.axis : {};
+              if (axis.format === undefined) axis.format = format;
+              p.axis = axis;
+            }
+            if (parsed!.utc) {
+              const scale = p.scale && typeof p.scale === 'object' ? p.scale : {};
+              if (scale.type === undefined) scale.type = 'utc';
+              p.scale = scale;
+            }
+            if (s && typeof s === 'object' && 'timeUnit' in s) delete s.timeUnit;
+            console.info(`🔧 RANGED-BAR-FIX: ${primary} timeUnit "${typeof tu === 'string' ? tu : parsed?.unit}" -> axis.format "${format}" (interval marks must not be bucketed)`);
+          } else if (hasRef(s) && s.timeUnit === undefined) {
+            s.timeUnit = tu;
+            console.info(`🔧 RANGED-BAR-FIX: copied ${primary} timeUnit to ${secondary} so both ends share a reference year`);
+          } else {
+            continue;
+          }
+          changed++;
+        }
+      }
+    }
+
+    // (2) x-ranged bar with a quantitative y and no y2: anchor the height at 0.
+    for (const m of members) {
+      const e = m.encoding;
+      if (!isBar(m.mark)) continue;
+      if (!hasRef(e.x) || !hasRef(e.x2) || e.y2 !== undefined) continue;
+      const y = e.y;
+      if (!y || typeof y !== 'object' || !('field' in y) || y.type !== 'quantitative') continue;
+      if (y.scale && typeof y.scale === 'object' && /^(log|symlog|pow|sqrt)$/.test(String(y.scale.type))) continue;
+      e.y2 = { datum: 0 };
+      changed++;
+      console.info('🔧 RANGED-BAR-FIX: x/x2 bar with quantitative y had no y2; anchored at 0 so y is a height, not a sliver');
+    }
+  };
+
+  fixGroup(spec);
+  for (const key of ['concat', 'hconcat', 'vconcat']) {
+    if (Array.isArray(spec[key])) spec[key].forEach(fixGroup);
+  }
+  if (spec.spec && typeof spec.spec === 'object') fixGroup(spec.spec);
+  return changed;
+}
+
 // SSRF hardening (PenPal #83): recursively remove any `data.url` from a
 // spec before it reaches vegaEmbed, at every nesting level (top-level,
 // layer[], vconcat/hconcat/concat[], facet spec, named datasets). A
@@ -3509,6 +3646,15 @@ export const vegaLitePlugin: D3RenderPlugin = {
         applyTemporalTickCountFix(vegaSpec);
       } catch (e) {
         console.warn('Temporal tick-count normalisation skipped:', e);
+      }
+
+      // Fix 0.02: interval (x/x2, y/y2) bars - translate a bucketing timeUnit
+      // to an axis format and anchor a quantitative height at 0. Runs AFTER the
+      // tick-count fix so that fix still sees the timeUnit and leaves these alone.
+      try {
+        applyRangedBarFixes(vegaSpec);
+      } catch (e) {
+        console.warn('Ranged-bar normalisation skipped:', e);
       }
 
       // Fix 0.1: Handle nominal fields with many categories that might cause slice errors
