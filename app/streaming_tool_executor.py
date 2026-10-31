@@ -1728,6 +1728,20 @@ class StreamingToolExecutor:
                 if not tool_name.startswith('mcp_') and tool_name not in builtin_tool_names:
                     tool['name'] = f'mcp_{tool_name}'
                 bedrock_tools.append(tool)
+        if _native_search and _mcp_filter.reach:
+            # Search entry first, within-reach servers' tools last with
+            # defer_loading; Ziya's loader/search builtins dropped (the API's
+            # search replaces them).  Order and content depend only on
+            # placement + registered tools, so the array never moves.
+            from app.utils.bench_prompt import _tool_server as _srv_of
+            from app.utils.mcp_ondemand import native_tool_payload
+            _obj_by_name = {c.get('name'): t for t, c in zip(all_tools, converted_tools)}
+            bedrock_tools = native_tool_payload(
+                [(_obj_by_name.get(c.get('name')), c) for c in bedrock_tools],
+                _srv_of, _mcp_filter.reach)
+            all_tools = [t for t in all_tools
+                         if self._normalize_tool_name(getattr(t, 'name', '')) not in ('load_server_tools', 'search_server_tools')]
+            logger.info(f"🔎 TOOL_SEARCH: {len(_mcp_filter.reach)} within-reach server(s) sent deferred")
 
         return all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools
 
@@ -3302,6 +3316,9 @@ class StreamingToolExecutor:
             # Per-iteration by design: only the turn whose tool_use the pending
             # tool_result answers needs them, and nothing is persisted.
             completed_thinking_blocks: List[Dict[str, Any]] = []
+            # Tool-search blocks the API requires back verbatim (PassbackBlock);
+            # echoed with the thinking blocks, never gated by the thinking switch.
+            passback_blocks: List[Dict[str, Any]] = []
             # Content-block index of the FIRST text block in this response —
             # ordering metadata for thinking passback.  The echoed assistant
             # turn must keep blocks in original order (interleaved thinking
@@ -3437,7 +3454,7 @@ class StreamingToolExecutor:
                 from app.providers.base import (
                     TextDelta, ToolUseStart, ToolUseInput, ToolUseEnd,
                     UsageEvent, ThinkingDelta, ThinkingBlock, ErrorEvent,
-                    ErrorType, StreamEnd, ProcessingEvent)
+                    ErrorType, StreamEnd, ProcessingEvent, PassbackBlock)
                 # Stoppable so the repetition guard can close the upstream
                 # stream (ending generation and its cost); the wrapper then
                 # yields StreamEnd(stop_reason='repetition'), so the normal
@@ -3549,6 +3566,9 @@ class StreamingToolExecutor:
                         chunk = {'type': 'content_block_delta',
                                  'delta': {'type': 'thinking_delta',
                                            'thinking': stream_event.content}}
+                    elif isinstance(stream_event, PassbackBlock):
+                        passback_blocks.append({**stream_event.block, '_index': stream_event.index})
+                        continue
                     elif isinstance(stream_event, ThinkingBlock):
                         if stream_event.block_type == 'reasoning_content':
                             # Flat OpenAI-compatible reasoning (ds4/DeepSeek,
@@ -4538,6 +4558,11 @@ Please retry the tool call with valid JSON. Ensure:
                             and not ziya_env("ZIYA_DISABLE_THINKING_PASSBACK"))
                         else None
                     )
+                    # Tool-search blocks go back regardless of the thinking
+                    # switch; without them the found tools' tool_use blocks
+                    # cannot be resolved by the API.
+                    if passback_blocks:
+                        _tb_pass = list(_tb_pass or []) + passback_blocks
                     # Per-content-block text segments: when the model emitted
                     # MULTIPLE text blocks (adaptive thinking interleaves
                     # reasoning between prose segments), merging them into a

@@ -108,6 +108,18 @@ class ThinkingBlock(StreamEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class PassbackBlock(StreamEvent):
+    """A response content block that must be echoed back verbatim in the
+    assistant turn, at its original index, but is neither text, tool_use
+    nor thinking: the Anthropic tool-search blocks ``server_tool_use`` and
+    ``tool_search_tool_result`` (design/mcp-on-demand.md).  Dropping or
+    moving one leaves a ``tool_use`` for a found tool the API cannot
+    resolve.  ``block`` is the API-shaped dict, ready to send."""
+    block: Dict[str, Any] = None  # type: ignore[assignment]
+    index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessingEvent(StreamEvent):
     """The model is still processing but has not emitted data recently.
 
@@ -414,12 +426,16 @@ class LLMProvider(ABC):
                 from app.utils.logging_utils import logger
                 logger.warning(
                     "🧠 THINKING_PASSBACK: %d of %d thinking block(s) "
-                    "unsigned — echoing none for this turn (a partial "
+                    "unsigned — echoing no thinking this turn (a partial "
                     "set shifts later blocks out of their original "
                     "positions and the API rejects the request)",
                     len(_unsigned), len(thinking_blocks),
                 )
-                thinking_blocks = None
+                # Thinking only: tool-search passback blocks (PassbackBlock)
+                # ride in the same list and must survive, or the found
+                # tools' tool_use blocks become unresolvable.
+                thinking_blocks = [tb for tb in thinking_blocks
+                                   if tb.get("type") not in ("thinking", "redacted_thinking")] or None
         thinking_items: List[Any] = []
         for tb in (thinking_blocks or []):
             tb = dict(tb)
