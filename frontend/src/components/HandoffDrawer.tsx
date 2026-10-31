@@ -14,13 +14,17 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { Alert, Button, Drawer, Input, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Drawer, Input, Select, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { useTheme } from '../context/ThemeContext';
 import * as handoffApi from '../api/handoffApi';
 import type { HandoffState } from '../api/handoffApi';
 import { useHandoffDraftRequest } from '../hooks/useHandoffDraftRequest';
+import {
+  DRAFT_TIER_LABELS, DRAFT_TIER_ORDER, fetchModelTiers, readDraftTier, writeDraftTier,
+  type DraftTierChoice, type TierInfo,
+} from '../utils/handoffDraftModel';
 
 const { Text } = Typography;
 
@@ -39,6 +43,11 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
   const [doc, setDoc] = useState('');
   const [workingSet, setWorkingSet] = useState<string[]>([]);
   const [busy, setBusy] = useState<'save' | 'commit' | 'draft' | null>(null);
+  // Which model writes the draft: a portable tier (default `medium`, the
+  // standard model) or the conversation's own pin.  Remembered per browser.
+  const [draftTier, setDraftTier] = useState<DraftTierChoice>(() => readDraftTier());
+  const [tierInfo, setTierInfo] = useState<TierInfo[]>([]);
+  const chooseDraftTier = (t: DraftTierChoice) => { setDraftTier(t); writeDraftTier(t); };
 
   const open = !!conversationId;
   // The SOURCE conversation's own project, read through a ref so that
@@ -68,6 +77,15 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
     else { setState(null); setDoc(''); }
   }, [conversationId, reload]);
 
+  // Resolved model names for the tier selector's labels (cached per page;
+  // the selector works without them).
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    fetchModelTiers().then(r => { if (!cancelled) setTierInfo(r.tiers); }).catch(() => { /* labels only */ });
+    return () => { cancelled = true; };
+  }, [open]);
+
   const dirty = useMemo(() => (state?.draft?.document ?? '') !== doc, [state, doc]);
   const hasDraft = !!state?.draft?.document || doc.trim().length > 0;
   const canRequestDraft = !!conversationId && conversationId === currentConversationId && !isStreaming;
@@ -79,7 +97,7 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
     if (!conversationId) return;
     setBusy('draft');
     try {
-      const draft = await requestDraft(conversationId);
+      const draft = await requestDraft(conversationId, { tier: draftTier });
       if (draft) {
         await reload(conversationId);
         message.success('Handoff draft written');
@@ -229,11 +247,30 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
           </div>
         )}
         {!hasDraft && !loading && busy !== 'draft' && (
-          <div style={{ marginBottom: 8 }}>
+          <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <Tooltip title={!canRequestDraft ? (isStreaming ? 'Wait for the current response to finish' : 'Open this conversation first') : undefined}>
               <Button size="small" onClick={askModelToDraft} disabled={!canRequestDraft}>Ask the model to draft it</Button>
             </Tooltip>
-            <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>or write it below</Text>
+            <Text type="secondary" style={{ fontSize: 11 }}>using</Text>
+            <Select
+              size="small"
+              data-testid="handoff-draft-tier"
+              aria-label="Model tier for drafting"
+              style={{ minWidth: 190 }}
+              value={draftTier ?? 'conversation'}
+              onChange={(v: string) => chooseDraftTier(v === 'conversation' ? null : (v as DraftTierChoice))}
+              options={[
+                ...DRAFT_TIER_ORDER.map(t => {
+                  const info = tierInfo.find(i => i.tier === t);
+                  return {
+                    value: t,
+                    label: info ? `${DRAFT_TIER_LABELS[t]} · ${info.resolved_model}${info.exact ? '' : ' (≈)'}` : DRAFT_TIER_LABELS[t],
+                  };
+                }),
+                { value: 'conversation', label: "This conversation's model" },
+              ]}
+            />
+            <Text type="secondary" style={{ fontSize: 11 }}>or write it below</Text>
           </div>
         )}
         <Input.TextArea
