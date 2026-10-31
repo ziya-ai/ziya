@@ -15,6 +15,8 @@ import { flattenNestedClassGenerics } from './mermaidClassGenerics';
 import { escapeClassDiagramLabelSemicolons } from './mermaidClassSemicolons';
 import { collapseClassDiagramDoubleBraces, collapseErDiagramDoubleBraces } from './mermaidClassDoubleBraces';
 import { escapeGanttTaskNameColons } from './mermaidGanttTaskColons';
+import { escapeStateLabelText } from './mermaidStateLabelText';
+import { quoteXychartAxisLabels } from './mermaidXychartAxisLabels';
 
 // Types for preprocessors and error handlers
 interface Preprocessor {
@@ -3076,6 +3078,17 @@ export function initMermaidEnhancer(): void {
     name: 'xychart-quotes-fix',
     priority: 140,
     diagramTypes: ['xychart']
+  });
+
+  // A bare x-axis band label is lexed as alphaNum tokens, so a time label
+  // ("05:54:15") fails at the colon. Quote labels the lexer cannot read.
+  // Registered for both header spellings: the type match is exact, and
+  // `xychart-beta` normalises to itself.
+  registerPreprocessor(
+    (definition: string): string => quoteXychartAxisLabels(definition), {
+    name: 'xychart-axis-label-quote',
+    priority: 135,
+    diagramTypes: ['xychart', 'xychart-beta']
   });
 
   // Add a preprocessor to fix flowchart line break issues
