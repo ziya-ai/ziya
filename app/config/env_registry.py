@@ -101,7 +101,7 @@ _VARS: List[EnvVar] = [
            cli_flag="--model-id"),
     EnvVar("ZIYA_LOCAL_MODEL_URL", str, "http://localhost:11434", EnvCategory.MODEL,
            "Base URL of a local OpenAI-compatible server for --endpoint local "
-           "(Ollama :11434, LM Studio :1234, llama-server :8080). '/v1' is added if missing."),
+           "(Ollama :11434, DwarfStar/oMLX :8000, LM Studio :1234, llama-server :8080). '/v1' is added if missing."),
     EnvVar("ZIYA_LOCAL_MODEL", str, "qwen2.5-coder:7b", EnvCategory.MODEL,
            "Model name to request from the local server (as the server names it)."),
     EnvVar("ZIYA_LOCAL_TOKEN_LIMIT", int, None, EnvCategory.MODEL,
@@ -110,8 +110,13 @@ _VARS: List[EnvVar] = [
            "it (sending Ollama options.num_ctx to match); set this only if the full "
            "window's KV cache does not fit in memory."),
     EnvVar("ZIYA_LOCAL_RUNTIME", str, None, EnvCategory.MODEL,
-           "Force the local runtime for metadata discovery: 'ollama' or 'lmstudio'. "
+           "Force the local runtime for metadata discovery: 'ollama', 'lmstudio' or 'omlx'. "
            "Auto-detected when unset."),
+    EnvVar("ZIYA_LOCAL_API_KEY", str, None, EnvCategory.MODEL,
+           "Bearer token for a local server that requires one (sent only after a "
+           "keyless GET /v1/models was refused). An oMLX key is read automatically "
+           "from OMLX_API_KEY or auth.api_key in its settings.json, so this is "
+           "needed only for other runtimes or a remote host."),
 
     # ── Model Parameters ──────────────────────────────────────────────────
     EnvVar("ZIYA_TEMPERATURE", float, None, EnvCategory.MODEL_PARAMS,
@@ -183,6 +188,17 @@ _VARS: List[EnvVar] = [
            "A reconnect within the window resumes it with a replay. Suspended "
            "while the turn is waiting on a human decision, and irrelevant to "
            "an explicit Stop, which cancels immediately."),
+    EnvVar("ZIYA_CHAT_TURN_UNWATCHED_GRACE_SECS", int, 0, EnvCategory.MCP,
+           "Disconnect grace for a chat turn that has already run a tool "
+           "(agentic or headless work). 0 means such a turn is never "
+           "cancelled for lack of a viewer; it stays bounded by the iteration "
+           "and per-turn tool-call ceilings. A positive value cancels it "
+           "after that many seconds with no viewer. Tool-less turns use "
+           "ZIYA_CHAT_TURN_DISCONNECT_GRACE_SECS."),
+    EnvVar("ZIYA_CHAT_TURN_RECORD_RETENTION_HOURS", int, 168, EnvCategory.MCP,
+           "How long the on-disk chat turn records in ~/.ziya/chat_turns/ are "
+           "kept. A record lets a tab replay a turn that finished, or was "
+           "interrupted by a restart, after it left the server's memory."),
     EnvVar("ZIYA_GIT_PROVENANCE_TRAILER", bool, True, EnvCategory.MCP,
            "Append a 'Co-authored-by: Ziya v<version> (<model>/<endpoint>)' "
            "trailer to commits made by the git builtin tool. Set false to "
@@ -232,6 +248,13 @@ _VARS: List[EnvVar] = [
     EnvVar("ZIYA_WHISPER_COMPUTE_TYPE", str, "int8", EnvCategory.FEATURES,
            "CTranslate2 compute type used by faster-whisper, such as 'int8', "
            "'float16', or 'default'."),
+    EnvVar("ZIYA_TRANSCRIBE_MAX_MB", int, 1024, EnvCategory.FEATURES,
+           "Largest audio file accepted for local voice transcription, in MB. "
+           "The default fits a 30-minute 48 kHz stereo WAV."),
+    EnvVar("ZIYA_BULK_SYNC_MAX_MB", int, 256, EnvCategory.FEATURES,
+           "Largest request body accepted by /chats/bulk-sync, in MB. Other "
+           "routes keep the 20 MB limit. The browser batches sync to ~8 MB, so "
+           "this matters only for a single conversation over 20 MB."),
 
     # ── Diff Application ──────────────────────────────────────────────────
     EnvVar("ZIYA_ENABLE_DIFF_VALIDATION", bool, True, EnvCategory.DIFF,
@@ -366,7 +389,7 @@ _VARS: List[EnvVar] = [
            "Flag: project root was explicitly set by --root, not auto-detected.",
            user_facing=False),
     EnvVar("ZIYA_VERSION", str, None, EnvCategory.INTERNAL,
-           "Version override set by wrapper scripts (e.g. toolbox).", user_facing=False),
+           "Version override set by launcher wrapper scripts.", user_facing=False),
     EnvVar("ZIYA_MEMORY_EVAL_MODEL", str, None, EnvCategory.INTERNAL,
            "Model override for memory evaluation/extraction.", user_facing=False),
     EnvVar("ZIYA_INCLUDE_INTERNAL_REGISTRIES", bool, False, EnvCategory.INTERNAL,

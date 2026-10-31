@@ -199,40 +199,120 @@ export async function bulkSync(projectId: string, chats: ServerChat[]): Promise<
   chats = _filtered;
   if (chats.length === 0) return { created: 0, updated: 0, skipped: 0, errors: [] };
 
-  // Chunk large payloads to avoid 413 Request Entity Too Large.
-  // With 500+ conversations carrying full message bodies, a single
-  // POST can easily exceed the server's 20MB request limit.
-  const CHUNK_SIZE = 50;
-  if (chats.length > CHUNK_SIZE) {
-    const aggregate: BulkSyncResult = { created: 0, updated: 0, skipped: 0, errors: [] };
-    for (let i = 0; i < chats.length; i += CHUNK_SIZE) {
-      const chunk = chats.slice(i, i + CHUNK_SIZE);
-      const result = await bulkSync(projectId, chunk);
-      aggregate.created += result.created;
-      aggregate.updated += result.updated;
-      aggregate.skipped += result.skipped;
-      aggregate.errors.push(...result.errors);
-    }
-    return aggregate;
+  // Batch by serialized size as well as count.  The server refuses any body
+  // over 20 MB before the handler runs (RequestSizeMiddleware, app/server.py).
+  // With count-only chunking one large conversation failed its whole batch:
+  // every chat in it -- including a just-created one, which then 404'd on
+  // read -- stayed unsynced, and the next poll rebuilt the same batch.
+  const aggregate: BulkSyncResult = { created: 0, updated: 0, skipped: 0, errors: [] };
+  for (const batch of planBulkSyncBatches(chats)) {
+    const r = await postBulkSyncBatch(projectId, batch);
+    aggregate.created += r.created;
+    aggregate.updated += r.updated;
+    aggregate.skipped += r.skipped;
+    aggregate.errors.push(...r.errors);
   }
+  return aggregate;
+}
 
+/** Largest serialized batch sent in one POST; well under the server's 20 MB ceiling. */
+export const BULK_SYNC_MAX_BYTES = 8 * 1024 * 1024;
+export const BULK_SYNC_MAX_CHATS = 50;
+
+export interface BulkSyncBatch {
+  ids: string[];
+  /** Each chat already JSON-serialized, so it is stringified once. */
+  parts: string[];
+  bytes: number;
+}
+
+/** UTF-8 byte length -- what Content-Length counts -- without allocating. */
+export function utf8ByteLength(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) { n += 4; i++; }
+    else n += 3;
+  }
+  return n;
+}
+
+/**
+ * Group chats into batches of at most maxChats and at most maxBytes
+ * serialized.  A chat larger than maxBytes on its own gets a batch to
+ * itself, so if the server refuses it, it is the only chat that fails.
+ */
+export function planBulkSyncBatches(
+  chats: ServerChat[],
+  maxBytes: number = BULK_SYNC_MAX_BYTES,
+  maxChats: number = BULK_SYNC_MAX_CHATS,
+): BulkSyncBatch[] {
+  const batches: BulkSyncBatch[] = [];
+  let cur: BulkSyncBatch = { ids: [], parts: [], bytes: 0 };
+  for (const c of chats) {
+    const part = JSON.stringify(c);
+    const bytes = utf8ByteLength(part) + 1; // + the ',' separator
+    if (cur.ids.length > 0 && (cur.bytes + bytes > maxBytes || cur.ids.length >= maxChats)) {
+      batches.push(cur);
+      cur = { ids: [], parts: [], bytes: 0 };
+    }
+    cur.ids.push(String(c.id));
+    cur.parts.push(part);
+    cur.bytes += bytes;
+  }
+  if (cur.ids.length > 0) batches.push(cur);
+  return batches;
+}
+
+function splitBatch(b: BulkSyncBatch, from: number, to: number): BulkSyncBatch {
+  const parts = b.parts.slice(from, to);
+  return {
+    ids: b.ids.slice(from, to),
+    parts,
+    bytes: parts.reduce((n, p) => n + utf8ByteLength(p) + 1, 0),
+  };
+}
+
+async function postBulkSyncBatch(projectId: string, batch: BulkSyncBatch): Promise<BulkSyncResult> {
   try {
     return await timedFetchJson<BulkSyncResult>(
       `${BASE}/${projectId}/chats/bulk-sync`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...projectHeaders() },
-        body: JSON.stringify({ chats }),
+        // Byte-identical to JSON.stringify({ chats }).
+        body: `{"chats":[${batch.parts.join(',')}]}`,
       },
       BULK_TIMEOUT_MS,
       'bulkSync',
     );
   } catch (e) {
-    if (e instanceof SyncHttpError) {
-      console.error('Bulk sync failed:', e.status);
-      return { created: 0, updated: 0, skipped: 0, errors: [{ id: 'bulk', error: `HTTP ${e.status}` }] };
+    if (!(e instanceof SyncHttpError)) throw e;
+    if (e.status === 413 && batch.ids.length > 1) {
+      // The server limit is lower than the planner assumed; halve and retry
+      // so the chats that fit still land.
+      const mid = Math.ceil(batch.ids.length / 2);
+      const agg: BulkSyncResult = { created: 0, updated: 0, skipped: 0, errors: [] };
+      for (const half of [splitBatch(batch, 0, mid), splitBatch(batch, mid, batch.ids.length)]) {
+        const r = await postBulkSyncBatch(projectId, half);
+        agg.created += r.created;
+        agg.updated += r.updated;
+        agg.skipped += r.skipped;
+        agg.errors.push(...r.errors);
+      }
+      return agg;
     }
-    throw e;
+    const mb = (batch.bytes / (1024 * 1024)).toFixed(1);
+    const error = e.status === 413
+      ? `HTTP 413: chat is ${mb} MB serialized, over the server's request size limit`
+      : `HTTP ${e.status}`;
+    console.error(
+      `Bulk sync failed: ${error} (${batch.ids.length} chat(s): ` +
+      `${batch.ids.map(id => id.slice(0, 8)).join(', ')})`,
+    );
+    return { created: 0, updated: 0, skipped: 0, errors: batch.ids.map(id => ({ id, error })) };
   }
 }
 

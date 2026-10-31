@@ -1644,9 +1644,17 @@ app.add_middleware(
 app.add_middleware(StreamingMiddleware)
 
 # Add request size middleware
+# Local transcription streams its upload to disk and enforces its own, much
+# larger ceiling (ZIYA_TRANSCRIBE_MAX_MB) so a 30-minute recording fits.
+# Conversation sync gets ZIYA_BULK_SYNC_MAX_MB so a single conversation
+# over 20 MB (many images) can still reach the server.
+from app.routes.transcription_routes import transcription_request_limit
+from app.middleware.request_size import BULK_SYNC_PATH_PATTERN, bulk_sync_request_limit
 app.add_middleware(
     RequestSizeMiddleware,
-    default_max_size_mb=20  # 20MB
+    default_max_size_mb=20,  # 20MB
+    path_limits={"/api/transcribe": transcription_request_limit()},
+    path_patterns={BULK_SYNC_PATH_PATTERN: bulk_sync_request_limit()},
 )
 
 # Add model settings middleware

@@ -14,6 +14,7 @@ import {
     selectDirtyConversations,
 } from '../pagehideFlush';
 import { _resetInstanceIdentityForTests, setServerInstanceId } from '../instanceIdentity';
+import { utf8ByteLength } from '../../api/conversationSyncApi';
 
 const conv = (over: Partial<any> = {}) => ({
     id: 'c1', title: 'Real title', isActive: true, _isShell: false,
@@ -132,6 +133,70 @@ describe('flushPendingDirtyOnPagehide', () => {
         expect(() => flushPendingDirtyOnPagehide({
             conversations: [conv()], pendingIds: new Set(['c1']), fallbackProjectId: 'p1', toServerChat, fetchFn,
         })).not.toThrow();
+    });
+});
+
+describe('keepalive budget is packed per conversation', () => {
+    // Regression: the flush was all-or-nothing, so one large conversation in
+    // the pending set meant nothing was sent, small ones included.  It also
+    // measured UTF-16 code units while browsers cap keepalive in bytes.
+    const sized = (id: string, content: string, projectId = 'p1') =>
+        conv({ id, projectId, messages: [{ role: 'human', content }] });
+    const sentBodies = (fetchFn: jest.Mock) =>
+        fetchFn.mock.calls.map(c => (c as unknown as [string, RequestInit])[1].body as string);
+
+    it('an oversized conversation is deferred; the small ones still go', () => {
+        const fetchFn = jest.fn(() => Promise.resolve({} as any));
+        const pending = new Set(['small1', 'big', 'small2', 'filtered']);
+        const out = flushPendingDirtyOnPagehide({
+            conversations: [
+                sized('small1', 'hi'), sized('big', 'x'.repeat(KEEPALIVE_BODY_LIMIT)),
+                sized('small2', 'hi'), conv({ id: 'filtered', isActive: false }),
+            ],
+            pendingIds: pending, fallbackProjectId: 'p1', toServerChat, fetchFn: fetchFn as any,
+        });
+        expect(out).toEqual({ kind: 'sent', projects: 1, conversations: 2, deferred: 1 });
+        expect(JSON.parse(sentBodies(fetchFn)[0]).chats.map((c: any) => c.id)).toEqual(['small1', 'small2']);
+        // Only the deferred id stays pending; the filtered one is consumed as before.
+        expect([...pending]).toEqual(['big']);
+    });
+
+    it('counts UTF-8 bytes: multibyte content under the limit in code units is deferred', () => {
+        const fetchFn = jest.fn();
+        const n = Math.floor(KEEPALIVE_BODY_LIMIT * 0.6);   // ~1.2x the limit in bytes
+        const pending = new Set(['c1']);
+        const out = flushPendingDirtyOnPagehide({
+            conversations: [sized('c1', 'é'.repeat(n))],
+            pendingIds: pending, fallbackProjectId: 'p1', toServerChat, fetchFn,
+        });
+        expect(JSON.stringify({ chats: [{ c: 'é'.repeat(n) }] }).length).toBeLessThan(KEEPALIVE_BODY_LIMIT);
+        expect(out.kind).toBe('too-large');
+        expect(fetchFn).not.toHaveBeenCalled();
+        expect(pending.size).toBe(1);
+    });
+
+    it('the budget is shared across projects', () => {
+        const fetchFn = jest.fn(() => Promise.resolve({} as any));
+        const half = 'x'.repeat(Math.floor(KEEPALIVE_BODY_LIMIT * 0.6));
+        const pending = new Set(['a', 'b']);
+        const out = flushPendingDirtyOnPagehide({
+            conversations: [sized('a', half, 'p1'), sized('b', half, 'p2')],
+            pendingIds: pending, fallbackProjectId: 'p1', toServerChat, fetchFn: fetchFn as any,
+        });
+        expect(out).toEqual({ kind: 'sent', projects: 1, conversations: 1, deferred: 1 });
+        const total = sentBodies(fetchFn).reduce((n, b) => n + utf8ByteLength(b), 0);
+        expect(total).toBeLessThanOrEqual(KEEPALIVE_BODY_LIMIT);
+        expect([...pending]).toEqual(['b']);
+    });
+
+    it('each body is byte-identical to JSON.stringify({chats})', () => {
+        const fetchFn = jest.fn(() => Promise.resolve({} as any));
+        const a = conv({ id: 'a' }), b = conv({ id: 'b' });
+        flushPendingDirtyOnPagehide({
+            conversations: [a, b], pendingIds: new Set(['a', 'b']),
+            fallbackProjectId: 'p1', toServerChat, fetchFn: fetchFn as any,
+        });
+        expect(sentBodies(fetchFn)).toEqual([JSON.stringify({ chats: [toServerChat(a, 'p1'), toServerChat(b, 'p1')] })]);
     });
 });
 
