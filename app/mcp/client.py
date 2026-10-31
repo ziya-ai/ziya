@@ -18,6 +18,7 @@ import time
 
 from app.utils.logging_utils import logger
 from app.config.env_registry import ziya_env
+from app.utils import mcp_sdk_compat as sdk_compat
 
 # Upper bound on the unmatched-response buffer so a misbehaving server
 # (late responses, unknown ids) cannot grow it without limit.
@@ -910,23 +911,60 @@ class MCPClient:
                 self.logs.append(f"ERROR: {self.startup_failure['summary']}")
                 self.is_connected = False
                 return False
+            # The provider builds the transport's HTTP client, so it must be
+            # able to build the type THIS SDK takes (httpx on 1.x, httpx2 on
+            # 2.x). Checked before the handshake so nothing is sent.
+            http_lib = sdk_compat.http_library_name()
+            declared = tuple(getattr(auth_handler, "http_libraries", ("httpx",)))
+            if http_lib not in declared:
+                self.startup_failure = {
+                    "code": "remote_auth_sdk_mismatch",
+                    "summary": f"Auth handler for '{auth_type}' does not support {http_lib}",
+                    "detail": (
+                        f"mcp {sdk_compat.sdk_version()} needs an {http_lib}.AsyncClient, but "
+                        f"the '{auth_type}' handler ({type(auth_handler).__name__}) "
+                        f"declares only {', '.join(declared)}."
+                    ),
+                    "hint": (
+                        "Update the plugin to build its client with "
+                        "app.utils.mcp_sdk_compat.http_module() and list "
+                        f"'{http_lib}' in http_libraries, or install mcp "
+                        f"{'2.x' if http_lib == 'httpx' else '1.x'}."
+                    ),
+                }
+                logger.error(f"{self.startup_failure['summary']} — {self.startup_failure['detail']}")
+                self.logs.append(f"ERROR: {self.startup_failure['summary']}")
+                self.is_connected = False
+                return False
 
         from app.plugins.interfaces import RemoteAuthError
         stack = None
         try:
-            import httpx
             from mcp.client.session import ClientSession
 
             stack = contextlib.AsyncExitStack()
             await stack.__aenter__()
 
-            timeout = httpx.Timeout(30, read=300)
+            timeout = sdk_compat.make_timeout(30, read=300)
             if auth_handler is not None:
                 http_client = await auth_handler.build_http_client(
                     url, self.server_config, headers=headers, timeout=timeout
                 )
+                if not sdk_compat.is_compatible_client(http_client):
+                    # Declared support but built the wrong type: refuse here
+                    # with the cause, not deep inside the transport.
+                    got = f"{type(http_client).__module__}.{type(http_client).__name__}"
+                    try:
+                        await http_client.aclose()
+                    except Exception:  # noqa: BLE001 — best-effort close of a foreign object
+                        pass
+                    raise RemoteAuthError(
+                        f"Auth handler for '{auth_type}' returned {got}; mcp "
+                        f"{sdk_compat.sdk_version()} needs {sdk_compat.http_library_name()}.AsyncClient",
+                        hint="Build the client with app.utils.mcp_sdk_compat.http_module().",
+                    )
             else:
-                http_client = httpx.AsyncClient(headers=headers or {}, timeout=timeout)
+                http_client = sdk_compat.make_http_client(headers=headers, timeout=timeout)
             # The SDK does not close a caller-supplied client; own its lifetime
             # here so disconnect() releases the connection pool.
             stack.push_async_callback(http_client.aclose)
@@ -946,7 +984,7 @@ class MCPClient:
             session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
 
             init_result = await session.initialize()
-            logger.info(f"Remote MCP server initialized: {server_name} (protocol={init_result.protocolVersion})")
+            logger.info(f"Remote MCP server initialized: {server_name} (protocol={sdk_compat.protocol_version(init_result)})")
 
             self._sdk_session = session
             self._sdk_exit_stack = stack
@@ -988,6 +1026,22 @@ class MCPClient:
             await self._close_stack(stack)
             return False
         except Exception as e:  # noqa: BLE001 — SDK surface: httpx errors, anyio groups, McpError
+            sdk_problem = sdk_compat.unsupported_sdk_message()
+            if sdk_problem:
+                # Ziya supports mcp 1.x and 2.x; anything else means the
+                # environment was altered after install (often by a bare
+                # 'pip install' of another package).
+                self.startup_failure = {
+                    "code": "mcp_sdk_incompatible",
+                    "summary": f"Incompatible mcp package {sdk_compat.sdk_version()} in Ziya's environment",
+                    "detail": f"{sdk_problem} Connecting to {server_name} failed with: {e}",
+                    "hint": "Run: pip install 'mcp>=1.23,<3'  (or reinstall Ziya with pipx), then restart Ziya.",
+                }
+                logger.error(f"{self.startup_failure['summary']} — {e}")
+                self.logs.append(f"ERROR: {self.startup_failure['summary']}. {self.startup_failure['hint']}")
+                self.is_connected = False
+                await self._close_stack(stack)
+                return False
             logger.error(f"Failed to connect to remote MCP server {server_name}: {e}", exc_info=True)
             self.logs.append(f"ERROR: Remote connection failed — {e}")
             self.is_connected = False
@@ -1016,7 +1070,8 @@ class MCPClient:
                     MCPTool(
                         name=t.name,
                         description=t.description or "",
-                        inputSchema=t.inputSchema if isinstance(t.inputSchema, dict) else {},
+                        inputSchema=sdk_compat.tool_input_schema(t),
+                        annotations=sdk_compat.tool_annotations(t),
                     )
                     for t in (result.tools if result else [])
                 ]
@@ -1701,20 +1756,12 @@ class MCPClient:
                 sdk_result = await self._sdk_session.call_tool(name, clean_args)
 
                 # Convert SDK result to our dict format
-                content_list = []
-                if sdk_result and sdk_result.content:
-                    for item in sdk_result.content:
-                        if hasattr(item, 'text'):
-                            content_list.append({"type": "text", "text": item.text})
-                        elif hasattr(item, 'data'):
-                            content_list.append({"type": "image", "data": item.data,
-                                                 "mimeType": getattr(item, 'mimeType', 'image/png')})
-                        else:
-                            content_list.append({"type": "text", "text": str(item)})
+                # (via sdk_compat: on 2.x the camelCase names read as defaults)
+                content_list = sdk_compat.content_to_dicts(sdk_result.content if sdk_result else None)
 
                 result = {"content": content_list} if content_list else {"content": [{"type": "text", "text": ""}]}
 
-                if sdk_result and getattr(sdk_result, 'isError', False):
+                if sdk_result and sdk_compat.is_error(sdk_result):
                     result["error"] = True
                     result["message"] = content_list[0].get("text", "Unknown error") if content_list else "Unknown error"
 

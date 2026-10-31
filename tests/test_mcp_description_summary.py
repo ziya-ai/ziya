@@ -31,7 +31,7 @@ class TestSummarizeDescription:
         raw = fixture("slack_mcp_readme.md")
         assert len(raw) > 15000  # the fixture is the real blob
         s = summarize_description(raw)
-        assert s.startswith("A Slack MCP server for Amazon Enterprise Slack")
+        assert s.startswith("A chat MCP server for an enterprise chat workspace")
         assert not s.startswith("#")          # heading skipped
         assert "Source Code" not in s         # byline skipped
         assert "](" not in s                  # no link syntax
@@ -112,7 +112,7 @@ class TestRegistryManagerSeams:
         mgr._add_to_config("slack-mcp", entries)
 
         written = json.loads(Path(mgr.config_path).read_text())["mcpServers"]["slack-mcp"]
-        assert written["description"].startswith("A Slack MCP server for Amazon Enterprise Slack")
+        assert written["description"].startswith("A chat MCP server for an enterprise chat workspace")
         assert len(written["description"]) <= 160
         # The other fields are untouched.
         assert written["command"] == "slack-mcp"
