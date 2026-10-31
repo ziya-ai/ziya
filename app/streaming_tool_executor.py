@@ -3741,10 +3741,13 @@ class StreamingToolExecutor:
                         content_block = chunk.get('content_block', {})
                         logger.debug(f"🔍 CHUNK_DEBUG: content_block_start - type: {content_block.get('type')}, id: {content_block.get('id')}")
                         if content_block.get('type') == 'tool_use':
-                            # FLUSH any buffered content before tool starts
+                            # FLUSH any buffered content before tool starts.  Feed
+                            # the tracker first, as every other optimizer drain
+                            # does, so it never holds a stale partial line.
                             if hasattr(self, '_content_optimizer'):
                                 remaining = self._content_optimizer.flush_remaining()
                                 if remaining:
+                                    self._update_code_block_tracker(remaining, code_block_tracker)
                                     yield track_yield({
                                         'type': 'text',
                                         'content': remaining,
