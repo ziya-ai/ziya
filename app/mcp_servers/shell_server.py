@@ -13,6 +13,7 @@ import glob
 import time
 import signal
 import shlex
+import shutil
 from typing import Dict, Any, Optional
 from contextvars import ContextVar
 
@@ -284,6 +285,80 @@ def _split_raw_words(segment: str) -> list:
         words.append(raw)
         i += len(raw)
     return words
+
+
+def _normalize_command_word(segment: str) -> tuple:
+    """Unquote a segment's command word for allowlist matching.
+
+    Returns ``(segment_for_matching, display_word)``.  Patterns anchor on
+    the literal first word, so ``"ls" -la`` and ``/bin/ls -la`` were refused
+    although ``ls`` is allowlisted.  The word is unquoted, and an absolute
+    path is reduced to its basename ONLY when PATH lookup for that basename
+    resolves to the same file: ``/tmp/ls`` (a script the model could have
+    written) is not ``ls``.  A word containing an expansion or glob is left
+    as is -- its value is not known here.  A path that keeps whitespace after
+    unquoting is not substituted (later checks split on spaces); only the
+    display word changes, so a refusal names the whole path.
+
+    Matching only: execution still runs the original text, which resolves
+    to the same file.
+    """
+    lead = len(segment) - len(segment.lstrip())
+    body = segment[lead:]
+    raw = _consume_raw_word(body)
+    if not raw or any(c in raw for c in '$`*?['):
+        return segment, raw
+    try:
+        parts = shlex.split(raw)
+    except ValueError:
+        return segment, raw
+    if len(parts) != 1 or not parts[0]:
+        return segment, raw
+    word = parts[0]
+    if os.path.isabs(word):
+        base = os.path.basename(word)
+        found = shutil.which(base) if base else None
+        if found and os.path.realpath(found) == os.path.realpath(word):
+            word = base
+    if word == raw or any(ch.isspace() for ch in word):
+        return segment, word
+    return segment[:lead] + word + body[len(raw):], word
+
+
+def _env_prefix_denial(segment: str, env: dict) -> str:
+    """Refuse a ``PATH=`` prefix that would change which file runs.
+
+    The allowlist matches the command word, but the child resolves it
+    through the prefixed PATH: ``PATH=/tmp ls`` ran a model-written
+    /tmp/ls as ``ls``.  Allowed only when the prefixed PATH resolves the
+    word to the same file the normal PATH does, so the usual prepend
+    (``PATH=/opt/x:$PATH ls`` with no /opt/x/ls) keeps working.  ``$PATH``
+    / ``${PATH}`` expand to the current PATH; any other expansion makes the
+    value unknowable and is refused.  ``segment`` is the text after the
+    peeled assignments; ``env`` the assignments.  Returns "" when fine.
+    """
+    if 'PATH' not in env:
+        return ""
+    raw = _consume_raw_word(segment.lstrip())
+    try:
+        parts = shlex.split(raw) if raw else []
+    except ValueError:
+        parts = []
+    word = parts[0] if len(parts) == 1 else ""
+    if not word or '/' in word:
+        return ""  # no command, or a path: PATH lookup is not used
+    current = os.environ.get('PATH', '')
+    value = re.sub(r'\$\{PATH\}|\$PATH(?![A-Za-z0-9_])', lambda _m: current, env['PATH'])
+    if '$' in value or '`' in value:
+        return ("a PATH= prefix must be literal (optionally with $PATH): "
+                "its value cannot be verified")
+    new = shutil.which(word, path=value)
+    if new is None:
+        return ""
+    old = shutil.which(word)
+    if old and os.path.realpath(old) == os.path.realpath(new):
+        return ""
+    return f"PATH= prefix would run '{new}' as '{word}', not the allowlisted command"
 
 
 def _unquoted_redirect_words(segment: str) -> list:
@@ -1905,7 +1980,8 @@ class ShellServer:
             
             if not segment_allowed:
                 print(f"Segment '{cmd_segment}' did not match any allowed patterns", file=sys.stderr)
-                first_word = cmd_segment.strip().split()[0] if cmd_segment.strip() else cmd_segment
+                first_word = shown_word or (
+                    cmd_segment.strip().split()[0] if cmd_segment.strip() else cmd_segment)
                 # Slice B: a per-task ``shell_commands`` grant is additive over
                 # the base allowlist and is consulted ONLY here, after the base
                 # patterns have already declined the segment. Guarded so it can
