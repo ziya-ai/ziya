@@ -217,12 +217,12 @@ def create_provider(
         # Ollama / DwarfStar / LM Studio / llama-server all speak OpenAI chat
         # completions,
         # so like zai and meta this needs no provider of its own. The server
-        # ignores the key, but the SDK will not construct a client without
-        # one, hence the placeholder. See design/local-models.md.
+        # usually ignores the key (the SDK still insists on one); a keyed
+        # server (oMLX --api-key) gets the key the scan found it needed.
         from app.providers.openai_direct import OpenAIDirectProvider
         from app.utils.local_models import (
             local_endpoint_base_url, resolve_local_alias,
-            LOCAL_PLACEHOLDER_API_KEY, discover_and_apply,
+            local_endpoint_api_key, discover_and_apply,
         )
         # Resolve the alias to the concrete server, ask it about this model
         # (memoised) and read the live entry, so the provider sends
@@ -236,7 +236,7 @@ def create_provider(
         return OpenAIDirectProvider(
             model_id=model_id,
             model_config=effective_config,
-            api_key=api_key or LOCAL_PLACEHOLDER_API_KEY,
+            api_key=api_key or local_endpoint_api_key(endpoint),
             base_url=local_endpoint_base_url(endpoint),
         )
 
