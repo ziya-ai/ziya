@@ -67,6 +67,18 @@ describe('deriveTitleFromContent', () => {
         expect(deriveTitleFromContent(long, 50)).toBe('x'.repeat(50) + '...');
     });
 
+    it('defaults to the stored cap, not a sidebar-width slice (design/visual-refresh.md, stage 4)', () => {
+        // The old caller passed width/6 (clamped 30-80); a 120-char first line
+        // then persisted as 50 chars + "...", and truncated mid-screen forever.
+        const line = 'w'.repeat(120);
+        expect(deriveTitleFromContent(line)).toBe(line);
+        expect(deriveTitleFromContent('x'.repeat(250))).toBe('x'.repeat(200) + '...');
+    });
+
+    it('takes the first non-blank line only', () => {
+        expect(deriveTitleFromContent('\n\n  why does this fail?  \n```log\nstack...')).toBe('why does this fail?');
+    });
+
     it('does not add an ellipsis at exactly the limit', () => {
         const exact = 'y'.repeat(50);
         expect(deriveTitleFromContent(exact, 50)).toBe(exact);
