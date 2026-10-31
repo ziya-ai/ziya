@@ -514,14 +514,32 @@ def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                     for _hk in ('handoffDraft', 'handoff', 'handedOffTo'):
                         if existing_extra.get(_hk) is not None:
                             merged[_hk] = existing_extra[_hk]
-                    # lineageKind IS client-authored (a plain fork stamps it),
-                    # so only an OMITTED field is carried forward: declared on
-                    # Chat, it dumps as None whether omitted or cleared, and
-                    # model_fields_set tells the two apart.
-                    if ('lineageKind' not in chat_data.model_fields_set
-                            and merged.get('lineageKind') is None
-                            and existing_extra.get('lineageKind') is not None):
-                        merged['lineageKind'] = existing_extra['lineageKind']
+                    # Bench fields are SERVER-OWNED: ``placements`` is written
+                    # only by bench.place, ``loadedMcp`` only by
+                    # mcp_ondemand.record_load.  The browser either omits them
+                    # (dumped as None) or holds a stale mirror, so taking the
+                    # push wholesale wiped an on-hand skill back to its default
+                    # a few turns later.  On-disk always wins on update.
+                    for _sk in ('placements', 'loadedMcp'):
+                        if raw.get(_sk) is not None:
+                            merged[_sk] = raw[_sk]
+                        else:
+                            merged.pop(_sk, None)
+                    # Lineage fields ARE client-authored (a plain fork stamps
+                    # them), so only an OMITTED field is carried forward:
+                    # declared on Chat, each dumps as None whether omitted or
+                    # cleared, and model_fields_set tells the two apart.  All
+                    # of them, not just lineageKind: a window that minted a
+                    # fresh local record for a handoff continuation (no
+                    # lineage at all) pushed it here and the commit-time
+                    # branchedFrom / lineageRootId were nulled, leaving a
+                    # continuation the sidebar could neither nest nor number.
+                    for _lk in ('lineageKind', 'branchedFrom', 'lineageRootId',
+                                'branchedAtMessageIndex', 'branchedFromLabel'):
+                        if (_lk not in chat_data.model_fields_set
+                                and merged.get(_lk) is None
+                                and existing_extra.get(_lk) is not None):
+                            merged[_lk] = existing_extra[_lk]
                     # A placeholder never replaces a real title on disk.
                     # Backend writers (context-tool auto-vivify, bead and
                     # handoff writes) re-stamp records with a fresh _version,
