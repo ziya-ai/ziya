@@ -8,13 +8,12 @@ The test suite is organized into several files:
 
 1. **test_ziya_string.py**: Tests for the ZiyaString class that preserves attributes in strings.
 2. **test_agent_string_handling.py**: Tests for string handling in the agent.
-3. **test_nova_wrapper_syntax.py**: Basic syntax check for the Nova wrapper.
-4. **test_nova_wrapper.py**: Comprehensive tests for the Nova wrapper.
-5. **test_ziya_string_integration.py**: Integration tests for ZiyaString with model wrappers.
-6. **test_llm_interaction_regression.py**: Core regression tests for string handling, attribute preservation, and error handling.
-7. **test_llm_interaction_regression_async.py**: Tests for async streaming, error handling, and combining streams.
-8. **test_llm_interaction_edge_cases.py**: Tests for unusual inputs, error conditions, and boundary cases.
-9. **test_llm_interaction_model_specific.py**: Tests for specific LLM models and their unique response formats.
+3. **test_nova_wrapper.py** (in `backend_system_tests/model/`): Tests for the Nova wrapper that `NovaBedrock` builds on.
+4. **test_ziya_string_integration.py**: Integration tests for ZiyaString with model wrappers.
+5. **test_llm_interaction_regression.py**: Core regression tests for string handling, attribute preservation, and error handling.
+6. **test_llm_interaction_regression_async.py**: Tests for async streaming, error handling, and combining streams.
+7. **test_llm_interaction_edge_cases.py**: Tests for unusual inputs, error conditions, and boundary cases.
+8. **test_llm_interaction_model_specific.py**: Tests for specific LLM models and their unique response formats.
 
 ## Key Areas Tested
 
