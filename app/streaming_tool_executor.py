@@ -3124,6 +3124,9 @@ class StreamingToolExecutor:
         # pure narration loop (intent → intent → intent) gives up at the cap.
         intent_stalls = 0
         tools_since_intent_continue = False
+        # Read-only calls started before message end (app/utils/tool_prestart.py);
+        # one prestarter per iteration, reaped when the next attempt starts.
+        _prestart = None
         for iteration in range(max_iterations):
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             # Check for user-requested cancellation before making a new LLM call.
@@ -3438,6 +3441,13 @@ class StreamingToolExecutor:
                 # dispatched after this iteration's content blocks close, so
                 # consecutive read-only calls overlap (see app/tool_batch.py).
                 pending_tool_ctxs = []
+                # The leading reads start as each tool_use block closes
+                # (app/utils/tool_prestart.py).  A retried iteration lands here
+                # again, so the previous attempt's calls are reaped first.
+                from app.utils.tool_prestart import ToolPrestarter
+                if _prestart is not None:
+                    await _prestart.discard()
+                _prestart = ToolPrestarter()
                 
                 # Initialize content buffer and visualization detector
                 content_buffer = ""
@@ -3507,6 +3517,7 @@ class StreamingToolExecutor:
                             yield track_yield({'type': 'stream_end'})
                             if _feedback_monitor_task:
                                 _feedback_monitor_task.cancel()
+                            await _prestart.discard()
                             return
                         _stop_fb = next(
                             (fb for fb in _pending_feedback
@@ -3518,6 +3529,7 @@ class StreamingToolExecutor:
                             yield track_yield({'type': 'stream_end'})
                             if _feedback_monitor_task:
                                 _feedback_monitor_task.cancel()
+                            await _prestart.discard()
                             return
                         if _pending_feedback:
                             logger.debug(f"🔄 MID_STREAM_FEEDBACK: {len(_pending_feedback)} message(s) pending, will inject at next drain point")
@@ -4280,6 +4292,7 @@ Retry with the 'command' parameter included."""
                                 # (see app/tool_batch.plan_groups).  should_stop / feedback /
                                 # cancel are all handled once, at the post-loop batch dispatch.
                                 pending_tool_ctxs.append(_exec_ctx)
+                                _prestart.offer(_exec_ctx)
                                 completed_tools.add(tool_id)
                             
                             except json.JSONDecodeError as e:
@@ -4390,6 +4403,7 @@ Please retry the tool call with valid JSON. Ensure:
                         inter_tool_delay={'current': 0.0, 'min': 0.0, 'decay_factor': 1.0},
                         outcome=_batch_outcome,
                         cancel_event=cancel_event,
+                        prestarted=_prestart,
                     ):
                         if _evt.get('type') == '_tool_result':
                             tool_results.append({
@@ -4399,6 +4413,7 @@ Please retry the tool call with valid JSON. Ensure:
                             })
                         else:
                             yield _evt
+                    await _prestart.discard()
                     deferred_feedback_messages.extend(_batch_outcome.deferred_feedback)
                     if _batch_outcome.feedback_received:
                         _feedback_received = True
