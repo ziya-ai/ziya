@@ -151,7 +151,22 @@ def merge_overlapping_hunks(hunks: List[Dict[str, Any]], overlap_indices: List[i
     last_hunk = hunks[sorted_indices[-1]]
     
     merged_old_start = first_hunk['old_start']
-    merged_old_end = last_hunk['old_start'] + last_hunk['old_count'] - 1
+    # The merged old region must cover every constituent hunk's body, not
+    # just the header-declared range of the hunk that starts last.  A header
+    # can undercount its body (the parser only repairs undercounts of 2+,
+    # and only when both sides are under), and the splice loop below
+    # replaces len(old_block) lines per hunk.  When the region ended at the
+    # header count but a body ran past it, the splice extended the list
+    # instead of replacing, and the lines past the region came out twice
+    # -- reported as success, and "already applied" on re-apply, so the
+    # streaming verifier could not see it either.  Take each hunk's extent
+    # as the larger of its declared and actual old side (a truncated hunk
+    # honestly declares more than it shows; an undercounted one shows more
+    # than it declares) and the region end as the furthest of them.
+    merged_old_end = max(
+        hunks[i]['old_start'] + max(hunks[i]['old_count'], len(hunks[i].get('old_block', []))) - 1
+        for i in sorted_indices
+    )
     merged_old_count = merged_old_end - merged_old_start + 1
     
     # Reconstruct the old_block from the original file content
