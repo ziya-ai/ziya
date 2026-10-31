@@ -532,8 +532,9 @@ def _ensure_data_retention(
         put_resp = _requests.put(url, headers=dict(put_req.headers), data=body, timeout=10)
         if put_resp.status_code != 200:
             return False, (
-                f"Failed to set {endpoint_label} data retention mode to '{required_mode}': "
-                f"HTTP {put_resp.status_code} — {put_resp.text[:200]}"
+                (f"{read_err}; " if read_err else "")
+                + f"Failed to set {endpoint_label} data retention mode to '{required_mode}': "
+                f"HTTP {put_resp.status_code} — {put_resp.text[:400]}"
             )
 
         logger.info(f"{endpoint_label} data retention mode set to '{required_mode}'")
