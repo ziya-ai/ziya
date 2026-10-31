@@ -2507,6 +2507,16 @@ export function initMermaidEnhancer(): void {
       result = result.replace(/--\s+([^\n]+?)\s+-->/g,
         (_m, label) => `-->${pipeLabel(label)}`);
 
+      // Short dotted heads: "-.x", "-.o", "-.>".  Mermaid's dotted-link
+      // token is /[xo<]?-?\.+-[xo>]?/, so the head must follow a dash;
+      // "-.x" lexes as the START of an inline dotted label and the pipe
+      // label after it fails ("Expecting 'LINK' ... got 'STR'").  Seen:
+      // `P10[[Y port 10]] -.x|"txpa1 ethpl1"| T1`.  Insert the dash.  Not
+      // applied when the head letter begins a word ("-.xfer.->" is an
+      // inline label) or the link is already well formed ("-.-x").
+      result = result.replace(/(?<![-.<xo=])-(\.+)([xo>])(?![\w.\-])/g,
+        (_m, dots, head) => `-${dots}-${head}`);
+
       // Inline labels on dotted and thick edges: "-. text .->" and
       // "== text ==>".  Mermaid ends the inline label at the first ".->"
       // (or "==>"), and its lexer reads a literal "." inside the text as
