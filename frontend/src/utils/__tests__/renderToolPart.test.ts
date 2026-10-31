@@ -53,6 +53,19 @@ describe('renderToolPart matches the pre-extraction live output', () => {
         + '<!-- TOOL_BLOCK_END:mcp_search|h1 -->\n\n');
   });
 
+  it('structured results keep their compact layout and row fields through the block', () => {
+    const structured = JSON.stringify({
+      _isStructuredToolResult: true, summary: 'Found 1', type: 'search_results', layout: 'compact',
+      hierarchicalResults: [{ title: 'R/a.rs', content: 'x', group: 'R', detail: '1 match', dim: false }],
+    });
+    const display = renderToolPart(fromEvent({ tool_id: 'h2', tool_name: 'search', result: structured }), '').display;
+    const json = JSON.parse(display.split('\n').find(l => l.startsWith('{'))!);
+    expect(json.layout).toBe('compact');
+    expect(json.hierarchicalResults[0]).toMatchObject({ group: 'R', detail: '1 match', dim: false });
+    // Default results carry no layout key, so their serialized form is unchanged.
+    expect(display).toContain('"_isStructuredToolResult":true');
+  });
+
   it('inline image precedes the tool block', () => {
     expect(renderToolPart(fromEvent(
       { tool_id: 'i1', tool_name: 'render_diagram', result: 'ok', image_data: 'data:image/png;base64,AA' }), 'x\n\n').display)
