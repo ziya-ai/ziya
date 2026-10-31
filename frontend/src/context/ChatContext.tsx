@@ -177,7 +177,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const renderStart = useRef(performance.now());
     const { isDarkMode } = useTheme();
     const { isEphemeralMode } = useConfig();
-    const { currentProject } = useProject();
+    const { currentProject, switchProject } = useProject();
     const { isServerReachable } = useServerStatus();
     const renderCount = useRef(0);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
@@ -228,7 +228,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // so a click made while the sync was still running is never undone by
     // the sync's own relocation logic.
     const userSelectedConversationRef = useRef<string | null>(null);
+    // Set when the user moves the conversation they are viewing to another
+    // project.  The move switches to that project; PROJECT_CLEAR and the
+    // switch preload read this to keep the conversation in state and
+    // selected instead of blanking the pane and selecting the target's
+    // saved or most recent conversation.  The preload clears it.
+    const followMoveRef = useRef<{ conversationId: string; projectId: string; conv: Conversation } | null>(null);
     const conversationIdRestored = useRef(false);
+    // The id the empty-list effect sets before anything has loaded.  Not a
+    // selection: the restore effect may replace it until the user uses it.
+    const placeholderConversationIdRef = useRef<string | null>(null);
 
     // ── Per-project conversation ID persistence ─────────────────────
     // Store the last-active conversation per project so switching back
@@ -2772,7 +2781,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (prevPid === newPid) return;
         console.log(`🧹 PROJECT_CLEAR: switching ${prevPid?.substring(0, 8) ?? 'none'} → ${newPid?.substring(0, 8) ?? 'none'}, clearing folders/conversations`);
         setFolders([]);
-        setConversations([]);
+        // A conversation moved into this project while being viewed stays
+        // on screen; everything else is cleared as before.
+        const follow = followMoveRef.current;
+        if (follow && follow.projectId === newPid) {
+            setConversations(prev => [
+                prev.find(c => c.id === follow.conversationId) ?? follow.conv,
+            ]);
+        } else {
+            setConversations([]);
+        }
         lastProjectIdRef.current = newPid;
     }, [currentProject?.id]);
 
@@ -2984,10 +3002,27 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     if (isStale()) return;
                     logSwitchTotal(`preload commit (${projectShells.length} shells)`);
 
+                    // Conversation the user moved here while viewing it: keep
+                    // the record already on screen (full messages) instead of
+                    // its IDB shell, and keep it selected.  Only if it is
+                    // still the one in view.
+                    const pendingFollow = followMoveRef.current;
+                    const follow = pendingFollow && pendingFollow.projectId === projectId
+                        && currentConversationRef.current === pendingFollow.conversationId
+                        ? pendingFollow : null;
+                    if (pendingFollow && pendingFollow.projectId === projectId) followMoveRef.current = null;
+
                     // Replace stale conversations with the new project's local data.
                     // Use startTransition so the paint isn't blocked.
                     React.startTransition(() => {
-                        setConversations(projectShells);
+                        if (follow) {
+                            setConversations(prev => [
+                                prev.find(c => c.id === follow.conversationId) ?? follow.conv,
+                                ...projectShells.filter(c => c.id !== follow.conversationId),
+                            ]);
+                        } else {
+                            setConversations(projectShells);
+                        }
                     });
 
                     // Select the appropriate conversation for the new project.
@@ -3005,7 +3040,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const curShell = curId ? projectShells.find(c => c.id === curId) : undefined;
                     const curIsGlobal = !!curShell &&
                         (curShell.isGlobal || conversationIsEffectivelyGlobal(curShell, idbFolders));
-                    if (curIsGlobal) {
+                    if (follow) {
+                        // Already selected.  Marking it user-selected stops the
+                        // server sync (section 7) from moving the selection off it.
+                        activeId = follow.conversationId;
+                        userSelectedConversationRef.current = follow.conversationId;
+                    } else if (curIsGlobal) {
                         activeId = curId;
                     } else if (savedExists) {
                         setCurrentConversationId(savedId!);
@@ -3028,7 +3068,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // body is blank" after every switch into a large project.
                     // Single-record IDB read is cheap (~1–5ms) and cross-project
                     // safe: db.getConversation reads only the requested record.
-                    if (activeId) {
+                    // A followed move already has its full record in state;
+                    // re-hydrating it would only re-render the open conversation.
+                    if (activeId && !follow) {
                         try {
                             const fullConv = typeof db.getConversation === 'function'
                                 ? await db.getConversation(activeId)
@@ -4964,65 +5006,61 @@ export function ChatProvider({ children }: ChatProviderProps) {
     }, [currentProject?.id, queueSave]);
     const moveConversationToProject = useCallback(async (conversationId: string, targetProjectId: string) => {
         const sourceProjectId = currentProject?.id;
-
-        // Capture the conversation data from the updater's `prev` (guaranteed
-        // fresh) instead of the stale `conversations` closure.  The closure
-        // value may be outdated because `conversations` is NOT (and should not
-        // be) in the dependency array — it changes every render.
-        let capturedConv: Conversation | undefined;
-
-        setConversations(prev => {
-            capturedConv = prev.find(c => c.id === conversationId);
-
-            const updated = prev.map(conv => {
-                if (conv.id === conversationId) {
-                    return {
-                        ...conv,
-                        projectId: targetProjectId,
-                        lastAccessedAt: Date.now(),
-                        isGlobal: false,
-                        folderId: null,
-                        _version: Date.now()
-                    };
-                }
-                return conv;
-            });
-            queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
-
-            // Remove from the visible list when moved to a different project
-            if (targetProjectId !== sourceProjectId) {
-                return updated.filter(c => c.id !== conversationId);
-            }
-            return updated;
+        const isCrossProject = !!sourceProjectId && targetProjectId !== sourceProjectId;
+        // Moving the conversation in view: the view goes with it.
+        const follow = isCrossProject && currentConversationRef.current === conversationId;
+        const moved = (conv: Conversation): Conversation => ({
+            ...conv,
+            projectId: targetProjectId,
+            lastAccessedAt: Date.now(),
+            isGlobal: false,
+            folderId: null,
+            _version: Date.now()
         });
 
-        // If the moved conversation was the active one, switch to the most
-        // recent remaining conversation rather than creating a new empty one.
-        if (currentConversationId === conversationId && targetProjectId !== sourceProjectId) {
-            const remaining = conversationsRef.current.filter(
-                c => c.id !== conversationId && c.isActive !== false &&
-                    (c.projectId === sourceProjectId || c.isGlobal)
-            );
-            if (remaining.length > 0) {
-                const mostRecent = remaining.reduce((a, b) =>
-                    (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a);
-                setCurrentConversationId(mostRecent.id);
-                setTabState('ZIYA_CURRENT_CONVERSATION_ID', mostRecent.id);
-            } else {
-                startNewChat();
+        let capturedConv: Conversation | undefined;
+        if (follow) {
+            // Read from the ref (not an updater) so the record is in hand
+            // before the awaited save below.
+            capturedConv = conversationsRef.current.find(c => c.id === conversationId);
+            if (capturedConv) {
+                const updated = conversationsRef.current.map(c => c.id === conversationId ? moved(c) : c);
+                setConversations(prev => prev.map(c => c.id === conversationId ? moved(c) : c));
+                // Awaited: the target project's preload and server sync
+                // rebuild the list from IndexedDB, so the new projectId must
+                // be there before the switch.
+                await queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
             }
+        } else {
+            // Capture the conversation data from the updater's `prev` (guaranteed
+            // fresh) instead of the stale `conversations` closure.
+            setConversations(prev => {
+                capturedConv = prev.find(c => c.id === conversationId);
+                const updated = prev.map(conv => conv.id === conversationId ? moved(conv) : conv);
+                queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
+                // Remove from the visible list when moved to a different project
+                return isCrossProject ? updated.filter(c => c.id !== conversationId) : updated;
+            });
         }
 
         // Server-side move in one step (POST .../move).  The previous
         // bulk-sync-to-target + DELETE-from-source pair could delete the only
         // copy: bulkSync silently drops shell conversations and returned
         // success with created: 0, after which the source delete ran anyway.
-        // The server also keeps its chat index current on this path.
-        if (sourceProjectId && sourceProjectId !== targetProjectId && capturedConv) {
+        // The server also keeps its chat index current on this path.  For a
+        // followed move this completes before the switch, so the target's
+        // server sync already finds the chat there.
+        if (isCrossProject && capturedConv) {
             try {
-                const outcome = await syncApi.moveChat(sourceProjectId, targetProjectId, conversationId);
+                const outcome = await syncApi.moveChat(sourceProjectId!, targetProjectId, conversationId);
                 if (outcome === 'moved') {
                     console.log(`📡 Move: server moved conversation ${sourceProjectId} → ${targetProjectId}`);
+                    // A moved chat is scoped to its new project.  The move
+                    // endpoint copies the record as-is, so clear a global flag
+                    // on the server too (locally it is already false).
+                    if (capturedConv.isGlobal) {
+                        await syncApi.setChatGlobal(targetProjectId, conversationId, false);
+                    }
                 } else {
                     // Never synced from the source project: nothing to move, so
                     // push the local copy to the target instead.  No source
@@ -5038,10 +5076,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 console.warn('📡 Move: server-side move failed:', e);
                 message.error('Conversation moved locally, but the server move failed — it may reappear in the source project after a reload.');
             }
-        } else if (sourceProjectId && sourceProjectId !== targetProjectId && !capturedConv) {
+        } else if (isCrossProject && !capturedConv) {
             console.error(`📡 Move: conversation ${conversationId} not found in state — server-side move skipped!`);
         }
-    }, [currentProject?.id, queueSave, currentConversationId, startNewChat]);
+
+        // Follow the conversation into its new project.  PROJECT_CLEAR and
+        // the switch preload read followMoveRef to keep it on screen and
+        // selected while the rest of the project loads.
+        if (follow && capturedConv) {
+            followMoveRef.current = { conversationId, projectId: targetProjectId, conv: moved(capturedConv) };
+            saveProjectConversationId(targetProjectId, conversationId);
+            try {
+                await switchProject(targetProjectId);
+            } catch (e) {
+                followMoveRef.current = null;
+                console.error('📡 Move: switching to the target project failed:', e);
+                message.error('Conversation moved, but switching to its new project failed.');
+            }
+        }
+    }, [currentProject?.id, queueSave, saveProjectConversationId, switchProject]);
 
     const copyConversationToProject = useCallback(async (conversationId: string, targetProjectId: string) => {
         const sourceProjectId = currentProject?.id;
