@@ -4522,7 +4522,7 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' | 'drawio' | 'music' |
     'railroad' | 'wavedrom' | 'flamegraph' | 'circuitikz' | 'html-mockup' | 'delegate-tasks' | 'task-card' | 'slidecast' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
-    'br' | 'list_item' |
+    'br' | 'list_item' | 'tool_group' |
     'unknown';
 
 // Track last log timestamp to prevent excessive logging
@@ -4531,6 +4531,8 @@ let lastLogTimestamp = 0;
 // Helper function to determine the definitive type of a token
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
+    // Synthetic container built by groupToolTokens (utils/toolGroupTokens.ts).
+    if (tokenType === 'tool_group') return 'tool_group';
 
     // 1. Content-based diff detection — fallback only when no explicit language tag is
     // present. An explicit lang (e.g. 'python', 'javascript') always takes precedence.
@@ -4940,6 +4942,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
     // style stays attached to its text. No-op (same array reference) for token
     // lists that contain no dangling inline HTML opener.
     tokens = coalesceInlineHtmlTokens(tokens as any) as (Tokens.Generic | TokenWithText)[];
+    // Members of a parallel tool batch, bracketed by TOOL_GROUP_START/END
+    // comments (utils/toolGroupDisplay.ts), become one 'tool_group' token
+    // drawn as a <ToolGroup> container.  Same array when there are none.
+    tokens = groupToolTokens(tokens as any) as (Tokens.Generic | TokenWithText)[];
 
     const shouldLog = isDebugLoggingEnabled() &&
         (Date.now() - lastLogTimestamp > 10000);
@@ -5146,6 +5152,17 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         debugLog('Rendering single DiffToken component');
                     }
                     return <DiffToken key={sk} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} superseded={singleFileSuperseded} isStreaming={diffStreaming} />;
+
+                case 'tool_group': {
+                    const group = token as unknown as ToolGroupToken;
+                    const { done } = groupMemberProgress(group.tokens, group.size);
+                    return (
+                        <ToolGroup key={sk} size={group.size} done={done} end={group.end}
+                            streaming={isStreaming} isDarkMode={isDarkMode}>
+                            {renderTokens(group.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}
+                        </ToolGroup>
+                    );
+                }
 
                 case 'html-mockup':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
@@ -5779,6 +5796,14 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // so the tag-allowlist test below would fall through and
                     // print it as literal text.
                     if (isDiffRejectedMarkerBlock(tokenWithText.text)) return null;
+
+                    // Any other lone HTML comment -- tool-group markers, the
+                    // legacy <!-- TOOL_GROUP:id --> placeholder -- is markup
+                    // for the renderer, never content.  Without this it fell
+                    // through to the final <div> and printed literally.  A
+                    // TOOL_BLOCK_START…END block holds several comments, so
+                    // the no-inner-"-->" test leaves it for the matcher below.
+                    if (/^\s*<!--(?:(?!-->)[\s\S])*-->\s*$/.test(tokenWithText.text)) return null;
 
                     // Check for malformed tool blocks and hide them instead of leaking
                     if (tokenWithText.text.includes('<!-- TOOL_BLOCK_START:') &&

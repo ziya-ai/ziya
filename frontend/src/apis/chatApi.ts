@@ -15,6 +15,10 @@ import { applyContinuationRewind } from './continuationProtocol';
 import { resolveModelPin, ResolvedModelPin } from '../utils/modelPins';
 import { reportStreamModel } from '../services/modelSyncService';
 import { markPickedUp, clearPickups } from '../utils/capabilityPickup';
+import { isModelMemoryError, renderModelMemoryErrorBanner } from '../utils/modelMemoryErrorBanner';
+import { isInstallationChangedError, renderInstallationChangedBanner } from '../utils/installationChangedBanner';
+import { appendGroupEnd, groupStartDisplay, memberHeader, opensGroup } from '../utils/toolGroupDisplay';
+import { elideInlineImages } from '../utils/elideInlineImages';
 import {
     applyThinkingEvent,
     thinkingMarker,
@@ -840,6 +844,8 @@ export const sendPayload = async (
 
     const BROADCAST_INTERVAL_MS = 300;
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
+    // Parallel batches whose container is open in this stream (utils/toolGroupDisplay.ts).
+    const openedToolGroups = new Set<string>();
     // ── Batched streaming map update ──────────────────────────────────
     // Instead of calling setStreamedContentMap(prev => new Map(prev).set(…))
     // on every SSE chunk (which creates a new Map + triggers re-render each
@@ -2432,7 +2438,21 @@ export const sendPayload = async (
                     }
 
                     flushStreamedContent();
+                } else if (unwrappedData.type === 'tool_group_end') {
+                    // A parallel group finished: close its container with the
+                    // wall-vs-serial timing (utils/toolGroupDisplay.ts).  Every
+                    // member's result has already been written above this point.
+                    currentContent = appendGroupEnd(currentContent, unwrappedData);
+                    flushStreamedContent();
                 } else if (unwrappedData.type === 'tool_start') {
+                    // The first member of a parallel group to arrive opens its
+                    // container -- before the specialized handlers below, which
+                    // return early, so their blocks land inside it too.  Members
+                    // run concurrently, so this is not necessarily index 0.
+                    const batchTag = unwrappedData.batch_group;
+                    if (opensGroup(batchTag, openedToolGroups)) {
+                        currentContent += groupStartDisplay(batchTag);
+                    }
 
                     if (typeof setProcessingState === 'function') {
                         setProcessingState('processing_tools');
@@ -2499,6 +2519,10 @@ export const sendPayload = async (
                         // state so trailing prose is absorbed into the tool block.
                         .replace(/`/g, "'")
                         .trim();
+
+                    // Parallel-batch member (utils/toolGroupDisplay.ts): the ⫽
+                    // mark; its container was opened at the top of this branch.
+                    displayHeader = memberHeader(displayHeader, batchTag);
 
                     // Store the enhanced header for later matching in tool_display
                     if (unwrappedData.tool_id) {

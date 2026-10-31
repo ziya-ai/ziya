@@ -16,6 +16,7 @@
  * it is a live-stream concern, and a saved part has no placeholder.
  */
 import { formatMCPOutput, stripRedundantCdForDisplay } from './mcpFormatter';
+import { MEMBER_PREFIX } from './toolGroupDisplay';
 
 /** A text segment of an assistant turn, in emission order. */
 export interface TextPart {
@@ -158,13 +159,16 @@ export function renderToolPart(part: ToolPart, contentSoFar: string): RenderedTo
     displayHeader = toolName.replace('mcp_', '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
   }
 
-  // Enhance shell command headers with the actual command
+  // Enhance shell command headers with the actual command.  The rebuilt
+  // header keeps the ⫽ parallel-group mark the start block carried, so a
+  // member still reads as one when its result replaces the placeholder.
   if (isShellCommandTool && storedInput?.command) {
     const displayCommand = stripRedundantCdForDisplay(storedInput.command);
     const cmdPreview = displayCommand.length > 50
       ? displayCommand.substring(0, 47) + '...'
       : displayCommand;
-    displayHeader = `Shell: ${cmdPreview}`;
+    const mark = storedHeader && storedHeader.startsWith(MEMBER_PREFIX) ? MEMBER_PREFIX : '';
+    displayHeader = `${mark}Shell: ${cmdPreview}`;
   }
 
   // Sanitize shell headers after all header logic: newlines in the header
@@ -250,7 +254,8 @@ export function renderToolPart(part: ToolPart, contentSoFar: string): RenderedTo
       _verificationError: verificationError,
       summary: formatted.summary || formatted.content,
       type: formatted.type,
-      hierarchicalResults: formatted.hierarchicalResults
+      hierarchicalResults: formatted.hierarchicalResults,
+      layout: formatted.layout
     });
     toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${part.toolId} -->\n${toolResultContent}\n<!-- TOOL_BLOCK_END:${toolName}|${part.toolId} -->\n\n`;
   } else {
