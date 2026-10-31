@@ -14,7 +14,7 @@ The internal tool surface consists of:
 | `time-server` | stdio (local) | `get_current_time` |
 | Built-in tools | in-process | `file_read`, `file_write`, `file_list`, `ast_get_tree`, `ast_search`, `ast_references`, `list_architecture_shape_categories`, `search_architecture_shapes`, `get_architecture_diagram_template`, `nova_web_search`, `get_skill_details` |
 
-External MCP servers (e.g., `enterprise-mcp`) are connected as configured by the user or enterprise plugin.
+External MCP servers (e.g., a company-internal tool server) are connected as configured by the user or enterprise plugin.
 
 ## Threat Mitigations
 
