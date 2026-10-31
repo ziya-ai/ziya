@@ -158,7 +158,7 @@ export class DrawIOEnhancer {
      */
     static fixAllForeignObjects(svgElement: SVGSVGElement, graph?: any, options?: { explicitLayout?: boolean }): void {
         const isExplicitLayout = options?.explicitLayout ?? graph?.__hasExplicitLayout ?? false;
-        console.log('🔧 DrawIOEnhancer: explicitLayout =', isExplicitLayout);
+        console.info('🔧 DrawIOEnhancer: explicitLayout =', isExplicitLayout);
 
         // For explicit layouts with a graph instance, first force-correct any
         // text-only cells whose foreignObject positioning got confused by
@@ -174,7 +174,7 @@ export class DrawIOEnhancer {
             DrawIOEnhancer.positionContainerTitles(svgElement, graph);
         }
 
-        console.log('🔧 DrawIOEnhancer: Fixing ALL foreignObject positioning');
+        console.info('🔧 DrawIOEnhancer: Fixing ALL foreignObject positioning');
 
         const cellGeometryUpdates: Array<{ cellId: string, dx: number, dy: number }> = [];
 
@@ -458,7 +458,7 @@ export class DrawIOEnhancer {
 
         // If we have a graph instance, update cell geometries in the model
         if (graph && cellGeometryUpdates.length > 0) {
-            console.log('🔧 DrawIOEnhancer: Updating cell geometries in maxGraph model');
+            console.info('🔧 DrawIOEnhancer: Updating cell geometries in maxGraph model');
             const model = graph.getModel();
 
             model.beginUpdate();
@@ -892,7 +892,7 @@ export class DrawIOEnhancer {
         });
 
         if (scaled > 0) {
-            console.log(`🔧 DrawIOEnhancer: Normalised ${scaled} arrow markers to [${minMarkerPx}, ${maxMarkerPx}]px`);
+            console.info(`🔧 DrawIOEnhancer: Normalised ${scaled} arrow markers to [${minMarkerPx}, ${maxMarkerPx}]px`);
         }
     }
 
@@ -902,7 +902,7 @@ export class DrawIOEnhancer {
      * @deprecated Use fixAllForeignObjects instead
      */
     static fixForeignObjectPositioning(svgElement: SVGSVGElement): void {
-        console.log('🔧 DrawIOEnhancer: Fixing foreignObject positioning in scaled groups');
+        console.info('🔧 DrawIOEnhancer: Fixing foreignObject positioning in scaled groups');
 
         // Find all g elements with scale transforms
         const scaledGroups = svgElement.querySelectorAll('g[transform*="scale"]');
@@ -997,7 +997,7 @@ export class DrawIOEnhancer {
      * Ensures labels appear below icons instead of far to the right
      */
     static fixAWSIconLabeling(svgElement: SVGSVGElement): void {
-        console.log('🔧 DrawIOEnhancer: Fixing AWS icon label positioning');
+        console.info('🔧 DrawIOEnhancer: Fixing AWS icon label positioning');
 
         const foreignObjects = svgElement.querySelectorAll('foreignObject');
         let fixedCount = 0;
