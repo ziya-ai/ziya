@@ -558,6 +558,7 @@ def _walk(
     if btype == "task":
         if not (block.instructions or "").strip():
             err("task has no instructions - dispatch will fail")
+        _check_data_habits(block, warn)
         # A task's verdict without a contract is the model's own
         # self-assessment, and the executor fails the task on "partial"
         # alone.  Under on_failure=stop that single judgement halts every
@@ -629,6 +630,38 @@ def _walk(
         _walk(child, [*ancestry, _label(block)], res, project_id,
               project_root, child_enclosing, index, child_lineage,
               parent_stops=child_stops)
+
+
+_ADHOC_STORE_RE = re.compile(
+    r"json\.dumps?\(|json\.loads?\(|file_write[^\n]{0,80}\.json\b|-state\.json\b|"
+    r"\bbacklog\.json\b|history/<?[^\s]{0,30}>?/[^\s]{0,30}\.json\b",
+)
+_DATA_TOOL_RE = re.compile(
+    r"\banalyze\(|\banalyze\b[^\n]{0,20}\bsql\b|\bstore_output\b|\bdataset_register\b|\.jsonl\b",
+)
+
+
+def _check_data_habits(block: Block, warn) -> None:
+    """Warn when a task keeps its own JSON store and names no data tool.
+
+    The cards that filled .ziya/ with gigabytes of derived JSON all read the
+    same way: instructions that say ``json.load`` / ``file_write ...json`` /
+    ``-state.json`` and never ``analyze`` or ``store_output``.  The habit is
+    cheapest to break at authoring time, so this is a warning the author
+    sees before anyone spends a run on it.
+    """
+    text = block.instructions or ""
+    if not text or not _ADHOC_STORE_RE.search(text):
+        return
+    if _DATA_TOOL_RE.search(text):
+        return
+    warn(
+        "instructions maintain a hand-built JSON store (json.dump/load, a "
+        "*.json state file or per-iteration copies) and name no data tool - "
+        "append one JSONL line per event and query it with analyze(inputs="
+        "{alias: path}), or keep validated records with store_output; a "
+        "directory of large JSON files is what this pattern produces"
+    )
 
 
 def _check_cwd(block: Block, project_root: Optional[str], err, warn) -> None:
