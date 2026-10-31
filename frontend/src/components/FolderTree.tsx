@@ -15,6 +15,7 @@ import { MUIFileExplorer } from './MUIFileExplorer';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { ActiveContextBar } from './ActiveContextBar';
 import { ContextsTab } from './ContextsTab';
+import { publishPanelStatus } from '../utils/panelStatus';
 import { useTheme } from '../context/ThemeContext';
 import { FolderScanProgress } from './FolderScanProgress';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
@@ -233,6 +234,11 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // after first render — a local apply OR external drift detected by
     // modelSyncService — pulse the label so the change is noticeable.
     const displayedModel = activePin ? activePin.model : (modelDisplayName || modelId);
+    // Mirror the footer's model label for the collapsed-panel strip.
+    useEffect(() => {
+        if (!modelId) return;
+        publishPanelStatus({ model: { id: modelId, display: displayedModel, pinned: !!activePin } });
+    }, [modelId, displayedModel, activePin]);
     const prevDisplayedModelRef = useRef<string>('');
     const [modelJustChanged, setModelJustChanged] = useState(false);
     useEffect(() => {
@@ -249,7 +255,6 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     return (
         <div ref={panelRef} className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
             <ProjectSwitcher />
-            <TokenCountDisplay />
             <FolderScanProgress onCancel={handleCancelScan} />
             <Tabs
                 activeKey={activeTab}
@@ -411,6 +416,9 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                 )}
                 {modelId && <ModelConfigButton modelId={modelId} />}
             </div>
+            {/* design/visual-refresh.md: budget bar + legend live in the footer
+                under the model row, not at the top of the panel. */}
+            <TokenCountDisplay />
         </div>
     );
 });
