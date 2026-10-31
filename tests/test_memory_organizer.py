@@ -230,6 +230,47 @@ class TestExtractRelations:
         result = await extract_relations([{"id": "m_1", "content": "A", "layer": "domain_context"}])
         assert result == []
 
+    async def test_truncated_reply_keeps_complete_relations(self):
+        """A reply cut off at max_tokens ends mid-string ("Unterminated
+        string"); the complete relations before the cut must survive
+        instead of the whole batch being discarded."""
+        memories = [{"id": f"m_{i}", "content": str(i), "layer": "domain_context"}
+                    for i in range(4)]
+        full = json.dumps([
+            {"source": "m_0", "target": "m_1", "type": "elaborates"},
+            {"source": "m_1", "target": "m_2", "type": "supports"},
+            {"source": "m_2", "target": "m_3", "type": "contradicts"},
+        ], indent=2)
+        truncated = full[: full.index('"contradicts"') + 5]   # cut mid-string
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(truncated)                              # the logged failure
+
+        with patch("app.services.model_resolver.call_service_model", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = truncated
+            result = await extract_relations(memories)
+        assert [(r["source"], r["target"]) for r in result] == [("m_0", "m_1"), ("m_1", "m_2")]
+
+    async def test_unparseable_reply_still_returns_empty(self):
+        with patch("app.services.model_resolver.call_service_model", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = "not json at all {{"
+            result = await extract_relations([
+                {"id": "m_1", "content": "A", "layer": "domain_context"},
+                {"id": "m_2", "content": "B", "layer": "domain_context"},
+            ])
+        assert result == []
+
+    async def test_relation_budget_fits_a_full_batch(self):
+        """At 1024 tokens a reply was cut after ~29 relations; a 20-memory
+        batch routinely returns more."""
+        from app.memory.organizer import RELATION_MAX_TOKENS
+        with patch("app.services.model_resolver.call_service_model", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = "[]"
+            await extract_relations([
+                {"id": "m_1", "content": "A", "layer": "domain_context"},
+                {"id": "m_2", "content": "B", "layer": "domain_context"},
+            ])
+        assert mock_call.call_args.kwargs["max_tokens"] == RELATION_MAX_TOKENS >= 4096
+
 
 @pytest.mark.asyncio
 class TestBootstrapMindmap:
