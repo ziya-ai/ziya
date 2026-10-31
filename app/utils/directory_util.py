@@ -402,7 +402,12 @@ def _build_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
                 entry_hops = symlink_hops + 1
                 if entry_hops > MAX_SYMLINK_HOPS:
                     continue
-            if not entry.is_dir(follow_symlinks=is_symlink):
+            try:
+                if not entry.is_dir(follow_symlinks=is_symlink):
+                    continue
+            except OSError:
+                # ELOOP (self-referential symlink), dangling link, EACCES, etc.
+                # An entry we cannot stat cannot hold a .gitignore.
                 continue
 
             # Cap entries per directory to avoid blocking on huge flat dirs
