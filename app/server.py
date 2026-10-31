@@ -1610,6 +1610,20 @@ async def chat_turn_status(conversation_id: str):
     return JSONResponse(st)
 
 
+@app.get('/api/chat/turns')
+async def chat_turns_list():
+    """Every turn the relay holds (running, held, or retained after finishing).
+
+    A reloaded tab reads this once so it can resubscribe to turns in
+    conversations it is NOT showing.  Without it only the viewed
+    conversation was reattached, and a turn running elsewhere (e.g. parked
+    in a job_wait) had no subscriber, hit the disconnect grace timer and
+    was cancelled.
+    """
+    from app.agents import chat_turn_relay
+    return JSONResponse({"turns": chat_turn_relay.all_statuses()})
+
+
 @app.get('/api/chat/turn/{conversation_id}/stream')
 async def chat_turn_stream(conversation_id: str):
     """Reattach to a turn: replay of buffered frames, then the live tail.
