@@ -27,7 +27,7 @@ statement that the change was made some other way).
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import List, Optional, Sequence
 
 # Reasoning blocks are streamed inline and only sanitized to markers later
 # (app/utils/sanitizer_util.py).  Planning language there -- "I'll put the
@@ -102,18 +102,84 @@ def find_phantom_diff_reference(content: str) -> Optional[str]:
     return None
 
 
-def phantom_diff_feedback(phrase: str) -> str:
+# Error lines a compiler, type-checker or test runner prints when the file
+# the model was editing is still broken.  Anchored on a file:line position or
+# a named error class so ordinary prose containing "error" does not match.
+_UNRESOLVED_ERROR_PATTERNS = [
+    # tsc / gcc / rustc shape:  path(6753,11): error TS18004: ...
+    #                           path:12:3: error: ...
+    re.compile(r"^[^\s:(]+\.\w+[(:]\d+[,:]\d+\)?:\s*error\b[^\n]*$", re.MULTILINE),
+    # JS / TS runtime failures from a test run.
+    re.compile(r"^[^\n]*\b(?:Reference|Type|Syntax|Range)Error:\s[^\n]*$", re.MULTILINE),
+    # Python traceback terminal line (NameError: ..., ImportError: ...).
+    re.compile(r"^(?:\w+\.)*\w+(?:Error|Exception):\s[^\n]*$", re.MULTILINE),
+]
+_MAX_EVIDENCE_LINES = 3
+_MAX_EVIDENCE_CHARS = 220
+
+
+def find_unresolved_errors(tool_outputs: Optional[Sequence[str]]) -> List[str]:
+    """Compiler / runtime error lines reported by this turn's tool outputs.
+
+    The phantom detector only knows the model SAID a diff existed.  The
+    turn's own tool results often carry a stronger fact: a compile error or
+    a failing test naming the very file the response then declared done.
+    Returned most-recent-first and de-duplicated so the correction request
+    can quote them; an empty list when no output carried one.  A later
+    output in the turn showing the error gone is NOT detected here -- the
+    feedback asks the model to quote such an output if it exists, which is
+    checkable, rather than offering the bare "no diff needed" exit.
+    """
+    seen: List[str] = []
+    for out in reversed(list(tool_outputs or [])):
+        if not out:
+            continue
+        for pat in _UNRESOLVED_ERROR_PATTERNS:
+            for m in pat.finditer(out):
+                line = " ".join(m.group(0).split())[:_MAX_EVIDENCE_CHARS]
+                if line and line not in seen:
+                    seen.append(line)
+                if len(seen) >= _MAX_EVIDENCE_LINES:
+                    return seen
+    return seen
+
+
+def phantom_diff_feedback(
+    phrase: str, unresolved: Optional[Sequence[str]] = None,
+) -> str:
     """Correction request for a response that cited a diff it never emitted.
 
     Worded so a false positive costs one sentence: a model that made the
     change through a direct write says so and stops.  A true positive gets
     the fence that was decided in reasoning but never written.
+
+    When ``unresolved`` carries error lines from the turn's own tool output
+    (see find_unresolved_errors) the one-sentence exit is withdrawn: the
+    correction pass is told what is still broken and may only close by
+    emitting the fence or by quoting the later tool output that showed the
+    error resolved.  Without that, a correction pass that could not see the
+    original turn verified something else (that earlier diffs had landed)
+    and reported "no diff needed" while the compile error stood.
     """
-    return (
+    base = (
         f"Your response refers to a diff (\"{phrase}\") but contains no "
         f"```diff fence. Nothing was emitted: a diff that exists only in your "
         f"reasoning has not been produced, and the user sees only the "
-        f"response text. Either emit the diff now, as a ```diff fence for the "
-        f"file it changes, or state in one sentence that the change was made "
-        f"another way (a direct write) and no diff is needed."
+        f"response text. "
+    )
+    if not unresolved:
+        return base + (
+            "Either emit the diff now, as a ```diff fence for the file it "
+            "changes, or state in one sentence that the change was made "
+            "another way (a direct write) and no diff is needed."
+        )
+    quoted = "\n".join(f"  {line}" for line in unresolved)
+    return base + (
+        "Tool output in this same turn still reported:\n"
+        f"{quoted}\n"
+        "Emit the ```diff fence that fixes this now. Do not answer that the "
+        "earlier diffs are present or that no diff is needed: the error above "
+        "is in a file this response did not write to. The only other "
+        "acceptable close is to quote the later tool output from this turn "
+        "that shows the error gone."
     )

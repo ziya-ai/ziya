@@ -130,6 +130,11 @@ class DiffValidationHook:
         # to word the correction request: this is "nothing was produced",
         # not "a diff failed to apply".
         self.phantom_reference: Optional[str] = None
+        # Compiler / test error lines the phantom turn's own tool output
+        # still reported (phantom_diff.find_unresolved_errors); empty when
+        # none.  Quoted in the correction request so the pass cannot close
+        # with "no diff needed" while the error stands.
+        self.phantom_evidence: List[str] = []
         # Files a new-file fence (``--- /dev/null``) in this response creates.
         # A later fence patching one of them is refused like any diff whose
         # target is missing, but with a reason that names the cause and the
@@ -229,7 +234,8 @@ class DiffValidationHook:
         self,
         content: str,
         model_messages: List[Dict[str, Any]],
-        send_event: Optional[Callable[[str, Dict[str, Any]], None]] = None
+        send_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        tool_outputs: Optional[List[str]] = None,
     ) -> Optional[str]:
         """
         Validate every completed diff and enhance context for the failures.
@@ -238,6 +244,10 @@ class DiffValidationHook:
             content: The current streamed content
             model_messages: The conversation messages (to append file content to)
             send_event: Callback to send SSE events to frontend
+            tool_outputs: Text of this turn's tool results, in order.  Only
+                read on the phantom-diff branch, where a compile or test
+                error they report becomes evidence the correction pass must
+                answer (see phantom_diff.find_unresolved_errors).
             
         Returns:
             Combined model feedback if ANY diff failed, None if all succeeded.
@@ -248,6 +258,7 @@ class DiffValidationHook:
 
         self.last_rejected = []
         self.phantom_reference = None
+        self.phantom_evidence = []
         feedback_parts: List[str] = []
         for diff_info in self.detect_completed_diffs(content):
             # Two byte-identical fences share a key; the second is a no-op.
@@ -267,20 +278,30 @@ class DiffValidationHook:
         # instead of the user asking "did you apply it?" next turn.  See
         # app/utils/phantom_diff.py for why this recurs.
         from app.utils.phantom_diff import (
-            find_phantom_diff_reference, phantom_diff_feedback,
+            find_phantom_diff_reference, find_unresolved_errors,
+            phantom_diff_feedback,
         )
         phrase = find_phantom_diff_reference(content)
         if phrase:
             self.phantom_reference = phrase
+            # Errors the turn's own tool output still reports.  With these
+            # the correction request withdraws the "no diff needed" exit:
+            # the pass that follows sees only the feedback (not the turn it
+            # corrects), and without the evidence it has closed by verifying
+            # that EARLIER diffs landed while the cited one was never written.
+            self.phantom_evidence = find_unresolved_errors(tool_outputs)
             logger.warning(
                 f"👻 PHANTOM_DIFF: response cites a diff ({phrase!r}) but "
                 f"contains no diff fence; requesting it"
+                + (f" (unresolved: {self.phantom_evidence[0]!r})"
+                   if self.phantom_evidence else "")
             )
             if send_event:
                 send_event("diff_validation_status", {
                     "status": "phantom_reference", "phrase": phrase,
+                    "unresolved": list(self.phantom_evidence),
                 })
-            return phantom_diff_feedback(phrase)
+            return phantom_diff_feedback(phrase, self.phantom_evidence)
         return None
 
     def _validate_one(
@@ -544,6 +565,7 @@ class DiffValidationHook:
         self.added_files.clear()
         self.created_in_response.clear()
         self.phantom_reference = None
+        self.phantom_evidence = []
     
     def _detect_language(self, file_path: str) -> str:
         """Detect language from file extension for code fence."""
