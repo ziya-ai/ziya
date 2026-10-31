@@ -213,8 +213,69 @@ def describe_dataframe(df) -> Dict[str, Any]:
 # Ingest
 # --------------------------------------------------------------------------- #
 
-def _read_path(path: Path, sheet: Optional[str] = None) -> Any:
-    """Load a tabular file into a DataFrame.  Raises DatasetError."""
+KEY_COLUMN = "_key"  # added when a JSON object of objects is read as rows
+
+
+def _is_record_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(r, dict) for r in value)
+
+
+def _records_from_json_object(obj: Any, record_path: Optional[str], label: str):
+    """Turn a parsed JSON document into (rows, selected_path).
+
+    Models write JSON in three shapes, only one of which pandas accepts:
+
+    * a top-level array of objects -> rows as-is;
+    * an object of objects (``{"D-001": {...}, "D-002": {...}}``) -> one row
+      per member with the member name in ``_key``;
+    * an object with one array-of-objects member plus scalars
+      (``{"schema": 2, "defects": [...]}``) -> that member, its name
+      returned so the caller can record it.
+
+    ``record_path`` (dotted keys) picks the member explicitly.  When it is
+    absent and several members qualify, the error names them so the caller
+    can pass one; guessing silently would analyse the wrong table.
+    """
+    selected: Optional[str] = None
+    if record_path:
+        node = obj
+        for part in record_path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                raise DatasetError(
+                    f"{label}: record_path {record_path!r} not found "
+                    f"(available at that level: {sorted(node)[:20] if isinstance(node, dict) else 'not an object'})"
+                )
+            node = node[part]
+        obj, selected = node, record_path
+
+    if _is_record_list(obj) or (isinstance(obj, list) and not obj):
+        return obj, selected
+    if not isinstance(obj, dict):
+        raise DatasetError(f"{label}: expected an array of objects or an object, got {type(obj).__name__}")
+    if obj and all(isinstance(v, dict) for v in obj.values()):
+        return [{KEY_COLUMN: k, **v} for k, v in obj.items()], selected
+    candidates = [k for k, v in obj.items() if _is_record_list(v)]
+    if len(candidates) == 1:
+        inner = candidates[0]
+        return obj[inner], (f"{selected}.{inner}" if selected else inner)
+    if not candidates:
+        raise DatasetError(
+            f"{label}: JSON object has no array-of-objects member to read as rows "
+            f"(keys: {sorted(obj)[:20]}); pass record_path=<key> or reshape the file"
+        )
+    raise DatasetError(
+        f"{label}: JSON object has several array-of-objects members {candidates}; "
+        f"pass record_path=<one of them>"
+    )
+
+
+def _read_path(path: Path, sheet: Optional[str] = None,
+               record_path: Optional[str] = None) -> Any:
+    """Load a tabular file into a DataFrame.  Raises DatasetError.
+
+    Returns ``(df, sheet, record_path)``: the sheet actually read (Excel)
+    and the member actually read (JSON object), each ``None`` otherwise.
+    """
     import pandas as pd
 
     ext = path.suffix.lower()
@@ -235,18 +296,24 @@ def _read_path(path: Path, sheet: Optional[str] = None) -> Any:
                 sheet = xl.sheet_names[0]
             if sheet not in xl.sheet_names:
                 raise DatasetError(f"Sheet {sheet!r} not found. Available: {xl.sheet_names}")
-            return xl.parse(sheet_name=sheet), sheet
+            return xl.parse(sheet_name=sheet), sheet, None
         if ext in (".json", ".jsonl", ".ndjson"):
             lines = ext != ".json"
             if not lines:
                 text = path.read_text(encoding="utf-8", errors="replace").lstrip()
                 lines = bool(text) and text[0] not in "[{"
-            return pd.read_json(path, lines=lines, orient="records" if not lines else None), None
+            if lines:
+                return pd.read_json(path, lines=True), None, None
+            if text and text[0] == "[" and not record_path:
+                # The shape pandas was built for; keep its type inference.
+                return pd.read_json(path, orient="records"), None, None
+            rows, selected = _records_from_json_object(json.loads(text), record_path, path.name)
+            return pd.DataFrame.from_records(rows), None, selected
         sep = "\t" if ext == ".tsv" else None  # None -> python engine sniffs
         return pd.read_csv(
             path, sep=sep, engine="python" if sep is None else "c",
             keep_default_na=False, na_values=CSV_NA_VALUES,
-        ), None
+        ), None, None
     except DatasetError:
         raise
     except Exception as e:  # pandas raises a wide variety of parser errors
@@ -294,10 +361,15 @@ def register_dataset(
     csv_text: Optional[str] = None,
     name: Optional[str] = None,
     sheet: Optional[str] = None,
+    record_path: Optional[str] = None,
     project_root: Optional[str] = None,
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Ingest one source into the store; return the describe block with id."""
+    """Ingest one source into the store; return the describe block with id.
+
+    ``record_path`` names the member of a JSON object to read as rows
+    (dotted keys); see ``_records_from_json_object``.
+    """
     sources = [s for s in (path, records, csv_text) if s is not None]
     if len(sources) != 1:
         raise DatasetError("Provide exactly one of path, records, csv_text")
@@ -305,11 +377,15 @@ def register_dataset(
     source: Dict[str, Any]
     if path is not None:
         path = Path(path)  # accept str or Path from any caller
-        df, used_sheet = _read_path(path, sheet)
+        df, used_sheet, used_member = _read_path(path, sheet, record_path)
         source = {"kind": "file", "path": str(path)}
         if used_sheet is not None:
             source["sheet"] = used_sheet
-        default_name = path.name + (f":{used_sheet}" if used_sheet else "")
+        if used_member is not None:
+            source["record_path"] = used_member
+        default_name = path.name + (
+            f":{used_sheet}" if used_sheet else f"#{used_member}" if used_member else ""
+        )
     elif records is not None:
         df = _read_records(records)
         source = {"kind": "records"}
