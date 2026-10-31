@@ -1254,9 +1254,13 @@ export const sendPayload = async (
                 // task_card_launch a run + a bound binding, server-side
                 // mid-turn; useTaskBindings only re-fetches on this event,
                 // so without it the tile would not appear until a reload.
+                // task_card_write moves the card's staged tile to the
+                // revising turn (app/utils/task_card_revision.py), which is
+                // also a binding change.
                 if (unwrappedData.type === 'tool_display'
                     && (unwrappedData.tool_name === 'task_card_stage'
-                        || unwrappedData.tool_name === 'task_card_launch')) {
+                        || unwrappedData.tool_name === 'task_card_launch'
+                        || unwrappedData.tool_name === 'task_card_write')) {
                     try {
                         const raw = unwrappedData.result;
                         const result = typeof raw === 'string'
@@ -1265,8 +1269,15 @@ export const sendPayload = async (
                         if (result && result.success && result.binding_id) {
                             window.dispatchEvent(new CustomEvent('task-binding-created'));
                         }
+                        // Any tile already showing this card re-reads it.
+                        if (result && result.success && result.card_id
+                            && unwrappedData.tool_name === 'task_card_write') {
+                            window.dispatchEvent(new CustomEvent('task-card-saved', {
+                                detail: { cardId: result.card_id },
+                            }));
+                        }
                     } catch (e) {
-                        console.warn('Failed to parse task_card_stage result:', e);
+                        console.warn(`Failed to parse ${unwrappedData.tool_name} result:`, e);
                     }
                 }
 

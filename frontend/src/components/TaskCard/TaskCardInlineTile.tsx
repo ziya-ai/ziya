@@ -1,4 +1,8 @@
 /**
+ */
+import { ScheduleRegisterControl, useScheduleState } from './ScheduleRegisterControl';
+import { registrationPhrase } from './scheduleCadence';
+/**
  * TaskCardInlineTile — renders at a binding's anchor point in the chat.
  *
  * Three visual states:
@@ -32,6 +36,7 @@ import { TaskRunMap } from './TaskRunMap';
 import { AskAnswerPanel } from './AskAnswerPanel';
 import { BlockDetailPanel } from './BlockDetailPanel';
 import { BlockOutline } from './BlockOutline';
+import { RunResourcesPanel } from './RunResourcesPanel';
 import { ArtifactViewer } from './ArtifactViewer';
 import { RunRecoveryBanner } from './RunRecoveryBanner';
 import {
@@ -1621,6 +1626,16 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
           </div>
         )}
 
+        {/* The resource log that stays with the run.  Deliberately outside
+            the result block above: that collapses with the result and is
+            absent on a run that produced none, which is exactly when the
+            question "what did this cost" is sharpest. */}
+        {run.status !== 'queued' && !focus && (
+          <RunResourcesPanel
+            projectId={projectId} runId={run.id} status={run.status}
+          />
+        )}
+
         {run.error && <div className="tc-tile__error-msg">{run.error}</div>}
 
         {iterCounts && iterCounts.total > 0 && (
@@ -1875,6 +1890,18 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
             synthesis or a card copied in from the deck. */}
         <strong>{card?.name ?? 'Task card'}</strong>
         <Tag color="default">staged</Tag>
+        {(binding.revision ?? 0) > 0 && (
+          <Tooltip title={
+            `Revised by the model at ${new Date(binding.created_at).toLocaleTimeString()}`
+            + (binding.revision_after_run_id
+              ? '. An earlier version ran above; this is the current definition.'
+              : '. Moved here from where it was first staged.')
+          }>
+            <Tag color="processing" data-testid="tc-staged-revised">
+              revised{(binding.revision ?? 0) > 1 ? ` ×${binding.revision}` : ''}
+            </Tag>
+          </Tooltip>
+        )}
         {card?.draft && (
           <Tooltip title="Lives in this conversation only; not filed in the Task Cards deck">
             <Tag color="default">conversation-only</Tag>
@@ -1922,9 +1949,18 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
           </div>
         </div>
       )}
+      {/* A Schedule-root card fires nothing until registered.  Drafts
+          never reach the deck, so this line (shared with the block editor's
+          status line) is where a card staged in chat gets registered. */}
+      {card?.root?.block_type === 'schedule' && projectId && binding.card_id && (
+        <ScheduleTileLine projectId={projectId} cardId={binding.card_id} />
+      )}
       <div className="actions" style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <Button type="primary" loading={launching} onClick={handleRun}>
-          Run
+        <Button type="primary" loading={launching} onClick={handleRun}
+          title={card?.root?.block_type === 'schedule'
+            ? 'Runs the scheduled body once, now. Does not register the schedule and does not count as a fire.'
+            : undefined}>
+          {card?.root?.block_type === 'schedule' ? 'Run once now' : 'Run'}
         </Button>
         <Tooltip title="Open this card in the editor; changes show here when you save">
           <Button icon={<EditOutlined />} onClick={handleEdit} disabled={launching}>
@@ -1948,3 +1984,23 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
 };
 
 export default TaskCardInlineTile;
+
+/** The registration line under a staged Schedule card: state, Register /
+ *  Manage schedules, Fire now.  Styled with the tile's warning colour when
+ *  the card will not fire. */
+const ScheduleTileLine: React.FC<{ projectId: string; cardId: string }> = ({ projectId, cardId }) => {
+  const { rec, reload } = useScheduleState(projectId, cardId);
+  const reg = registrationPhrase(rec);
+  if (!reg.text) return null;
+  return (
+    <div data-testid="tile-schedule-line" style={{
+      fontSize: 12, marginTop: 6, padding: '4px 8px', borderRadius: 4,
+      ...(reg.attention
+        ? { background: 'rgba(250, 173, 20, 0.12)', border: '1px solid rgba(250, 173, 20, 0.5)' }
+        : { opacity: 0.8 }),
+    }}>
+      {reg.attention && <span aria-label="needs attention">⚠ </span>}
+      <ScheduleRegisterControl projectId={projectId} cardId={cardId} rec={rec} onChanged={reload} />
+    </div>
+  );
+};

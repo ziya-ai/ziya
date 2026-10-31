@@ -44,7 +44,7 @@ function toolDisplayBlock(toolName: string): string {
   throw new Error(`unbalanced braces after ${needle}`);
 }
 
-describe.each(['task_card_stage', 'task_card_launch'])(
+describe.each(['task_card_stage', 'task_card_launch', 'task_card_write'])(
   'chatApi.ts %s → task-binding-created sync', (toolName) => {
     it('handles the tool_display result and requires a binding_id', () => {
       const block = toolDisplayBlock(toolName);
@@ -65,3 +65,15 @@ describe.each(['task_card_stage', 'task_card_launch'])(
     });
   },
 );
+
+// task_card_write moves the card's tile server-side (app/utils/
+// task_card_revision.py); a tile already showing the card must also re-read
+// it, through the event the staged tile listens for.
+describe('chatApi.ts task_card_write → task-card-saved', () => {
+  it('dispatches the saved event under the name the tiles listen for', () => {
+    const block = toolDisplayBlock('task_card_write');
+    const m = block.match(/new CustomEvent\('([a-z-]+)', \{\s*detail: \{ cardId: result\.card_id \}/);
+    expect(m).not.toBeNull();
+    expect(HOOK_SRC).toContain(`TASK_CARD_SAVED_EVENT = '${m![1]}'`);
+  });
+});
