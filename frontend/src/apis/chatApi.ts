@@ -979,7 +979,10 @@ export const sendPayload = async (
     // previous sendPayload's listener (still keyed on window) and must not
     // reach ours — otherwise the new AbortController is aborted by its own
     // dispatch and the request below fails immediately with AbortError.
-    if (streamedContentMap.has(conversationId) && streamedContentMap.get(conversationId) !== '') {
+    // Never on a reattach: the abort listener POSTs /api/abort-stream, which
+    // cancels the server-side turn -- the very turn a reattach is rejoining.
+    // decideReattach already refuses when this browser is streaming it.
+    if (!reattach && streamedContentMap.has(conversationId) && streamedContentMap.get(conversationId) !== '') {
         console.warn('🔄 Stream already active for conversation:', conversationId);
         console.warn('Aborting existing stream before starting new one');
         document.dispatchEvent(new CustomEvent('abortStream', { detail: { conversationId } }));
