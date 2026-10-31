@@ -446,6 +446,7 @@ def _ensure_data_retention(
     region: str,
     profile_name: str | None = None,
     allow_downgrade: bool = False,
+    assume_below: bool = False,
 ) -> tuple[bool, str]:
     """Check an account-level data retention endpoint and set the mode if needed.
 
@@ -461,6 +462,13 @@ def _ensure_data_retention(
     in-flight session) that needs the more permissive value. Pass
     allow_downgrade=True to force the mode to exactly *required_mode*
     regardless of where it currently sits.
+
+    assume_below=True is for callers that already know the switch is below
+    *required_mode* — a call to the model was just rejected with the
+    retention gate error.  A failed read then does not stop the write:
+    many roles may PUT the switch without being allowed to GET it
+    (bedrock:GetAccountDataRetention), and the rejection already answers
+    the question the read would ask, so the write can only raise.
 
     Returns (True, "") on success, (False, error_message) on failure.
     """
@@ -549,16 +557,20 @@ def ensure_bedrock_data_retention_mode(
     region: str = "us-east-1",
     profile_name: str | None = None,
     allow_downgrade: bool = False,
+    assume_below: bool = False,
 ) -> tuple[bool, str]:
     """Ensure the bedrock control-plane data retention mode (e.g. for Fable 5.1).
 
     Raises the account switch to *required_mode* only when it is not already
-    at or above it. Pass allow_downgrade=True to force an exact value.
+    at or above it. Pass allow_downgrade=True to force an exact value, and
+    assume_below=True when a rejected call already proved the mode is too low
+    (a denied read then does not block the write).
     """
     return _ensure_data_retention(
         "Bedrock",
         f"https://bedrock.{region}.amazonaws.com/data-retention",
         required_mode, region, profile_name, allow_downgrade=allow_downgrade,
+        assume_below=assume_below,
     )
 
 
