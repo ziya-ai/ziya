@@ -1191,6 +1191,36 @@ export function quoteBracketLabelsWithParens(definition: string): string {
 }
 
 /**
+ * Quote a flowchart decision-diamond label `id{…}` whose unquoted text holds
+ * characters the lexer treats as shape or token syntax. A `(` inside `{…}`
+ * opens a new shape (`got 'PS'`); `[`, `]`, `|`, `<` and `>` break it
+ * similarly. Models emit `B{fn() >= max?}` constantly.
+ *
+ * Narrow on purpose: only `id{…}` (not `{{hexagon}}`), only when a risky
+ * character is present (a bare `<br/>` is legal and left alone), never inside
+ * an already-quoted label, never on directive/style lines.
+ */
+export function quoteDiamondLabelsWithSpecials(definition: string): string {
+  return definition
+    .split('\n')
+    .map((line) => {
+      if (/^\s*(%%|style|classDef|linkStyle|class|click|subgraph)/.test(line)) return line;
+      return line.replace(
+        /([A-Za-z0-9_]+)\{(?!\{)([^{}\n]*)\}/g,
+        (match: string, id: string, content: string, offset: number) => {
+          // Inside an author-quoted label (odd number of quotes before it).
+          if ((line.slice(0, offset).match(/"/g) || []).length % 2 === 1) return match;
+          if (/^\s*"/.test(content)) return match;            // already quoted
+          const probe = content.replace(/<br\s*\/?>/gi, ' ');
+          if (!/[()\[\]|<>]/.test(probe)) return match;       // nothing risky
+          return `${id}{"${content.replace(/"/g, '#quot;')}"}`;
+        },
+      );
+    })
+    .join('\n');
+}
+
+/**
  * G-24 / D-040 (chat-message w4-10): drop a `primaryColor: transparent`/`none`
  * from a `%%{init}%%` themeVariables block. Otherwise mermaid's base theme
  * derives a near-white node label over a see-through fill (ghost text ~1.1:1 on
@@ -1497,6 +1527,12 @@ export function initMermaidEnhancer(): void {
   registerPreprocessor(
     (definition: string): string => quoteBracketLabelsWithParens(definition),
     { name: 'flowchart-bracket-label-paren-quote', priority: 660, diagramTypes: ['flowchart', 'graph'] },
+  );
+
+  // Same contract for decision diamonds `id{…}`; see quoteDiamondLabelsWithSpecials.
+  registerPreprocessor(
+    (definition: string): string => quoteDiamondLabelsWithSpecials(definition),
+    { name: 'flowchart-diamond-label-quote', priority: 661, diagramTypes: ['flowchart', 'graph'] },
   );
 
   // Issue 42 defect 1: flatten NESTED / unbalanced generic tildes in
