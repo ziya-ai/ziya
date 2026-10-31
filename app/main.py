@@ -789,6 +789,14 @@ def main():
         sys.exit(0 if success else 1)
         return
 
+    # Warn about the obsolete PyPI 'asyncio' backport (pulled in by some
+    # third-party packages).  Warning only; never blocks startup.
+    try:
+        from app.utils.asyncio_backport_check import warn_if_asyncio_backport
+        warn_if_asyncio_backport()
+    except Exception:
+        pass
+
     try:
         # Check for updates and upgrade if available
         check_version_and_upgrade()
