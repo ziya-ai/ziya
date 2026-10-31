@@ -123,6 +123,15 @@ class TaskScope(BaseModel):
     #
     # None leaves both the ceiling and the default at their base values.
     shell_timeout_secs: Optional[int] = None
+    # Wall-clock budget for one Task block, in seconds.  At the deadline
+    # the model stream is cut off and ONE closing turn runs with every
+    # tool but emit_artifact withheld, so the task writes what it has
+    # (task_executor.TIME_BUDGET_CLOSING_MESSAGE).  A BOUND, not a grant:
+    # merged as the MINIMUM of non-null layers, so an inner layer can
+    # tighten it but never widen it.  Set on a Parallel, every lane gets
+    # this much.  None means no deadline (the pre-existing behaviour: the
+    # only ceiling is the iteration count).
+    time_budget_secs: Optional[int] = None
 
 
 def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
@@ -147,6 +156,9 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
         the additive rule says an inner layer can only add: letting an
         inner 60 s silently undercut an outer 1200 s would revoke a
         grant the outer layer made.
+      - ``time_budget_secs``: MINIMUM of the non-null values.  A budget
+        is a bound on the run, not a grant to it, so the tightest layer
+        wins — a lane cannot give itself more time than its stage has.
       - ``cwd``: last non-null value wins (most specific).
       - ``model_tier`` / ``model_name`` / ``model_id_override`` /
         ``model_endpoint`` / ``service_tier``: last non-null value wins
@@ -164,6 +176,7 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
     shell_commands: List[str] = []
     cwd: Optional[str] = None
     shell_timeout_secs: Optional[int] = None
+    time_budget_secs: Optional[int] = None
     model_tier: Optional[str] = None
     model_name: Optional[str] = None
     model_id_override: Optional[str] = None
@@ -199,6 +212,14 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
                 _sts_i = 0
             if _sts_i > (shell_timeout_secs or 0):
                 shell_timeout_secs = _sts_i
+        _tb = getattr(s, "time_budget_secs", None)
+        if _tb:
+            try:
+                _tb_i = int(_tb)
+            except (TypeError, ValueError):
+                _tb_i = 0
+            if _tb_i > 0 and (time_budget_secs is None or _tb_i < time_budget_secs):
+                time_budget_secs = _tb_i
         if s.cwd:
             cwd = s.cwd
         if getattr(s, "model_tier", None):
@@ -216,6 +237,7 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
         cwd=cwd, tools=tools, skills=skills,
         shell_commands=shell_commands,
         shell_timeout_secs=shell_timeout_secs,
+        time_budget_secs=time_budget_secs,
         model_tier=model_tier, model_name=model_name,
         model_id_override=model_id_override, model_endpoint=model_endpoint,
         service_tier=service_tier,

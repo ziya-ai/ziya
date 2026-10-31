@@ -22,6 +22,7 @@ Scope handling:
     KB to keep the context bounded.
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -60,6 +61,36 @@ class TaskInfraError(TaskExecutorError):
         super().__init__(message)
         self.infra_kind = infra_kind
         self.block_id = block_id
+
+
+# Per-block wall-clock budget (``scope.time_budget_secs``).  At the deadline
+# the model stream is cut off and ONE closing turn runs with every tool
+# but ``emit_artifact`` withheld, so the task writes what it has instead of
+# pulling more.  The closing turn gets a grace of 10% of the budget,
+# clamped to [60 s, 300 s]; a block still streaming past that is recorded
+# failed with signature ``time_budget_exceeded``.  Motivating run: a lane
+# spent 2 h 20 min on one hypothesis query and ended "cause not
+# identified" -- within its iteration budget the whole time, because the
+# only ceiling was a count (chat 3f831376).
+TIME_BUDGET_GRACE_FRACTION = 0.10
+TIME_BUDGET_GRACE_MIN_S = 60
+TIME_BUDGET_GRACE_MAX_S = 300
+TIME_BUDGET_FAILURE_SIGNATURE = "time_budget_exceeded"
+TIME_BUDGET_CLOSING_MESSAGE = (
+    "[System: this task's time budget is exhausted. Stop querying. Tools "
+    "other than emit_artifact are withheld for this final turn. Write your "
+    "findings from what you already have: what was established, with its "
+    "evidence; what was not; and what the next step would be. Then emit "
+    "the required <self_assessment .../> tag, stating objective_met "
+    "honestly.]"
+)
+
+
+def time_budget_grace_secs(budget_secs: int) -> int:
+    """Grace for the closing turn: 10% of the budget, clamped to [60, 300]."""
+    return int(min(TIME_BUDGET_GRACE_MAX_S,
+                   max(TIME_BUDGET_GRACE_MIN_S,
+                       budget_secs * TIME_BUDGET_GRACE_FRACTION)))
 
 
 def _read_launch_context(storage: Any, run_id: Optional[str]) -> str:
@@ -563,6 +594,12 @@ async def execute_task_block(
         )
 
     start_time = time.time()
+    # Resource accounting (app/utils/run_resources.py): tool-side CPU is
+    # the children's rusage delta over the task body; files the model
+    # names to the write tool are sized when the task ends.
+    from app.utils.run_resources import cpu_children_ms, WriteTracker
+    _cpu_start_ms = cpu_children_ms()
+    _write_tracker = WriteTracker()
     tokens_used = 0
     # Baseline for token accounting.  GlobalUsageTracker is keyed by
     # conversation_id, and every task in a run shares one
@@ -882,9 +919,23 @@ async def execute_task_block(
     scope_token = set_task_writable_paths(writable_grant or None)
     read_token = set_task_readable_paths(readable_grant or None)
     # Cost-ledger attribution: rows written during this task body carry
-    # source=task plus run/block ids (app/cost/meter.py).
+    # source=task plus run/block ids (app/cost/meter.py), and the id of the
+    # conversation the run was launched from.  The stream below uses run_id
+    # as its conversation_id (a stand-in the context tools need), so
+    # without this the ledger filed every run under an id no chat has and
+    # the Info tab of a conversation whose only spend was a run read "no
+    # usage recorded".  See app/utils/conversation_cost.py.
+    _source_conversation_id = None
+    if _hb_storage is not None and run_id:
+        try:
+            _source_conversation_id = getattr(
+                _hb_storage.get(run_id), "source_conversation_id", None,
+            )
+        except Exception as e:  # noqa: BLE001 - attribution is best effort
+            logger.debug("source_conversation_id read failed: %s", e)
     usage_attr_token = set_usage_attribution(
-        {"source": "task", "run_id": run_id, "block_id": block.id}
+        {"source": "task", "run_id": run_id, "block_id": block.id,
+         "conversation_id": _source_conversation_id}
     )
     # Evidence ledger (design/evidence-ledger.md, Task Card integration):
     # claims recorded by this task go to the CARD's project ledger even
@@ -1012,14 +1063,32 @@ async def execute_task_block(
     # (network error, cancellation, etc.) — without it the writable /
     # readable grants would leak past task boundaries on any
     # non-``error``-chunk failure path.
-    def _stream(msgs):
+    # Wall-clock budget for this block (scope.time_budget_secs, merged as a
+    # MIN so an inner layer can only tighten it).  ``_budget`` is the
+    # record the verdict and the artifact read after the stream ends.
+    _budget_secs: Optional[int] = None
+    try:
+        _raw_budget = getattr(scope, "time_budget_secs", None)
+        if _raw_budget is not None and int(_raw_budget) > 0:
+            _budget_secs = int(_raw_budget)
+    except (TypeError, ValueError):
+        _budget_secs = None
+    _budget: Dict[str, Any] = {"exhausted": False, "hard_stopped": False}
+    # The closing turn withholds every tool but emit_artifact: the point of
+    # the turn is to write down what was found, and emitting it is writing.
+    _closing_deny = sorted(
+        ({getattr(t, "name", "") for t in tools} | set(tool_denylist))
+        - {"emit_artifact", ""}
+    )
+
+    def _stream(msgs, closing: bool = False):
         return executor.stream_with_tools(
             msgs, tools=tools, project_root=effective_root,
             # The list actually enforced.  ``tools`` above is retained only
             # for the tests/callers that inspect what was resolved; the
             # executor narrows its own tool set from these names.
             tool_allowlist=(sorted(scope_tools) if scope_tools else None),
-            tool_denylist=(tool_denylist or None),
+            tool_denylist=(_closing_deny or None) if closing else (tool_denylist or None),
             # The executor re-derives the denial after ITS project-mode step,
             # so an enableable ``ask`` tool cannot be added back after the
             # names above were computed.
@@ -1071,13 +1140,103 @@ async def execute_task_block(
         messages.append(HumanMessage(content=correction_message(missing)))
         if collected_text and not collected_text[-1].endswith("\n"):
             collected_text.append("\n\n")
+            # Mirror the seam on the live stream.  No tool call separates
+            # these turns, so without this delta the CLI sink and the live
+            # inspector weld the correction turn onto the previous line.
+            await _emit({
+                "type": "task_text_delta", "run_id": run_id,
+                "block_id": delta_block_id, "index": delta_index,
+                "content": "\n\n", "ts": time.time(),
+            })
         async for c in _stream(messages):
             yield c
+
+    async def _pull_until(agen, deadline: float, hit: List[bool]):
+        """Yield ``agen``'s chunks until it ends or ``deadline`` passes.
+
+        ``hit[0]`` is set when the deadline cut the stream off.  The
+        in-flight ``__anext__`` is cancelled by ``wait_for``, which throws
+        CancelledError into the generator at its await -- a tool call in
+        progress is abandoned, which is what a hard bound means.
+        """
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                hit[0] = True
+                return
+            try:
+                chunk = await asyncio.wait_for(agen.__anext__(), timeout=remaining)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError:
+                hit[0] = True
+                return
+            yield chunk
+
+    async def _stream_within_budget():
+        """The model stream under the block's time budget (option B).
+
+        Under budget this is byte-identical to consuming
+        ``_stream_with_contract_correction`` directly.  At the deadline the
+        stream is cut off and ONE closing turn runs with tools withheld
+        (``_closing_deny``) so the task writes what it has; the closing
+        turn itself is bounded by ``time_budget_grace_secs``.
+        """
+        if not _budget_secs:
+            async with aclosing(_stream_with_contract_correction()) as g:
+                async for c in g:
+                    yield c
+            return
+        deadline = start_time + _budget_secs
+        hit = [False]
+        async with aclosing(_stream_with_contract_correction()) as g:
+            async for c in _pull_until(g, deadline, hit):
+                yield c
+        if not hit[0]:
+            return
+        _budget["exhausted"] = True
+        _budget["exhausted_after_ms"] = int((time.time() - start_time) * 1000)
+        grace = time_budget_grace_secs(_budget_secs)
+        decisions.append(
+            f"time_budget: {_budget_secs}s exhausted; the stream was cut off "
+            f"and one closing turn ran with tools withheld ({grace}s grace)"
+        )
+        logger.info(
+            f"📋 TASK_EXEC: {block.name!r} time budget of {_budget_secs}s "
+            f"exhausted; running closing turn ({grace}s grace)"
+        )
+        await _emit({
+            "type": "task_progress", "run_id": run_id, "block_id": delta_block_id,
+            "index": delta_index,
+            "note": f"time budget ({_budget_secs}s) exhausted; writing findings",
+            "ts": time.time(),
+        })
+        _heartbeat("time budget exhausted; writing findings")
+        # Same shape as the contract-correction turn: close the model's
+        # turn so far (never empty -- the provider sanitizer drops an empty
+        # assistant turn, leaving two user turns in a row), then ask.
+        messages.append(AIMessage(content="".join(collected_text).strip()
+                                  or "[no text response]"))
+        messages.append(HumanMessage(content=TIME_BUDGET_CLOSING_MESSAGE))
+        if collected_text and not collected_text[-1].endswith("\n"):
+            collected_text.append("\n\n")
+            # Same live-stream seam as the contract-correction turn.
+            await _emit({
+                "type": "task_text_delta", "run_id": run_id,
+                "block_id": delta_block_id, "index": delta_index,
+                "content": "\n\n", "ts": time.time(),
+            })
+        hit2 = [False]
+        async with aclosing(_stream(messages, closing=True)) as g:
+            async for c in _pull_until(g, time.time() + grace, hit2):
+                yield c
+        if hit2[0]:
+            _budget["hard_stopped"] = True
 
     try:
         # Same reason as the inner aclosing: the loop below breaks on
         # stream_end, so close the generator chain on the way out.
-        async with aclosing(_stream_with_contract_correction()) as _chunks:
+        async with aclosing(_stream_within_budget()) as _chunks:
             async for chunk in _chunks:
                 ctype = chunk.get("type")
                 if ctype == "text":
@@ -1144,6 +1303,7 @@ async def execute_task_block(
                     _result = chunk.get("result", "")
                     _tool_name = chunk.get("tool_name") or "tool"
                     _args = chunk.get("args")
+                    _write_tracker.note(_tool_name, _args)
                     _arg_hint = ""
                     if isinstance(_args, dict):
                         _arg_hint = str(
@@ -1349,6 +1509,8 @@ async def execute_task_block(
         emitted_outputs = finish_artifact_collection(artifact_token)
 
     elapsed_ms = int((time.time() - start_time) * 1000)
+    _cpu_ms = max(0, cpu_children_ms() - _cpu_start_ms)
+    _files_written = _write_tracker.snapshot(effective_root)
     full_text = "".join(collected_text)
 
     # Token accounting.  ``tokens_used`` was initialised to 0 and never
@@ -1467,6 +1629,22 @@ async def execute_task_block(
         assessment_signature = assessment_signature or "truncated_summary"
         _executor_imposed_failure = True
 
+    # The closing turn did not finish inside its grace: the block kept
+    # streaming (or a tool call kept running) past budget + grace, so there
+    # is no deliberate "what I have" to pass forward.  Executor-imposed, so
+    # a satisfied contract does not rescue it below.  A block whose closing
+    # turn DID finish is judged normally; its ``time_budget`` record on the
+    # artifact and event says the result was written under the deadline.
+    if _budget["hard_stopped"]:
+        decisions.append(
+            f"{TIME_BUDGET_FAILURE_SIGNATURE}: the closing turn did not finish "
+            f"within its grace after the {_budget_secs}s budget; recorded as "
+            f"failed"
+        )
+        assessment_failed = True
+        assessment_signature = TIME_BUDGET_FAILURE_SIGNATURE
+        _executor_imposed_failure = True
+
     # Required contracted outputs still missing after the correction turn.
     # Checked against the recorded parts, which hold only parts that passed
     # emit-time validation.  The block's on_failure then governs, unchanged.
@@ -1525,6 +1703,16 @@ async def execute_task_block(
     except Exception as e:  # noqa: BLE001 -- listing claims must never fail a task
         logger.debug("ledger_claims listing failed: %s", e)
 
+    # Only present when the budget fired, so an under-budget artifact and
+    # event are byte-identical to before the budget existed.
+    _budget_extra: Dict[str, Any] = {}
+    if _budget["exhausted"]:
+        _budget_extra["time_budget"] = {
+            "budget_secs": _budget_secs,
+            "exhausted_after_ms": _budget.get("exhausted_after_ms"),
+            "closing_turn": "cut_off" if _budget["hard_stopped"] else "completed",
+        }
+
     from app.utils.artifact_summary import truncate_summary
     artifact = Artifact(
         summary=truncate_summary(full_text.strip()),
@@ -1540,7 +1728,10 @@ async def execute_task_block(
         self_assessment=self_assessment,
         failed=assessment_failed,
         signature=assessment_signature,
+        cpu_ms=_cpu_ms,
+        files_written=_files_written,
         **model_used,
+        **_budget_extra,
     )
     await _emit({
         "type": "task_finished",
@@ -1550,6 +1741,7 @@ async def execute_task_block(
         "duration_ms": elapsed_ms,
         "tool_calls": tool_call_count,
         "ts": time.time(),
+        **_budget_extra,
         # Structured verdict.  The run record is encrypted at rest and
         # ``ok`` alone does not say WHY a task failed, so an operator
         # reading events.jsonl after the fact had to reconstruct the
