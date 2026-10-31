@@ -558,6 +558,9 @@ def _walk(
     elif btype == "ask":
         _check_ask(block, err, enclosing)
 
+    elif btype == "schedule":
+        _check_schedule(block, err, warn, nested=bool(ancestry))
+
     if btype in CONTAINER_TYPES and not (block.body or []):
         warn(f"{btype} block has an empty body - it will do nothing")
 
@@ -741,6 +744,33 @@ def _check_sibling_refs(
                             "a card that has that block)")
             else:
                 err(full)
+
+
+def _check_schedule(block: Block, err, warn, nested: bool) -> None:
+    """A Schedule block's cadence must be one the scheduler can read.
+
+    Before this check a cron of four fields, a daily time of 25:00 or an
+    interval of 0 saved without complaint; compute_next_fire then returned
+    None on every tick and the card sat on "next slot not computed yet"
+    for ever.  The same ``cadence_problem`` the scheduler and the registry
+    use decides here, so the three cannot disagree.  A one-shot ``at`` in
+    the past is a warning rather than an error: saving an old card is
+    fine, registering it is what will not fire.
+    """
+    from app.agents.task_scheduler import cadence_problem
+    problem = cadence_problem(block, None)
+    if problem:
+        err(f"schedule block cannot fire: {problem}")
+    elif (block.schedule_mode or "interval") == "at":
+        import time as _time
+        past = cadence_problem(block, int(_time.time() * 1000))
+        if past:
+            warn(f"schedule block: {past} - it will never fire if registered")
+    if nested:
+        # Only the topmost Schedule block in a card is honoured by the fire
+        # loop; a nested one runs its body once as a passthrough.
+        warn("schedule block is nested - only a card's topmost schedule "
+             "block fires; this one runs its body once, in sequence")
 
 
 def _check_ask(block: Block, err, enclosing: Tuple[str, ...]) -> None:

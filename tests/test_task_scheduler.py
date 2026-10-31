@@ -340,8 +340,39 @@ def test_enumerate_skips_cards_without_schedule(isolated_home):
     assert ts._enumerate_scheduled_cards() == []
 
 
+def _register(home, pid: str, cid: str, **patch):
+    """Registration is what puts a card on the scheduler (schedule_registry.py);
+    the card's own Schedule block is only the author's request."""
+    from app.agents import schedule_registry as reg
+    from app.storage.task_cards import TaskCardStorage
+    card = TaskCardStorage(home / "projects" / pid).get(cid)
+    r = reg.register(pid, card)
+    if patch:
+        r = reg.update_registration(pid, cid, patch)
+    return r
+
+
+def test_enumerate_skips_unregistered_schedule(isolated_home):
+    """An enabled Schedule block with no registration fires nothing."""
+    _make_project_with_card(isolated_home, "p1", {
+        "id": "c-unreg", "name": "unreg", "description": "",
+        "tags": [], "is_template": False, "source": "custom",
+        "created_at": 0, "updated_at": 0, "run_count": 0,
+        "root": {
+            "block_type": "schedule", "id": "s", "name": "s",
+            "schedule_mode": "interval",
+            "schedule_interval_value": 1,
+            "schedule_interval_unit": "hours",
+            "schedule_enabled": True,
+            "body": [{"block_type": "task", "id": "t", "name": "t",
+                      "instructions": "x", "body": []}],
+        },
+    })
+    assert ts._enumerate_scheduled_cards() == []
+
+
 def test_enumerate_skips_disabled_schedules(isolated_home):
-    """schedule_enabled=False → not enumerated."""
+    """A registration with enabled=False → not enumerated."""
     _make_project_with_card(isolated_home, "p1", {
         "id": "c-off", "name": "off", "description": "",
         "tags": [], "is_template": False, "source": "custom",
@@ -356,11 +387,12 @@ def test_enumerate_skips_disabled_schedules(isolated_home):
                       "instructions": "x", "body": []}],
         },
     })
+    _register(isolated_home, "p1", "c-off", enabled=False)
     assert ts._enumerate_scheduled_cards() == []
 
 
 def test_enumerate_finds_enabled_schedule(isolated_home):
-    """An enabled schedule appears with the right project/card/block ids."""
+    """A registered card appears with the right project/card/block ids."""
     _make_project_with_card(isolated_home, "p1", {
         "id": "c-on", "name": "on", "description": "",
         "tags": [], "is_template": False, "source": "custom",
@@ -375,6 +407,7 @@ def test_enumerate_finds_enabled_schedule(isolated_home):
                       "instructions": "x", "body": []}],
         },
     })
+    _register(isolated_home, "p1", "c-on")
     found = ts._enumerate_scheduled_cards()
     assert len(found) == 1
     assert found[0].project_id == "p1"
@@ -403,6 +436,7 @@ def test_enumerate_finds_nested_schedule(isolated_home):
             }],
         },
     })
+    _register(isolated_home, "p1", "c-nested")
     found = ts._enumerate_scheduled_cards()
     assert len(found) == 1
     assert found[0].block.id == "s-inner"
@@ -479,6 +513,113 @@ def test_fire_one_records_card_and_permissions_snapshot(isolated_home):
     scopes = run.permissions_snapshot.get("block_scopes") or {}
     assert "t1" in scopes, scopes
     assert "file_read" in scopes["t1"]["tools"]
+
+
+def test_fire_one_runs_against_project_path(isolated_home):
+    """A scheduled fire has no request, so there is no X-Project-Root
+    header to take the root from; it must fall back to the project's
+    recorded path, as the interactive launch path does.  Both the
+    ExecutionContext the body runs under AND the permissions snapshot
+    that records the grant must carry that path — a ``None`` root
+    makes tool calls resolve against the server's cwd.
+    """
+    from app.models.project import ProjectCreate
+    from app.models.task_card import Artifact, TaskCardCreate
+    from app.storage.projects import ProjectStorage
+    from app.storage.task_cards import TaskCardStorage
+    from app.storage.task_runs import TaskRunStorage
+    from app.utils.paths import get_ziya_home, get_project_dir
+
+    repo = isolated_home / "repo"
+    repo.mkdir()
+    proj = ProjectStorage(get_ziya_home()).create(
+        ProjectCreate(path=str(repo), name="repo"))
+    body = Block(block_type="task", id="t1", name="t1", instructions="x")
+    sched = Block(block_type="schedule", id="s1", name="nightly",
+                  schedule_mode="interval", schedule_interval_value=1,
+                  schedule_interval_unit="hours", body=[body])
+    card = TaskCardStorage(get_project_dir(proj.id)).create(
+        TaskCardCreate(name="sched", description="d", root=sched))
+    target = ts._ScheduledCard(
+        project_id=proj.id, card_id=card.id, card_name="sched",
+        block=card.root, body_root=ts._resolve_body_root(card.root))
+
+    seen = {}
+
+    async def fake_exec(block, ctx):
+        from app.context import get_project_root_or_none
+        seen["project_root"] = ctx.project_root
+        # Code that reads the contextvar directly (task_artifacts,
+        # tool_batch cwd, MCPManager workspace routing) must see the same
+        # root; ctx.project_root alone does not reach it.
+        seen["contextvar"] = get_project_root_or_none()
+        return Artifact(summary="ok")
+
+    async def go():
+        with patch("app.agents.block_executor.execute_block",
+                   side_effect=fake_exec):
+            await ts._fire_one(target)
+            for _ in range(20):
+                await asyncio.sleep(0)
+    asyncio.run(go())
+
+    assert "project_root" in seen, "execute_block was never reached"
+    assert seen["project_root"] == str(repo)
+    assert seen["contextvar"] == str(repo)
+
+    run_storage = TaskRunStorage(get_project_dir(proj.id))
+    run = run_storage.get(run_storage.list()[0].id)
+    assert run.permissions_snapshot is not None
+    assert run.permissions_snapshot.get("project_root") == str(repo)
+
+
+def test_fire_one_missing_project_dir_falls_back_to_none(isolated_home):
+    """The project's recorded path is used only when the directory still
+    exists (same rule as the launch endpoint, ``resolve_launch_root``).  A
+    project whose directory was moved or deleted must not hand that path
+    to the executor; the fire runs with no root and does not crash."""
+    from app.models.project import ProjectCreate
+    from app.models.task_card import Artifact, TaskCardCreate
+    from app.storage.projects import ProjectStorage
+    from app.storage.task_cards import TaskCardStorage
+    from app.storage.task_runs import TaskRunStorage
+    from app.utils.paths import get_ziya_home, get_project_dir
+
+    gone = isolated_home / "gone"
+    gone.mkdir()
+    proj = ProjectStorage(get_ziya_home()).create(
+        ProjectCreate(path=str(gone), name="gone"))
+    gone.rmdir()
+    body = Block(block_type="task", id="t1", name="t1", instructions="x")
+    sched = Block(block_type="schedule", id="s1", name="nightly",
+                  schedule_mode="interval", schedule_interval_value=1,
+                  schedule_interval_unit="hours", body=[body])
+    card = TaskCardStorage(get_project_dir(proj.id)).create(
+        TaskCardCreate(name="sched", description="d", root=sched))
+    target = ts._ScheduledCard(
+        project_id=proj.id, card_id=card.id, card_name="sched",
+        block=card.root, body_root=ts._resolve_body_root(card.root))
+
+    seen = {}
+
+    async def fake_exec(block, ctx):
+        seen["project_root"] = ctx.project_root
+        return Artifact(summary="ok")
+
+    async def go():
+        with patch("app.agents.block_executor.execute_block",
+                   side_effect=fake_exec):
+            await ts._fire_one(target)
+            for _ in range(20):
+                await asyncio.sleep(0)
+    asyncio.run(go())
+
+    assert "project_root" in seen, "execute_block was never reached"
+    assert seen["project_root"] is None
+    run_storage = TaskRunStorage(get_project_dir(proj.id))
+    run = run_storage.get(run_storage.list()[0].id)
+    assert run.status == "done"
+    assert run.permissions_snapshot.get("project_root") is None
 
 
 # ── _tick_card: schedule_concurrency ────────────────────────

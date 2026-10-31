@@ -8,6 +8,11 @@
  * Schedules can nest like any other block.  Nested schedules are
  * legal (they execute as passthrough when run directly) but only the
  * topmost schedule in a card's tree is honored by the fire loop.
+ *
+ * The block is the author's REQUEST.  Nothing fires until the user
+ * registers the card (ScheduleHistory's Register button, or the header's
+ * Schedules list); from then on the registration owns enabled and the
+ * cadence.  That is why there is no "enabled" checkbox here.
  */
 
 import React from 'react';
@@ -100,13 +105,6 @@ export const ScheduleBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
           />
         )}
 
-        <label className="tc-checkbox-label" title="Disable to pause without deleting the schedule">
-          <input
-            type="checkbox"
-            checked={block.schedule_enabled !== false}
-            onChange={e => update({ schedule_enabled: e.target.checked })}
-          /> enabled
-        </label>
         <label className="tc-checkbox-label" title="Run once on recovery if a fire was missed (default cron behavior)">
           <input
             type="checkbox"

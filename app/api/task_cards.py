@@ -13,9 +13,7 @@ which the header re-polls on every window focus.  Only ``launch_task_card``
 awaits.  tests/test_task_cards_api_not_event_loop_blocking.py enforces this.
 """
 
-import asyncio
 import os
-import time
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -30,12 +28,8 @@ from ..models.task_run import TaskRun, TaskRunCreate, TaskRunBlockState
 from ..storage.projects import ProjectStorage
 from ..storage.task_cards import TaskCardStorage, build_export
 from ..storage.task_runs import TaskRunStorage
-from ..agents.task_executor import TaskExecutorError
-from ..agents.block_executor import (
-    execute_block, ExecutionContext, BlockExecutionCancelled,
-)
-from ..agents import task_run_stream_relay as _relay
-from ..agents import live_runs as _live_runs
+# Imported at module level so tests can patch ``app.api.task_cards.execute_block``.
+from ..agents.block_executor import execute_block
 from ..utils.paths import get_ziya_home, get_project_dir
 from ..utils.logging_utils import logger
 
@@ -948,7 +942,7 @@ async def _launch_run_for_card(
     except Exception as e:
         logger.warning(f"📋 TASK_LAUNCH: card_snapshot capture failed: {e}")
 
-    from ..context import get_project_root_or_none, set_project_root
+    from ..context import get_project_root_or_none
     from ..utils.launch_root import resolve_launch_root
     # Falls back to the project's own directory when the launching request
     # carried no X-Project-Root (scripts, curl, model tool calls); without
@@ -970,269 +964,41 @@ async def _launch_run_for_card(
         # Non-fatal — missing audit trail shouldn't block task execution.
         logger.warning(f"📋 TASK_LAUNCH: permissions_snapshot capture failed: {e}")
 
-    async def _run(run_id: str, block, project_root):
-        logger.info(f"🚀 TASK_RUN: _run coroutine entered for {run_id[:8]}")
-        # ── Launch preflight ────────────────────────────────────────
-        # Two of ten runs of one long campaign card died at 0.0 minutes
-        # because they were relaunched straight into a dead endpoint,
-        # producing a run record whose only content was the error.  A
-        # cheap check first turns that into an explicit held run.
-        #
-        # Deliberately mints a HELD run rather than refusing the launch:
-        # a refusal at the HTTP layer would leave no record the user
-        # could see, resume, or reason about, whereas 'held' is exactly
-        # "the work never started because the infrastructure was down".
-        #
-        # Bedrock-only, opt-out-able, and best-effort.  The STS
-        # round-trip is NOT free — measured at ~10s cold — so it is
-        # skipped for every non-Bedrock endpoint, and
-        # ZIYA_SKIP_LAUNCH_PREFLIGHT=1 disables it for callers that know
-        # no model call will occur: a stubbed executor under test, a card
-        # doing only shell/file work, or an offline environment.  Without
-        # that escape hatch the check holds runs that would have
-        # succeeded — the one outcome worse than not checking — while
-        # billing every launch ~10s for an answer it did not need.
-        #
-        # Any failure of the check ITSELF proceeds to launch: "cannot
-        # verify" is not "invalid".
-        try:
-            _skip = os.environ.get(
-                "ZIYA_SKIP_LAUNCH_PREFLIGHT", "",
-            ).strip().lower() in ("1", "true", "yes")
-            if _skip:
-                _endpoint = ""   # sentinel: no endpoint check performed
-                logger.debug(
-                    "Launch preflight skipped (ZIYA_SKIP_LAUNCH_PREFLIGHT)"
-                )
-            else:
-                from ..agents.models import ModelManager
-                _endpoint = (ModelManager.get_state() or {}).get("endpoint", "bedrock")
-            if _endpoint == "bedrock":
-                from ..utils.aws_utils import check_aws_credentials
-                # STS round trip (~10s cold) plus botocore client setup:
-                # never on the event loop.
-                _ok, _msg = await asyncio.to_thread(
-                    check_aws_credentials, is_server_startup=False,
-                )
-                if not _ok:
-                    run_storage.mark_held(
-                        run_id, reason="authentication_error",
-                        block_id=getattr(block, "id", "") or "",
-                        error=(
-                            f"Launch preflight failed — the run did not start. "
-                            f"{_msg or 'AWS credentials are not valid.'}"
-                        ),
-                    )
-                    await _relay.safe_push(run_id, {
-                        "type": "run_completed", "run_id": run_id,
-                        "status": "held", "at": time.time(),
-                        "error": _msg or "credentials invalid",
-                    })
-                    logger.warning(
-                        f"⏸️ Task run held before start (preflight): {run_id[:8]}"
-                    )
-                    return
-        except Exception as e:  # noqa: BLE001 — never block a launch on the check
-            logger.debug("Launch preflight skipped: %s", e)
-        # Defense in depth: re-set the request-scoped ContextVar inside
-        # the spawned task.  asyncio.create_task copies the current
-        # Context, so this is normally redundant — but if project_root
-        # was passed via a path other than the X-Project-Root header
-        # (or if the var was cleared), tool calls fired from inside
-        # the task would otherwise fall through to ``os.getcwd()``,
-        # which is wherever the server happened to be launched from.
-        if project_root:
-            set_project_root(project_root)
-        # Lifecycle event emitter — kept local so the run_id/project_id
-        # are captured in closure and callers don't have to thread them.
-        async def _emit_run(status: str, **extra):
-            await _relay.safe_push(run_id, {
-                "type": "run_completed" if status != "started" else "run_started",
-                "run_id": run_id,
-                "status": status,
-                "at": time.time(),
-                **extra,
-            })
-        # Mark this run as actively executing in this process so the
-        # cancel endpoint can distinguish "live executor — soft-cancel"
-        # from "zombie from a prior server lifetime — force-cancel".
-        # The startup reconciler handles zombies left behind by a hard
-        # crash that bypassed the finally block below.
-        run_storage.mark_active(run_id)
-        # Journal every relay event to disk so a sibling server (one
-        # that did not launch this run) can tail it and show the same
-        # live detail.  Opened before the first emit below.
-        try:
-            _relay.open_journal(run_id, run_storage.journal_path(run_id))
-        except Exception as e:  # noqa: BLE001 — observation is optional
-            logger.debug("Could not open run journal: %s", e)
-        try:
-            logger.info(f"🚀 TASK_RUN: {run_id[:8]} → marking running")
-            run_storage.update_status(run_id, "running")
-            await _emit_run("started")
-            ctx = ExecutionContext(
-                run_id=run_id,
-                project_root=project_root,
-                project_id=project_id,
-                storage=run_storage,
-                overrides=dict(parameter_overrides or {}),
-                deck_scope=deck_scope,
-                card_scope=card.scope,
-                # Outermost hop of the hold breadcrumb.  Without it, a hold
-                # inside a called card reports a path that starts at the
-                # CALLEE and omits the card the user actually launched.
-                root_card_label=(card.name or card.id),
-                # Resume state.  ``resume_skipping`` starts True only
-                # when a target was given, so a normal launch is
-                # untouched: the gate in execute_block is inert unless
-                # resume_skipping is set.
-                resume_from_block_id=resume_from_block_id,
-                resume_skipping=bool(resume_from_block_id),
-                resume_artifacts=dict(resume_artifacts or {}),
-                # Mid-loop resume.  Coerced to Artifact here rather than
-                # at the endpoint so a record read straight off disk (a
-                # plain dict) and one passed in-process behave the same.
-                resume_from_iteration=resume_from_iteration,
-                resume_iteration_artifacts={
-                    int(k): (v if isinstance(v, Artifact) else Artifact(**v))
-                    for k, v in (resume_iteration_artifacts or {}).items()
-                    if v is not None
-                },
-                # Descend-through-Call hint.  Without it the gate replays a
-                # Call whole (empty body -> _subtree_contains False), so a
-                # target inside a called card is unreachable and the run
-                # reports success having executed nothing — which is worse
-                # than the 404 that behaviour replaced.
-                resume_call_chain=list(resume_call_chain or []),
-                # Finished branches of a resumed parallel: replayed, not
-                # re-run.  Empty unless the resume endpoint supplied them.
-                resume_banked_ids=set(resume_banked_ids or []),
-            )
-            logger.info(f"🚀 TASK_RUN: {run_id[:8]} → execute_block start (type={block.block_type})")
+    # Hand the run to the shared driver (app/agents/run_driver.py): the
+    # same coroutine the scheduler uses, so an interactive run and a
+    # scheduled fire record outcomes, hold on infrastructure faults, take
+    # the executor lock and clean up jobs identically.  start_run keeps
+    # the task handle in live_runs — the only in-process lever that can
+    # interrupt a run stuck inside a block.  ``_execute`` defers the lookup
+    # of ``execute_block`` to call time so a test that patches this
+    # module's name is honoured.
+    from ..agents.run_driver import RunLaunch, start_run
 
-            def _terminal(base: str) -> str:
-                """Reclassify a terminal status against what completed.
+    async def _execute(block, ctx):
+        return await execute_block(block, ctx)
 
-                Reads block_states back from disk rather than tracking
-                progress here: the executor already persists every
-                block's outcome, and re-deriving keeps this to one
-                lookup instead of a parallel accounting scheme that
-                could drift from the durable record.
-                """
-                from ..utils.run_outcome import classify_terminal_status
-                fresh = run_storage.get(run_id)
-                return classify_terminal_status(
-                    base, fresh.block_states if fresh else None,
-                )
-
-            artifact = await execute_block(block, ctx)
-            logger.info(
-                f"🚀 TASK_RUN: {run_id[:8]} → execute_block returned "
-                f"(summary_len={len(artifact.summary)}, failed={artifact.failed})"
-            )
-            run_storage.set_artifact(run_id, artifact)
-            final_status = _terminal("failed" if artifact.failed else "done")
-            run_storage.update_status(run_id, final_status)
-            await _emit_run(final_status)
-            # Feed what the run established into probationary memory
-            # (app/agents/run_memory_harvest.py).  Fire-and-forget; the
-            # harvest itself skips anything other than done / partial.
-            from ..agents.run_memory_harvest import schedule_harvest
-            schedule_harvest(
-                run_id=run_id, card=card, artifact=artifact, status=final_status,
-                project_path=getattr(project, "path", None) or project_root,
-            )
-            logger.info(f"✅ Task run complete: {run_id[:8]}")
-        except BlockExecutionCancelled:
-            # A user-stopped run that got partway carries the same
-            # workspace hazard as a crash-partway.
-            _st = _terminal("cancelled")
-            run_storage.update_status(run_id, _st)
-            await _emit_run(_st)
-            logger.info(f"🛑 Task run cancelled: {run_id[:8]}")
-        except TaskExecutorError as e:
-            # An infrastructure fault is not a verdict on the work: the
-            # card never reached a decision, so recording it as
-            # "failed" both misdescribes it and throws away the
-            # position the run had reached.  Detected by attribute
-            # rather than by importing TaskInfraError, keeping this
-            # module's import surface unchanged.
-            _kind = getattr(e, "infra_kind", "")
-            if _kind:
-                _blk = getattr(e, "block_id", "") or ""
-                # The aggregate, not just the exception that happened to
-                # survive gather().  ctx accumulated every fault in
-                # memory; this is the single write of that record.
-                _faults = None
-                _gate = None
-                try:
-                    _faults = ctx.infra_summary()
-                    _gate = ctx.infra_gated_reason
-                except Exception:  # noqa: BLE001 — surfacing must not mask the hold
-                    pass
-                run_storage.mark_held(
-                    run_id, reason=_kind, block_id=_blk, error=str(e),
-                    faults=_faults, gate_reason=_gate,
-                )
-                await _emit_run("held", error=str(e))
-                _n = (_faults or {}).get("fault_count", 1)
-                logger.warning(
-                    f"⏸️ Task run held ({_kind}): {run_id[:8]} at block "
-                    f"{_blk[:14] or '?'} — {_n} fault(s)"
-                    + (f", gate: {_gate}" if _gate else "") + f" — {e}"
-                )
-            else:
-                _st = _terminal("failed")
-                run_storage.update_status(run_id, _st, error=str(e))
-                await _emit_run(_st, error=str(e))
-                logger.warning(f"❌ Task run failed: {run_id[:8]}: {e}")
-        except asyncio.CancelledError:
-            # Two things cancel this coroutine and they must be told
-            # apart: a force-stop (live_runs.abort, because the run was
-            # stuck inside a block where cancel_requested is never read)
-            # and the event loop shutting down.  Only the first is a
-            # verdict on the run; the second is the startup reconciler's
-            # job.  CancelledError is a BaseException, so the broad
-            # handler below never saw it and the run stayed ``running``
-            # on disk with no executor behind it.
-            if _live_runs.consume_abort(run_id):
-                # No-op if the endpoint already recorded the hold after
-                # its bounded wait; it emits nothing, so this is the one
-                # place the run_completed event comes from.
-                _aborted = run_storage.mark_aborted(run_id)
-                if _aborted is not None and _aborted.status == "held":
-                    await _emit_run("held", error=_aborted.error or "force-stopped")
-                logger.info(f"🛑 Task run force-stopped: {run_id[:8]}")
-            raise
-        except Exception as e:  # Broad: background task must not bubble
-            _st = _terminal("failed")
-            run_storage.update_status(run_id, _st, error=str(e))
-            await _emit_run(_st, error=str(e))
-            logger.error(f"❌ Task run crashed: {run_id[:8]}: {e}", exc_info=True)
-        finally:
-            # Managed jobs owned by this run (design/job-runner.md,
-            # Ownership): killed when the run ends or is cancelled.  A HELD
-            # run keeps them running; on resume job_status shows them.
-            try:
-                _final = run_storage.get(run_id)
-                if _final is None or _final.status != "held":
-                    from app.jobs.manager import get_job_manager
-                    _killed = await asyncio.to_thread(
-                        get_job_manager().kill_owned, {"run_id": run_id}, "run_end")
-                    if _killed:
-                        logger.info(f"🧵 run {run_id[:8]} ended; killed {len(_killed)} job(s)")
-            except Exception as _je:  # noqa: BLE001 -- cleanup never masks the run's verdict
-                logger.warning(f"job cleanup at run end failed: {_je}")
-            # Always drop from the active-runs set, even on error.
-            run_storage.mark_inactive(run_id)
-            _relay.close_journal(run_id)
-            _live_runs.unregister(run_id)
-
-    # Keep the handle.  It is the only in-process lever that can
-    # interrupt a run stuck inside a block; see app/agents/live_runs.py.
-    _live_runs.register(
-        run.id, asyncio.create_task(_run(run.id, root_block, project_root)),
-    )
+    start_run(RunLaunch(
+        run_id=run.id, root=root_block, project_id=project_id,
+        project_root=project_root, card=card, run_storage=run_storage,
+        deck_scope=deck_scope,
+        project_path=getattr(project, "path", None) or project_root,
+        overrides=dict(parameter_overrides or {}),
+        context_kwargs=dict(
+            root_card_label=(card.name or card.id),
+            resume_from_block_id=resume_from_block_id,
+            resume_skipping=bool(resume_from_block_id),
+            resume_artifacts=dict(resume_artifacts or {}),
+            resume_from_iteration=resume_from_iteration,
+            resume_iteration_artifacts={
+                int(k): (v if isinstance(v, Artifact) else Artifact(**v))
+                for k, v in (resume_iteration_artifacts or {}).items()
+                if v is not None
+            },
+            resume_call_chain=list(resume_call_chain or []),
+            resume_banked_ids=set(resume_banked_ids or []),
+        ),
+        execute=_execute,
+    ))
     logger.info(f"🚀 Task card launched: {card.name} → run {run.id[:8]} (task scheduled)")
     return run
 
@@ -1296,4 +1062,7 @@ def get_schedule_state(project_id: str, card_id: str) -> dict:
                 rec = {**rec, "last_run": last}
         except Exception as e:  # noqa: BLE001 — enrichment must not break the read
             logger.warning(f"schedule-state: last_run enrichment failed: {e}")
-    return rec
+    from ..agents.schedule_registry import get_registration
+    reg = get_registration(project_id, card_id)
+    return {**rec, "registered": reg is not None,
+            "enabled": reg.enabled if reg is not None else None}
