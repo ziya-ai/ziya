@@ -4751,8 +4751,9 @@ Please retry the tool call with valid JSON. Ensure:
                         DEFAULT_KEEP_RECENT_INTERACTIVE,
                         DEFAULT_MAX_IMAGE_BYTES,
                         IMAGE_OMITTED_PLACEHOLDER, compact_prior_image_results,
-                        image_blocks_to_text,
+                        image_blocks_to_text, sanitize_unsupported_images,
                     )
+                    sanitize_unsupported_images(conversation)
                     from app.utils.image_pin_context import take_image_retain_floor
                     _keep_recent = (DEFAULT_KEEP_RECENT_INTERACTIVE if interactive
                                     else DEFAULT_KEEP_RECENT_BATCH)
