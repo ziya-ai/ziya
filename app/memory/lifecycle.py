@@ -158,6 +158,59 @@ def _is_fast_track_eligible(proposal: Dict[str, Any]) -> bool:
     return True
 
 
+# ── Identifier fast track ──────────────────────────────────────────────
+# An explicitly proposed fact (memory_propose, learned_from="observation")
+# that names a stable identifier (UUID, ti-… terminal id, ticket key, long
+# hex) is taught once and never independently re-derived, so it can never
+# meet the corroboration bar; the user's own terminal ids were proposed on
+# 2026-10-20 and 10-21 and decayed both times.  Such a fact is also cheap to
+# contradict, which is what makes skipping corroboration safe.  Harvest and
+# auto-extraction proposals keep the ordinary bar: they are the model's
+# summary of a transcript, not a fact it was told.
+_IDENTIFIER_FAST_TRACK_SOURCES = {"observation"}
+
+
+def _is_identifier_fast_track_eligible(
+        proposal: Dict[str, Any],
+        active_identifiers: Optional[set] = None) -> bool:
+    """True if the proposal may promote on the identifier track (ignoring
+    age).  ``active_identifiers`` is the set of identifiers already present
+    in active memories; a proposal naming one of them is NOT eligible —
+    the store already knows that identifier, and whether the new text
+    confirms or contradicts it is for the ordinary path to decide.  None
+    means the caller has no index (display paths); the guard is skipped."""
+    if proposal.get("learned_from") not in _IDENTIFIER_FAST_TRACK_SOURCES:
+        return False
+    if _has_signal(proposal, "contradicted"):
+        return False
+    from app.utils.memory_identifiers import extract_identifiers, is_hedged
+    content = proposal.get("content") or ""
+    idents = extract_identifiers(content)
+    if not idents:
+        return False
+    # A fact the model itself marks as a guess does not skip corroboration.
+    if is_hedged(content):
+        return False
+    if active_identifiers and any(i in active_identifiers for i in idents):
+        return False
+    return True
+
+
+def _active_identifier_index() -> Optional[set]:
+    """Every stable identifier named by an active memory, for the conflict
+    guard above.  Built once per sweep."""
+    try:
+        from app.storage.memory import get_memory_storage
+        from app.utils.memory_identifiers import extract_identifiers
+        out: set = set()
+        for m in get_memory_storage().list_memories(status="active"):
+            out.update(extract_identifiers(m.content or ""))
+        return out
+    except Exception as e:
+        logger.debug(f"Lifecycle: active identifier index unavailable: {e}")
+        return None
+
+
 def _proposal_age(proposal: Dict[str, Any], current_counter: int) -> int:
     """Return how many activity counts have passed since this proposal was created."""
     created_at = proposal.get("activity_count_at_proposal", 0)
@@ -180,7 +233,8 @@ def _has_signal(proposal: Dict[str, Any], name: str) -> bool:
 
 
 def _evaluate_promotion(proposal: Dict[str, Any],
-                        current_counter: int = 0) -> Optional[str]:
+                        current_counter: int = 0,
+                        active_identifiers: Optional[set] = None) -> Optional[str]:
     """Return a reason string if the proposal should promote, else None.
 
     Two tracks (redesign §2.2), first match wins:
@@ -194,6 +248,10 @@ def _evaluate_promotion(proposal: Dict[str, Any],
       corroboration required.  ``current_counter`` is the live activity
       counter (defaults to 0, which — since age would be < FAST_TRACK_MIN_AGE
       — makes rule 4 inert for callers that don't supply it).
+    * IDENTIFIER TRACK (rule 5) — an explicitly proposed, unhedged fact that
+      names a stable identifier not already in the active store promotes at
+      FAST_TRACK_MIN_AGE regardless of layer.  See
+      ``_is_identifier_fast_track_eligible``.
     """
     corroborations = proposal.get("corroborations", 0)
     layer = proposal.get("layer", "domain_context")
@@ -211,11 +269,15 @@ def _evaluate_promotion(proposal: Dict[str, Any],
     if (_is_fast_track_eligible(proposal)
             and _proposal_age(proposal, current_counter) >= FAST_TRACK_MIN_AGE):
         return "quality_fast_track"
+    if (_is_identifier_fast_track_eligible(proposal, active_identifiers)
+            and _proposal_age(proposal, current_counter) >= FAST_TRACK_MIN_AGE):
+        return "identifier_fast_track"
     return None
 
 
 def _evaluate_archival(proposal: Dict[str, Any], current_counter: int,
-                        active_embedding_lookup) -> Optional[str]:
+                        active_embedding_lookup,
+                        active_identifiers: Optional[set] = None) -> Optional[str]:
     """Return a reason string if the proposal should archive, else None.
 
     ``active_embedding_lookup`` is a callable taking a proposal dict and
@@ -229,7 +291,7 @@ def _evaluate_archival(proposal: Dict[str, Any], current_counter: int,
     # Never archive something that qualifies for promotion.  The pass
     # evaluates promotion first, but the two evaluators must not disagree
     # if a caller consults archival alone.
-    if _evaluate_promotion(proposal, current_counter):
+    if _evaluate_promotion(proposal, current_counter, active_identifiers):
         return None
 
     corroborations = proposal.get("corroborations", 0)
@@ -242,6 +304,8 @@ def _evaluate_archival(proposal: Dict[str, Any], current_counter: int,
         # unreachable — it promotes at age 2 before archival fires at 7 — but
         # the guard is REQUIRED so the two evaluators never disagree.)
         if _is_fast_track_eligible(proposal):
+            return None
+        if _is_identifier_fast_track_eligible(proposal, active_identifiers):
             return None
         return "decayed"
 
@@ -464,18 +528,20 @@ def _run_lifecycle_pass_sync() -> Dict[str, int]:
         logger.debug(f"Lifecycle: domain clocks unavailable, using global counter: {e}")
 
     embedding_lookup = _make_active_embedding_lookup()
+    active_identifiers = _active_identifier_index()
 
     for proposal in open_proposals:
         counts["scanned"] += 1
 
         counter = effective_counter(proposal, current_counter, clock_ctx)
-        promote_reason = _evaluate_promotion(proposal, counter)
+        promote_reason = _evaluate_promotion(proposal, counter, active_identifiers)
         if promote_reason:
             if _promote_proposal(proposal, promote_reason):
                 counts["promoted"] += 1
             continue
 
-        archive_reason = _evaluate_archival(proposal, counter, embedding_lookup)
+        archive_reason = _evaluate_archival(proposal, counter, embedding_lookup,
+                                            active_identifiers)
         if not archive_reason and is_dormant(proposal, clock_ctx):
             archive_reason = "dormant"
         if archive_reason:
