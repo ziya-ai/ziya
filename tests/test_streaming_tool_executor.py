@@ -65,6 +65,72 @@ class TestOptionalOnlyToolsDetection:
         # bead_create has a required 'content' field → NOT optional-only
         assert 'bead_create' not in optional_only
 
+    @pytest.mark.asyncio
+    async def test_external_mcp_tools_recognized_as_optional_only(self):
+        """Regression: zero-argument external MCP tools (e.g. a Jira
+        server's refresh_jira_auth with schema {required: []}) were rejected
+        with 'EMPTY ARGUMENTS'. SecureMCPTool stores the server's real schema
+        only in metadata['input_schema']; its args_schema is inferred from
+        _run(tool_input, ...) and has a *required* tool_input, so the old
+        pydantic-only probe never classified any external tool as
+        optional-only. Separately, the set held 'mcp_<name>' while the gate
+        compares the mcp_-stripped name, so a match was impossible anyway."""
+        from app.mcp.enhanced_tools import SecureMCPTool
+
+        no_args = SecureMCPTool(
+            name='mcp_refresh_jira_auth',
+            description='Force refresh auth',
+            mcp_tool_name='refresh_jira_auth',
+            input_schema={'type': 'object', 'properties': {}, 'required': []},
+            server_name='jira',
+        )
+        # 'required' key absent entirely — also zero-required.
+        optional_only_params = SecureMCPTool(
+            name='mcp_list_my_channels',
+            description='List channels',
+            mcp_tool_name='list_my_channels',
+            input_schema={'type': 'object',
+                          'properties': {'excludeArchived': {'type': 'boolean'}}},
+            server_name='slack',
+        )
+        requires_args = SecureMCPTool(
+            name='mcp_get_jira_issue',
+            description='Get issue',
+            mcp_tool_name='get_jira_issue',
+            input_schema={'type': 'object',
+                          'properties': {'issue_key': {'type': 'string'}},
+                          'required': ['issue_key']},
+            server_name='jira',
+        )
+
+        # Sanity-check the premise the bug rested on: SecureMCPTool exposes
+        # no pydantic schema at all (args_schema is None, no InputSchema /
+        # tool_instance), so a pydantic-only probe finds nothing and can
+        # never classify an external tool. metadata['input_schema'] is the
+        # only place the server's real schema lives.
+        assert no_args.args_schema is None
+        assert not hasattr(no_args, 'tool_instance')
+        assert isinstance(no_args.metadata.get('input_schema'), dict)
+
+        executor = _make_executor()
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        mock_manager.initialize = AsyncMock()
+
+        with patch('app.mcp.manager.get_mcp_manager', return_value=mock_manager), \
+             patch('app.mcp.enhanced_tools.create_secure_mcp_tools',
+                   return_value=[no_args, optional_only_params, requires_args]):
+            (_all, _bedrock, _builtin, _internal,
+             optional_only) = await executor._load_and_prepare_tools()
+
+        # The gate (stream_with_tools) checks the mcp_-stripped name.
+        from app.streaming_tool_executor import StreamingToolExecutor
+        gate_name = StreamingToolExecutor._normalize_tool_name
+        assert gate_name('mcp_refresh_jira_auth') in optional_only
+        assert gate_name('mcp_list_my_channels') in optional_only
+        assert gate_name('mcp_get_jira_issue') not in optional_only
+        assert 'mcp_get_jira_issue' not in optional_only
+
 
 class TestImageContentCompaction:
     """Verify that structured image tool results are compacted

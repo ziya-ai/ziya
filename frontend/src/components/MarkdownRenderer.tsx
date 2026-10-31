@@ -778,8 +778,15 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
         actualToolName === 'WorkspaceSearch';
     const isShellCommand = actualToolName === 'mcp_run_shell_command';
 
-    // Load Prism highlighting for any tool that has a language hint
-    const hasSyntaxHighlighting = contentLanguage && contentLanguage !== 'text' && contentLanguage !== 'markdown';
+    // Load Prism highlighting for any tool that has a language hint.  Capped
+    // by size: a 300 KB `cat` highlighted to ~100K spans blocked the main
+    // thread for over 30 s and then sat in every layout pass of the stream.
+    // Above the cap the result is shown as plain text.
+    const TOOL_HIGHLIGHT_MAX_CHARS = 150_000;
+    const hasSyntaxHighlighting = contentLanguage
+        && contentLanguage !== 'text'
+        && contentLanguage !== 'markdown'
+        && content.length <= TOOL_HIGHLIGHT_MAX_CHARS;
     const queryMatch = isSearchTool && content.match(/Query:\s*\*?\*?"([^"]+)"\*?\*?/);
     const searchQuery = queryMatch ? queryMatch[1] : '';
 
@@ -4303,9 +4310,14 @@ export const ReadOnlyDiffView: React.FC<{ diff: string; elementId: string }> = (
 interface CodeBlockProps {
     token: TokenWithText;
     index: number;
+    /** True while this block's text is still arriving from the stream. */
+    isStreaming?: boolean;
 }
 
-const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
+// Exported for tests: the streaming render path is asserted on directly
+// (DOM node identity across text growth), which a markdown-level test
+// cannot reach.
+export const CodeBlock: React.FC<CodeBlockProps> = ({ token, index, isStreaming = false }) => {
     const tokenRef = useRef<TokenWithText>(token);
     const contentRef = useRef<HTMLDivElement>(null);
 
@@ -4404,9 +4416,12 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         // Only update if content actually changed
         if (tokenRef.current.text !== token.text || tokenRef.current.lang !== token.lang) {
             tokenRef.current = token;
-            if (contentRef.current) highlightCodeIfNeeded();
+            // While the block is still arriving the render below shows plain
+            // text; rebuilding the highlighted subtree here on every flush
+            // (on top of React's own innerHTML write) was the DOM churn.
+            if (!isStreaming && contentRef.current) highlightCodeIfNeeded();
         }
-    }, [token.text, token.lang, highlightCodeIfNeeded]);
+    }, [token.text, token.lang, highlightCodeIfNeeded, isStreaming]);
 
     // Remove the effect that was causing continuous re-renders
     /*
@@ -4449,6 +4464,15 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         }
     }, [token.lang, normalizedLang]);
 
+    // Highlight once per distinct text, not once per parent re-render: a
+    // streaming message re-renders every flush and every closed code block
+    // in it was re-running Prism each time.  The block that is itself still
+    // arriving is rendered as plain text instead (see below), so it skips
+    // Prism entirely until the stream ends.
+    const highlightedHtml = useMemo(
+        () => (isStreaming ? '' : getHighlightedCode(token.text || '')),
+        [isStreaming, token.text, getHighlightedCode]);
+
     // Check if this should be a tool block instead - BEFORE normal code rendering
     if (token.lang?.startsWith('tool:')) {
         const toolName = token.lang.substring(5);
@@ -4483,8 +4507,6 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         return rawLang;
     };
 
-    const highlightedHtml = getHighlightedCode(tokenRef.current.text || '');
-
     if (!isLanguageLoaded) {
         return (
             <pre style={{
@@ -4517,15 +4539,34 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                 }}
                 className={`language-${normalizedLang}`}
             >
-                <code
-                    style={{
-                        textShadow: 'none',
-                        visibility: 'visible',
-                        color: isDarkMode ? '#e6e6e6' : '#24292e'
-                    }}
-                    ref={contentRef}
-                    dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-                />
+                {isStreaming ? (
+                    // A single text node: React updates its data in place as
+                    // the block grows, allocating only the new string.  No
+                    // Prism, no span subtree to tear down per flush.  The
+                    // distinct key makes the switch to the highlighted element
+                    // at stream end one clean remount instead of a children ↔
+                    // innerHTML swap on the same node.
+                    <code
+                        key="arriving"
+                        data-streaming="true"
+                        style={{
+                            textShadow: 'none',
+                            visibility: 'visible',
+                            color: isDarkMode ? '#e6e6e6' : '#24292e'
+                        }}
+                    >{token.text}</code>
+                ) : (
+                    <code
+                        key="highlighted"
+                        style={{
+                            textShadow: 'none',
+                            visibility: 'visible',
+                            color: isDarkMode ? '#e6e6e6' : '#24292e'
+                        }}
+                        ref={contentRef}
+                        dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+                    />
+                )}
             </pre>
         </ErrorBoundary>
     );
@@ -4949,7 +4990,7 @@ const LiveThinkingBlock: React.FC<{ turnId: string; index: number; isDarkMode: b
         );
     });
 
-const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, onOpenShellConfig?: () => void, forcedSuperseded: boolean = false): React.ReactNode => {
+export const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, onOpenShellConfig?: () => void, forcedSuperseded: boolean = false): React.ReactNode => {
     // D-018: marked's inline lexer splits a styled inline element
     // (<span style="...">chip</span>) into three tokens — a dangling opening-tag
     // html token, the text, and a closing-tag html token — which the html case
@@ -5706,7 +5747,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         ...codeToken,
                         text: decodeHtmlEntities(codeToken.text)
                     };
-                    return <CodeBlock key={sk} token={decodedToken} index={index} />;
+                    // Only the block still arriving changes between flushes,
+                    // and an unclosed fence is always the message's last
+                    // content token.  Closed blocks earlier in the message
+                    // keep their highlight.
+                    const isArrivingBlock = isStreaming &&
+                        !tokens.slice(index + 1).some(t => t.type !== 'space');
+                    return <CodeBlock key={sk} token={decodedToken} index={index} isStreaming={isArrivingBlock} />;
 
                 // --- Handle Standard Markdown Elements ---
                 case 'paragraph':
