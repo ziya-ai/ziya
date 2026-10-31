@@ -56,7 +56,7 @@ def _provision(force: bool) -> int:
     """One-time, per-machine root setup: generate the Ed25519 approval keypair
     and the locked-down sudoers entry that gates ``ziya-approve`` (ASR
     F-004/F-007, design §4.0/§5). Pure-Python so it ships with the console entry
-    point and needs no path-dependent file on toolbox/pip installs.
+    point and needs no path-dependent file on wheel installs.
 
     After this runs:
         /etc/ziya/approve_ed25519        root:root 0600  (private — signer only)
