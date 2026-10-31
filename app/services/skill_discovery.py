@@ -7,16 +7,22 @@ Discovery paths (checked in order):
   2. {project_root}/.skills/
   3. {project_root}/SKILLS/
 
-Each subdirectory containing a SKILL.md is treated as one skill.
+Each directory containing a SKILL.md is treated as one skill.  Directories
+without one are grouping folders and are searched further, up to
+MAX_SKILL_DEPTH levels below the root (see iter_skill_dirs).
 """
 import hashlib
 import logging
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from ..models.skill import Skill
+from ..models.recipe import KIND_KEY, SIGNATURE_FILE
+from ..recipes.layout import (
+    RECIPE_PROJECT_PATHS, load_provenance, load_signature, user_recipe_roots,
+)
 from ..services.color_service import generate_color
 from ..services.token_service import TokenService
 from ..utils.skill_resources import skill_resource_manifest
@@ -49,6 +55,39 @@ DISCOVERY_PATHS = [
 # agent (Cursor, Codex, Copilot, Cline, Zed, ...), so one global install
 # is visible to Ziya without a second copy.
 USER_HARNESS_PATHS = [".agents/skills", ".claude/skills", ".kiro/skills"]
+
+# How far below a skills root a skill directory may sit.  1 is the flat
+# layout (root/<skill>/SKILL.md); 3 allows two levels of grouping folders.
+MAX_SKILL_DEPTH = 3
+
+
+def iter_skill_dirs(root: Path, max_depth: int = MAX_SKILL_DEPTH) -> Iterator[Path]:
+    """Every skill directory under ``root``, depth-first in name order.
+
+    A child holding a SKILL.md is a skill: it is yielded and never searched
+    inside, because its references/ and scripts/ are resources, not skills.
+    A child without one is a grouping folder and is searched further, until
+    a skill would sit more than ``max_depth`` levels below ``root``.
+    Hidden directories are skipped, and a missing or unreadable directory
+    yields nothing.  Symlinks are followed; the depth bound stops a cycle.
+    The leaf-name check stays in _skill_from_dir: ``name`` must match the
+    skill directory, never a grouping folder.
+    """
+    def walk(d: Path, depth: int) -> Iterator[Path]:
+        try:
+            children = sorted(d.iterdir())
+        except OSError:
+            return
+        for child in children:
+            if child.name.startswith(".") or not child.is_dir():
+                continue
+            if (child / "SKILL.md").is_file():
+                yield child
+            elif depth < max_depth:
+                yield from walk(child, depth + 1)
+
+    if root.is_dir():
+        yield from walk(root, 1)
 
 
 def user_skill_roots() -> List[Tuple[Path, bool]]:
@@ -193,6 +232,8 @@ def _skill_from_dir(
     source: str,
     id_base: str,
     id_prefix: str,
+    default_kind: str = "skill",
+    include_archived: bool = False,
 ) -> Optional[Skill]:
     """Parse one skill directory's SKILL.md into a Skill.
 
@@ -228,6 +269,31 @@ def _skill_from_dir(
         )
         return None
 
+    # ``kind: recipe`` marks a skill directory that also carries a contract
+    # (design/recipe-store.md): signature.json must exist and parse, and an
+    # archived recipe is hidden unless the caller asks for it.  The marker
+    # selects the stricter rule wherever the directory sits; a directory
+    # under a recipes root defaults to the recipe kind.
+    kind = (fm.get(KIND_KEY) or default_kind).strip().lower()
+    if kind not in ("skill", "recipe"):
+        logger.warning("%s: unknown kind '%s'; treating as a skill", skill_md, kind)
+        kind = "skill"
+    if kind == "recipe":
+        if not (child / SIGNATURE_FILE).is_file():
+            logger.warning(
+                "Skipping recipe '%s': no %s (a recipe needs its contract)",
+                name, SIGNATURE_FILE,
+            )
+            return None
+        if load_signature(child) is None:
+            logger.warning(
+                "Skipping recipe '%s': %s does not parse", name, SIGNATURE_FILE,
+            )
+            return None
+        if not include_archived and load_provenance(child).status == "archived":
+            logger.debug("Hiding archived recipe '%s'", name)
+            return None
+
     # Frontmatter ``description:`` is the preferred source.  When absent,
     # fall back to the first markdown paragraph so under-specified SKILL.md
     # files still surface useful browse-time text.
@@ -243,12 +309,14 @@ def _skill_from_dir(
     # ``ziya-visibility`` key.  A top-level ``visibility:`` is still honored
     # as a back-compat fallback for files authored before this convention.
     # Defaults to user_selectable per agentskills.io conservatism.
+    # A recipe defaults to model_discoverable: the bench places it
+    # ondemand and the model may load it, but it is never on by default.
     visibility = (
         skill_metadata.get("ziya-visibility")
         or fm.get("visibility", "")
     ).strip().lower()
     if visibility not in ("model_discoverable", "user_selectable"):
-        visibility = "user_selectable"
+        visibility = "model_discoverable" if kind == "recipe" else "user_selectable"
 
     return Skill(
         id=_stable_id(id_base, name, prefix=id_prefix),
@@ -263,6 +331,7 @@ def _skill_from_dir(
         isBuiltIn=False,
         source=source,
         visibility=visibility,
+        kind=kind,
         createdAt=int(skill_md.stat().st_mtime * 1000),
         lastUsedAt=now,
         # agentskills metadata
@@ -310,9 +379,7 @@ def discover_project_skills(
         if not skills_root.is_dir():
             continue
 
-        for child in sorted(skills_root.iterdir()):
-            if not child.is_dir():
-                continue
+        for child in iter_skill_dirs(skills_root):
             skill = _skill_from_dir(
                 child, token_service, load_body=load_body,
                 source="project", id_base=workspace_path, id_prefix="project",
@@ -335,8 +402,8 @@ def discover_user_skills(
 ) -> List[Skill]:
     """Scan ~/.ziya/skills/<name>/SKILL.md for user-global skills.
 
-    Cross-project sibling of discover_project_skills: same one-level
-    directory model, same strict SKILL.md + name-matches-directory
+    Cross-project sibling of discover_project_skills: same grouping-folder
+    walk (iter_skill_dirs), same strict SKILL.md + name-matches-directory
     validation, same agentskills.io frontmatter.  These skills live under
     the Ziya home directory so they are available in every project.
 
@@ -357,9 +424,7 @@ def discover_user_skills(
     skills: List[Skill] = []
     seen_names: set = set()
 
-    for child in sorted(skills_root.iterdir()):
-        if not child.is_dir():
-            continue
+    for child in iter_skill_dirs(skills_root):
         skill = _skill_from_dir(
             child, token_service, load_body=load_body,
             source="user", id_base=id_base, id_prefix="user",
@@ -383,8 +448,9 @@ def _scan_skill_root(
     source: str,
     id_base: str,
     id_prefix: str,
+    default_kind: str = "skill",
 ) -> List[Skill]:
-    """Parse every valid skill directory directly under ``skills_root``.
+    """Parse every valid skill directory under ``skills_root`` (see iter_skill_dirs).
 
     Unlike discover_project_skills/discover_user_skills this performs NO
     name-level dedup — callers (notably discover_all_skills) need the raw
@@ -394,12 +460,11 @@ def _scan_skill_root(
     if not skills_root.is_dir():
         return []
     out: List[Skill] = []
-    for child in sorted(skills_root.iterdir()):
-        if not child.is_dir():
-            continue
+    for child in iter_skill_dirs(skills_root):
         skill = _skill_from_dir(
             child, token_service, load_body=load_body,
             source=source, id_base=id_base, id_prefix=id_prefix,
+            default_kind=default_kind,
         )
         if skill is not None:
             out.append(skill)
@@ -420,9 +485,12 @@ def discover_all_skills(
         .kiro/skills.
       * User-global: ~/.ziya/skills (via get_ziya_home, honors $ZIYA_HOME)
         plus the USER_HARNESS_PATHS equivalents under $HOME.
+      * Recipes (design/recipe-store.md): <project>/.ziya/recipes and
+        ~/.ziya/recipes, parsed with ``kind: recipe`` as the default.
 
-    When the same skill *name* appears in more than one root, a single
-    winner is chosen by this precedence (lower rank wins):
+    When the same ``(kind, name)`` appears in more than one root, a single
+    winner is chosen by this precedence (lower rank wins) -- a skill and a
+    recipe of the same name are distinct and both survive:
       1. a ``.ziya`` root beats any non-ziya root (absolute preference);
       2. otherwise a project root beats a user-global root;
       3. otherwise the newest SKILL.md (by mtime) wins.
@@ -433,11 +501,12 @@ def discover_all_skills(
     discover_project_skills / discover_user_skills outputs so stored-skill
     cross-references stay stable.
     """
-    # name -> list of (skill, is_ziya, tier_rank)  (tier_rank: 0=project,1=user)
-    candidates: Dict[str, List[Tuple[Skill, bool, int]]] = {}
+    # (kind, name) -> list of (skill, is_ziya, tier_rank)  (0=project, 1=user)
+    candidates: Dict[Tuple[str, str], List[Tuple[Skill, bool, int]]] = {}
 
     def _add(skill: Skill, is_ziya: bool, tier_rank: int) -> None:
-        candidates.setdefault(skill.name, []).append((skill, is_ziya, tier_rank))
+        candidates.setdefault((skill.kind or "skill", skill.name), []).append(
+            (skill, is_ziya, tier_rank))
 
     # --- project roots ---
     if workspace_path:
@@ -450,6 +519,13 @@ def discover_all_skills(
                     source="project", id_base=workspace_path, id_prefix="project",
                 ):
                     _add(skill, is_ziya, 0)
+            for rel in RECIPE_PROJECT_PATHS:
+                for skill in _scan_skill_root(
+                    root / rel, token_service, load_body=load_body,
+                    source="project", id_base=str(root / rel), id_prefix="project",
+                    default_kind="recipe",
+                ):
+                    _add(skill, True, 0)
 
     # --- user-global roots ---
     for skills_root, is_ziya in user_skill_roots():
@@ -458,11 +534,18 @@ def discover_all_skills(
             source="user", id_base=str(skills_root), id_prefix="user",
         ):
             _add(skill, is_ziya, 1)
+    for recipes_root, is_ziya in user_recipe_roots():
+        for skill in _scan_skill_root(
+            recipes_root, token_service, load_body=load_body,
+            source="user", id_base=str(recipes_root), id_prefix="user",
+            default_kind="recipe",
+        ):
+            _add(skill, is_ziya, 1)
 
-    # --- resolve precedence per name ---
+    # --- resolve precedence per (kind, name) ---
     result: List[Skill] = []
     new_shadows = 0
-    for name, cands in candidates.items():
+    for (kind, name), cands in candidates.items():
         # Sort ascending so the first element is the winner:
         #   ziya first, then project-over-user, then newest mtime.
         ranked = sorted(
@@ -477,9 +560,9 @@ def discover_all_skills(
                 _WARNED_SHADOWS.add(sig)
                 new_shadows += 1
                 logger.debug(
-                    "Skill '%s' found in multiple roots; using %s "
+                    "%s '%s' found in multiple roots; using %s "
                     "(preferred), shadowing: %s",
-                    name, winner.skillPath,
+                    kind.capitalize(), name, winner.skillPath,
                     ", ".join(p for p in shadowed if p),
                 )
         result.append(winner)
