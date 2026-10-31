@@ -26,6 +26,32 @@ const { Option } = Select;
 const { TabPane } = Tabs;
 const { Text } = Typography;
 
+/** Where a configured MCP server came from; mirrors MCPManager.get_server_sources(). */
+export interface ServerSource {
+    kind: 'builtin' | 'plugin' | 'config_file' | 'registry' | 'runtime' | string;
+    provider?: string;
+    service_id?: string;
+    file?: string;
+    overridden_in?: string;
+    foreign_keys?: string[];
+}
+
+export function describeServerSource(src: ServerSource): string {
+    switch (src.kind) {
+        case 'registry':
+            return `Installed from registry${src.provider ? `: ${src.provider}` : ''}`
+                + (src.service_id ? ` (service ${src.service_id})` : '');
+        case 'config_file':
+            return 'Declared in an MCP config file (added by hand or by another tool)';
+        case 'plugin':
+            return `Contributed by plugin${src.provider ? `: ${src.provider}` : ''}`;
+        case 'builtin':
+            return src.overridden_in ? 'Built-in, with overrides from a config file' : 'Built-in';
+        default:
+            return 'Added at runtime (not read from a config file)';
+    }
+}
+
 interface MCPStatusModalProps {
     visible: boolean;
     onClose: () => void;
@@ -86,6 +112,7 @@ interface MCPStatus {
         service_id?: string;
         [key: string]: any;
     }>;
+    server_sources?: Record<string, ServerSource>;
     token_costs?: {
         servers: Record<string, number>;
         total_tool_tokens: number;
@@ -508,7 +535,11 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [visible, focusServer]);
 
-    const getServerDisplayName = (serverName: string) => {
+    // One-line description shown beside the server name in the panel header.
+    // The name itself is always shown; this used to REPLACE it whenever a
+    // description existed, leaving the header with no way to tell which
+    // mcp_config.json entry a panel was.
+    const getServerHeadline = (serverName: string): string | null => {
         const serverConfig = status?.server_configs?.[serverName];
         // A registry install can leave an entire README in `description`;
         // the panel header needs one line, not the tool catalogue.
@@ -516,10 +547,10 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
         if (headline) {
             return headline;
         }
-        if (serverConfig?.service_id) {
+        if (serverConfig?.service_id && serverConfig.service_id !== serverName) {
             return serverConfig.service_id;
         }
-        return serverName;
+        return null;
     };
 
     const handleBuiltinToolToggle = async (category: string, enabled: boolean) => {
@@ -1155,12 +1186,15 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                 <Panel
                                     key={name}
                                     header={
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                                            <Space>
-                                                <Tag color={isEnabled && server.connected ? 'green' : (isEnabled ? 'red' : 'default')} icon={isEnabled && server.connected ? <CheckCircleOutlined /> : <CloseCircleOutlined />}>
-                                                    {isEnabled ? (server.connected ? 'Connected' : 'Disconnected') : 'Disabled'}
-                                                </Tag>
-                                                <span>{getServerDisplayName(name)}</span>
+                                        <div style={{ width: '100%', minWidth: 0 }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                                            <Space style={{ minWidth: 0 }}>
+                                                <Tooltip title={isEnabled ? (server.connected ? 'Connected' : 'Disconnected') : 'Disabled'}>
+                                                    <span data-testid={`server-status-${name}`}
+                                                          style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', display: 'inline-block',
+                                                                   background: isEnabled && server.connected ? '#52c41a' : (isEnabled ? '#ff4d4f' : '#bfbfbf') }} />
+                                                </Tooltip>
+                                                <Text strong data-testid={`server-name-${name}`} style={{ whiteSpace: 'nowrap', flex: 'none' }}>{name}</Text>
                                                 {server.quarantined && (
                                                     <>
                                                         <Tooltip title="This server's tool definitions changed since they were last approved (possible rug-pull). Its tools are excluded until you re-authorize.">
@@ -1184,7 +1218,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                     </Tag>
                                                 )}
                                             </Space>
-                                            <Space>
+                                            <Space style={{ flex: 'none', whiteSpace: 'nowrap' }}>
                                                 <Tag icon={<ToolOutlined />}>
                                                     {(() => {
                                                         const details = status.token_costs?.server_details?.[name];
@@ -1194,7 +1228,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                         return `${server.tools} tools`;
                                                     })()}
                                                 </Tag>
-                                                <Tag icon={<DatabaseOutlined />}>{server.resources} resources</Tag>
+                                                {server.resources > 0 && <Tag icon={<DatabaseOutlined />}>{server.resources} resources</Tag>}
                                                 {status.token_costs?.servers[name] !== undefined && (
                                                     <Tag color={isEnabled && server.connected ? undefined : 'default'}
                                                          style={isEnabled && server.connected ? {} : { opacity: 0.5 }}>
@@ -1209,6 +1243,16 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                     </Tag>
                                                 )}
                                             </Space>
+                                        </div>
+                                        {(() => {
+                                            const headline = getServerHeadline(name);
+                                            return headline ? (
+                                                <Text type="secondary" ellipsis={{ tooltip: headline }}
+                                                      style={{ display: 'block', marginTop: 4, paddingLeft: 16, fontSize: 12 }}>
+                                                    {headline}
+                                                </Text>
+                                            ) : null;
+                                        })()}
                                         </div>
                                     }
                                 >
@@ -1238,6 +1282,29 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                     );
                                                 })()}
                                             </Descriptions.Item>
+                                            {status.server_sources?.[name] && (
+                                                <Descriptions.Item label="Source">
+                                                    {(() => {
+                                                        const src = status.server_sources![name];
+                                                        return (
+                                                            <Space direction="vertical" size={2}>
+                                                                <span>{describeServerSource(src)}</span>
+                                                                {(src.file || src.overridden_in) && (
+                                                                    <Text type="secondary" style={{ fontSize: 12 }} copyable>
+                                                                        {src.file || src.overridden_in}
+                                                                    </Text>
+                                                                )}
+                                                                {src.foreign_keys && src.foreign_keys.length > 0 && (
+                                                                    <Text type="secondary" style={{ fontSize: 12 }}>
+                                                                        Uses {src.foreign_keys.join(', ')}: keys Kiro, Q Developer or Claude Code
+                                                                        write, so this entry was likely copied from one of their configs.
+                                                                    </Text>
+                                                                )}
+                                                            </Space>
+                                                        );
+                                                    })()}
+                                                </Descriptions.Item>
+                                            )}
                                             {status.token_costs?.servers[name] && (
                                                 <Descriptions.Item label="Context Cost">
                                                     {(() => {

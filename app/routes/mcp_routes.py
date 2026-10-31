@@ -485,6 +485,9 @@ def get_mcp_status():
             "config_error": config_info.get("config_error"),
             "config_findings": config_info.get("config_findings", []),
             "server_configs": server_configs,
+            "server_sources": (mcp_manager.get_server_sources()
+                               if hasattr(mcp_manager, "get_server_sources")
+                               else {}),
             "token_costs": {
                 "servers": server_token_costs,
                 "total_tool_tokens": total_tool_tokens,

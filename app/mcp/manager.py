@@ -161,6 +161,9 @@ class MCPManager:
         self._workspace_reaper_task: Optional[asyncio.Task] = None
         self._workspace_reaper_interval = 60.0
         self.config_search_paths: List[str] = []
+        # Where each configured server came from (built-in, plugin, config
+        # file, registry). Populated by the config loader; read by the status view.
+        self.server_sources: Dict[str, Dict[str, Any]] = {}
         self.builtin_server_definitions = self._get_builtin_server_definitions()
         self.is_initialized = False
         
@@ -630,6 +633,10 @@ class MCPManager:
         
         # Load configuration
         server_configs = self.builtin_server_definitions.copy()
+        # Provenance of each entry, shown in the MCP status modal's expanded
+        # panel. Kept beside server_configs, not inside it, so it is never
+        # written back to mcp_config.json or shown as part of the stanza.
+        server_sources: Dict[str, Dict[str, Any]] = {n: {"kind": "builtin"} for n in server_configs}
         logger.debug(f"Initialized with {len(server_configs)} built-in server definitions.")
 
         # Merge servers contributed by active config providers (e.g. an
@@ -647,6 +654,10 @@ class MCPManager:
                 for name in mcp_defaults.get("default_servers", []):
                     if name in provider_servers and name not in server_configs:
                         server_configs[name] = {**provider_servers[name], "builtin": False}
+                        server_sources[name] = {
+                            "kind": "plugin",
+                            "provider": getattr(provider, "name", None) or type(provider).__name__,
+                        }
                         logger.debug(f"Merged provider-contributed MCP server: '{name}'")
         except Exception as e:
             logger.warning(f"Error merging provider-contributed MCP servers: {e}")
@@ -733,6 +744,12 @@ class MCPManager:
                     if not isinstance(user_cfg, dict):
                         logger.info(f"MCP server '{name}' skipped: config must be a JSON object, got {type(user_cfg).__name__}")
                         continue
+
+                    # Keys other harnesses write that Ziya reads only through a
+                    # compatibility shim: a stanza carrying them was most likely
+                    # copied from that harness's config. Captured before the
+                    # shims below rename or pop them.
+                    _foreign_keys = [k for k in ("transportType", "disabled") if k in user_cfg]
 
                     # Registry installs (amazon_registry, official_mcp) persist the
                     # endpoint as "remote_url"; every consumer below keys on "url".
@@ -825,9 +842,15 @@ class MCPManager:
 
                         updated_config["builtin"] = True 
                         server_configs[name] = updated_config
+                        server_sources[name] = {"kind": "builtin", "overridden_in": self.config_path}
                     else:
                         logger.debug(f"Loaded user-defined server: '{name}'")
                         server_configs[name] = {**user_cfg, "builtin": False}
+                        server_sources[name] = {"kind": "config_file", "file": self.config_path}
+                        if user_cfg.get("registry_provider"):
+                            server_sources[name]["kind"] = "registry"
+                    if _foreign_keys:
+                        server_sources[name]["foreign_keys"] = _foreign_keys
                 
                 logger.debug(f"Loaded {len(user_servers)} user server configurations from {self.config_path}. Total servers: {len(server_configs)}")
             except (KeyError, TypeError, ValueError, AttributeError) as e:
@@ -838,6 +861,7 @@ class MCPManager:
             else:
                 logger.debug(f"No MCP configuration file found. Searched: {getattr(self, 'config_search_paths', [])}. Using built-in server defaults.")
         self.server_configs = server_configs # Store the final merged configs
+        self.server_sources = server_sources
     
         # Apply persisted enable/disable overrides from previous toggle_server calls.
         # This ensures reinitialize doesn't undo user toggles.
@@ -2895,6 +2919,32 @@ class MCPManager:
                         return await client.get_prompt(prompt_name, arguments)
         return None
     
+    def get_server_sources(self) -> Dict[str, Dict[str, Any]]:
+        """Provenance for every configured server, for the status view.
+
+        The loader records where each entry was declared. A server that
+        reached server_configs another way (restart_server with a fresh
+        config, as the registry install path does) has no record, so the
+        config itself is consulted: registry metadata wins, then the
+        builtin flag.
+        """
+        recorded = getattr(self, "server_sources", None) or {}
+        sources: Dict[str, Dict[str, Any]] = {}
+        for name, cfg in (self.server_configs or {}).items():
+            src = dict(recorded.get(name) or {})
+            cfg = cfg or {}
+            if cfg.get("registry_provider"):
+                src["kind"] = "registry"
+                src["provider"] = cfg.get("registry_provider")
+                if cfg.get("service_id"):
+                    src["service_id"] = cfg.get("service_id")
+                if not src.get("file") and getattr(self, "config_path", None):
+                    src["file"] = self.config_path
+            if not src.get("kind"):
+                src["kind"] = "builtin" if cfg.get("builtin") else "runtime"
+            sources[name] = src
+        return sources
+
     def get_server_status(self) -> Dict[str, Dict[str, Any]]:
         """Get status of all MCP servers."""
         status = {}
