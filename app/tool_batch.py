@@ -64,7 +64,12 @@ _READ_ONLY_BUILTINS = frozenset({
     "get_skill_details",
     "task_card_list", "task_card_read", "task_card_validate",
     "list_run_artifacts", "validate_output",
-    "shadow_list", "shadow_read",
+    "shadow_list", "shadow_read", "shadow_wait",
+    "render_diagram", "view_image", "recall_image",
+    "analyze", "dataset_describe", "dataset_preview", "dataset_list",
+    "ledger_query", "job_status", "job_read", "task_run_read",
+    "handoff_read", "bead_status", "mcp_server_status",
+    "nova_web_search",
 })
 
 _SHELL_TOOL_NAMES = frozenset({"run_shell_command", "mcp_run_shell_command"})
@@ -78,14 +83,14 @@ _READ_ONLY_COMMANDS = frozenset({
     "realpath", "readlink", "nl", "column", "uniq", "comm", "od", "hexdump",
     "xxd", "strings", "date", "seq", "which", "whoami", "hostname", "uname",
     "id", "true", "false", "test", "less", "fold", "expand", "paste", "join",
-    "tree", "du", "df", "free", "uptime", "ps",
+    "tree", "du", "df", "free", "uptime", "ps", "rg", "jq", "xargs",
 })
 
 # git subcommands that never mutate the repo or working tree.
 _GIT_READ_ONLY_SUBCMDS = frozenset({
     "log", "status", "show", "diff", "blame", "rev-parse", "ls-files",
     "ls-tree", "cat-file", "describe", "shortlog", "reflog", "whatchanged",
-    "grep",
+    "grep", "check-ignore",
 })
 
 # find primaries that act rather than observe.
@@ -95,9 +100,16 @@ _FIND_MUTATING = frozenset({
 })
 
 _ENV_ASSIGN_RE = re.compile(r"^\w+=")
-_SEG_SPLIT_RE = re.compile(r"\|\||&&|[|;&]")
-# A redirection and its target; ``2>&1`` fd-dups do not match (``&`` excluded).
-_REDIR_RE = re.compile(r"\d*>>?\s*([^\s;|&]+)")
+# Control operators as shlex emits them with punctuation_chars=True.  Quoted
+# text is never split: ``grep "a\|b"`` is one argument, not two commands.
+_CONTROL_OPS = frozenset({"|", "||", "&&", ";", "&", "|&", ";;"})
+_WRITE_REDIRS = frozenset({">", ">>", ">|"})
+_INPUT_REDIRS = frozenset({"<", "<<", "<<<"})
+_DURATION_RE = re.compile(r"^\d+(\.\d+)?[smhd]?$")
+# xargs flags that consume the following token.
+_XARGS_VALUE_FLAGS = frozenset({"-n", "-I", "-P", "-d", "-s", "-L", "-E", "-a", "-i"})
+# rg --pre runs an arbitrary preprocessor per file.
+_RG_MUTATING = frozenset({"--pre"})
 
 
 def shell_command_is_read_only(command: Optional[str]) -> bool:
@@ -111,22 +123,68 @@ def shell_command_is_read_only(command: Optional[str]) -> bool:
     # Command substitution can run anything.
     if "$(" in cmd or "`" in cmd:
         return False
-    # Redirection to a real file writes; ``>/dev/null`` and fd-dups are fine.
-    for m in _REDIR_RE.finditer(cmd):
-        if m.group(1) != "/dev/null":
-            return False
-    segments = [s.strip() for s in _SEG_SPLIT_RE.split(cmd)]
-    segments = [s for s in segments if s]
-    if not segments:
+    segments = _split_segments(cmd)
+    if segments is None or not segments:
         return False
     return all(_segment_is_read_only(s) for s in segments)
 
 
-def _segment_is_read_only(segment: str) -> bool:
+def _split_segments(cmd: str) -> Optional[List[List[str]]]:
+    """Tokenise ``cmd`` shell-style and split on control operators.
+
+    Lexed in non-POSIX mode so quotes stay ON the tokens: a quoted ``"&&"``
+    or ``';'`` is then a plain argument, while an unquoted one is a control
+    operator (in POSIX mode both arrive as the bare string and cannot be
+    told apart).  Quotes are stripped from the surviving arguments
+    afterwards.  Returns None on a lexing error (unbalanced quotes): don't
+    guess, treat as unsafe.  Redirections are resolved here: a write
+    redirection to anything but ``/dev/null`` makes the whole command unsafe
+    (signalled by returning an empty list); fd-dups (``2>&1``) and input
+    redirections are dropped along with their target so they never look
+    like arguments."""
+    lex = shlex.shlex(cmd, posix=False, punctuation_chars=True)
+    lex.whitespace_split = True
     try:
-        tokens = shlex.split(segment)
+        tokens = list(lex)
     except ValueError:
-        return False  # unbalanced quotes etc.: don't guess, treat as unsafe
+        return None
+
+    def _dequote(tok: str) -> Optional[str]:
+        if '"' not in tok and "'" not in tok:
+            return tok
+        try:
+            parts = shlex.split(tok)
+        except ValueError:
+            return None
+        return parts[0] if len(parts) == 1 else tok
+
+    segments: List[List[str]] = []
+    cur: List[str] = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t in _CONTROL_OPS:
+            segments.append(cur)
+            cur = []
+        elif t in _WRITE_REDIRS or t in _INPUT_REDIRS or t.endswith(">&") or t.endswith("<&"):
+            # Drop an fd number that preceded the operator (``2>``).
+            if cur and cur[-1].isdigit():
+                cur.pop()
+            target = tokens[i + 1] if i + 1 < len(tokens) else None
+            if t in _WRITE_REDIRS and target != "/dev/null":
+                return []
+            i += 1  # skip the target / fd
+        else:
+            word = _dequote(t)
+            if word is None:
+                return None
+            cur.append(word)
+        i += 1
+    segments.append(cur)
+    return [s for s in segments if s]
+
+
+def _segment_is_read_only(tokens: List[str]) -> bool:
     i = 0
     while i < len(tokens) and _ENV_ASSIGN_RE.match(tokens[i]):
         i += 1
@@ -134,14 +192,37 @@ def _segment_is_read_only(segment: str) -> bool:
         return True  # bare env assignment, no command
     cmd = tokens[i]
     args = tokens[i + 1:]
+    if cmd in ("timeout", "time"):
+        return _wrapped_is_read_only(cmd, args)
     if cmd not in _READ_ONLY_COMMANDS:
         return False
     return _command_flags_ok(cmd, args)
 
 
+def _wrapped_is_read_only(wrapper: str, args: List[str]) -> bool:
+    """``timeout [flags] DURATION cmd...`` / ``time [flags] cmd...``: the
+    wrapper itself is inert; classify the command it runs."""
+    j = 0
+    while j < len(args) and args[j].startswith("-"):
+        if wrapper == "timeout" and args[j] in ("-k", "--kill-after", "-s", "--signal"):
+            j += 1
+        j += 1
+    if wrapper == "timeout":
+        if j >= len(args) or not _DURATION_RE.match(args[j]):
+            return False
+        j += 1
+    rest = args[j:]
+    return bool(rest) and _segment_is_read_only(rest)
+
+
 def _command_flags_ok(cmd: str, args: List[str]) -> bool:
     if cmd in ("sed", "awk", "perl"):
         if any(_is_inplace_flag(a) for a in args):
+            return False
+    elif cmd == "xargs":
+        return _xargs_flags_ok(args)
+    elif cmd == "rg":
+        if any(a in _RG_MUTATING or a.startswith("--pre=") for a in args):
             return False
     elif cmd == "find":
         if any(a in _FIND_MUTATING for a in args):
@@ -152,6 +233,20 @@ def _command_flags_ok(cmd: str, args: List[str]) -> bool:
     elif cmd == "git":
         return _git_flags_ok(args)
     return True
+
+
+def _xargs_flags_ok(args: List[str]) -> bool:
+    """``xargs`` runs the command that follows its flags; classify that.
+    Bare ``xargs`` (no command) is ``echo``."""
+    j = 0
+    while j < len(args) and args[j].startswith("-"):
+        if args[j] in _XARGS_VALUE_FLAGS:
+            j += 1
+        j += 1
+    rest = args[j:]
+    if not rest:
+        return True
+    return _segment_is_read_only(rest)
 
 
 def _is_inplace_flag(arg: str) -> bool:
@@ -175,30 +270,188 @@ def _git_flags_ok(args: List[str]) -> bool:
     return True
 
 
-def is_read_only_call(tool_name: str, args: Optional[dict]) -> bool:
-    """True if calling ``tool_name`` with ``args`` only observes state."""
+# --------------------------------------------------------------------------
+# External (mcp_*) tools
+# --------------------------------------------------------------------------
+
+# A name containing ANY of these is serial, whatever else it contains
+# (``ReadRemoteTestRun`` stays serial because of ``run``; ``download_file``
+# writes to disk).  Conservative by design.
+_MUTATING_WORDS = frozenset({
+    "set", "update", "create", "creator", "delete", "remove", "post", "write",
+    "add", "edit", "upload", "send", "run", "launch", "kill", "move",
+    "transition", "assign", "pin", "unpin", "share", "revoke", "restore",
+    "copy", "archive", "subscribe", "unsubscribe", "download", "export",
+    "sync", "publish", "merge", "unmerge", "sort", "resize", "rename",
+    "reorder", "reset", "refresh", "review", "lock", "unlock", "format",
+    "attach", "leave", "save", "mark", "comment", "insert", "append",
+    "replace", "apply", "build", "checkout", "commit", "push", "deploy",
+    "start", "stop", "execute", "exec", "invoke", "submit", "bulk",
+    "duplicate", "link", "unlink", "resolve", "patch", "put", "destroy",
+    "clear", "purge", "drop", "join", "open", "close", "enable", "disable",
+    "toggle", "change", "modify", "spawn", "trigger", "notify", "schedule",
+    "cancel", "approve", "reject", "transfer", "import", "install",
+    "register", "record", "propose", "complete", "stage", "draft",
+})
+
+# With no mutating word present, any of these marks the tool as observing.
+_OBSERVING_WORDS = frozenset({
+    "get", "read", "list", "search", "describe", "fetch", "lookup", "find",
+    "query", "view", "show", "inspect", "status", "info", "history",
+    "details", "preview", "summary", "exists", "outline", "diagnostics",
+})
+
+# Argument names that name a place on disk the tool will write.  A tool
+# that is read-only by name (``get_page_storage``) becomes a writer when one
+# of these carries a value.
+_WRITE_TARGET_ARG_RE = re.compile(
+    r"(save|output|out|dest|destination|target)_?(path|file|dir|directory|folder)"
+    r"|^(file_?paths?|dest_?dir)$",
+    re.IGNORECASE,
+)
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _strip_mcp(name: str) -> str:
+    while name.startswith("mcp_"):
+        name = name[4:]
+    return name
+
+
+def _name_words(name: str) -> frozenset:
+    """``kuiper_confluence_get_page_content`` / ``ReadInternalWebsites`` ->
+    lower-cased words."""
+    spaced = _CAMEL_RE.sub("_", name)
+    return frozenset(w.lower() for w in re.split(r"[_\-\s]+", spaced) if w)
+
+
+def _parallel_config() -> Dict[str, Any]:
+    """``permissions.json`` -> ``{"parallel": {"read_only_tools": [...],
+    "serial_tools": [...]}}``; names with or without ``mcp_``.  Never raises."""
+    try:
+        from app.mcp.permissions import get_permissions_manager
+        cfg = (get_permissions_manager().get_permissions() or {}).get("parallel") or {}
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:  # noqa: BLE001 — configuration is advisory
+        return {}
+
+
+def _annotations(tool: Any) -> Dict[str, Any]:
+    if tool is None:
+        return {}
+    meta = getattr(tool, "metadata", None)
+    ann = meta.get("annotations") if isinstance(meta, dict) else None
+    if ann is None:
+        ann = getattr(tool, "annotations", None)
+    return ann if isinstance(ann, dict) else {}
+
+
+def _writes_a_target_path(args: Optional[dict]) -> bool:
+    for k, v in (args or {}).items():
+        if isinstance(k, str) and _WRITE_TARGET_ARG_RE.search(k) and v not in (None, "", [], False):
+            return True
+    return False
+
+
+def external_tool_is_read_only(tool_name: str, args: Optional[dict], tool: Any = None) -> bool:
+    """Read-only classification for a tool served by an external MCP server.
+
+    Ordering decision only (which calls of one turn may overlap); the write
+    policy and signing are unaffected.  Precedence: permissions.json lists,
+    the server's ``readOnlyHint``, a write-target argument, the name."""
+    clean = _strip_mcp(tool_name)
+    cfg = _parallel_config()
+    serial = {_strip_mcp(n) for n in cfg.get("serial_tools") or [] if isinstance(n, str)}
+    read_only = {_strip_mcp(n) for n in cfg.get("read_only_tools") or [] if isinstance(n, str)}
+    if clean in serial:
+        return False
+    if clean in read_only:
+        return True
+    ann = _annotations(tool)
+    if "readOnlyHint" in ann:
+        return bool(ann["readOnlyHint"]) and not ann.get("destructiveHint")
+    if _writes_a_target_path(args):
+        return False
+    words = _name_words(clean)
+    if words & _MUTATING_WORDS:
+        return False
+    return bool(words & _OBSERVING_WORDS)
+
+
+def is_read_only_call(tool_name: str, args: Optional[dict], tool: Any = None) -> bool:
+    """True if calling ``tool_name`` with ``args`` only observes state.
+
+    ``tool`` is the advertised tool object when the caller has it; external
+    tools are classified from its annotations (see
+    ``external_tool_is_read_only``)."""
     if tool_name in _SHELL_TOOL_NAMES:
         return shell_command_is_read_only((args or {}).get("command"))
-    return tool_name in _READ_ONLY_BUILTINS
+    if tool_name in _READ_ONLY_BUILTINS:
+        return True
+    is_builtin = tool is not None and getattr(tool, "tool_instance", None) is not None
+    if is_builtin or tool_name.startswith(("file_", "memory_", "context_", "bead_", "job_", "ledger_", "task_card_", "shadow_", "handoff_", "dataset_")):
+        return False  # a Ziya builtin not on the list stays a barrier
+    return external_tool_is_read_only(tool_name, args, tool)
+
+
+def _find_tool(ctx: Any) -> Any:
+    tools = getattr(ctx, "all_tools", None) or ()
+    wanted = {ctx.actual_tool_name, getattr(ctx, "tool_name", None), f"mcp_{ctx.actual_tool_name}"}
+    for t in tools:
+        if getattr(t, "name", None) in wanted:
+            return t
+    return None
 
 
 # --------------------------------------------------------------------------
 # Grouping
 # --------------------------------------------------------------------------
 
+def _project_root(ctx: Any) -> Optional[str]:
+    root = getattr(ctx, "project_root", None)
+    if root:
+        return root
+    try:
+        from app.context import get_project_root
+        return get_project_root() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def plan_groups(ctxs: List[Any]) -> List[List[Any]]:
-    """Split contexts into execution groups: runs of consecutive read-only
-    calls stay together; every other call is its own barrier group."""
+    """Split contexts into execution groups that run one after another;
+    the members of one group run concurrently.
+
+    A call joins the current group unless its footprint (reads and writes,
+    app/utils/tool_footprint.py) conflicts with a member's.  Reads never
+    conflict with reads, so consecutive reads group exactly as before; an
+    append-only or distinct-path write can now join them.  A call with no
+    footprint (any other mutating tool, or a write that could ask for
+    approval) is a barrier group of its own.  Conflicting calls always land
+    in different groups, in issue order."""
+    from app.utils.tool_footprint import call_footprint, conflicts
     groups: List[List[Any]] = []
     run: List[Any] = []
+    footprints: List[Any] = []
     for ctx in ctxs:
-        if is_read_only_call(ctx.actual_tool_name, ctx.args):
-            run.append(ctx)
-        else:
+        tool = _find_tool(ctx)
+        name = ctx.actual_tool_name
+        footprint = call_footprint(
+            name, ctx.args, tool, _project_root(ctx),
+            is_read_only_call(name, ctx.args, tool),
+            call_id=str(getattr(ctx, "tool_id", "")),
+        )
+        if footprint is None:
             if run:
                 groups.append(run)
-                run = []
+                run, footprints = [], []
             groups.append([ctx])
+            continue
+        if any(conflicts(footprint, other) for other in footprints):
+            groups.append(run)
+            run, footprints = [], []
+        run.append(ctx)
+        footprints.append(footprint)
     if run:
         groups.append(run)
     return groups

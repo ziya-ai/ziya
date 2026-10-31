@@ -26,7 +26,7 @@ from langchain_classic.tools import BaseTool
 from app.utils.logging_utils import logger
 from app.mcp.tools.base import coerce_json_string_args
 from app.utils.file_utils import read_file_content
-from app.utils.tool_schema_compact import compact_tool_schema
+from app.utils.tool_schema_compact import compact_tool_schema, flatten_root_combinators
 
 # Constants for enhanced triggers
 CONTEXT_REQUEST_OPEN = "<<CONTEXT_REQUEST>>"
@@ -386,7 +386,7 @@ class DirectMCPTool(BaseTool):
 class SecureMCPTool(BaseTool):
     """Secure wrapper around MCP tools."""
     
-    def __init__(self, name: str, description: str, mcp_tool_name: str, input_schema: Optional[Dict[str, Any]] = None, server_name: Optional[str] = None, config_enhancements: Optional[Dict[str, Any]] = None):
+    def __init__(self, name: str, description: str, mcp_tool_name: str, input_schema: Optional[Dict[str, Any]] = None, server_name: Optional[str] = None, config_enhancements: Optional[Dict[str, Any]] = None, annotations: Optional[Dict[str, Any]] = None):
         """Initialize the secure MCP tool."""
         # Apply tool enhancements: plugin-level first, then config-level overrides
         enhancements = _load_tool_enhancements()
@@ -415,8 +415,16 @@ class SecureMCPTool(BaseTool):
         # Store input_schema so it can be retrieved by streaming_tool_executor.
         # Compacted losslessly; the root description is kept because for an
         # external server it is the server's own text, not a docstring echo.
+        # A root-level oneOf/anyOf/allOf (e.g. Chorus's action-keyed tools)
+        # is folded into a plain object: Anthropic/Bedrock reject the whole
+        # request when any one tool carries it.
         if input_schema:
-            metadata["input_schema"] = compact_tool_schema(input_schema)
+            metadata["input_schema"] = compact_tool_schema(
+                flatten_root_combinators(input_schema))
+        # Server-declared annotations; app.tool_batch reads readOnlyHint to
+        # decide whether this call may overlap its neighbours in a turn.
+        if isinstance(annotations, dict) and annotations:
+            metadata["annotations"] = dict(annotations)
         
         # Initialize BaseTool with our metadata
         super().__init__(
@@ -957,6 +965,7 @@ def create_secure_mcp_tools() -> List[BaseTool]:
                 mcp_tool_name=tool.name,
                 input_schema=tool.inputSchema,
                 server_name=getattr(tool, "_server_name", None),
+                annotations=getattr(tool, "annotations", None),
                 config_enhancements=server_config.get("tool_enhancements", {}).get(tool.name) if tool_server_name else None
             )
             

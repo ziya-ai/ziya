@@ -2961,6 +2961,12 @@ class StreamingToolExecutor:
         # model just retries the block next iteration. This counter persists
         # ACROSS iterations and drives a stop-and-summarize recovery injection.
         consecutive_blocked_calls = 0
+        # One-read-per-message tracker (app/utils/serial_reads_nudge.py).  The
+        # batch runner overlaps reads issued in the same message; this notes,
+        # in the tool-result turn, when the model keeps issuing them one per
+        # message instead.  Per stream so the streak spans iterations.
+        from app.utils.serial_reads_nudge import SerialReadTracker
+        _serial_reads = SerialReadTracker()
         
         # Intelligent throttle backoff state
         throttle_state = {
@@ -4831,6 +4837,21 @@ Please retry the tool call with valid JSON. Ensure:
                             f"{len(tool_results)} tool call(s) in iteration {iteration}")
                         self._append_to_last_user_turn(
                             conversation, self._already_shown_note(_shown))
+
+                    # Second consecutive message holding exactly one read-only
+                    # call: tell the model its reads would have overlapped had
+                    # it issued them together (see serial_reads_nudge).
+                    _args_by_id = {tc.get('id'): tc.get('args') for tc in all_tool_calls}
+                    _serial_note = _serial_reads.observe(
+                        (self._normalize_tool_name(tr.get('tool_name', '')),
+                         _args_by_id.get(tr.get('tool_id')) or {})
+                        for tr in tool_results
+                    )
+                    if _serial_note:
+                        logger.info(
+                            f"🐢 SERIAL_READS_NOTE: streak {_serial_reads.streak} "
+                            f"(note #{_serial_reads.notes_sent}) in iteration {iteration}")
+                        self._append_to_last_user_turn(conversation, _serial_note)
 
                     # Cross-iteration repeat-block recovery (auto-recover). A
                     # single blocked call cannot end the loop — the model just
