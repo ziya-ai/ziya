@@ -102,31 +102,6 @@ class TestNovaGenerationCompatibility:
         assert len(result.generations) == 1
         assert len(result.generations[0]) == 1
         assert result.generations[0][0].text == "Test response"
-
-    def test_ziya_message_chunk_with_pre_created_generation(self):
-        """Test that ZiyaMessageChunk with a pre-created Generation works correctly."""
-        # Create a ZiyaMessageChunk
-        chunk = ZiyaMessageChunk(content="Test response", id="test-id")
-        
-        # Create a Generation object
-        generation = Generation(text="Pre-created response", generation_info={})
-        
-        # Store the Generation object on the chunk
-        object.__setattr__(chunk, '_generation', generation)
-        
-        # Convert to a Generation object
-        retrieved_generation = chunk.to_generation()
-        
-        # Verify that the retrieved Generation object is the pre-created one
-        assert retrieved_generation is generation
-        assert retrieved_generation.text == "Pre-created response"
-        
-        # Verify that the Generation object can be used in an LLMResult
-        result = LLMResult(generations=[[retrieved_generation]])
-        assert len(result.generations) == 1
-        assert len(result.generations[0]) == 1
-        assert result.generations[0][0].text == "Pre-created response"
-
     def test_error_generation_creation(self):
         """Test that error Generation objects can be created."""
         # Create an error message

@@ -54,7 +54,9 @@ def test_nova_model_initialization(setup_nova_environment):
         
         # Check that it's a Nova model
         model_id = ModelManager.get_model_id(model_instance)
-        assert "nova" in model_id.lower()
+        # get_model_id returns a per-region dict for Bedrock models.
+        ids = model_id.values() if isinstance(model_id, dict) else [model_id]
+        assert any("nova" in str(i).lower() for i in ids), model_id
         
         logger.info(f"Successfully initialized Nova model: {model_id}")
         

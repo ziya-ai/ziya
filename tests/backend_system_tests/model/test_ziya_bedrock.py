@@ -15,6 +15,13 @@ class TestZiyaBedrock(unittest.TestCase):
     
     def setUp(self):
         """Set up the test case."""
+        # ZiyaBedrock strips sampling parameters the CURRENT model rejects,
+        # reading ZIYA_ENDPOINT / ZIYA_MODEL.  Unpinned, the test followed
+        # the server default, and once that became Sonnet 5.5 (max_tokens
+        # only) temperature/top_k/top_p were cleared and three tests failed.
+        self.env_patcher = patch.dict(
+            "os.environ", {"ZIYA_ENDPOINT": "bedrock", "ZIYA_MODEL": "sonnet4.6"})
+        self.env_patcher.start()
         # Mock the ChatBedrock class
         self.patcher = patch('app.agents.wrappers.ziya_bedrock.ChatBedrock')
         self.mock_chatbedrock = self.patcher.start()
@@ -39,6 +46,7 @@ class TestZiyaBedrock(unittest.TestCase):
         """Clean up after the test."""
         self.patcher.stop()
         self.client_patcher.stop()
+        self.env_patcher.stop()
     
     def test_init(self):
         """Test initialization."""
@@ -52,8 +60,9 @@ class TestZiyaBedrock(unittest.TestCase):
         self.assertEqual(self.model.ziya_top_p, 0.9)
         self.assertTrue(self.model.ziya_thinking_mode)
         
-        # Check that CustomBedrockClient was used
-        self.mock_custom_client.assert_called_once()
+        # The client arrives already wrapped by ModelManager's persistent
+        # pool; construction must not wrap it a second time.
+        self.mock_custom_client.assert_not_called()
     
     def test_generate(self):
         """Test _generate method."""
@@ -115,8 +124,8 @@ class TestZiyaBedrock(unittest.TestCase):
         # Check that a new ChatBedrock instance was created
         self.assertEqual(self.mock_chatbedrock.call_count, 2)
         
-        # Check that CustomBedrockClient was used again
-        self.assertEqual(self.mock_custom_client.call_count, 2)
+        # bind() builds a fresh ChatBedrock client and wraps it once.
+        self.assertEqual(self.mock_custom_client.call_count, 1)
     
     def test_get_parameters(self):
         """Test get_parameters method."""
