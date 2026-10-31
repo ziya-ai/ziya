@@ -21,13 +21,15 @@ interface Props {
     /** From useHeaderAttention in App; drawn on the environment row's shell badge. */
     shellAttention?: Attention;
     onOpenShellConfig?: () => void;
+    /** MCP attention from useHeaderAttention; drawn on the panel's MCP servers button. */
+    mcpAttention?: Attention;
     /** MCP Servers / Registry panels, reached from inside the Bench. */
     actions?: BenchActions;
 }
 
 type BodyProps = Omit<Props, 'visible' | 'onClose' | 'actions'>;
 
-const Body: React.FC<BodyProps> = ({ projectId, conversationId, shellAttention, onOpenShellConfig }) => {
+const Body: React.FC<BodyProps> = ({ projectId, conversationId, shellAttention, onOpenShellConfig, mcpAttention }) => {
     const bench = useBench({ projectId, conversationId });
     const { ready, lenses, lens, setLens } = bench;
     const [paletteOpen, setPaletteOpen] = useState(false);
@@ -44,7 +46,7 @@ const Body: React.FC<BodyProps> = ({ projectId, conversationId, shellAttention, 
     if (!projectId) return <div style={{ opacity: 0.6 }}>Open a project to arrange its bench.</div>;
     return (
         <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-            <BenchPanel bench={bench} shellAttention={shellAttention} onOpenShellConfig={onOpenShellConfig}
+            <BenchPanel bench={bench} shellAttention={shellAttention} onOpenShellConfig={onOpenShellConfig} mcpAttention={mcpAttention}
                         onOpenPalette={() => setPaletteOpen(true)} />
             {ready && <BenchPalette bench={bench} open={paletteOpen} onClose={() => setPaletteOpen(false)} />}
         </div>
@@ -63,14 +65,14 @@ const Title: React.FC = () => (
     </span>
 );
 
-const BenchModal: React.FC<Props> = ({ visible, onClose, projectId, conversationId, shellAttention, onOpenShellConfig, actions = {} }) => (
+const BenchModal: React.FC<Props> = ({ visible, onClose, projectId, conversationId, shellAttention, onOpenShellConfig, mcpAttention, actions = {} }) => (
     <Modal open={visible} onCancel={onClose} footer={null} width="min(1400px, 94vw)" title={<Title />} destroyOnClose
            style={{ top: 24 }}
            styles={{ body: { height: 'calc(100vh - 140px)', display: 'flex', flexDirection: 'column', minHeight: 0 } }}>
         <LensProvider initial={conversationId ? 'conversation' : 'project'}>
             <BenchActionsProvider actions={actions}>
                 <Body projectId={projectId} conversationId={conversationId ?? null}
-                      shellAttention={shellAttention} onOpenShellConfig={onOpenShellConfig} />
+                      shellAttention={shellAttention} onOpenShellConfig={onOpenShellConfig} mcpAttention={mcpAttention} />
             </BenchActionsProvider>
         </LensProvider>
     </Modal>

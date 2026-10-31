@@ -84,11 +84,15 @@ describe('drag and drop', () => {
         await act(async () => { drag('skill:Concise', 'off'); });
         expect(place).toHaveBeenCalledWith('skill:Concise', null);
     });
-    it('mcp into Within reach is refused without calling place, with a reason', async () => {
+    it('mcp into Within reach places it there', async () => {
         const { place } = setup();
         await act(async () => { drag('mcp:jira', 'ondemand'); });
-        expect(place).not.toHaveBeenCalled();
-        expect(screen.getByRole('status')).toHaveTextContent('on-demand MCP servers are coming soon');
+        expect(place).toHaveBeenCalledWith('mcp:jira', 'ondemand');
+        expect(screen.queryByRole('status')).toBeNull();
+    });
+    it('the Within reach lane no longer says MCP servers are excluded', () => {
+        setup();
+        expect(screen.getByTestId('lane-ondemand')).not.toHaveTextContent(/MCP servers not yet/);
     });
     it('a 409 from place is shown, not swallowed', async () => {
         const err = Object.assign(new Error('x'), { reason: 'environment_not_placeable' });
@@ -106,10 +110,13 @@ describe('keyboard and right-click reach the same moves', () => {
         expect(place).toHaveBeenCalledWith('skill:Code Review', 'off');
         expect(screen.queryByRole('menu')).toBeNull();
     });
-    it('right-click opens the same menu; mcp Within reach is disabled', () => {
-        setup();
+    it('right-click opens the same menu; mcp Within reach is offered', async () => {
+        const { place } = setup();
         fireEvent.contextMenu(screen.getByTestId('card-mcp:jira'));
-        expect(screen.getByRole('menuitem', { name: 'Within reach (coming soon)' })).toBeDisabled();
+        const item = screen.getByRole('menuitem', { name: 'Move to Within reach' });
+        expect(item).toBeEnabled();
+        await act(async () => { fireEvent.click(item); });
+        expect(place).toHaveBeenCalledWith('mcp:jira', 'ondemand');
     });
     it('Escape closes the menu', () => {
         setup();

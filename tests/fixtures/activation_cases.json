@@ -78,14 +78,14 @@
       }
     },
     {
-      "name": "stored mcp ondemand is ignored (slice 9 lifts this) and falls through",
+      "name": "stored mcp ondemand is honoured (slice 9) and wins over a lower layer",
       "items": [{"key": "mcp:jira", "kind": "mcp"}],
       "layers": {"project": {"mcp:jira": "ondemand"}, "user": {"mcp:jira": "off"}},
       "expect": {
-        "items": {"mcp:jira": {"effective": "off", "origin": "user",
-                               "placements": {"conversation": null, "project": null, "user": "off"}}},
-        "always": [], "catalog": [],
-        "dropped": [{"key": "mcp:jira", "layer": "project", "reason": "mcp_ondemand_unsupported"}]
+        "items": {"mcp:jira": {"effective": "ondemand", "origin": "project",
+                               "placements": {"conversation": null, "project": "ondemand", "user": "off"}}},
+        "always": [], "catalog": ["mcp:jira"],
+        "dropped": []
       }
     },
     {
@@ -125,10 +125,10 @@
   ],
   "validate": [
     {
-      "name": "mcp ondemand is refused until slice 9",
+      "name": "mcp ondemand is accepted (slice 9)",
       "items": [{"key": "mcp:jira", "kind": "mcp"}],
       "key": "mcp:jira", "layer": "project", "state": "ondemand",
-      "reason": "mcp_ondemand_unsupported"
+      "reason": null
     },
     {
       "name": "environment items are not placeable at any layer",

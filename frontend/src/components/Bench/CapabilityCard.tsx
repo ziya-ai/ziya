@@ -46,6 +46,9 @@ export const CapabilityCard: React.FC<CapabilityCardProps> = ({ item, onIntent, 
     // a human clears it (today: rug-pull quarantine, cleared in the drawer).
     const gate = item.health?.gate as { state?: string; reason?: string } | null | undefined;
     const held = !!gate;
+    // A within-reach MCP server this conversation has loaded (design/mcp-on-demand.md).
+    const loaded = item.loaded;
+    const loadedText = loaded === '*' ? 'loaded' : Array.isArray(loaded) && loaded.length ? `${loaded.length} tool${loaded.length === 1 ? '' : 's'} loaded` : null;
 
     return (
         <div
@@ -98,9 +101,14 @@ export const CapabilityCard: React.FC<CapabilityCardProps> = ({ item, onIntent, 
                     <span data-testid={`picked-up-${item.key}`} title="The model loaded this during the current turn"
                           style={{ color: '#b32ca8', fontSize: 10 }}>✦ this turn</span>
                 )}
+                {loadedText && (
+                    <span data-testid={`loaded-${item.key}`}
+                          title={Array.isArray(loaded) ? `Loaded in this conversation: ${loaded.join(', ')}` : 'Whole server loaded in this conversation'}
+                          style={{ color: '#0d9488', fontSize: 10 }}>{loadedText}</span>
+                )}
                 <DeltaChip delta={delta} testId={`delta-${item.key}`} />
                 <span data-testid={`tokens-${item.key}`} style={{ opacity: 0.6, fontSize: 10 }}
-                      title={item.kind === 'skill' && v.state === 'ondemand' ? 'when loaded' : undefined}>{item.tokens.toLocaleString()}t</span>
+                      title={v.state === 'ondemand' ? 'when loaded' : undefined}>{item.tokens.toLocaleString()}t</span>
                 {partial && (
                     <span data-testid={`partial-${item.key}`} style={{ opacity: 0.7, fontSize: 10 }}
                           title={`${total - enabledCount} tool${total - enabledCount === 1 ? '' : 's'} withheld · ${withheld.toLocaleString()}t not sent`}>
@@ -144,6 +152,7 @@ export const CapabilityCard: React.FC<CapabilityCardProps> = ({ item, onIntent, 
                             type="button"
                             role="menuitem"
                             disabled={o.disabled}
+                            title={o.hint}
                             onClick={() => { setMenuOpen(false); onIntent(o.intent); }}
                             style={{ textAlign: 'left', border: 'none', background: 'none', padding: '4px 6px',
                                      cursor: o.disabled ? 'default' : 'pointer', color: 'inherit', opacity: o.disabled ? 0.5 : 1 }}

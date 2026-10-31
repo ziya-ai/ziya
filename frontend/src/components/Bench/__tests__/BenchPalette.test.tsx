@@ -39,7 +39,7 @@ it('verbs are exactly the board\'s enabled move options for the highlighted item
     const shown = within(screen.getByTestId('palette-verbs')).getAllByRole('menuitem').map(b => b.textContent!.replace(' ↵', ''));
     const expected = moveOptions(items()[2]).filter(o => !o.disabled).map(o => o.label);
     expect(shown).toEqual(expected);
-    expect(shown.some(l => /coming soon/.test(l))).toBe(false);   // the MCP on-demand refusal is not offered
+    expect(shown.some(l => /not available/.test(l))).toBe(false);   // the MCP on-demand refusal is not offered
 });
 
 it('↵ applies the highlighted verb through place; ⇥ moves the highlight; ⇧⇥ changes lens', async () => {

@@ -113,7 +113,7 @@ export const BenchBoard: React.FC<BenchBoardProps> = ({ bench, selectedKey = nul
                     const ghosts = placeable.filter(i =>
                         !i.atLens.ghost && i.atLens.inherited === lane.state && i.atLens.state !== lane.state);
                     const open = !!expanded[lane.state];
-                    const { shown, spaceFolded, builtinFolded } = foldLane(cards, capacities[lane.state], open);
+                    const { shown, spaceFolded, builtinFolded } = foldLane(cards, capacities[lane.state], open, lane.state);
                     const expand = () => setExpanded(e => ({ ...e, [lane.state]: true }));
                     const anyFold = spaceFolded.length + builtinFolded.length > 0;
                     return (
@@ -136,7 +136,7 @@ export const BenchBoard: React.FC<BenchBoardProps> = ({ bench, selectedKey = nul
                                     <span data-testid={`lane-tokens-${lane.state}`} style={{ fontWeight: 400, opacity: 0.6, marginLeft: 6 }}>
                                         {fmtK(sumTokens(cards))}{lane.state === 'ondemand' ? ' if loaded' : ''}</span></div>
                                 <div style={{ opacity: 0.6, fontSize: 11 }}>
-                                    {lane.hint}{lane.state === 'ondemand' ? ' · MCP servers coming soon' : ''}
+                                    {lane.hint}
                                 </div>
                             </header>
                             {shown.map(item => (

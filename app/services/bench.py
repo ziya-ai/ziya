@@ -184,19 +184,28 @@ def _mcp_specs() -> List[ItemSpec]:
     return [_mcp_spec(n, c) for n, c in sorted(configs.items())]
 
 
+def mcp_effective(project_id: str, conversation_id: Optional[str]) -> Dict[str, str]:
+    """``{server: always|ondemand|off}`` for every placeable MCP server.
+
+    Only MCP specs are built: skill discovery walks the disk and is
+    irrelevant here, so skill-layer entries resolve as unknown and are
+    ignored with ``dropped``.  Within-reach servers are withheld until
+    loaded; that rule lives in app/utils/mcp_ondemand.py.
+    """
+    result = resolve_activation(load_layers(project_id, conversation_id), _mcp_specs())
+    return {r.key.partition(":")[2]: r.effective for r in result.items
+            if r.kind == "mcp" and r.tier == "placeable"}
+
+
 def withheld_mcp_servers(project_id: str, conversation_id: Optional[str]) -> set:
-    """MCP server names whose tools must not reach the model this request.
+    """Shelved MCP server names (``off``), whose tools never reach the model.
 
     Design rule (capabilities-hub.md, Model): project/conversation ``off``
     keeps the server connected but withholds its tools.  User ``off`` also
     unspawns it (api/bench.py ``_sync_mcp_enabled``) and is included here
-    too, so a failed sync cannot leak the tools.  Only MCP specs are built:
-    skill discovery walks the disk and is irrelevant to this answer, so
-    skill-layer entries resolve as unknown and are ignored with ``dropped``.
+    too, so a failed sync cannot leak the tools.
     """
-    result = resolve_activation(load_layers(project_id, conversation_id), _mcp_specs())
-    return {r.key.partition(":")[2] for r in result.items
-            if r.kind == "mcp" and r.tier == "placeable" and r.effective == "off"}
+    return {n for n, s in mcp_effective(project_id, conversation_id).items() if s == "off"}
 
 
 def _builtin_items() -> List[BenchItem]:

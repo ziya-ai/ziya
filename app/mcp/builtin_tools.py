@@ -84,6 +84,14 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "conversation_organize": {
+        "name": "Conversation Organization",
+        "description": ("Lets the model create and arrange folders, move, rename "
+                        "and fork conversations (metadata only; never edits messages)"),
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
     "diagram_render": {
         "name": "Diagram Render",
         "description": "Render diagrams to images for visual inspection and iterative refinement",
@@ -279,10 +287,11 @@ def get_diagram_render_tools() -> List[Type[BaseMCPTool]]:
 
 
 def get_skill_tools() -> List[Type[BaseMCPTool]]:
-    """Get skill discovery tools."""
+    """Get on-demand discovery tools: skills and within-reach MCP servers."""
     try:
         from app.mcp.tools.skill_tools import GetSkillDetailsTool
-        return [GetSkillDetailsTool]
+        from app.mcp.tools.mcp_loader_tools import LoadServerToolsTool, SearchServerToolsTool
+        return [GetSkillDetailsTool, SearchServerToolsTool, LoadServerToolsTool]
     except ImportError as e:
         logger.warning(f"Could not import skill tools: {e}")
         return []
@@ -339,10 +348,21 @@ def get_chat_history_tools() -> List[Type[BaseMCPTool]]:
         from app.mcp.tools.handoff_tools import (
             HandoffReadTool, HandoffWriteTool
         )
+        from app.mcp.tools.tributary_tools import RecallTributaryTool
         return [ChatSearchTool, ChatReadTool, ChatListTool,
-                HandoffReadTool, HandoffWriteTool]
+                HandoffReadTool, HandoffWriteTool, RecallTributaryTool]
     except ImportError as e:
         logger.warning(f"Could not import chat history tools: {e}")
+        return []
+
+
+def get_conversation_organize_tools() -> List[Type[BaseMCPTool]]:
+    """Sidebar organisation: folders, move/rename/fork (metadata writes only)."""
+    try:
+        from app.mcp.tools.conversation_organize_tools import ORGANIZE_TOOLS
+        return list(ORGANIZE_TOOLS)
+    except ImportError as e:
+        logger.warning(f"Could not import conversation organize tools: {e}")
         return []
 
 
@@ -473,6 +493,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "memory": get_memory_tools,
         "context_management": get_context_management_tools,
         "chat_history": get_chat_history_tools,
+        "conversation_organize": get_conversation_organize_tools,
         "beads": get_bead_tools,
         "task_cards": get_task_card_tools,
         "task_artifacts": get_task_artifact_tools,

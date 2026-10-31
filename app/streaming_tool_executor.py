@@ -1613,13 +1613,32 @@ class StreamingToolExecutor:
         # cached, so this is the only point with the request's project and
         # conversation in hand.  Before the task allowlist, which may only
         # narrow the set, never restore a shelved server.
-        from app.utils.bench_prompt import withheld_mcp_for_root, drop_withheld_tools
-        _withheld = withheld_mcp_for_root(project_root, conversation_id)
-        all_tools, _n_withheld = drop_withheld_tools(all_tools, _withheld)
+        # A within-reach server is withheld too except for what this
+        # conversation has LOADED (the chat record's loadedMcp, written by
+        # load_server_tools; design/mcp-on-demand.md) or a task scope names.
+        # The same step ORDERS the list: builtins, on-hand servers by name,
+        # loaded servers in load order, so a load only appends to the array
+        # that heads the cached prefix.
+        from app.utils.bench_prompt import mcp_filter_for_root, apply_mcp_filter
+        _mcp_filter = mcp_filter_for_root(
+            project_root, conversation_id, tools=all_tools, tool_allowlist=tool_allowlist)
+        # Native deferral (design/mcp-on-demand.md, "Anthropic's native
+        # path"): the API holds within-reach servers' definitions out of
+        # context itself, so they are KEPT here and marked defer_loading in
+        # the payload below; only shelved servers are dropped.  The tools
+        # array is then identical on every request: no prefix miss.
+        _native_search = bool(self.provider and self.provider.supports_feature('tool_search'))
+        if _native_search:
+            from app.utils.bench_prompt import _tool_server as _srv_of
+            _before = len(all_tools)
+            all_tools = [t for t in all_tools if _srv_of(t) not in _mcp_filter.shelved]
+            _n_withheld = _before - len(all_tools)
+        else:
+            all_tools, _n_withheld = apply_mcp_filter(all_tools, _mcp_filter)
         if _n_withheld:
             logger.info(
-                f"🧰 BENCH: withheld {_n_withheld} tool(s) from shelved "
-                f"server(s) {sorted(_withheld)}"
+                f"🧰 BENCH: withheld {_n_withheld} tool(s) from shelved or "
+                f"not-yet-loaded server(s) {sorted(_mcp_filter.withheld | set(_mcp_filter.partial))}"
             )
 
         # Headless denial.  After project modes and before the allowlist, so
@@ -2910,6 +2929,9 @@ class StreamingToolExecutor:
                 logger.warning(f"🔍 EXTENDED_CONTEXT: Could not set conversation_id: {e}")
         
         # Load and prepare tools
+        # MCP servers loaded by load_server_tools during this turn (the loader
+        # writes the chat record; this only decides whether to rebuild).
+        _mcp_loaded_this_turn: set = set()
         all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools = await self._load_and_prepare_tools(
             extra_tools, tool_allowlist=tool_allowlist,
             messages=messages, project_root=project_root, conversation_id=conversation_id,
@@ -4508,6 +4530,31 @@ Please retry the tool call with valid JSON. Ensure:
                             f"stop_reason={last_stop_reason!r} "
                             f"thinking={'adaptive' if (_thk and getattr(_thk,'mode',None)=='adaptive') else (_thk and getattr(_thk,'enabled',False))}"
                         )
+
+                # MCP servers within reach (design/mcp-on-demand.md): a
+                # successful load_server_tools in this iteration makes that
+                # server's own tools callable from the next one.  Rebuilding
+                # costs one cache miss (the tool list heads the prefix); a
+                # refusal carries no marker and rebuilds nothing.
+                from app.utils.mcp_ondemand import loaded_in_results
+                # A second load of the same server (more tools) also rebuilds.
+                # Never on the native path: the loader is not offered there
+                # and the API, not a rebuild, expands found tools.
+                _newly_loaded = (set() if self.provider.supports_feature('tool_search')
+                                 else loaded_in_results(tool_results))
+                if _newly_loaded:
+                    _mcp_loaded_this_turn |= _newly_loaded
+                    # Re-reads the record the loader just wrote.
+                    (all_tools, bedrock_tools, builtin_tool_names,
+                     internal_tool_names, optional_only_tools) = await self._load_and_prepare_tools(
+                        extra_tools, tool_allowlist=tool_allowlist,
+                        messages=messages, project_root=project_root, conversation_id=conversation_id,
+                        tool_denylist=tool_denylist,
+                        unattended=unattended,
+                    )
+                    logger.info(
+                        f"🧰 MCP_LOADED: rebuilt tool list for {sorted(_newly_loaded)} "
+                        f"({len(bedrock_tools)} tools)")
 
                 # CRITICAL: Validate tool_results match tool_use blocks before building conversation
                 # Remove any tool_use blocks that don't have corresponding results
