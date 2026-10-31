@@ -59,7 +59,13 @@ describe('an explicit conversation click sticks across a project switch', () => 
 
   it('the passive preload does not record a selection', () => {
     const body = slice('logSwitchTotal(`preload commit', 'Hydrate the active conversation');
-    expect(body).not.toContain('userSelectedConversationRef.current =');
+    // The one exception is a conversation the user moved here while viewing
+    // it (moveConversationToProject): that move is the selection.  Any other
+    // assignment in the preload is still a passive selection being recorded.
+    const assigns = body.match(/userSelectedConversationRef\.current =[^\n]*/g) ?? [];
+    expect(assigns).toEqual(['userSelectedConversationRef.current = follow.conversationId;']);
+    const followBranch = body.slice(body.indexOf('if (follow) {\n'), body.indexOf('} else if (curIsGlobal)'));
+    expect(followBranch).toContain('userSelectedConversationRef.current = follow.conversationId;');
   });
 
   it('section 7 honours the selection before the projectId test', () => {
