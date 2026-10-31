@@ -39,14 +39,16 @@ class TestSearchChatsFilter:
                          conversation_ids=[])
         assert [r["conversationId"] for r in a] == [r["conversationId"] for r in b]
 
-    def test_id_outside_project_scope_yields_nothing(self, env):
-        # beta lives in project B; without all_projects the filter cannot
-        # reach it (scope first, then membership).
-        assert search_chats(env["ziya_home"], env["pid_a"], "widget_parser",
-                            conversation_ids=[env["beta"]]) == []
-        hits = search_chats(env["ziya_home"], env["pid_a"], "widget_parser",
-                            all_projects=True, conversation_ids=[env["beta"]])
-        assert [r["conversationId"] for r in hits] == [env["beta"]]
+    def test_listed_id_in_other_project_is_reached(self, env):
+        # beta lives in project B.  A listed id names one conversation, so
+        # it is resolved across projects like chat_read's chat_id; scoping
+        # it to the current project made the model fall back to
+        # all_projects=True (case 606f5f05).
+        for all_projects in (False, True):
+            hits = search_chats(env["ziya_home"], env["pid_a"], "widget_parser",
+                                all_projects=all_projects,
+                                conversation_ids=[env["beta"]])
+            assert [r["conversationId"] for r in hits] == [env["beta"]]
 
 
 # ── tool layer ────────────────────────────────────────────────────────

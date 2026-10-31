@@ -94,6 +94,9 @@ interface DB {
 }
 
 class ConversationDB implements DB {
+    // Which path produced the last searchConversations result.  'local' is
+    // the IndexedDB fallback, which only holds conversations hydrated here.
+    lastSearchSource: 'server' | 'local' = 'server';
     private saveInProgress = false;
     private lastBackupTime = 0;  // BUGFIX: Throttle localStorage backups
     private lastKnownVersion: number = 0;
@@ -1889,6 +1892,7 @@ class ConversationDB implements DB {
                     sort: options.sort,
                 });
                 if (server !== null) {
+                    this.lastSearchSource = 'server';
                     return server as SearchResult[];
                 }
             }
@@ -1899,6 +1903,7 @@ class ConversationDB implements DB {
         // Fallback: local IndexedDB scan (offline, or chats not yet synced
         // to the server).  Reads full message bodies — only used when the
         // server path is unavailable.
+        this.lastSearchSource = 'local';
         return this._searchConversationsLocal(query, options);
     }
 

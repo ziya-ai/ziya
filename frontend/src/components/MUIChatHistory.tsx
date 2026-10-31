@@ -1231,7 +1231,11 @@ const MUIChatHistory = () => {
 
   // Debounced search function
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
+  // Each search takes a sequence number and a response that is no longer the
+  // latest is dropped, so a slow earlier query cannot overwrite newer results.
+  const searchSeqRef = useRef(0);
   const performSearch = useCallback(async (query: string) => {
+    const seq = ++searchSeqRef.current;
     if (!query || query.trim().length === 0) {
       setSearchResults([]);
       setIsSearching(false);
@@ -1247,19 +1251,28 @@ const MUIChatHistory = () => {
         sort: searchSort,
         projectId: searchAllProjects ? undefined : currentProject?.id
       });
+      if (seq !== searchSeqRef.current) return;
       // Enrich results with project names for display
       const enriched = results.map(r => ({
         ...r,
         projectName: r.projectId ? projects.find(p => p.id === r.projectId)?.name : undefined
       }));
       setSearchResults(enriched);
+      if (db.lastSearchSource === 'local') {
+        message.warning({
+          content: 'Server search was unavailable or timed out. These results only cover conversations opened in this browser and may be incomplete.',
+          key: 'ziya-search-local-fallback',
+          duration: 6,
+        });
+      }
       console.log(`🔍 Search for "${query}" found ${results.length} conversations`);
     } catch (error) {
+      if (seq !== searchSeqRef.current) return;
       console.error('Search error:', error);
       message.error('Search failed');
       setSearchResults([]);
     } finally {
-      setIsSearching(false);
+      if (seq === searchSeqRef.current) setIsSearching(false);
     }
   }, [searchAllProjects, searchSort, currentProject?.id, projects]);
 
