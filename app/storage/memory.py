@@ -509,6 +509,33 @@ class MemoryStorage:
             keyword_scored.sort(key=lambda x: x[1], reverse=True)
             keyword_ranked = keyword_scored[:limit * 2]
 
+        # -- Exact-identifier lane --
+        # A query that names a stable identifier (UUID, ti-… terminal id,
+        # CR-/ticket key, long hex) is asking about one specific thing.  The
+        # keyword path already scores that token highly (rare => high IDF),
+        # but Reciprocal Rank Fusion can still let a semantic neighbour win:
+        # keyword rank 1 + semantic rank 3 loses to keyword rank 1 + semantic
+        # rank 1 for an unrelated memory.  So memories containing the literal
+        # identifier are pinned ahead of the fused order — most identifiers
+        # matched first, keyword score breaking ties.  Pure reordering: a
+        # query with no identifier is unaffected.
+        pinned_ids: List[str] = []
+        try:
+            from app.utils.memory_identifiers import extract_identifiers
+            idents = extract_identifiers(query)
+        except Exception:
+            idents = []
+        if idents:
+            kw_score = dict(keyword_ranked)
+            pinned = []
+            for m in active:
+                hay = (m.get("content", "") + " " + " ".join(m.get("tags", []))).lower()
+                n_hit = sum(1 for ident in idents if ident in hay)
+                if n_hit:
+                    pinned.append((n_hit, kw_score.get(m.get("id"), 0.0), m.get("id")))
+            pinned.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            pinned_ids = [mid for _, _, mid in pinned[:limit]]
+
         # -- Reciprocal Rank Fusion --
         if semantic_ranked and keyword_ranked:
             RRF_K = 60
@@ -523,6 +550,10 @@ class MemoryStorage:
             result_ids = [mid for mid, _ in semantic_ranked[:limit]]
         else:
             result_ids = [mid for mid, _ in keyword_ranked[:limit]]
+
+        if pinned_ids:
+            _pinned = set(pinned_ids)
+            result_ids = (pinned_ids + [mid for mid in result_ids if mid not in _pinned])[:limit]
 
         # Resolve IDs to Memory objects
         id_to_raw = {m.get("id"): m for m in active}
