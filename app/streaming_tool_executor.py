@@ -5140,6 +5140,33 @@ Please retry the tool call with valid JSON. Ensure:
                         # by tests/test_decide_no_tool_outcome.py). The caller
                         # owns all side effects below based on the verdict.
                         supports_prefill = self.model_config.get('supports_assistant_prefill', True)
+                        # The incremental tracker's in_block is built from
+                        # chunk boundaries, out-of-band flushes and a
+                        # partial-line rewind, and has reported an open
+                        # fence on complete responses more than once
+                        # (2026-10-17 viz-flush seam; 2026-10-19 a closed
+                        # mermaid block reported open with transitions=1 on
+                        # claude).  The decision below is about the COMPLETE
+                        # text, so take the verdict from a single pass over
+                        # it and log the divergence with the incremental
+                        # state so the next case is attributable.
+                        _incr_open = bool(code_block_tracker.get('in_block'))
+                        _full_open = self._fence_open_in_full_text(assistant_text)
+                        if _incr_open != _full_open:
+                            _fence_lines = [
+                                (_ln, _l.rstrip()[:40])
+                                for _ln, _l in enumerate(assistant_text.split('\n'), 1)
+                                if _l.lstrip(' \t').startswith('`' * 3)
+                            ]
+                            logger.warning(
+                                "🔍 FENCE_STATE_DIVERGENCE: incremental tracker in_block=%s "
+                                "but a single pass over the complete text says %s; using "
+                                "the full-text verdict. tracker=%r fence_lines=%r",
+                                _incr_open, _full_open,
+                                {k: v for k, v in code_block_tracker.items()
+                                 if k != 'accumulated_content'},
+                                _fence_lines,
+                            )
                         _verdict, _reason, _probe = self._decide_no_tool_outcome(
                             assistant_text=assistant_text,
                             supports_prefill=supports_prefill,
@@ -5148,7 +5175,7 @@ Please retry the tool call with valid JSON. Ensure:
                             iteration=iteration,
                             max_iterations=max_iterations,
                             continuation_happened=continuation_happened,
-                            code_block_open=bool(code_block_tracker.get('in_block')),
+                            code_block_open=_full_open,
                             blocked_tools=blocked_tools_this_iteration,
                             prev_is_tool_result=False,
                             textonly_grace_used=textonly_grace_used,
@@ -5184,12 +5211,21 @@ Please retry the tool call with valid JSON. Ensure:
                             else:
                                 _verdict, _reason = 'end', 'no_prefill_end'
 
+                        # The iteration-end block above ("Add assistant response
+                        # to conversation") has already appended this turn's
+                        # text whenever assistant_text is non-empty, which is
+                        # a precondition of every inject branch below.  A second
+                        # append was being merged by the pre-send coalesce into
+                        # one assistant turn holding the text twice.
+                        _assistant_turn_pending = (
+                            not conversation or conversation[-1].get('role') != 'assistant')
                         if _verdict == 'inject_max_tokens':
                             logger.info(
                                 f"🔄 MAX_TOKENS_CONTINUE: Model hit max_tokens on non-prefill model, "
                                 f"injecting continuation prompt (iteration {iteration})"
                             )
-                            conversation.append({"role": "assistant", "content": assistant_text})
+                            if _assistant_turn_pending:
+                                conversation.append({"role": "assistant", "content": assistant_text})
                             conversation.append({
                                 "role": "user",
                                 "content": "[System: Your previous response was cut off due to length limits. Continue exactly where you left off.]"
@@ -5212,7 +5248,8 @@ Please retry the tool call with valid JSON. Ensure:
                                 f"(iteration={iteration}, intent_stalls={intent_stalls}/"
                                 f"{self._INTENT_CONTINUE_STALL_CAP})"
                             )
-                            conversation.append({"role": "assistant", "content": assistant_text})
+                            if _assistant_turn_pending:
+                                conversation.append({"role": "assistant", "content": assistant_text})
                             conversation.append({
                                 "role": "user",
                                 "content": "[System: You described an action you intend to take but have not taken it yet. Proceed now — either call the tool you described, or if no action is actually needed, give your final answer.]"
@@ -5242,7 +5279,8 @@ Please retry the tool call with valid JSON. Ensure:
                                 f"progress={_made_progress}, stalls={block_continue_stalls}/"
                                 f"{self._BLOCK_CONTINUE_STALL_CAP}, transitions={_now_transitions})"
                             )
-                            conversation.append({"role": "assistant", "content": assistant_text})
+                            if _assistant_turn_pending:
+                                conversation.append({"role": "assistant", "content": assistant_text})
                             conversation.append({
                                 "role": "user",
                                 "content": "[System: Your previous response was cut off in the middle of a code block. Continue exactly where you left off and finish the code block — do not restart it.]"
@@ -5695,6 +5733,21 @@ Please retry the tool call with valid JSON. Ensure:
         """
         from app.utils.inline_code_spans import ends_inside_code_span
         return ends_inside_code_span(text)
+
+    def _fence_open_in_full_text(self, text: str) -> bool:
+        """Open-fence state of a COMPLETE response, derived in one pass.
+
+        Same grammar as the streaming tracker (``_update_code_block_tracker``
+        reads a whole string line by line, trailing partial line included),
+        but with no chunk-boundary state to inherit.  Used where a decision
+        is made about the finished text rather than the stream.
+        """
+        fresh: Dict[str, Any] = {'in_block': False, 'block_type': None,
+                                 'fence_transitions': 0, 'fence_indent': 0,
+                                 'accumulated_content': ''}
+        if text:
+            self._update_code_block_tracker(text, fresh)
+        return bool(fresh.get('in_block'))
 
     def _update_code_block_tracker(self, text: str, tracker: Dict[str, Any]) -> None:
         """Update code block tracking state based on text content."""
