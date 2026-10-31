@@ -10,6 +10,14 @@ class ChatGroup(BaseModel):
 
     id: str
     name: str
+    # Nesting.  The frontend has always written this as an extra field
+    # (folderSyncApi.ts); declared so ChatGroupStorage.create/update and
+    # the conversation-organisation tools can set it first-class.
+    parentId: Optional[str] = None
+    # Server-side "pin to top".  Set by the conversation_organize tools;
+    # the sidebar's own pins are browser-local (localStorage) and this
+    # flag is only honoured once the frontend reads it.
+    pinned: Optional[bool] = None
     defaultContextIds: List[str] = []
     defaultSkillIds: List[str] = []
     collapsed: bool = False
@@ -28,6 +36,7 @@ class ChatGroup(BaseModel):
 class ChatGroupCreate(BaseModel):
     model_config = {"extra": "allow"}
     name: str
+    parentId: Optional[str] = None
     defaultContextIds: Optional[List[str]] = None
     defaultSkillIds: Optional[List[str]] = None
 
@@ -37,6 +46,10 @@ class ChatGroupUpdate(BaseModel):
     defaultSkillIds: Optional[List[str]] = None
     collapsed: Optional[bool] = None
     order: Optional[int] = None
+    # Explicit None (set, not unset) moves the folder to the top level —
+    # ChatGroupStorage.update applies exclude_unset fields only.
+    parentId: Optional[str] = None
+    pinned: Optional[bool] = None
     # Saved per-folder model pin (see ChatGroup.modelPreference).
     modelPreference: Optional[str] = None
 
