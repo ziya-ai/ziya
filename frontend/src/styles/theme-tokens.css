@@ -1,0 +1,360 @@
+/* Theme tokens — design/visual-refresh.md.
+   Loaded AFTER index.css.  Selectors here are written to win on specificity
+   (body.dark … vs index.css's .dark …) so the legacy hardcoded colours do
+   not need to be edited one by one.  Everything visual should read a --z-*
+   variable from this file rather than a literal. */
+
+/* ---------- light: linen (default) ---------- */
+:root {
+  --z-canvas: #f7f6f3;
+  --z-sidebar: #f1f0ec;
+  --z-surface: #fcfbf9;
+  --z-inset: #efeeea;
+  --z-turn-human: #efeeea;
+  --z-border: #e2e0da;
+  --z-border-strong: #d8d6d0;
+  --z-text: #1a1b1e;
+  --z-text-muted: #72736f;
+  --z-text-faint: #9a9a94;
+  --z-accent: #0d9488;
+  --z-accent-text: #ffffff;
+  --z-accent-soft: #e6f4f1;
+  --z-accent-ink: #0b6b60;
+  --z-brand-magenta: #8b2a9a;
+  --z-remote: #a21caf;
+  --z-header-bg: #fcfbf9;
+  --z-code-bg: #efeeea;
+  /* Token-breakdown bar segments (TokenBreakdownBar).  Files and chat take
+     the two brand colours; tools gets its own slate so the largest slice of
+     a tool-heavy session is never drawn in the text colour; AST is grey. */
+  --z-tok-files: #0d9488;
+  --z-tok-chat: #8b2a9a;
+  --z-tok-tools: #5b6fa8;
+  --z-tok-ast: #9a9a94;
+  --z-tok-warning: #d97706;
+  --z-tok-danger: #dc2626;
+  --z-prose-font: Charter, 'Iowan Old Style', Georgia, serif;
+  --z-ui-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;
+  --z-mono-font: ui-monospace, Menlo, Consolas, monospace;
+  --z-row-height: 26px;
+}
+html[data-paper="warm"] {
+  --z-canvas: #f6f3ee; --z-sidebar: #f1ede6; --z-surface: #fbf9f5;
+  --z-inset: #efebe3; --z-turn-human: #efebe3; --z-code-bg: #efebe3;
+  --z-border: #e3ddd2; --z-border-strong: #d9d3c8;
+  --z-text: #1c1a17; --z-text-muted: #7a7266; --z-text-faint: #a89f91;
+  --z-header-bg: #fbf9f5;
+}
+html[data-paper="cool"] {
+  --z-canvas: #f4f5f4; --z-sidebar: #eef1ef; --z-surface: #fafbfa;
+  --z-inset: #eaeeec; --z-turn-human: #eaeeec; --z-code-bg: #eaeeec;
+  --z-border: #dfe3e0; --z-border-strong: #d3d7d4;
+  --z-text: #181b1a; --z-text-muted: #6b7472; --z-text-faint: #98a09d;
+  --z-header-bg: #fafbfa;
+}
+html[data-paper="white"] {
+  --z-canvas: #ffffff; --z-sidebar: #f6f6f6; --z-surface: #ffffff;
+  --z-inset: #f0f0f0; --z-turn-human: #f0f0f0; --z-code-bg: #f0f0f0;
+  --z-border: #e5e5e5; --z-border-strong: #d9d9d9;
+  --z-header-bg: #fafafa;
+}
+
+/* ---------- dark ---------- */
+body.dark {
+  --z-canvas: #1c1f24;
+  --z-sidebar: #171a1e;
+  --z-surface: #252930;
+  --z-inset: #2d323a;
+  --z-turn-human: #2a2f37;
+  --z-border: #434a55;
+  --z-border-strong: #4a515c;
+  --z-text: #e8eaed;
+  --z-text-muted: #9aa0a8;
+  --z-text-faint: #7d848e;
+  --z-accent: #2dd4bf;
+  --z-accent-text: #0b2a26;
+  --z-accent-soft: rgba(45, 212, 191, 0.14);
+  --z-accent-ink: #5ee6d3;
+  --z-brand-magenta: #c43bb8;
+  --z-remote: #e879f9;
+  --z-header-bg: linear-gradient(90deg, #241a28 0%, #132a28 100%);
+  --z-code-bg: #2d323a;
+  --z-tok-files: #2dd4bf;
+  --z-tok-chat: #c43bb8;
+  --z-tok-tools: #7f93cf;
+  --z-tok-ast: #7d848e;
+  --z-tok-warning: #f59e0b;
+  --z-tok-danger: #f85149;
+}
+
+/* ---------- token breakdown bar (shared by sidebar footer and strip) ---------- */
+.ziya-tok-bar {
+  display: flex; height: 6px; border-radius: 3px; overflow: hidden;
+  /* The track must read against both the sidebar and the strip, so 100%
+     is visible even when the bar is nearly empty. */
+  background: var(--z-border-strong);
+}
+/* Budget zone as a ring round the whole bar: orange past the warning
+   threshold (70%), red past danger (90%).  A CSS outline, not stacked
+   box-shadows: the 1px gap is then transparent and shows whatever surface is
+   behind (footer, strip, any paper tone) instead of a colour that would have
+   to be kept in step with it.  Follows border-radius and takes no layout
+   room, so the 28px collapsed strip carries it too. */
+.ziya-tok-bar.warning { outline: 2px solid var(--z-tok-warning); outline-offset: 1px; }
+.ziya-tok-bar.danger  { outline: 2px solid var(--z-tok-danger); outline-offset: 1px; }
+.ziya-tok-bar > span { display: block; height: 100%; }
+.ziya-tok-bar .files { background: var(--z-tok-files); }
+.ziya-tok-bar .chat { background: var(--z-tok-chat); }
+.ziya-tok-bar .tools { background: var(--z-tok-tools); }
+.ziya-tok-bar .ast { background: var(--z-tok-ast); }
+/* Spenders spread edge to edge so a fourth or fifth slice fits before the
+   row wraps; the figures take the text colour, not a zone colour. */
+.ziya-tok-legend { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 10px; font-size: 10.5px; color: var(--z-text-muted); }
+.ziya-tok-legend b { color: var(--z-text); }
+.ziya-tok-legend .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.ziya-tok-legend .sw.files { background: var(--z-tok-files); }
+.ziya-tok-legend .sw.chat { background: var(--z-tok-chat); }
+.ziya-tok-legend .sw.tools { background: var(--z-tok-tools); }
+.ziya-tok-legend .sw.ast { background: var(--z-tok-ast); }
+/* "x / y" at the left edge, "n%" at the right, both under the bar's ends. */
+.ziya-tok-total { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--z-text); }
+.ziya-tok-total .pct { color: var(--z-text-muted); }
+.ziya-tok-total.warning b, .ziya-tok-total.warning .pct { color: var(--z-tok-warning); }
+.ziya-tok-total.danger b, .ziya-tok-total.danger .pct { color: var(--z-tok-danger); }
+/* Sidebar footer: model row, then the breakdown, flush at the panel bottom.
+   index.css still declares .model-id-display as position:fixed; bottom:0;
+   height:35px; text-align:center — a bar pinned over the bottom 35px of the
+   panel, which is exactly where the breakdown's hand-off / telemetry row
+   landed once the footer moved down (2026-10-20 screenshot: clipped row,
+   centered model name).  Make it an ordinary left-aligned row in the flex
+   column instead; the footer then owns the panel bottom with no padding
+   under it. */
+.folder-tree-panel { padding-bottom: 0; }
+.folder-tree-panel .model-id-display, body.dark .folder-tree-panel .model-id-display {
+  position: static; width: auto; height: auto; left: auto; bottom: auto;
+  margin: 0 -5px 0 -10px;            /* full-bleed across the panel padding */
+  padding: 6px 10px;
+  justify-content: flex-start; text-align: left;
+  background: var(--z-surface); color: var(--z-text);
+  border-top: 1px solid var(--z-border);
+  font-family: var(--z-ui-font); font-size: 11.5px;
+}
+.folder-tree-panel .model-id-display > span:first-child { text-align: left; }
+.folder-tree-panel .token-display-container {
+  margin: 0 -5px 0 -10px;
+  background: var(--z-surface);
+  /* The model row above carries the separating hairline. */
+  border-top: 0;
+}
+.folder-tree-panel .token-display-container .token-summary { border-bottom: 0 !important; min-height: 0 !important; }
+/* The token block's action row (hand off · cache · telemetry) is the last
+   thing in the panel; keep it tight. */
+.folder-tree-panel .token-display-container .token-display > div:last-child { padding-top: 0 !important; padding-bottom: 6px !important; }
+
+/* ---------- preferences ---------- */
+html[data-font="georgia"]  { --z-prose-font: Georgia, 'Times New Roman', serif; }
+html[data-font="palatino"] { --z-prose-font: Palatino, 'Palatino Linotype', 'Book Antiqua', Georgia, serif; }
+html[data-font="sans"]     { --z-prose-font: var(--z-ui-font); }
+html[data-density="comfortable"] { --z-row-height: 36px; }
+
+/* ---------- application ---------- */
+body, body.dark {
+  font-family: var(--z-ui-font);
+  background-color: var(--z-canvas);
+  color: var(--z-text);
+}
+
+.app-header, body.dark .app-header {
+  background: var(--z-header-bg);
+  border-bottom: 1px solid var(--z-border);
+  /* Brand + breadcrumb read from the left; the control cluster is
+     absolutely positioned at the right and unaffected. */
+  justify-content: flex-start;
+  padding-left: 14px;
+  /* The header is width: 100%; without border-box the left padding
+     widens it past the viewport and pushes the right cluster off-screen. */
+  box-sizing: border-box;
+}
+.app-header h2 { justify-content: flex-start; }
+
+.folder-tree-panel, body.dark .folder-tree-panel {
+  background-color: var(--z-sidebar);
+  border-right: 1px solid var(--z-border);
+}
+
+.chat-container, body.dark .chat-container {
+  background-color: var(--z-canvas);
+  border-color: var(--z-border);
+}
+
+/* Turns: shape, not grey, tells them apart.  Human = teal rule + tint.
+   AI = open on the canvas.  Same left text edge for both. */
+.message.human, body.dark .message.human {
+  background-color: var(--z-turn-human);
+  color: var(--z-text);
+  border: 0;
+  border-left: 3px solid var(--z-accent);
+  border-radius: 0 6px 6px 0;
+  box-shadow: none;
+}
+.message.ai, body.dark .message.ai {
+  background-color: transparent;
+  color: var(--z-text);
+  border: 0;
+  border-left: 3px solid transparent;
+}
+.message-sender { color: var(--z-text-muted); font-weight: 600; font-size: 11px; }
+.message.ai .message-sender { color: var(--z-accent-ink); }
+
+/* Response prose in the chosen serif; UI chrome, code and tables keep theirs. */
+.message.ai .message-content > p,
+.message.ai .message-content > ul,
+.message.ai .message-content > ol,
+.message.ai .message-content > blockquote,
+.message.ai .message-content > h1,
+.message.ai .message-content > h2,
+.message.ai .message-content > h3,
+.message.ai .message-content > h4 {
+  font-family: var(--z-prose-font);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.message.ai .message-content > h1, .message.ai .message-content > h2,
+.message.ai .message-content > h3, .message.ai .message-content > h4 { line-height: 1.25; }
+.message .message-content code { font-family: var(--z-mono-font); }
+.message .message-content :not(pre) > code { background: var(--z-code-bg); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
+
+/* Optional reading-width cap on prose only; code, diffs and diagrams stay full width. */
+html[data-prose-cap="on"] .message.ai .message-content > p,
+html[data-prose-cap="on"] .message.ai .message-content > ul,
+html[data-prose-cap="on"] .message.ai .message-content > ol,
+html[data-prose-cap="on"] .message.ai .message-content > blockquote { max-width: 78ch; }
+
+/* Header buttons: labelled, one accent. */
+.app-header .ziya-header-btn.ant-btn {
+  height: 28px;
+  padding: 0 9px;
+  border-color: var(--z-border-strong);
+  background: var(--z-surface);
+  color: var(--z-text);
+  box-shadow: none;
+}
+.app-header .ziya-header-btn.ant-btn .ziya-header-btn-label { margin-left: 6px; font-size: 12.5px; }
+@media (max-width: 1100px) { .app-header .ziya-header-btn .ziya-header-btn-label { display: none; } }
+.app-header .ziya-header-btn.ant-btn-primary { background: var(--z-accent); border-color: var(--z-accent); color: var(--z-accent-text); font-weight: 600; }
+.app-header .ziya-header-btn.ant-btn-text, body.dark .app-header .ziya-header-btn.ant-btn-text { background: transparent; border-color: transparent; color: var(--z-text-muted); }
+
+/* Breadcrumb in the header middle: a label, not a control. */
+.ziya-breadcrumb {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 12px; padding-left: 12px;
+  border-left: 1px solid var(--z-border-strong);
+  font-size: 12.5px; font-weight: 400; letter-spacing: 0;
+  color: var(--z-text-muted);
+  max-width: 34vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ziya-breadcrumb .ziya-breadcrumb-title { color: var(--z-text); overflow: hidden; text-overflow: ellipsis; }
+.ziya-breadcrumb .ziya-breadcrumb-sep { color: var(--z-text-faint); }
+
+/* Appearance popover controls. */
+.ziya-appearance { width: 280px; display: flex; flex-direction: column; gap: 10px; font-size: 12px; }
+.ziya-appearance .ziya-appearance-label { color: var(--z-text-muted); margin-bottom: 4px; }
+.ziya-appearance .ziya-paper-row { display: flex; gap: 5px; }
+.ziya-appearance .ziya-paper-swatch {
+  flex: 1; height: 22px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--z-border-strong);
+}
+.ziya-appearance .ziya-paper-swatch[aria-pressed="true"] { border: 2px solid var(--z-accent); }
+.ziya-appearance .ziya-paper-swatch:disabled { opacity: .5; cursor: default; }
+.ziya-appearance .ziya-font-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.ziya-appearance .ziya-font-choice {
+  padding: 4px 7px; border-radius: 5px; background: var(--z-surface); cursor: pointer;
+  border: 1px solid var(--z-border-strong); color: var(--z-text); font-size: 13px; text-align: left;
+}
+.ziya-appearance .ziya-font-choice[aria-pressed="true"] { border: 2px solid var(--z-accent); padding: 3px 6px; }
+.ziya-appearance .ziya-appearance-row { display: flex; justify-content: space-between; align-items: center; }
+
+/* AntD surfaces that index.css pins to #141414 / #ffffff. */
+.ant-popover .ant-popover-inner, body.dark .ant-popover .ant-popover-inner {
+  background: var(--z-surface); border: 1px solid var(--z-border-strong); color: var(--z-text);
+}
+.ant-popover .ant-popover-arrow::before, body.dark .ant-popover .ant-popover-arrow::before { background: var(--z-surface); }
+.ant-dropdown .ant-dropdown-menu, body.dark .ant-dropdown .ant-dropdown-menu {
+  background: var(--z-surface); border: 1px solid var(--z-border-strong);
+}
+.ant-dropdown .ant-dropdown-menu-item, body.dark .ant-dropdown .ant-dropdown-menu-item { color: var(--z-text); }
+.ant-dropdown .ant-dropdown-menu-item:hover, body.dark .ant-dropdown .ant-dropdown-menu-item:hover { background: var(--z-inset); }
+.ziya-menu-sub { display: block; font-size: 11px; color: var(--z-text-muted); }
+
+/* Sidebar tabs: accent underline instead of AntD blue. */
+.folder-tree-panel .ant-tabs-ink-bar, body.dark .folder-tree-panel .ant-tabs-ink-bar { background: var(--z-accent); }
+.folder-tree-panel .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn,
+body.dark .folder-tree-panel .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn { color: var(--z-text); font-weight: 600; }
+
+/* Collapse tab on the panel divider (design/visual-refresh.md, stage 3).
+   Same position as before (mid-height on the panel edge); the AntD button
+   chrome goes, the stray 2px rule below it goes, and it reads as a grip.
+   Drag-to-resize stays on the PanelResizer strip it sits on. */
+.panel-toggle.ant-btn, body.dark .panel-toggle.ant-btn {
+  width: 18px; height: 56px; padding: 0;
+  margin-left: -9px;
+  /* Above the PanelResizer strip (zIndex 100): with the tab beneath it,
+     only the tab's edge pixels received clicks and the middle started a
+     drag.  The strip above and below the tab still resizes. */
+  z-index: 101;
+  cursor: pointer;
+  border-radius: 6px;
+  background: var(--z-surface);
+  border: 1px solid var(--z-border-strong);
+  color: var(--z-text-muted);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  font-size: 10px;
+  transition: background-color 0.15s, color 0.15s;
+}
+.panel-toggle.ant-btn:hover, body.dark .panel-toggle.ant-btn:hover {
+  background: var(--z-inset); color: var(--z-text); border-color: var(--z-border-strong);
+}
+.panel-toggle.ant-btn .anticon { font-size: 10px; }
+.panel-toggle::before, .dark .panel-toggle::before { display: none; }
+/* Collapsed: hugs the screen edge in accent colour so "something is here". */
+.panel-toggle.collapsed.ant-btn, body.dark .panel-toggle.collapsed.ant-btn {
+  left: 0; margin-left: 0; border-radius: 0 6px 6px 0; border-left: 0;
+  background: var(--z-accent); border-color: var(--z-accent); color: var(--z-accent-text);
+}
+
+/* Scrollbars follow the ladder. */
+body.dark ::-webkit-scrollbar-thumb { background: var(--z-border-strong); }
+body.dark ::-webkit-scrollbar-track { background: var(--z-sidebar); }
+
+/* Composer dock + collapsed-panel strip (design/visual-refresh.md, stage 3).
+   The dock takes over the composer's sticky role so the strip and the
+   composer pin to the bottom as one unit; .input-container's own sticky
+   is neutralised inside it. */
+.ziya-composer-dock { position: sticky; bottom: 0; z-index: 2; background: var(--z-canvas); }
+.ziya-composer-dock .input-container { position: static; }
+.chat-content-with-fixed-input .ziya-composer-dock { position: static; }
+
+.ziya-collapsed-strip {
+  display: flex; align-items: center; gap: 8px; height: 28px;
+  padding: 0 20px 0 10px; font-size: 11.5px; color: var(--z-text);
+  background: var(--z-sidebar); border-top: 1px solid var(--z-border);
+  overflow: hidden; white-space: nowrap;
+}
+.ziya-collapsed-strip .ziya-strip-model { font-family: var(--z-mono-font); font-weight: 600; }
+.ziya-collapsed-strip .ziya-strip-cache.ok { color: var(--z-accent-ink); }
+.ziya-collapsed-strip .ziya-strip-cache.bad { color: #c2410c; }
+.ziya-collapsed-strip .ziya-strip-sep { width: 1px; height: 14px; background: var(--z-border-strong); }
+.ziya-collapsed-strip .ziya-strip-pill {
+  font-size: 10.5px; padding: 1px 7px; border-radius: 999px; color: #fff; font-weight: 500;
+}
+.ziya-collapsed-strip .ziya-strip-pill.pickup { background: transparent; color: var(--z-remote); border: 1px dashed var(--z-remote); }
+.ziya-collapsed-strip .ziya-strip-pill.more { background: transparent; color: var(--z-text-muted); border: 1px solid var(--z-border-strong); cursor: default; }
+.ziya-collapsed-strip .ziya-strip-tokens { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.ziya-collapsed-strip .ziya-tok-bar { width: 110px; }
+.ziya-collapsed-strip .ziya-strip-muted { color: var(--z-text-muted); }
+.ziya-collapsed-strip .ziya-strip-handoff {
+  background: none; border: 0; padding: 0; cursor: pointer; font: inherit; color: var(--z-text-muted);
+}
+.ziya-collapsed-strip .ziya-strip-handoff:hover { color: var(--z-accent-ink); }
+/* ModelConfigButton inside the strip: icon only, no label box. */
+.ziya-collapsed-strip .ant-btn { height: 20px; padding: 0 4px; border: 0; background: transparent; box-shadow: none; }
