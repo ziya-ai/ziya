@@ -100,7 +100,12 @@ import {
 } from '../utils/inlineMathClassifier';
 import { protectThinkingMath, restoreThinkingMath, hasThinkingMathMarkers } from '../utils/thinkingMath';
 import { THINKING_MARKED_OPTIONS } from '../utils/thinkingHtml';
+import { isRawCodeRow } from '../utils/hierarchicalRowKind';
+import { CompactHierarchicalList } from './CompactHierarchicalList';
+import type { HierarchicalRow } from '../utils/hierarchicalGroups';
 import { applyMusicDarkTheme, applyMusicLightTheme, VALID_DURATION_BASES, MIN_OCTAVE, MAX_OCTAVE } from '../utils/d3Plugins/musicPlugin';
+import { groupToolTokens, groupMemberProgress, type ToolGroupToken } from '../utils/toolGroupTokens';
+import { ToolGroup } from './ToolGroup';
 
 /**
  * Split a text run into literal text and rendered inline-math, decoding each
@@ -793,6 +798,7 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
                         collapsed: true,
                         summary: parsed.summary,
                         hierarchicalResults: parsed.hierarchicalResults,
+                        layout: parsed.layout,
                         verified: parsed._verified,
                         verificationError: parsed._verificationError
                     };
@@ -1135,9 +1141,35 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
 
     const colors = getToolColors();
 
+    // One hierarchical row's body, shared by the default and compact layouts.
+    const renderHierarchicalBody = (result: HierarchicalRow) => isRawCodeRow(result) ? (
+        <pre style={{
+            margin: 0,
+            padding: '12px',
+            backgroundColor: isDarkMode ? '#0d1117' : '#f6f8fa',
+            borderRadius: '4px',
+            overflow: 'auto',
+            maxHeight: '400px',
+            fontSize: '12px',
+            lineHeight: '1.5'
+        }}>
+            <code className={`language-${result.language}`}>{result.content}</code>
+        </pre>
+    ) : (
+        <div
+            style={{
+                margin: 0,
+                padding: '12px',
+                fontSize: '13px',
+                lineHeight: '1.4'
+            }}
+            // ASR F-026: marked v16 has no built-in sanitizer; result.content is tool output.
+            dangerouslySetInnerHTML={{ __html: sanitizeModelHtml(marked.parse(result.content, { breaks: true, gfm: true }) as string) }}
+        />
+    );
+
     // Render hierarchical results if available (e.g., workspace search)
     if (hierarchicalResults && hierarchicalResults.length > 0) {
-        const isCodeContent = hierarchicalResults[0].language && hierarchicalResults[0].language !== 'text' && hierarchicalResults[0].language !== 'markdown';
         return (
             <div style={{
                 backgroundColor: colors.bg,
@@ -1177,6 +1209,13 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
                     </div>
                 </div>
 
+                {(formattedOutput as any).layout === 'compact' ? (
+                    <CompactHierarchicalList
+                        rows={hierarchicalResults}
+                        renderBody={renderHierarchicalBody}
+                        colors={colors}
+                    />
+                ) : (
                 <div style={{ padding: '8px' }}>
                     <Collapse
                         ghost
@@ -1203,35 +1242,12 @@ const GenericToolBlock: React.FC<ToolBlockProps> = ({
                                     marginBottom: '4px'
                                 }}
                             >
-                                {isCodeContent ? (
-                                    <pre style={{
-                                        margin: 0,
-                                        padding: '12px',
-                                        backgroundColor: isDarkMode ? '#0d1117' : '#f6f8fa',
-                                        borderRadius: '4px',
-                                        overflow: 'auto',
-                                        maxHeight: '400px',
-                                        fontSize: '12px',
-                                        lineHeight: '1.5'
-                                    }}>
-                                        <code className={`language-${result.language}`}>{result.content}</code>
-                                    </pre>
-                                ) : (
-                                    <div
-                                        style={{
-                                            margin: 0,
-                                            padding: '12px',
-                                            fontSize: '13px',
-                                            lineHeight: '1.4'
-                                        }}
-                                        // ASR F-026: marked v16 has no built-in sanitizer; result.content is tool output.
-                                        dangerouslySetInnerHTML={{ __html: sanitizeModelHtml(marked.parse(result.content, { breaks: true, gfm: true }) as string) }}
-                                    />
-                                )}
+                                {renderHierarchicalBody(result)}
                             </Panel>
                         ))}
                     </Collapse>
                 </div>
+                )}
             </div>
         );
     }

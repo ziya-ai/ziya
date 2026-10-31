@@ -217,7 +217,15 @@ export interface FormattedOutput {
     content: string;
     language?: string;
     metadata?: Record<string, any>;
+    /** compact layout: rows sharing a group render under one header */
+    group?: string;
+    /** compact layout: right-aligned secondary text */
+    detail?: string;
+    /** compact layout: de-emphasised row */
+    dim?: boolean;
   }>;
+  /** 'compact': one line per hierarchical row (utils/hierarchicalGroups.ts) */
+  layout?: 'compact';
   // Verification status propagated from structured tool results.
   verified?: boolean;
   verificationError?: string;
@@ -508,7 +516,8 @@ export function formatMCPOutput(
       type: result.type || 'search_results',
       collapsed: true,
       summary: result.summary,
-      hierarchicalResults: result.hierarchicalResults
+      hierarchicalResults: result.hierarchicalResults,
+      layout: result.layout
     };
   }
 
