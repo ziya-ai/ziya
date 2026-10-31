@@ -373,23 +373,25 @@ class RenderDiagramTool(BaseMCPTool):
             # conversation intact (when the provider supports
             # 'image_tool_results') so the NEXT model call sees the image,
             # then compacts it to the text summary once consumed.
-            return {
-                "_has_image_content": True,
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": b64_data,
-                        },
+            from app.utils.image_result_compaction import (
+                SUPPORTED_IMAGE_MEDIA_TYPES, unsupported_image_to_text_blocks,
+            )
+            blocks = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": b64_data,
                     },
-                    {
-                        "type": "text",
-                        "text": desc,
-                    },
-                ],
-            }
+                },
+                {"type": "text", "text": desc},
+            ]
+            if media_type not in SUPPORTED_IMAGE_MEDIA_TYPES:
+                # SVG cannot be sent as an image block; Bedrock rejects the
+                # whole request and the block would poison every later turn.
+                return {"content": unsupported_image_to_text_blocks(blocks)}
+            return {"_has_image_content": True, "content": blocks}
 
         except ImportError as exc:
             # DiagramRenderer.create names what is missing and the installer.
@@ -765,15 +767,18 @@ class ViewImageTool(BaseMCPTool):
         if len(data) > 25 * 1024 * 1024:
             return _error(f"{raw}: {len(data)} bytes exceeds the 25 MB limit")
         media_type = "image/svg+xml" if p.suffix.lower() == ".svg" else "image/png"
-        return {
-            "_has_image_content": True,
-            "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": media_type,
-                                             "data": base64.b64encode(data).decode("utf-8")}},
-                {"type": "text", "text": f"{p} ({len(data) / 1024:.1f} KB) — the file's "
-                                         f"exact bytes, not a re-render."},
-            ],
-        }
+        from app.utils.image_result_compaction import (
+            SUPPORTED_IMAGE_MEDIA_TYPES, unsupported_image_to_text_blocks,
+        )
+        blocks = [
+            {"type": "image", "source": {"type": "base64", "media_type": media_type,
+                                         "data": base64.b64encode(data).decode("utf-8")}},
+            {"type": "text", "text": f"{p} ({len(data) / 1024:.1f} KB) — the file's "
+                                     f"exact bytes, not a re-render."},
+        ]
+        if media_type not in SUPPORTED_IMAGE_MEDIA_TYPES:
+            return {"content": unsupported_image_to_text_blocks(blocks)}
+        return {"_has_image_content": True, "content": blocks}
 
 
 def _error(msg: str) -> dict:
