@@ -2319,7 +2319,10 @@ async def stream_chunks(body):
                         # until now the frontend logged this event and dropped
                         # it, so the user saw silence and then a second diff
                         # whose relationship to the first was only guessed.
-                        separator_content = '\n\n---\n\n**Correcting failed diff(s):**\n\n'
+                        separator_content = (
+                            '\n\n---\n\n**Supplying the missing diff:**\n\n'
+                            if getattr(validation_hook, 'phantom_reference', None)
+                            else '\n\n---\n\n**Correcting failed diff(s):**\n\n')
                         yield f"data: {json.dumps({'type': 'validation_retry', 'content': separator_content, 'rejected': list(getattr(validation_hook, 'last_rejected', None) or [])})}\n\n"
                         
                         # Generate again with the feedback

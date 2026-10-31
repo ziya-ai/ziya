@@ -22,7 +22,8 @@ import pytest
 
 from app.utils.diff_validation_hook import DiffValidationHook
 from app.utils.phantom_diff import (
-    find_phantom_diff_reference, has_diff_fence, phantom_diff_feedback,
+    find_phantom_diff_reference, find_unresolved_errors, has_diff_fence,
+    phantom_diff_feedback,
 )
 
 # The real turn, abridged: tool fences as the frontend renders them, the
@@ -127,7 +128,8 @@ class TestHookSeam:
         assert fb is not None and "no ```diff fence" in fb
         assert hook.phantom_reference is not None
         assert ("diff_validation_status", {"status": "phantom_reference",
-                                           "phrase": hook.phantom_reference}) in events
+                                           "phrase": hook.phantom_reference,
+                                           "unresolved": []}) in events
         # Not a rejected fence: the frontend must not try to mark one.
         assert hook.last_rejected == []
 
@@ -150,3 +152,85 @@ class TestHookSeam:
     def test_disabled_hook_does_not_run_the_check(self):
         hook = DiffValidationHook(enabled=False)
         assert hook.validate_and_enhance(STORED_TURN_19, []) is None
+
+
+# Stored turn of 2026-10-25 (conversation forked from the "Round" harp-score
+# music-renderer work): tsc in iteration 0 named a scope error in
+# musicPlugin.ts, the jest run in iteration 8 hit the same line as a
+# ReferenceError, the response said "once the stave-scope diff above is
+# applied" and ended.  The correction pass received only the phrase, grepped
+# for the OTHER diffs' symbols, found them, and answered "no diff needs
+# re-emitting".  These are the two tool outputs, abridged.
+TSC_OUTPUT_1025 = (
+    "src/utils/d3Plugins/__tests__/musicFlatNotesWrapG33.test.ts(35,3): error TS2305: "
+    "Module '\"../musicPlugin\"' has no exported member 'segmentFlatStaffIntoMeasures'.\n"
+    "src/utils/d3Plugins/musicPlugin.ts(6753,11): error TS18004: No value exists in "
+    "scope for the shorthand property 'stave'. Either declare one or provide an initializer.\n"
+    "tsc done\n"
+)
+JEST_OUTPUT_1025 = (
+    "  ● G5 brackets › `hooks: \"both\"` draws a solid bracket with a hook at each end\n"
+    "    ReferenceError: stave is not defined\n"
+    "      at renderMusicSpec (src/utils/d3Plugins/musicPlugin.ts:6753:11)\n"
+    "Tests:       3 failed, 10 passed, 13 total\n"
+)
+PHANTOM_TURN_1025 = (
+    "One compile error from my change (the span loop doesn't have `stave` in scope).\n"
+    "Once the stave-scope diff above is applied, run both:\n"
+    "Ready for the next run once the stave diff is in."
+)
+
+
+class TestUnresolvedEvidence:
+    """The turn's own tool output can prove the cited diff is still missing;
+    the correction request must then withdraw the 'no diff needed' exit."""
+
+    def test_finds_compiler_and_runtime_errors_most_recent_first(self):
+        found = find_unresolved_errors([TSC_OUTPUT_1025, "$ grep -n foo\n12: foo", JEST_OUTPUT_1025])
+        assert found[0].startswith("ReferenceError: stave is not defined")
+        assert any("error TS18004" in line for line in found)
+        # Capped and de-duplicated: the same tsc line twice is one line.
+        assert len(find_unresolved_errors([TSC_OUTPUT_1025, TSC_OUTPUT_1025] * 3)) <= 3
+        assert len(set(find_unresolved_errors([TSC_OUTPUT_1025, TSC_OUTPUT_1025]))) == \
+            len(find_unresolved_errors([TSC_OUTPUT_1025, TSC_OUTPUT_1025]))
+
+    @pytest.mark.parametrize("text", [
+        "The error budget is 5%.",
+        "$ grep -n 'error' app/x.py\n12: logger.error('boom')",
+        "PASS src/foo.test.ts\nTests: 3 passed, 3 total",
+        "", None,
+    ])
+    def test_prose_and_passing_runs_are_not_evidence(self, text):
+        assert find_unresolved_errors([text]) == []
+        assert find_unresolved_errors(None) == []
+
+    def test_feedback_with_evidence_quotes_it_and_withdraws_the_exit(self):
+        fb = phantom_diff_feedback("diff above", ["ReferenceError: stave is not defined"])
+        assert "ReferenceError: stave is not defined" in fb
+        assert "no diff is needed" not in fb.split("Do not answer")[0]
+        assert "Do not answer that the earlier diffs are present" in fb
+        # Without evidence the one-sentence exit is still offered.
+        assert "no diff is needed" in phantom_diff_feedback("diff above")
+
+    def test_hook_threads_this_turns_tool_outputs_into_the_request(self):
+        hook = DiffValidationHook(enabled=True)
+        events = []
+        fb = hook.validate_and_enhance(
+            content=PHANTOM_TURN_1025, model_messages=[],
+            send_event=lambda t, d: events.append((t, d)),
+            tool_outputs=[TSC_OUTPUT_1025, JEST_OUTPUT_1025],
+        )
+        assert fb is not None
+        assert "ReferenceError: stave is not defined" in fb
+        assert "error TS18004" in fb
+        assert hook.phantom_evidence and hook.phantom_evidence[0].startswith("ReferenceError")
+        status = [d for t, d in events if t == "diff_validation_status"][0]
+        assert status["unresolved"] == hook.phantom_evidence
+        hook.reset_validation_state()
+        assert hook.phantom_evidence == []
+
+    def test_hook_without_outputs_keeps_the_old_wording(self):
+        hook = DiffValidationHook(enabled=True)
+        fb = hook.validate_and_enhance(PHANTOM_TURN_1025, [])
+        assert fb is not None and "no diff is needed" in fb
+        assert hook.phantom_evidence == []
