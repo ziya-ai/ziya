@@ -3,6 +3,7 @@ import { theme, ThemeConfig } from 'antd';
 
 // MUI theme imports
 import { ThemeProvider as MUIThemeProvider, createTheme } from '@mui/material/styles';
+import { initAppearance } from '../utils/appearance';
 
 interface ThemeContextType {
     isDarkMode: boolean;
@@ -31,18 +32,18 @@ export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         palette: {
             mode: isDarkMode ? 'dark' : 'light',
             primary: {
-                main: isDarkMode ? '#177ddc' : '#1890ff',
+                main: isDarkMode ? '#2dd4bf' : '#0d9488',
             },
             secondary: {
                 main: isDarkMode ? '#49aa19' : '#52c41a',
             },
             background: {
-                default: isDarkMode ? '#141414' : '#ffffff',
-                paper: isDarkMode ? '#1f1f1f' : '#ffffff',
+                default: isDarkMode ? '#1c1f24' : '#f7f6f3',
+                paper: isDarkMode ? '#252930' : '#fcfbf9',
             },
             text: {
-                primary: isDarkMode ? '#ffffff' : '#000000',
-                secondary: isDarkMode ? '#a0a0a0' : '#666666',
+                primary: isDarkMode ? '#e8eaed' : '#1a1b1e',
+                secondary: isDarkMode ? '#9aa0a8' : '#72736f',
             },
             error: {
                 main: isDarkMode ? '#ff4d4f' : '#f5222d',
@@ -51,6 +52,7 @@ export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     });
 
     useEffect(() => {
+        initAppearance();
         const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
         const handleChange = (e: MediaQueryListEvent) => {
             if (localStorage.getItem(THEME_KEY) === null) {
@@ -60,9 +62,10 @@ export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         mediaQuery.addEventListener('change', handleChange);
 
         localStorage.setItem(THEME_KEY, JSON.stringify(isDarkMode));
-        // Update body background color
+        // Body background comes from theme-tokens.css (--z-canvas); an inline
+        // colour here would override the paper-tone preference.
         document.body.classList.toggle('dark', isDarkMode);
-        document.body.style.backgroundColor = isDarkMode ? '#141414' : '#f5f5f5';
+        document.body.style.removeProperty('background-color');
 
         return () => {
             mediaQuery.removeEventListener('change', handleChange);
