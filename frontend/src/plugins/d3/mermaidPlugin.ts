@@ -1194,7 +1194,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         rawDefinition = clampMermaidNodeLabels(rawDefinition);
 
         // CRITICAL DEBUG: Log what we're about to send to Mermaid
-        console.log('🔧 MERMAID-DEBUG: About to render with rawDefinition:', {
+        console.info('🔧 MERMAID-DEBUG: About to render with rawDefinition:', {
             type: typeof rawDefinition,
             length: rawDefinition?.length || 0,
             firstChar: rawDefinition?.charAt(0) || 'N/A',
@@ -1222,6 +1222,22 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         }
         const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
 
+        // Mermaid 12 lays graph diagrams out with ELK and draws them in the
+        // `neo` look by default.  Our post-render passes and goldens assume
+        // the classic look.  The layout is chosen per diagram type from the
+        // dagre/ELK comparison (scripts/mermaid_layout_eval.py): ELK won or
+        // tied on every state, flowchart and ER spec; class diagrams gained
+        // nothing and grew taller.  A per-diagram
+        // `%%{init: {"layout": ...}}%%` still overrides this.
+        const LAYOUT_BY_TYPE: Record<string, 'dagre' | 'elk'> = {
+            flowchart: 'elk',
+            graph: 'elk',
+            statediagram: 'elk',
+            classdiagram: 'dagre',
+            erdiagram: 'elk',
+            requirementdiagram: 'dagre',
+        };
+
         // Create a guaranteed unique ID that won't conflict with other diagrams
         const containerId = container.id || container.className || 'mermaid';
         const mermaidId = `${containerId}-${Date.now()}-${Math.random().toString(16).substring(2, 10)}`;
@@ -1229,6 +1245,8 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         mermaid.initialize({
             startOnLoad: false,
             theme: isDarkMode ? 'dark' : 'default',
+            look: 'classic',
+            layout: LAYOUT_BY_TYPE[diagramType] ?? 'dagre',
             securityLevel: 'loose',
             // G-961e2c / D-425 (edge-count-over-500-refused-empty-svg): mermaid's
             // stock maxEdges=500 security cap makes any graph with more edges
