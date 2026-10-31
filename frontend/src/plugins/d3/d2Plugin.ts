@@ -4,6 +4,7 @@ import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
 import { calculateContrastRatio, hslStringToRgb, hexToRgb } from '../../utils/colorUtils';
 import { namedColorToHex } from './chartTheme';
+import { addDiagramActions, diagramSourceText } from './diagramActions';
 
 export interface D2Spec {
     type: 'd2';
@@ -2426,6 +2427,15 @@ nodeGroups.each(function (this: any, d: any) {
                 .attr('font-family', 'Arial, sans-serif')
                 .attr('font-size', `${EDGE_LABEL_FONT}px`)
                 .text((d: any) => edgeLabelText(d));
+
+            // Open / Source / Save, as on the other SVG plugins.
+            const svgNode = typeof svg.node === 'function' ? svg.node() : null;
+            if (container instanceof HTMLElement && svgNode instanceof SVGElement) {
+                addDiagramActions(container, {
+                    view: svgNode, source: diagramSourceText(spec),
+                    title: 'D2 Diagram', filenameBase: 'd2-diagram', isDarkMode,
+                });
+            }
 
         } catch (error) {
             console.error('D2 rendering error:', error);

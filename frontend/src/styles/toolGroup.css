@@ -1,0 +1,12 @@
+/*
+ * Members inside a parallel tool group (components/ToolGroup.tsx).  A tool
+ * block sets margin: 16px 0 inline for standalone use; inside the container
+ * that doubles up against the header and between rows, so tighten it.
+ * !important is required to beat the inline style.
+ */
+.tool-group-body > :not(.tool-group-rail) {
+    margin-top: 6px !important;
+    margin-bottom: 6px !important;
+}
+.tool-group-body > .tool-group-rail + * { margin-top: 0 !important; }
+.tool-group-body > :last-child { margin-bottom: 0 !important; }

@@ -27,6 +27,8 @@ Ordering guarantees the model relies on are preserved:
 import asyncio
 import re
 import shlex
+import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -222,20 +224,52 @@ def _absorb(ctx: Any, outcome: BatchOutcome) -> None:
         outcome.deferred_feedback.extend(fb)
 
 
-async def _run_group(group: List[Any], outcome: BatchOutcome) -> AsyncGenerator[Dict[str, Any], None]:
+async def _run_group(group: List[Any], outcome: BatchOutcome,
+                     prestarted: Any = None) -> AsyncGenerator[Dict[str, Any], None]:
     """Run one group concurrently.  Live events (tool_start, tool_display,
     stream_end, ...) are yielded as they arrive; ``_tool_result`` events are
     buffered and re-emitted in group order once every call finishes.  A stop
-    directive cancels the siblings still in flight and yields no results."""
+    directive cancels the siblings still in flight and yields no results.
+
+    Group chrome for the frontend: when the group has two or more members,
+    each member's ``tool_start`` carries ``batch_group = {id, size, index}``
+    (index = issue order) and one ``tool_group_end`` follows the results with
+    the group's wall-clock and serial time, so the chat can draw the overlap
+    (utils/toolGroupDisplay.ts).  A lone call is emitted exactly as before.
+
+    ``prestarted`` (app/utils/tool_prestart.ToolPrestarter): a member it
+    already started is not executed again; its buffered events are replayed
+    and its duration counts from when it really started."""
     queue: asyncio.Queue = asyncio.Queue()
     tasks: Dict[str, asyncio.Task] = {}
     results: Dict[str, Dict[str, Any]] = {}
+    tagged = len(group) >= 2
+    group_id = uuid.uuid4().hex[:8]
+    index_of = {ctx.tool_id: i for i, ctx in enumerate(group)}
+    started: Dict[str, float] = {}
+    durations: Dict[str, float] = {}
+    t0 = time.monotonic()
+    pre_of: Dict[str, Any] = {}
+    if prestarted is not None:
+        for ctx in group:
+            pre = prestarted.take(ctx.tool_id)
+            if pre is not None:
+                pre_of[ctx.tool_id] = pre
 
     async def _drive(ctx: Any) -> None:
+        pre = pre_of.get(ctx.tool_id)
+        started[ctx.tool_id] = pre.started if pre is not None else time.monotonic()
         try:
-            async for evt in execute_single_tool(ctx):
+            if pre is not None:
+                from app.utils.tool_prestart import replay
+                source = replay(pre)
+            else:
+                source = execute_single_tool(ctx)
+            async for evt in source:
                 await queue.put((ctx, evt))
         finally:
+            durations[ctx.tool_id] = (pre.duration if pre is not None
+                                      else time.monotonic() - started[ctx.tool_id])
             await queue.put((ctx, None))  # completion sentinel
 
     for ctx in group:
@@ -255,19 +289,36 @@ async def _run_group(group: List[Any], outcome: BatchOutcome) -> AsyncGenerator[
         if evt.get("type") == "_tool_result":
             results[ctx.tool_id] = evt
         else:
+            if tagged and evt.get("type") == "tool_start":
+                evt = {**evt, "batch_group": {
+                    "id": group_id, "size": len(group), "index": index_of[ctx.tool_id],
+                }}
             yield evt
 
     if stop:
         for task in tasks.values():
             if not task.done():
                 task.cancel()
-        await asyncio.gather(*tasks.values(), return_exceptions=True)
+        for pre in pre_of.values():  # a replayed call's real task
+            if not pre.task.done():
+                pre.task.cancel()
+        await asyncio.gather(*tasks.values(), *(p.task for p in pre_of.values()),
+                             return_exceptions=True)
         return  # a stopped batch emits no tool results
 
     await asyncio.gather(*tasks.values(), return_exceptions=True)
     for ctx in group:  # arrival order, not completion order
         if ctx.tool_id in results:
             yield results[ctx.tool_id]
+    if tagged:
+        yield {
+            "type": "tool_group_end",
+            "group_id": group_id,
+            "size": len(group),
+            "tool_ids": [ctx.tool_id for ctx in group],
+            "wall_ms": int((time.monotonic() - t0) * 1000),
+            "serial_ms": int(sum(durations.values()) * 1000),
+        }
 
 
 async def run_tool_batch(

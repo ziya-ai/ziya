@@ -29,6 +29,7 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { isDarkBackground, classifyColor, ensureReadableFill, contrastRatio, truncateLabel } from './chartTheme';
 import { lenientParseObject } from './forceDirectedPlugin';
+import { addDiagramActions, diagramSourceText } from './diagramActions';
 
 interface ChordNode {
   id: string;
@@ -1249,6 +1250,16 @@ export const chordPlugin: D3RenderPlugin = {
       ribbons.attr('fill-opacity', ribbonOpacity);
     });
 
+    // Open / Source / Save, as on the other SVG plugins.  Guarded: unit
+    // tests drive this render with a mock d3 whose svg.node() is not a DOM
+    // element, and a real container is needed to mount into.
+    const svgNode = typeof svg.node === 'function' ? svg.node() : null;
+    if (container instanceof HTMLElement && svgNode instanceof SVGElement) {
+      addDiagramActions(container, {
+        view: svgNode, source: diagramSourceText(rawSpec),
+        title: 'Chord Diagram', filenameBase: 'chord-diagram', isDarkMode,
+      });
+    }
     // No simulation to clean up — return a no-op so the host's
     // cleanup contract is honoured.
     return () => { /* nothing to tear down */ };
