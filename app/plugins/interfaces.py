@@ -70,7 +70,7 @@ class AuthProvider(ABC):
         # credential.  The exclusion list lives in app.utils.infra_errors and
         # is ALSO applied by the core call sites (is_auth_failure), because a
         # provider subclass that overrides this method without it (the
-        # enterprise EnterpriseAuthProvider did) otherwise turns every network
+        # enterprise auth plugin did) otherwise turns every network
         # blip into a "run mwinit" banner.
         from app.utils.infra_errors import is_network_failure_text
         if is_network_failure_text(lowered):
