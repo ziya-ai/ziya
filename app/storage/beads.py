@@ -151,6 +151,12 @@ def _resolve_chat_storage(conversation_id: Optional[str] = None):
     """Resolve ChatStorage + conversation_id from request context.
 
     Returns (chat_storage, conversation_id) or raises ValueError.
+
+    The request names the project the WINDOW has open, which is not
+    necessarily the conversation's home: a global conversation shown in
+    another project's sidebar is stored under its own project.  The
+    returned storage is the one that actually holds the record (same rule
+    as context tools, auto-context and handoff, via resolve_chat_home).
     """
     from app.context import get_project_root_or_none
     from app.storage.projects import ProjectStorage
@@ -171,6 +177,21 @@ def _resolve_chat_storage(conversation_id: Optional[str] = None):
         raise ValueError(f"No project found for path: {project_root}")
 
     project_dir = get_project_dir(project.id)
+    # Without this, a turn driven from a non-home window resolved
+    # ChatStorage(window project), .get(cid) returned None, and every bead
+    # read/write went to the standalone fallback file instead of the record:
+    # the model closed the same stale beads turn after turn and they came
+    # back parked, and a later save from the home window deleted the
+    # fallback with the other window's writes in it (2026-10-25, 31fa660d;
+    # tests/test_bead_cross_project_home.py).
+    try:
+        from app.utils.chat_home import resolve_chat_home
+        home = resolve_chat_home(project.id, project_dir, conversation_id)
+    except Exception as e:
+        logger.debug(f"📿 chat_home resolution failed, using window project: {e}")
+        home = None
+    if home is not None:
+        return home[1], conversation_id
     return ChatStorage(project_dir), conversation_id
 
 
