@@ -673,9 +673,15 @@ class RemoteAuthProvider(ABC):
     A remote server's config selects a handler with ``"auth": {"type": X}``.
     ``bearer`` is engine-native (a static header); every other type is
     delegated to the provider registered for it, which builds the
-    ``httpx.AsyncClient`` the MCP SDK transport will send requests through.
+    HTTP client the MCP SDK transport will send requests through.
     That gives the plugin full control over cookies, redirects, signing,
     and any pre-connection handshake (e.g. an SSO cookie exchange).
+
+    The client type follows the installed SDK: ``httpx.AsyncClient`` for
+    mcp 1.x, ``httpx2.AsyncClient`` for mcp 2.x. Build it with
+    ``app.utils.mcp_sdk_compat.http_module().AsyncClient(...)`` and list
+    every library the provider can build in ``http_libraries``; the engine
+    refuses a provider that cannot build the type the installed SDK needs.
 
     The engine owns the returned client's lifetime and closes it on
     disconnect. The provider must close it itself only when it raises.
@@ -683,6 +689,8 @@ class RemoteAuthProvider(ABC):
 
     provider_id: str = "default"
     auth_type: str = ""
+    # HTTP client libraries this provider can build ("httpx", "httpx2").
+    http_libraries: Tuple[str, ...] = ("httpx",)
 
     @abstractmethod
     async def build_http_client(
@@ -693,10 +701,11 @@ class RemoteAuthProvider(ABC):
         headers: Optional[Dict[str, str]] = None,
         timeout: Any = None,
     ):
-        """Return an authenticated ``httpx.AsyncClient`` for ``url``.
+        """Return an authenticated AsyncClient (see class docstring) for ``url``.
 
         ``headers`` are the server's configured static headers; ``timeout``
-        is an ``httpx.Timeout`` the engine would otherwise have used. Raise
+        is the ``Timeout`` (of the same library) the engine would otherwise
+        have used. Raise
         RemoteAuthError for any failure the user can act on.
         """
         pass
