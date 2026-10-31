@@ -21,6 +21,10 @@ export interface BenchViewItem {
     /** Who wrote each layer's placement; absent for layers with none, null
      *  for the conversation layer (the chat record keeps no meta). */
     meta?: Partial<Record<Layer, PlacementMeta | null>>;
+    /** Epoch ms of the last use (skill loaded, MCP tool called); null when never used. */
+    last_used?: number | null;
+    /** Within-reach MCP only: what this conversation has loaded — '*' or tool names. */
+    loaded?: string[] | '*' | null;
 }
 
 export type PlacementVia = 'hub' | 'migration' | 'palette' | 'api';

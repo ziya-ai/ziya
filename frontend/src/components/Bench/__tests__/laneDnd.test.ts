@@ -20,18 +20,18 @@ describe('dropIntent', () => {
         expect(x.atLens.inherited).toBe('always');
         expect(dropIntent(x, 'always')).toEqual({ kind: 'place', key: 'skill:a', toState: null });
     });
-    it('mcp ondemand and environment are refused', () => {
-        expect(dropIntent(mk('mcp:jira'), 'ondemand')).toEqual({ kind: 'rejected', reason: 'mcp_ondemand_unsupported' });
+    it('mcp can be placed within reach (slice 9); environment is refused', () => {
+        expect(dropIntent(mk('mcp:jira'), 'ondemand')).toEqual({ kind: 'place', key: 'mcp:jira', toState: 'ondemand' });
         expect(dropIntent(mk('mcp:shell', { tier: 'environment' }), 'off'))
             .toEqual({ kind: 'rejected', reason: 'environment_not_placeable' });
     });
 });
 
 describe('moveOptions (keyboard / right-click parity with drag)', () => {
-    it('every non-noop lane is offered; mcp ondemand is disabled "coming soon"', () => {
+    it('every non-noop lane is offered, Within reach included for an mcp server', () => {
         const opts = moveOptions(mk('mcp:jira'));
-        expect(opts.map(o => o.label)).toEqual(['Within reach (coming soon)', 'Move to Shelved']);
-        expect(opts[0].disabled).toBe(true);
+        expect(opts.map(o => o.label)).toEqual(['Move to Within reach', 'Move to Shelved']);
+        expect(opts.every(o => !o.disabled && o.hint === undefined)).toBe(true);
     });
     it('a pin equal to the inherited value still offers a clear', () => {
         const redundant = mk('skill:a', { project: 'ondemand' });  // default is ondemand too
