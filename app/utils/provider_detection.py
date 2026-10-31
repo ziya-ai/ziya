@@ -95,8 +95,9 @@ PROVIDER_CREDENTIALS: Tuple[ProviderCredential, ...] = (
         # running Ollama needs no variable at all. --endpoint local already
         # works with no variable set (the default URL is used).
         "local", ("ZIYA_LOCAL_MODEL_URL",),
-        "Local (Ollama / DwarfStar / LM Studio / llama.cpp)", "http://localhost:11434",
-        note="Servers on ports 11434, 8000, 1234, 8080 are found automatically; "
+        "Local (Ollama / DwarfStar / oMLX / LM Studio / llama.cpp)", "http://localhost:11434",
+        note="Servers on ports 11434, 8000, 1234, 8080 (and an oMLX port from "
+             "OMLX_PORT or ~/.omlx/settings.json) are found automatically; "
              "set the URL only for another port or host.",
     ),
 )
@@ -247,7 +248,7 @@ def missing_credential_hint(endpoint: str) -> Optional[str]:
         return "Run 'aws configure' or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY"
     from app.utils.local_models import is_local_endpoint
     if is_local_endpoint(endpoint):
-        return ("Start a local server (Ollama, DwarfStar ds4-server, LM Studio, "
+        return ("Start a local server (Ollama, DwarfStar ds4-server, oMLX, LM Studio, "
                 "llama-server) or set ZIYA_LOCAL_MODEL_URL")
     p = _BY_ENDPOINT.get(endpoint)
     if not p:
