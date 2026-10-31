@@ -152,10 +152,10 @@ derives the OpenAI-compatible `/v1` path itself so the user sets one URL.
    2026-09-09 (see Status). Still owed: CI test against a real
    `llama3.2:1b` on Linux, and the live DS4 run end to end.
 1b. **Tool surface must fit local context.** Live measurement on the DS4 Mac:
-   `tools: 122,370` tokens — 40 `enterprise-mcp` tools with 4–5k-char
+   `tools: 122,370` tokens — 40 enterprise MCP tools with 4–5k-char
    descriptions — exceeds ds4 `--ctx 100000` before the first message, and
    the 39 builtins alone are ~4k. Needs: per-endpoint MCP server disable
-   (enterprise-mcp off for `local-*` by default) and a trimmed builtin set for
+   (large enterprise MCP servers off for `local-*` by default) and a trimmed builtin set for
    local endpoints (file I/O, AST, shell; the rest opt-in) in
    `builtin_tools.py`. Promoted from polish to phase 1.
 1c. **Reasoning replay on the OpenAI-compatible provider.** DS4's client
