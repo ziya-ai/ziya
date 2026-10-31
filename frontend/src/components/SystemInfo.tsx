@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Typography, Tag, Descriptions, Spin } from 'antd';
+import { Card, Typography, Tag, Descriptions, Spin, Button, Space } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined, WarningOutlined } from '@ant-design/icons';
 
 const { Title, Text, Paragraph } = Typography;
@@ -8,6 +8,8 @@ export const SystemInfo: React.FC = () => {
   const [systemInfo, setSystemInfo] = useState<any>(null);
   const [formatterInfo, setFormatterInfo] = useState<any>({ formatters: [] });
   const [mcpInfo, setMcpInfo] = useState<any>(null);
+  const [extras, setExtras] = useState<any>(null);
+  const [installLog, setInstallLog] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -67,6 +69,39 @@ export const SystemInfo: React.FC = () => {
         console.error('Error fetching MCP status:', error);
       });
   }, []);
+
+  // Optional extras (app/utils/extras_registry.py): what is installed, what
+  // went stale on upgrade, what is new in this version, and an Install button
+  // for the ones the server can add itself.
+  const loadExtras = () => {
+    fetch('/api/extras')
+      .then(r => r.json())
+      .then(setExtras)
+      .catch(error => console.error('Error fetching extras:', error));
+  };
+  useEffect(loadExtras, []);
+
+  const installExtra = async (key: string) => {
+    const res = await fetch(`/api/extras/${key}/install`, { method: 'POST' });
+    const body = await res.json();
+    if (!res.ok) {
+      setInstallLog(prev => ({ ...prev, [key]: { done: true, ok: false, lines: [body?.detail?.message || 'refused'] } }));
+      return;
+    }
+    setInstallLog(prev => ({ ...prev, [key]: body }));
+    const poll = async () => {
+      const p = await fetch(`/api/extras/${key}/install`);
+      if (!p.ok) return;
+      const status = await p.json();
+      setInstallLog(prev => ({ ...prev, [key]: status }));
+      if (status.done) {
+        loadExtras();
+      } else {
+        setTimeout(poll, 1500);
+      }
+    };
+    setTimeout(poll, 1500);
+  };
 
   if (loading) {
     return (
@@ -226,6 +261,64 @@ export const SystemInfo: React.FC = () => {
             {systemInfo?.features?.ephemeral_mode ? '✓ Enabled' : '✗ Disabled'}
           </Descriptions.Item>
         </Descriptions>
+      </Card>
+
+      {/* Optional extras */}
+      <Card title="🧩 Optional Extras" style={{ marginBottom: 16 }}>
+        <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          Parts of Ziya that pip cannot install, or that are opt-in. Extras you installed are
+          re-installed automatically at startup if an upgrade leaves them missing; those marked
+          <Tag style={{ marginLeft: 6 }}>new</Tag> appeared in this version and were never installed.
+          Installer: <Text code>{extras?.install_cmd || 'ziya-install-extras'}</Text>
+          {extras?.versions?.playwright && <> · Playwright {extras.versions.playwright}</>}
+        </Paragraph>
+        {extras?.extras ? (
+          <Descriptions column={1} bordered size="small">
+            {extras.extras.filter((x: any) => x.supported).map((x: any) => {
+              const log = installLog[x.key];
+              const busy = x.installing || (log && !log.done);
+              return (
+                <Descriptions.Item key={x.key} label={x.title}>
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    <Space wrap>
+                      {x.installed
+                        ? <Tag color="success" icon={<CheckCircleOutlined />}>installed</Tag>
+                        : x.blocked
+                          ? <Tag color="default" icon={<CloseCircleOutlined />}>unavailable on this host</Tag>
+                          : x.stale
+                            ? <Tag color="warning" icon={<WarningOutlined />}>missing since upgrade</Tag>
+                            : <Tag color="error" icon={<CloseCircleOutlined />}>not installed</Tag>}
+                      {x.new_in_this_version && <Tag>new</Tag>}
+                      {!x.installed && !x.blocked && x.server_installable && (
+                        <Button size="small" type="primary" loading={!!busy} onClick={() => installExtra(x.key)}>
+                          Install
+                        </Button>
+                      )}
+                      {!x.installed && !x.blocked && !x.server_installable && (
+                        <Text>Run in a terminal: <Text code>{x.command}</Text></Text>
+                      )}
+                    </Space>
+                    <Text type="secondary">{x.enables}</Text>
+                    {!x.installed && x.missing && <Text type="secondary">Missing: {x.missing}</Text>}
+                    {x.blocked && <Text type="secondary">{x.blocked}</Text>}
+                    {!log && x.last_install_failed && (
+                      <pre style={{ margin: 0, maxHeight: 120, overflow: 'auto', fontSize: 11 }}>
+                        {'The automatic re-install at startup failed:\n'}
+                        {(x.last_install_tail || []).join('\n')}
+                      </pre>
+                    )}
+                    {log?.lines?.length > 0 && (
+                      <pre style={{ margin: 0, maxHeight: 160, overflow: 'auto', fontSize: 11 }}>
+                        {log.lines.slice(-30).join('\n')}
+                        {log.done && log.ok ? '\nDone. Restart Ziya for render tools to pick it up.' : ''}
+                      </pre>
+                    )}
+                  </Space>
+                </Descriptions.Item>
+              );
+            })}
+          </Descriptions>
+        ) : <Text type="secondary">Loading…</Text>}
       </Card>
 
       {/* MCP Servers */}

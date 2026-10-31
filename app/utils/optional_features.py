@@ -266,19 +266,38 @@ def latex_hint() -> str:
 
 
 def missing_feature_lines() -> List[str]:
-    """Human-readable lines for the startup banner.  Empty when nothing is missing."""
+    """Human-readable lines for the startup banner.  Empty when nothing is missing.
+
+    Every extra in ``extras_registry.REGISTRY`` that applies to this platform
+    and is missing gets a line, so an extra added in a release is named here
+    for an upgraded install without any other surface having to learn of it.
+    """
+    from .extras_registry import REGISTRY, installing_keys  # local: the registry imports this module
     lines: List[str] = []
-    pw = playwright_status()
-    if pw:
-        lines.append(
-            f"  • Diagram screenshots for the model, PDF export: missing {pw}."
-        )
-    tex = tex_status()
-    if tex:
-        lines.append(
-            f"  • LaTeX diagrams (circuits, chemistry, pgfplots, TikZ): missing {tex}."
-        )
-    if lines:
+    targets: List[str] = []
+    busy = set(installing_keys())
+    installing = []
+    for x in REGISTRY:
+        if not x.supported():
+            continue
+        if x.key in busy:
+            # The banner prints while a startup refresh may still be running;
+            # a half-finished pip install is not "missing" (2026-10-27: the
+            # banner listed duckdb, pyarrow mid-install).
+            installing.append(x.title)
+            continue
+        missing = x.missing()
+        if not missing:
+            continue
+        lines.append(f"  • {x.title} ({x.enables.rstrip('.')}): missing {missing}.")
+        targets.append(x.target)
+    if installing and not lines:
+        return [f"  Installing in the background: {', '.join(installing)}."]
+    if installing:
+        lines.insert(0, f"  Installing in the background: {', '.join(installing)}.")
+    if targets:
         lines.append(f"  Install everything with:  {INSTALL_CMD}")
-        lines.append(f"  (or one at a time: {INSTALL_CMD} --browser / --latex; --dry-run shows the plan)")
+        lines.append(f"  (or one at a time: {INSTALL_CMD} {' / '.join(targets)}; --dry-run shows the plan)")
+        lines.append("  Opted-in extras that go missing after an upgrade are re-installed at startup;")
+        lines.append("  the Settings page (System Information) can install the rest.")
     return lines
