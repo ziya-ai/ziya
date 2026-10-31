@@ -1261,6 +1261,14 @@ const MUIChatHistory = () => {
     level: number;
     target?: string;
   } | null>(null);
+  // True from the moment a drop begins until the next drag starts.  The
+  // move awaits before isDragging flips false, and during that await the
+  // still-attached mousemove/scroll handlers hold a stale closure in which
+  // isDragging is true and ghostElement is non-null, so a pointer move or
+  // the move's own re-render scrolling the list redrew the "Drop inside
+  // folder" highlight after the drop.  A ref is read live, not from the
+  // closure, so the handlers can see the drop has already happened.
+  const dragSettlingRef = useRef(false);
 
   // Custom drag state to replace HTML5 drag and drop
   const [customDragState, setCustomDragState] = useState<{
@@ -1755,6 +1763,7 @@ const MUIChatHistory = () => {
       existingGhost.remove();
     }
 
+    dragSettlingRef.current = false;
     setCustomDragState({
       isDragging: true,
       draggedNodeId: nodeId,
@@ -1769,6 +1778,7 @@ const MUIChatHistory = () => {
 
   const endCustomDrag = useCallback(async (dropTargetId?: string | undefined, insertionContext?: { type: string; targetNodeId?: string }) => {
     if (!customDragState.isDragging || !customDragState.draggedNodeId) return;
+    dragSettlingRef.current = true;
     // Clear all visual feedback
     document.querySelectorAll<HTMLElement>('[data-node-id]').forEach((item) => {
       if (item instanceof HTMLElement) {
@@ -1874,6 +1884,8 @@ const MUIChatHistory = () => {
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!customDragState.isDragging || !customDragState.ghostElement) return;
+      // The drop has started; nothing may be drawn after it.
+      if (dragSettlingRef.current) return;
 
             lastMousePos.x = e.clientX;
             lastMousePos.y = e.clientY;
@@ -2147,13 +2159,16 @@ const MUIChatHistory = () => {
                     clientY: lastMousePos.y,
                     target,
                 } as unknown as MouseEvent);
-            };
-            treeEl?.addEventListener('scroll', handleScroll, { passive: true });
-
-      return () => {
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
+               
+
                 treeEl?.removeEventListener('scroll', handleScroll);
+        // Backstop: a drop-position line drawn by a stale handler between
+        // endCustomDrag's final sweep and this teardown has no other owner,
+        // so it would otherwise stay on screen until the next drag.
+        document.querySelectorAll<HTMLElement>('.drop-insertion-line')
+          .forEach(el => el.remove());
       };
     }
   }, [customDragState, endCustomDrag, folders, conversations, pinnedFolders]);
