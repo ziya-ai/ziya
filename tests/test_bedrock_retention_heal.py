@@ -95,7 +95,7 @@ def test_lowered_switch_is_raised_and_call_retried(monkeypatch):
     events = _run(_provider(fake, {"required_data_retention_mode": "aws_review"}))
 
     assert calls == [{"required_mode": "aws_review", "region": "us-east-1",
-                      "profile_name": "shared"}]
+                      "profile_name": "shared", "assume_below": True}]
     assert fake.calls == 2
     assert not any(isinstance(e, ErrorEvent) for e in events)
     assert any(isinstance(e, StreamEnd) for e in events)

@@ -84,7 +84,12 @@ def _claim_retention_heal(profile: Optional[str], region: str) -> bool:
 
 def heal_retention_gate(model_config: Dict[str, Any], region: str,
                         profile: Optional[str]) -> tuple:
-    """Raise the classic account switch for this model.  Returns (ok, err)."""
+    """Raise the classic account switch for this model.  Returns (ok, err).
+
+    Only called after the model rejected a call with the retention gate
+    error, so the switch is known to be below the required mode.  A role
+    that may PUT but not GET the switch must still get the write.
+    """
     from app.utils.aws_utils import ensure_bedrock_data_retention_mode
     mode = required_retention_for(model_config)
     logger.warning(
@@ -92,7 +97,7 @@ def heal_retention_gate(model_config: Dict[str, Any], region: str,
         f"after this session started; raising it back to '{mode}'"
     )
     return ensure_bedrock_data_retention_mode(
-        required_mode=mode, region=region, profile_name=profile,
+        required_mode=mode, region=region, profile_name=profile, assume_below=True,
     )
 
 
