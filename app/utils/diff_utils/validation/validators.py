@@ -874,9 +874,9 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     return _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace)
 
 def _is_valid_hunk_header(hunk: Dict[str, Any]) -> bool:
-    """Check if the hunk header is valid."""
+    """Check if the hunk header is valid.  Counts are optional ("@@ -63 +63 @@")."""
     if 'header' in hunk and '@@ -' in hunk['header']:
-        header_match = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@', hunk['header'])
+        header_match = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', hunk['header'])
         if not header_match:
             logger.warning(f"Malformed hunk header: {hunk['header']}")
             return False
