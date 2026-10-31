@@ -80,6 +80,52 @@ def test_prompt_has_stacked_chart_and_back_to_back_rule():
     assert "vconcat" in dblock and "back to back" in dblock
 
 
+def test_prompt_export_uses_env_port_not_literal_6969():
+    """Attribution (2026-10-14, netscan lc-s9): a task-card stage followed
+    the skill's literal `localhost:6969` curl, got a non-200 from a port
+    nothing listened on, declared the export server unreachable and fell
+    back to pandoc — while the real server (port 1999/1989) answered %PDF
+    the whole time.  The skill must point at $ZIYA_PORT, require a %PDF
+    check, and forbid concluding "unreachable" from a single probe."""
+    p = _prompt()
+    i = p.index("5. To render a PDF")
+    block = p[i:p.index("\n6. ", i)]
+    assert "localhost:$ZIYA_PORT/api/export/document" in block
+    assert "6969" not in block, "a literal default port is what the stage copied"
+    assert "%PDF" in block
+    assert "lsof" in block
+    # "Unreachable" needs every discovered port tried, not one failed probe.
+    assert "every discovered port" in block
+    assert "single failed probe" in block
+    assert "pandoc" in block  # the fallback is named so it can be forbidden
+
+
+def test_server_exports_its_port_as_ZIYA_PORT(monkeypatch):
+    """Seam: the skill tells the model $ZIYA_PORT is in the shell tool's
+    environment.  main.py must actually publish the bound port there (and
+    not leave the registry default), or the recipe silently reverts to
+    6969 on every non-default server."""
+    import os
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text()
+    assert 'os.environ["ZIYA_PORT"] = str(args.port)' in src
+    # And the shell tool inherits the process environment rather than a
+    # scrubbed one: a subprocess sees what the parent set.
+    import subprocess
+    monkeypatch.setenv("ZIYA_PORT", "4242")
+    out = subprocess.run(["sh", "-c", 'echo "$ZIYA_PORT"'], capture_output=True, text=True)
+    assert out.stdout.strip() == "4242"
+
+
+def test_docs_mirror_env_port_recipe():
+    d = _docs()
+    i = d.index("## Exporting")
+    block = d[i:i + 1600]
+    assert "${ZIYA_PORT:-6969}/api/export/document" in block
+    assert "head -c 5" in block and "%PDF" in block
+    assert "lsof" in block
+
+
 def test_prompt_has_list_blockquote_rule():
     """iter_008 (d013): a column-0 blockquote inside a list ends the list."""
     p = _prompt()

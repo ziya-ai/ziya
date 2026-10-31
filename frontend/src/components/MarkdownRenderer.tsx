@@ -4,18 +4,24 @@ import { lazyWithRetry } from '../utils/lazyWithRetry';
 import { marked, Tokens } from 'marked';
 import { isLatexFenceLang, latexProfileForLang } from '../constants/latexProfiles';
 import { Alert, Button, message, notification, Tooltip, Collapse } from 'antd';
-import { parseDiff, Diff, Hunk } from 'react-diff-view';
+import { parseDiff } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import { useActiveChat } from '../context/ActiveChatContext';
+import { useStreamedContent } from '../context/StreamedContentContext';
 import { parseToolCall, formatToolCallForDisplay } from '../utils/toolCallParser';
 import { removeThinkingTags } from '../utils/thinkingParser';
 import { THINKING_MARKER_RE } from '../utils/thinkingBlocks';
 import type { ThinkingBlockData } from '../utils/thinkingBlocks';import { useFolderContext } from '../context/FolderContext';
 import {
     SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
-    CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, UndoOutlined
+    CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, UndoOutlined, DownloadOutlined,
+    ExpandAltOutlined, ShrinkOutlined
 } from '@ant-design/icons';
+import {
+    INLINE_FULL_MAX_BYTES, changedSinceShown, countLines, downloadDocument,
+    fetchWholeDocument, fullDocumentMarkdown, isPartialDocument,
+} from '../utils/documentDownload';
 import { loadPrismLanguage, type PrismStatic } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
 import { sanitizeModelHtml, sanitizeMathMl } from '../utils/domSanitize';
@@ -28,7 +34,7 @@ import { blockquoteTheme } from '../utils/blockquoteTheme';
 import { repairNearMissTableSeparator } from '../utils/tableSeparatorRepair';
 import { DraggableTable } from './DraggableTable';
 import { FailedHunkList } from './FailedHunkList';
-import { FileDragChip, filePathFromHeader } from './FileDragChip';
+import { FileDragChip, FileDragIcon, filePathFromHeader } from './FileDragChip';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
 // D-014: horizontal-overflow affordances for markdown sub-surfaces (long code
@@ -582,30 +588,106 @@ const ToolDiffPreview: React.FC<{ diff: string; isDarkMode: boolean }> = ({ diff
 /**
  * A file shown with show_document: rendered markdown, expanded, under a
  * caption naming the path, line range, size and SHA-256.  The model never
- * saw this text (app/utils/show_document.py).
+ * saw this text (app/utils/show_document.py).  Download saves the whole
+ * file; a partial range can be expanded to the whole file in place.  Both
+ * read the file as it is now (utils/documentDownload.ts).
  */
 const DocumentBlock: React.FC<{ content: string; isDarkMode: boolean; header: string }> = ({
     content, isDarkMode, header,
 }) => {
     const { fields, body } = parseDocumentCaption(content);
-    const meta = [
+    const partial = isPartialDocument(fields);
+    const [full, setFull] = useState<{ markdown: string; lines: number; bytes: number; changed: boolean } | null>(null);
+    const [showFull, setShowFull] = useState(false);
+    const [loadingFull, setLoadingFull] = useState(false);
+    const [downloading, setDownloading] = useState(false);
+
+    const toggleFull = async () => {
+        if (showFull) { setShowFull(false); return; }
+        if (full) { setShowFull(true); return; }
+        if (!fields.path) return;
+        setLoadingFull(true);
+        try {
+            const doc = await fetchWholeDocument(fields.path);
+            if (doc.bytes.length > INLINE_FULL_MAX_BYTES) {
+                message.warning(`${fields.path} is ${doc.bytes.length.toLocaleString()} bytes, too large to show inline; use Download.`);
+                return;
+            }
+            setFull({
+                markdown: fullDocumentMarkdown(doc.text, body),
+                lines: countLines(doc.text),
+                bytes: doc.bytes.length,
+                changed: changedSinceShown(doc, fields),
+            });
+            setShowFull(true);
+        } catch (e) {
+            message.error(`Could not read ${fields.path}: ${e instanceof Error ? e.message : String(e)}`);
+        } finally {
+            setLoadingFull(false);
+        }
+    };
+
+    const onDownload = async () => {
+        setDownloading(true);
+        try {
+            const r = await downloadDocument(body, fields);
+            if (r.kind === 'changed') {
+                message.info('The file changed since it was shown; downloaded its current contents.');
+            } else if (r.kind === 'shown' && r.reason) {
+                message.warning(`Could not read ${fields.path} (${r.reason}); downloaded the shown ${partial ? 'lines' : 'text'} instead.`);
+            }
+        } finally {
+            setDownloading(false);
+        }
+    };
+
+    const meta = showFull && full ? [
+        `whole file, ${full.lines.toLocaleString()} lines`,
+        `${full.bytes.toLocaleString()} bytes`,
+    ].join(' · ') : [
         fields.lines && fields.total_lines ? `lines ${fields.lines} of ${fields.total_lines}` : '',
         fields.bytes ? `${Number(fields.bytes).toLocaleString()} bytes` : '',
         fields.sha256 ? `sha256 ${fields.sha256.slice(0, 12)}` : '',
     ].filter(Boolean).join(' · ');
+    const toggleLabel = showFull ? `Show lines ${fields.lines}` : 'Show whole file';
     return (
-        <div className="show-document" data-testid="show-document" style={{
+        <div className="show-document" data-testid="show-document" data-showing={showFull ? 'full' : 'shown'} style={{
             border: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`,
             borderRadius: 6, margin: '8px 0',
         }}>
             <div style={{
                 padding: '4px 10px', fontSize: 12, opacity: 0.85,
                 borderBottom: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`,
+                display: 'flex', alignItems: 'center', gap: 4,
             }}>
-                📄 <strong>{fields.path || header}</strong>{meta ? ` — ${meta}` : ''}
+                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {fields.path ? <FileDragIcon path={fields.path} /> : '📄 '}
+                    <strong>{fields.path || header}</strong>{meta ? ` — ${meta}` : ''}
+                </span>
+                <span style={{ marginLeft: 'auto', flexShrink: 0, display: 'flex', gap: 2 }}>
+                    {partial && fields.path && (
+                        <Button type="text" size="small" aria-label={toggleLabel}
+                            data-testid="show-document-toggle" loading={loadingFull}
+                            icon={showFull ? <ShrinkOutlined /> : <ExpandAltOutlined />}
+                            onClick={() => { void toggleFull(); }}>
+                            {toggleLabel}
+                        </Button>
+                    )}
+                    <Tooltip title={fields.path ? 'Download the whole file as it is on disk now' : 'Download the shown text'}>
+                        <Button type="text" size="small" icon={<DownloadOutlined />}
+                            aria-label="Download file" data-testid="show-document-download"
+                            loading={downloading} onClick={() => { void onDownload(); }} />
+                    </Tooltip>
+                </span>
             </div>
+            {showFull && full?.changed && (
+                <div data-testid="show-document-changed" style={{ padding: '4px 12px', fontSize: 12, color: '#d48806' }}>
+                    ⚠ This file has changed since it was shown; this is its current contents.
+                </div>
+            )}
             <div style={{ padding: '4px 12px' }}>
-                <MarkdownRenderer markdown={body} enableCodeApply={false} isStreaming={false} isSubRender={true} />
+                <MarkdownRenderer markdown={showFull && full ? full.markdown : body}
+                    enableCodeApply={false} isStreaming={false} isSubRender={true} />
             </div>
         </div>
     );
