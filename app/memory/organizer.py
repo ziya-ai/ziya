@@ -278,6 +278,37 @@ async def cluster_memories(
         return []
 
 
+def _salvage_json_array(raw: str) -> List[Any]:
+    """Complete elements of a JSON array whose tail was cut off.
+
+    A relation reply that hits max_tokens ends mid-string; json.loads then
+    rejects the whole array and every relation before the cut is lost.
+    Decode element by element and stop at the first one that is incomplete.
+    """
+    start = raw.find("[")
+    if start < 0:
+        return []
+    decoder = json.JSONDecoder()
+    out: List[Any] = []
+    i, n = start + 1, len(raw)
+    while i < n:
+        while i < n and raw[i] in " \t\r\n,":
+            i += 1
+        if i >= n or raw[i] == "]":
+            break
+        try:
+            obj, i = decoder.raw_decode(raw, i)
+        except json.JSONDecodeError:
+            break
+        out.append(obj)
+    return out
+
+
+# Each relation is ~70 chars of token-dense ids; at 1024 tokens a reply was
+# cut off after ~29 relations, which a 20-memory batch routinely exceeds.
+RELATION_MAX_TOKENS = 4096
+
+
 async def extract_relations(
     memories: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -302,7 +333,7 @@ async def extract_relations(
             category="memory_organization",
             system_prompt=RELATION_SYSTEM_PROMPT,
             user_message=user_msg,
-            max_tokens=1024,
+            max_tokens=RELATION_MAX_TOKENS,
             temperature=0.2,
         )
 
@@ -310,7 +341,16 @@ async def extract_relations(
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-        relations = json.loads(raw)
+        try:
+            relations = json.loads(raw)
+        except json.JSONDecodeError as e:
+            relations = _salvage_json_array(raw)
+            if not relations:
+                raise
+            logger.warning(
+                f"Relation extraction: reply truncated ({e}); "
+                f"kept {len(relations)} complete relations"
+            )
         if not isinstance(relations, list):
             return []
 
