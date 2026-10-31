@@ -4,6 +4,7 @@ Precision prompt system that achieves 100% equivalence with original Ziya prompt
 """
 
 import os
+import re
 import logging
 import sys
 from typing import Dict, List, Any
@@ -68,37 +69,15 @@ class PrecisionPromptSystem:
                 context=context
             )
             
-            # Format the prompt with file context
-            # Escape curly braces but preserve template literals like ${variable}
-            import re
-            def escape_braces_preserve_template_literals(text):
-                if not text or '{{' in text or '}}' in text:
-                    return text
-                # Temporarily replace template literals with placeholders
-                placeholders = []
-                def save_template(match):
-                    placeholders.append(match.group(0))
-                    return f'__TEMPLATE_{len(placeholders)-1}__'
-                
-                # Save template literals
-                text = re.sub(r'\$\{[^}]*\}', save_template, text)
-                
-                # Escape remaining braces
-                text = text.replace('{', '{{').replace('}', '}}')
-                
-                # Restore template literals — but escape their inner braces too,
-                # because Python's str.format() will still interpret {var} inside ${var}.
-                for i, placeholder_text in enumerate(placeholders):
-                    escaped_placeholder = placeholder_text.replace('{', '{{').replace('}', '}}')
-                    text = text.replace(f'__TEMPLATE_{i}__', escaped_placeholder)
-                
-                return text
-            
-            # Don't escape question - it's user input, not a template
-            safe_codebase = escape_braces_preserve_template_literals(file_context) if file_context else ""
-            
+            # Format the prompt with file context.  The codebase is substituted
+            # as the {codebase} VARIABLE of the template, and str.format() never
+            # re-parses a substituted value, so its braces must not be escaped.
+            # An earlier version doubled every '{' here (skipped only when some
+            # file already contained a '{{'), which sent the model '{{a,b}}'
+            # and '${{x}}' for source that actually read '{a,b}' and '${x}' --
+            # intermittently, depending on which other files were in context.
             formatted_messages = extended_prompt.format_messages(
-                codebase=safe_codebase,
+                codebase=file_context if file_context else "",
                 tools="",  # Tools are handled natively
                 question=question if question else ""
             )
