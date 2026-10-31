@@ -107,6 +107,48 @@ export async function fetchChatTurnStatus(conversationId: string): Promise<ChatT
   }
 }
 
+/** Every turn the relay holds (GET /api/chat/turns); [] on any failure. */
+export async function fetchChatTurnStatuses(): Promise<ChatTurnStatus[]> {
+  try {
+    const res = await fetch('/api/chat/turns');
+    if (!res.ok) return [];
+    const body = (await res.json()) as { turns?: unknown } | null;
+    return Array.isArray(body?.turns) ? (body!.turns as ChatTurnStatus[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export interface ReattachCandidate {
+  status: ChatTurnStatus;
+  messages: Message[];
+}
+
+/**
+ * Turns the reload sweep should consider: those for conversations this tab
+ * knows about, other than the one it is showing (the per-conversation path
+ * owns that one).  Each candidate still has to pass decideReattach.
+ *
+ * A background conversation is usually a shell (first + last message), and
+ * the last message is all decideReattach reads.
+ */
+export function backgroundReattachCandidates(
+  statuses: ReadonlyArray<ChatTurnStatus>,
+  currentConversationId: string | null | undefined,
+  conversations: ReadonlyArray<{ id: string; messages: Message[] }>,
+): ReattachCandidate[] {
+  const byId = new Map(conversations.map(c => [c.id, c]));
+  const out: ReattachCandidate[] = [];
+  for (const s of statuses) {
+    if (!s || !s.turn_id || !s.conversation_id) continue;
+    if (s.conversation_id === currentConversationId) continue;
+    const conv = byId.get(s.conversation_id);
+    if (!conv) continue;
+    out.push({ status: s, messages: conv.messages || [] });
+  }
+  return out;
+}
+
 /**
  * Ask the other tabs in this browser whether one of them owns the turn.
  * Resolves after ``waitMs``; the caller re-reads its streaming set, which
