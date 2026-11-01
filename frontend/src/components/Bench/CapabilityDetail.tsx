@@ -130,6 +130,42 @@ export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClos
                 <button type="button" data-testid="detail-close" aria-label="Close details" onClick={onClose}
                         style={{ ...linkBtn, marginLeft: 'auto', textDecoration: 'none', fontSize: 14 }}>✕</button>
             </div>
+            {/* The gate comes first: the placement, provenance and tool sections below can run long, and the action it asks for must not sit under them. */}
+            {gate && (
+                <section data-testid="detail-gate" style={{ marginTop: 10, padding: 8, borderRadius: 6, border: '1px solid #d4380d',
+                                                           background: 'rgba(212,56,13,0.06)' }}>
+                    <div style={{ ...label, color: '#d4380d', opacity: 1, margin: '0 0 4px' }}>⛔ DEFINITIONS CHANGED · NOT SENT</div>
+                    <div>{gate.reason}</div>
+                    <div style={{ ...muted, marginTop: 2 }}>
+                        The card keeps its place; none of its tools reach the model until you accept the new definitions.
+                    </div>
+                    {refusal && (
+                        <div data-testid="detail-gate-refusal" style={{ marginTop: 6 }}>
+                            <div style={{ color: '#d4380d' }}>{refusal.message ?? 'Re-authorization refused'}</div>
+                            {Object.entries(refusal.blocking_tools ?? {}).map(([tool, warns]) => (
+                                <div key={tool} style={{ fontFamily: 'monospace', fontSize: 10 }}><b>{tool}</b>: {warns.join('; ')}</div>
+                            ))}
+                            {Object.keys(refusal.advisory_tools ?? {}).length > 0 && (
+                                <div style={{ ...muted, fontSize: 10 }}>advisory only: {Object.keys(refusal.advisory_tools!).join(', ')}</div>
+                            )}
+                            <div style={{ ...muted, fontSize: 10, marginTop: 2 }}>Override only if you have read these descriptions and trust this server.</div>
+                        </div>
+                    )}
+                    {onReauthorize && (
+                        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                            {!refusal?.can_force ? (
+                                <button type="button" data-testid="detail-reauthorize" onClick={() => void reauthorize(false)}
+                                        style={{ fontSize: 11, padding: '2px 10px', borderRadius: 5, cursor: 'pointer', color: '#fff',
+                                                 background: '#d4380d', border: '1px solid #d4380d' }}>Re-authorize</button>
+                            ) : (
+                                <button type="button" data-testid="detail-reauthorize-force" onClick={() => void reauthorize(true)}
+                                        style={{ fontSize: 11, padding: '2px 10px', borderRadius: 5, cursor: 'pointer', color: '#d4380d',
+                                                 background: 'none', border: '1px solid #d4380d' }}>Re-authorize anyway</button>
+                            )}
+                        </div>
+                    )}
+                </section>
+            )}
             {d?.description && <div style={{ opacity: 0.8, marginTop: 6 }}>{d.description}</div>}
 
             <div style={label}>WHERE IT SITS</div>
@@ -183,42 +219,6 @@ export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClos
                         copy path
                     </button>
                 </div>
-            )}
-
-            {gate && (
-                <section data-testid="detail-gate" style={{ marginTop: 10, padding: 8, borderRadius: 6, border: '1px solid #d4380d',
-                                                           background: 'rgba(212,56,13,0.06)' }}>
-                    <div style={{ ...label, color: '#d4380d', opacity: 1, margin: '0 0 4px' }}>⛔ DEFINITIONS CHANGED · NOT SENT</div>
-                    <div>{gate.reason}</div>
-                    <div style={{ ...muted, marginTop: 2 }}>
-                        The card keeps its place; none of its tools reach the model until you accept the new definitions.
-                    </div>
-                    {refusal && (
-                        <div data-testid="detail-gate-refusal" style={{ marginTop: 6 }}>
-                            <div style={{ color: '#d4380d' }}>{refusal.message ?? 'Re-authorization refused'}</div>
-                            {Object.entries(refusal.blocking_tools ?? {}).map(([tool, warns]) => (
-                                <div key={tool} style={{ fontFamily: 'monospace', fontSize: 10 }}><b>{tool}</b>: {warns.join('; ')}</div>
-                            ))}
-                            {Object.keys(refusal.advisory_tools ?? {}).length > 0 && (
-                                <div style={{ ...muted, fontSize: 10 }}>advisory only: {Object.keys(refusal.advisory_tools!).join(', ')}</div>
-                            )}
-                            <div style={{ ...muted, fontSize: 10, marginTop: 2 }}>Override only if you have read these descriptions and trust this server.</div>
-                        </div>
-                    )}
-                    {onReauthorize && (
-                        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                            {!refusal?.can_force ? (
-                                <button type="button" data-testid="detail-reauthorize" onClick={() => void reauthorize(false)}
-                                        style={{ fontSize: 11, padding: '2px 10px', borderRadius: 5, cursor: 'pointer', color: '#fff',
-                                                 background: '#d4380d', border: '1px solid #d4380d' }}>Re-authorize</button>
-                            ) : (
-                                <button type="button" data-testid="detail-reauthorize-force" onClick={() => void reauthorize(true)}
-                                        style={{ fontSize: 11, padding: '2px 10px', borderRadius: 5, cursor: 'pointer', color: '#d4380d',
-                                                 background: 'none', border: '1px solid #d4380d' }}>Re-authorize anyway</button>
-                            )}
-                        </div>
-                    )}
-                </section>
             )}
 
             {detail && (

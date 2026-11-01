@@ -8,6 +8,7 @@ import React, { useState } from 'react';
 import type { BenchItemDetail, BenchItemView, FindResponse, ReauthorizeResult, TokenFlash } from '../../hooks/useBench';
 import type { Layer, PlacementState } from '../../utils/activation';
 import type { Attention } from '../../utils/headerAttention';
+import { attentionButtonStyle, attentionTooltip } from '../../utils/headerAttention';
 import { useBenchActions } from './BenchActions';
 import { BenchBoard } from './BenchBoard';
 import { BenchFind } from './BenchFind';
@@ -44,11 +45,14 @@ export interface BenchPanelProps {
     bench: BenchPanelModel;
     shellAttention?: Attention;
     onOpenShellConfig?: () => void;
+    /** MCP config / quarantine / connection attention from useHeaderAttention;
+     *  drawn on the "MCP servers" button, the way in to the panel that explains it. */
+    mcpAttention?: Attention;
     /** Shows a "⌘K" affordance beside the lens strip. */
     onOpenPalette?: () => void;
 }
 
-export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, onOpenShellConfig, onOpenPalette }) => {
+export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, onOpenShellConfig, mcpAttention, onOpenPalette }) => {
     const { openRegistry, openMcpServers } = useBenchActions();
     const [selectedKey, setSelectedKey] = useState<string | null>(null);
     // arrange = the board; find = a query to the sources (slice 8b).
@@ -128,10 +132,12 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
                         way in. */}
                     {openMcpServers && (
                         <button type="button" data-testid="bench-mcp-servers" onClick={() => openMcpServers()}
-                                title="Status, startup logs and permissions for every configured server; Reload Config re-reads mcp_config.json and reconnects"
+                                data-attention={mcpAttention?.level ?? 'none'}
+                                title={attentionTooltip('Status, startup logs and permissions for every configured server; Reload Config re-reads mcp_config.json and reconnects', mcpAttention ?? { level: 'none', reasons: [] })}
                                 style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6,
                                          cursor: 'pointer', color: 'inherit', background: 'none',
-                                         border: '1px solid var(--mockup-border, rgba(127,127,127,0.35))' }}>
+                                         border: '1px solid var(--mockup-border, rgba(127,127,127,0.35))',
+                                         ...attentionButtonStyle(mcpAttention?.level ?? 'none') }}>
                             ⚙ <b>MCP servers</b> <span style={{ opacity: 0.6 }}>· status, logs, reload config</span>
                         </button>
                     )}
