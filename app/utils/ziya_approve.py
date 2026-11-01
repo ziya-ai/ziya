@@ -63,6 +63,11 @@ def _provision(force: bool) -> int:
         /etc/ziya/approve_ed25519.pub    root:root 0644  (public  — verifier)
         /etc/sudoers.d/ziya-approve      0440            (timestamp_timeout=0)
     """
+    if not hasattr(os, "geteuid"):
+        # Provisioning writes /etc/ziya and a sudoers drop-in; there is
+        # nothing to integrate with on Windows.
+        sys.stderr.write("--provision is only available on POSIX systems\n")
+        return 2
     if os.geteuid() != 0:
         sys.stderr.write("--provision must run as root: sudo ziya-approve --provision\n")
         return 2
