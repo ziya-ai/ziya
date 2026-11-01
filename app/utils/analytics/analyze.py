@@ -58,6 +58,9 @@ def _resolve_inputs(
                 raise ValueError(f"Input {alias!r}: unknown dataset {ref}.") from None
             entry: Dict[str, Any] = {"alias": alias, "id": ref}
         else:
+            # ``path#member`` reads one array-of-objects member of a JSON
+            # object (dotted keys allowed); see dataset_store.
+            ref, _, record_path = ref.partition("#")
             try:
                 path = resolve_path(ref)
             except ValueError:
@@ -67,11 +70,14 @@ def _resolve_inputs(
             # A path input becomes a dataset first, so it has an id and a
             # describe, and its lineage entry names a stored file.
             try:
-                reg = ds.register_dataset(path=path, project_root=project_root,
+                reg = ds.register_dataset(path=path, record_path=record_path or None,
+                                          project_root=project_root,
                                           conversation_id=conversation_id)
             except ds.DatasetError as e:
                 raise ValueError(f"Input {alias!r}: {e}") from None
             entry = {"alias": alias, "id": reg["id"], "path": str(path)}
+            if record_path:
+                entry["record_path"] = record_path
         ds.ensure_parquet(entry["id"])
         files[alias] = ds.data_file(entry["id"])
         entry["sha256"] = ds.load_meta(entry["id"]).get("sha256")
@@ -211,10 +217,16 @@ def tool_description() -> str:
     from .primitives import DESCRIPTIONS
     lines = "\n".join(f"- {d}" for d in DESCRIPTIONS.values())
     return (
+        "USE THIS whenever you would otherwise write a python3/json script to "
+        "count, group, join, dedupe or aggregate records that are in a file or a "
+        "prior tool result — it is faster, leaves a verifiable trail, and does "
+        "not fill .ziya/ with derived JSON. "
         "Run one read-only SQL query (DuckDB dialect: SELECT or WITH … SELECT) over "
         "registered datasets and data files. Address a dataset by its id "
         "(FROM ds_…) or give inputs as {alias: ds_id or file path} (Parquet, CSV, "
-        "TSV, JSON, JSONL). The result is stored as a new dataset with its SQL and "
+        "TSV, JSON, JSONL; a JSON object of objects becomes rows keyed by _key, "
+        "and 'path#member' reads one array member of a JSON object). The result "
+        "is stored as a new dataset with its SQL and "
         "inputs recorded, and returned as its describe plus the rows when small. "
         "When the result has one entity column (*_id, entity*, device*, host*, or "
         "entity=…), a per-entity distribution of each numeric column comes back "
