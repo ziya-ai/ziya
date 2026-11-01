@@ -17,7 +17,7 @@ import {
   sectionContentHeight, SECTION_LABEL_LINE_H,
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
-import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
+import { addDiagramActions, diagramSourceText } from './diagramActions';
 import JSON5 from 'json5';
 import {
   collapseUniformDoubleBraces,
@@ -733,136 +733,23 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
   // Bottom ruler
   drawRuler(y);
 
-  // ── Interactive controls (source toggle + export), matching other plugins ──
+  // Open / Source / Save come from the shared helper; the Theme toggle
+  // (re-render in the opposite mode) is packet-specific and rides along.
   const svgNode = svg.node() as SVGSVGElement;
-  const sourceStr = typeof rawSpec === 'string' ? rawSpec
-    : typeof rawSpec?.definition === 'string' ? rawSpec.definition
-    : JSON.stringify(rawSpec, null, 2);
-
-  const actionsContainer = document.createElement('div');
-  actionsContainer.className = 'diagram-actions';
-
-  // Open: pop the diagram out into a standalone, zoomable window.
-  const openButton = document.createElement('button');
-  openButton.innerHTML = '↗️ Open';
-  openButton.className = 'diagram-action-button packet-open-button';
-  openButton.onclick = () => {
-    const svgData = new XMLSerializer().serializeToString(svgNode);
-    const winW = Math.max(width + 50, 400);
-    const winH = Math.max(height + 100, 300);
-    const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>Packet Diagram</title>
-  <style>
-    body { margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh;
-      background-color: ${isDarkMode ? '#1e1e1e' : '#f8f9fa'};
-      font-family: system-ui, -apple-system, sans-serif; }
-    .toolbar { background-color: ${isDarkMode ? '#343a40' : '#f1f3f5'};
-      border-bottom: 1px solid ${isDarkMode ? '#495057' : '#dee2e6'};
-      padding: 8px; display: flex; justify-content: space-between; align-items: center; }
-    .toolbar button { background-color: #4361ee; color: white; border: none; border-radius: 4px;
-      padding: 6px 12px; cursor: pointer; margin-right: 8px; font-size: 14px; }
-    .toolbar button:hover { background-color: #3a0ca3; }
-    .container { flex: 1; display: flex; justify-content: center; align-items: center;
-      overflow: auto; padding: 20px; }
-    svg { max-width: 100%; max-height: 100%; height: auto; width: auto; }
-  </style>
-</head>
-<body>
-  <div class="toolbar">
-    <div>
-      <button onclick="zoomIn()">Zoom In</button>
-      <button onclick="zoomOut()">Zoom Out</button>
-      <button onclick="resetZoom()">Reset</button>
-    </div>
-    <div><button onclick="downloadSvg()">Download SVG</button></div>
-  </div>
-  <div class="container" id="svg-container">${svgData}</div>
-  <script>
-    document.querySelector('svg').setAttribute('preserveAspectRatio', 'xMidYMid meet');
-    ${getZoomScript()}${getDownloadSvgScript(`packet-diagram-${Date.now()}.svg`)}
-  </script>
-</body>
-</html>`;
-    const blob = new Blob([htmlContent], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const popupWindow = window.open(
-      url, 'PacketDiagram',
-      `width=${winW},height=${winH},resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no`
-    );
-    if (popupWindow) popupWindow.focus();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-  };
-  actionsContainer.appendChild(openButton);
-
-  // Source toggle: swap the rendered SVG for its raw definition and back.
-  let showingSource = false;
-  const sourcePre = document.createElement('pre');
-  sourcePre.style.cssText = `
-    display: none;
-    margin: 0;
-    padding: 16px;
-    background: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
-    border: 1px solid ${isDarkMode ? '#303030' : '#e1e4e8'};
-    border-radius: 6px;
-    color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
-    font: 13px Monaco, Menlo, "Ubuntu Mono", monospace;
-    line-height: 1.45;
-    white-space: pre-wrap;
-    word-break: break-word;
-    max-height: 500px;
-    overflow: auto;
-    width: 100%;
-    box-sizing: border-box;
-  `;
-  sourcePre.innerHTML = `<code>${escapeXml(sourceStr)}</code>`;
-  container.appendChild(sourcePre);
-
-  const sourceButton = document.createElement('button');
-  sourceButton.innerHTML = '📝 Source';
-  sourceButton.className = 'diagram-action-button packet-source-button';
-  sourceButton.onclick = () => {
-    showingSource = !showingSource;
-    sourceButton.innerHTML = showingSource ? '🎨 View' : '📝 Source';
-    svgNode.style.display = showingSource ? 'none' : '';
-    sourcePre.style.display = showingSource ? 'block' : 'none';
-  };
-  actionsContainer.appendChild(sourceButton);
-
-  // Save / export the rendered diagram as a standalone SVG file.
-  const saveButton = document.createElement('button');
-  saveButton.innerHTML = '💾 Save';
-  saveButton.className = 'diagram-action-button packet-save-button';
-  saveButton.onclick = () => {
-    const svgData = new XMLSerializer().serializeToString(svgNode);
-    const svgDoc = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-${svgData}`;
-    const blob = new Blob([svgDoc], { type: 'image/svg+xml' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `packet-diagram-${Date.now()}.svg`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-  actionsContainer.appendChild(saveButton);
-
-  // Theme: re-render the diagram with the opposite light/dark mode.
   const themeButton = document.createElement('button');
-  themeButton.innerHTML = isDarkMode ? '☀️ Light' : '🌙 Dark';
+  themeButton.textContent = isDarkMode ? '☀️ Light' : '🌙 Dark';
   themeButton.className = 'diagram-action-button packet-theme-button';
   themeButton.onclick = () => {
     render(container, d3, rawSpec, !isDarkMode);
   };
-  actionsContainer.appendChild(themeButton);
-
-  container.appendChild(actionsContainer);
+  addDiagramActions(container, {
+    view: svgNode,
+    source: diagramSourceText(rawSpec),
+    title: 'Packet Diagram',
+    filenameBase: 'packet-diagram',
+    isDarkMode,
+    extraButtons: [themeButton],
+  });
 }
 
 export const packetPlugin: D3RenderPlugin = {

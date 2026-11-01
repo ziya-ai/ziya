@@ -2131,16 +2131,16 @@ body:not(.dark) .token.attr-name {
 }
 
 /* Diagram Action Buttons Styling */
+/* One rule set for every plugin's Open / Source / Save cluster (the shared
+   plugins/d3/diagramActions.ts and the inline copies in mermaid, graphviz,
+   vega, drawio).  Hidden until the diagram is hovered. */
 .diagram-actions {
     position: absolute;
-    top: 0;
-    right: 0;
+    top: 8px;
+    right: 8px;
     z-index: 10; /* Ensure it's above the SVG */
     display: flex;
-    gap: 5px;
-    background: rgba(240, 240, 240, 0.7); /* Light background for visibility */
-    padding: 3px;
-    border-radius: 4px;
+    gap: 4px;
     opacity: 0; /* Hidden by default */
     transition: opacity 0.2s ease-in-out;
 }
@@ -2150,15 +2150,12 @@ body:not(.dark) .token.attr-name {
 }
 
 .diagram-action-button {
-    padding: 3px 8px;
-    font-size: 10px;
-    line-height: 16px;
-    background-color: rgba(200, 200, 200, 0.7);
-    border: none;
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid #ccc;
     border-radius: 4px;
     cursor: pointer;
     transition: opacity 0.2s ease-in-out;
-    opacity: 0.8;
 }
 
 .diagram-action-button:hover {
@@ -2167,14 +2164,10 @@ body:not(.dark) .token.attr-name {
     opacity: 1;
 }
 
-.dark .diagram-actions {
-    background: rgba(40, 40, 40, 0.8);
-}
-
 .dark .diagram-action-button {     
-    background-color: rgba(50, 50, 50, 0.7);
-    border-color: rgba(100, 100, 100, 0.8);
-    color: #ccc;
+    background: rgba(0, 0, 0, 0.7);
+    border-color: #444;
+    color: #fff;
 }
 
 .dark .diagram-action-button:hover {
@@ -2415,29 +2408,6 @@ body:not(.dark) .token.attr-name {
 .mermaid-container svg {
     max-width: 100% !important;
     height: auto !important;
-}
-
-.diagram-actions {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    z-index: 1;
-    display: flex;
-    gap: 4px;
-}
-
-.diagram-action-button {
-    padding: 4px 8px;
-    border-radius: 4px;
-    border: 1px solid #ccc;
-    background: rgba(255, 255, 255, 0.9);
-    cursor: pointer;
-}
-
-.dark .diagram-action-button {
-    background: rgba(0, 0, 0, 0.7);
-    border-color: #444;
-    color: #fff;
 }
 
 .message.muted {

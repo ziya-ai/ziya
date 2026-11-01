@@ -9,6 +9,7 @@
  *   { type: "force", nodes: [...], links: [...], style?: {...} }
  */
 import { D3RenderPlugin } from '../../types/d3';
+import { addDiagramActions, diagramSourceText } from './diagramActions';
 import {
   classifyColor,
   contrastRatio,
@@ -1684,6 +1685,15 @@ export const forceDirectedPlugin: D3RenderPlugin = {
     const labelVisible = selectVisibleLabels(declutterBoxes, discBoxes);
     labelText.attr('display', (_d: any, i: number) => (labelVisible[i] ? null : 'none'));
 
+    // Open / Source / Save, as on the other SVG plugins.  Guarded for the
+    // unit tests that drive this render with a mock d3 and a bare {} container.
+    const svgNode = typeof svg.node === 'function' ? svg.node() : null;
+    if (container instanceof HTMLElement && svgNode instanceof SVGElement) {
+      addDiagramActions(container, {
+        view: svgNode, source: diagramSourceText(rawSpec),
+        title: 'Force-Directed Graph', filenameBase: 'force-directed-graph', isDarkMode,
+      });
+    }
     // Cleanup function — stop simulation when component unmounts
     return () => {
       simulation.stop();
