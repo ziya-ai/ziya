@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * "n/m" progress for for_each loops — the dot strip's trailing count.
  *
  * The count after a loop row's iteration dots was the completed total
