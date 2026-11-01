@@ -291,7 +291,19 @@ correctly and the execution surface must enforce them.
 ### One iteration equals one pass through the body
 
 A Task block is the atomic unit of model invocation: one streamed
-conversation in, one Artifact out.  Larger structures produce
+conversation in, one Artifact out.  Its only ceilings are the
+executor's iteration count and, when the scope sets
+`time_budget_secs`, a wall clock: at the deadline the stream is cut
+off and one closing turn runs with every tool but `emit_artifact`
+withheld, so the task writes what it has (grace 10% of the budget,
+clamped to 60–300 s; overrunning the grace fails the block with
+signature `time_budget_exceeded`).  The budget merges as a MINIMUM
+across scope layers — a bound, not a grant — so set on a Parallel it
+applies to each lane.  A budget-stopped block is judged by its closing
+turn like any other and carries a `time_budget` record on its artifact
+and `task_finished` event; "it ran out of time" is not by itself a
+verdict.  (Item 7 of `design/job-runner.md`'s roadmap, built
+2026-10-23 after run 3f831376.)  Larger structures produce
 composite artifacts:
 
 - **Sequence** (implicit — stacked blocks in a body) — runs each
