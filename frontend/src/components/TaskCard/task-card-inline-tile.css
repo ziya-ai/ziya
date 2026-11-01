@@ -2148,3 +2148,27 @@ body:not(.dark) .tc-tile__iter--failed .tc-tile__iter-status { color: #cf222e; }
 .tc-tile__inspector-done--cancelled { color: #d29922; }
 /* Violet like the tile's held/paused treatment: stopped, not broken. */
 .tc-tile__inspector-done--held      { color: #8957e5; }
+
+/* Resources panel (RunResourcesPanel.tsx) */
+.tc-tile__resources { margin-top: 6px; }
+.tc-tile__resources-summary { cursor: pointer; user-select: none; }
+.tc-tile__resources-summary .tc-res__dim { text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.tc-res__dim { opacity: 0.65; font-size: 11px; }
+.tc-res__line { margin-top: 4px; line-height: 1.4; }
+.tc-res__table {
+  width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 11px;
+}
+.tc-res__table th {
+  text-align: right; font-weight: normal; opacity: 0.6; padding: 2px 4px;
+}
+.tc-res__table th:first-child, .tc-res__table td.tc-res__name { text-align: left; }
+.tc-res__table td { text-align: right; padding: 3px 4px; border-top: 1px solid rgba(128,128,128,0.15); }
+.tc-res__table td.tc-res__name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-res__row--container td { font-weight: 600; }
+.tc-res__badge {
+  margin-left: 6px; padding: 0 4px; border-radius: 3px; font-size: 9.5px; color: #fff;
+}
+.tc-res__badge--held { background: #8957e5; }
+.tc-res__files { margin-top: 6px; }
+.tc-res__files ul { margin: 4px 0 0 14px; padding: 0; font-size: 11px; }
+.tc-res__files code { font-size: 10.5px; }
