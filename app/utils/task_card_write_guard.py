@@ -60,7 +60,7 @@ def _normalize_scope(scope: Optional[Dict[str, Any]]) -> Optional[str]:
     meaningful = any(
         normalized.get(f) for f in (
             "paths", "tools", "skills", "shell_commands",
-            "shell_timeout_secs", "model_tier", "model_name",
+            "shell_timeout_secs", "time_budget_secs", "model_tier", "model_name",
             "model_id_override", "model_endpoint",
         )
     )
@@ -95,6 +95,9 @@ REMEDY = (
     "returned them.  To change a scope field, use the 'edits' parameter "
     "instead ({block_id, set: {'scope.<field>': value}}): it may set any "
     "TaskScope field and may narrow a grant, but may not widen one.  "
+    "The same parameter sets one State variable with "
+    "'state_variables.<name>' (null removes it), so no edit needs the "
+    "whole tree resent.  "
     "Grants (shell_commands, writable paths outside the safe-write floor) "
     "are authorized by a root-signed approval, not by the card file, so "
     "editing the deck file by other means gains nothing — ask the user to "
