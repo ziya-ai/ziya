@@ -254,7 +254,8 @@ def print_summary(index):
             print(f"      {p}")
 
 
-def triaged_paths(triage_dir, untracked=None, rejected=None):
+def triaged_paths(triage_dir, untracked=None, rejected=None,
+                  entry_ids=None, stale=None):
     """Paths that already carry a verdict in some ``batch-*.json``.
 
     With ``untracked`` (the index's untracked list), an ``exclude`` verdict on
@@ -264,10 +265,20 @@ def triaged_paths(triage_dir, untracked=None, rejected=None):
     verdict nothing would act on, so it was never re-batched and stayed dirty
     through every rerun (run cli-d1103758c5d8: 54 files).  Each such path is
     appended to ``rejected`` when given, so the caller can say why it is
-    back.  ``untracked=None`` (an index without the list) skips the check."""
+    back.  ``untracked=None`` (an index without the list) skips the check.
+
+    With ``entry_ids`` (the current index's entry ids), an ``assign`` verdict
+    naming an entry that is not among them does not count either: it was
+    written against an earlier Unreleased section (a prior release's batch,
+    or a batch made before CHANGELOG.md was rewritten), and the commit-plan
+    builder defers it.  Run cli-188224db41e6 (2026-10-31) deferred 69 paths
+    this way because they were never re-batched.  Such paths go to
+    ``stale`` when given.  ``entry_ids=None`` skips the check."""
     done = set()
     bad = set()
+    old = set()
     allowed_exclude = set(untracked) if untracked is not None else None
+    current = set(entry_ids) if entry_ids is not None else None
     if not os.path.isdir(triage_dir):
         return done
     for name in os.listdir(triage_dir):
@@ -286,10 +297,16 @@ def triaged_paths(triage_dir, untracked=None, rejected=None):
                         and v["path"] not in allowed_exclude):
                     bad.add(v["path"])
                     continue
+                if (v["disposition"] == "assign" and current is not None
+                        and v.get("entry_id") not in current):
+                    old.add(v["path"])
+                    continue
                 done.add(v["path"])
     # A later valid verdict for the same path wins over a rejected one.
     if rejected is not None:
         rejected.extend(sorted(bad - done))
+    if stale is not None:
+        stale.extend(sorted(old - done))
     return done
 
 
@@ -339,15 +356,23 @@ def main(argv=None):
             return 1
         unclaimed = list(index.get("unclaimed") or [])
         rejected = []
+        stale = []
+        entries = index.get("entries")
+        entry_ids = ([e.get("entry_id") for e in entries if isinstance(e, dict)]
+                     if isinstance(entries, list) else None)
         triaged = triaged_paths(absolute(args.triage_dir),
-                                index.get("untracked"), rejected)
+                                index.get("untracked"), rejected,
+                                entry_ids=entry_ids, stale=stale)
         batches = build_batches(unclaimed, triaged, max(1, args.size))
         json.dump({"batches": batches,
                    "pending": sum(len(b["paths"]) for b in batches),
                    "triaged": len([p for p in unclaimed if p in triaged]),
                    # Re-batched because their earlier verdict excluded a
                    # tracked modification, which is never a valid verdict.
-                   "rejected_excludes": [p for p in rejected if p in set(unclaimed)]},
+                   "rejected_excludes": [p for p in rejected if p in set(unclaimed)],
+                   # Re-batched because their earlier verdict assigned them
+                   # to an entry the current Unreleased section lacks.
+                   "stale_assigns": [p for p in stale if p in set(unclaimed)]},
                   sys.stdout, indent=1)
         print()
         return 0

@@ -969,7 +969,33 @@ def test_release_stages_wait_for_an_empty_deferred_list():
     assert p6.startswith("RELEASE GATE")
     assert "'deferred' list is non-empty" in p6 and "fail this block" in p6
     until = find_block(load_root(), "P5").until_condition or ""
-    assert "deferred list" in until
+    # Deferred (and P7-reserved) paths are accounted for, not outstanding.
+    assert "deferred" in until and "reserved" in until
+    assert "groups_done" in until
+
+
+# cli-188224db41e6 (2026-10-31): a7cc3f12 carried another group's file, so
+# that group found nothing to stage, took the "already committed" exit and
+# never recorded its id; P6 then refused the release over a shipped group.
+
+def test_an_already_committed_group_still_records_its_ids():
+    loop = find_block(load_root(), "Commit one group").instructions or ""
+    assert "already at HEAD" in loop
+    assert "--reverse" in loop, "patch mode must prove the hunks are at HEAD"
+    assert "never succeed on this path without recording the ids" in loop
+    residue = find_block(load_root(), "Sweep the residue").instructions or ""
+    assert "Reconcile the ledger against git FIRST" in residue
+    assert "groups recorded from HEAD" in residue
+
+
+# Same run: 56 paths kept prior-release triage verdicts naming entries the
+# current Unreleased section lacks, so they were deferred, never re-triaged.
+
+def test_prior_release_triage_is_archived_and_stale_assigns_rebatched():
+    p0 = find_block(load_root(), "P0").instructions or ""
+    assert "PRIOR-RELEASE TRIAGE" in p0 and "archive/triage." in p0
+    p3a = find_block(load_root(), "P3a - Batch the unclaimed files").instructions or ""
+    assert "stale_assigns" in p3a and "rejected_excludes" in p3a
 
 
 # cli-462ad587602c: 16 paths staged before the run began; every commit
