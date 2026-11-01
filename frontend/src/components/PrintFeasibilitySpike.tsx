@@ -119,8 +119,6 @@ const READONLY_ACTIVE_CHAT: any = {
     setReasoningContentMap: noop,
     getProcessingState: () => ({} as any),
     updateProcessingState: noop,
-    dynamicTitleLength: 0,
-    setDynamicTitleLength: noop,
     lastResponseIncomplete: false,
     setDisplayMode: noop,
     toggleMessageMute: noop,
