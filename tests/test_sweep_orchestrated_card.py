@@ -861,7 +861,43 @@ def test_a_refused_commit_plan_fails_its_block_by_contract():
     schema = plan[0].schema_
     assert schema["properties"]["status"] == {"enum": ["ready", "partial"]}
     assert schema["properties"]["gate"]["properties"]["passed"] == {"const": True}
-    assert schema["properties"]["groups"]["minItems"] == 1
+    from jsonschema import Draft202012Validator
+    ok = Draft202012Validator(schema).is_valid
+    assert not ok({"status": "refused", "gate": {"passed": False}, "groups": []})
+    assert not ok({"status": "partial", "gate": {"passed": True}, "groups": []}), \
+        "an empty roster needs the already-committed evidence"
+    assert ok({"status": "ready", "gate": {"passed": True}, "groups": [
+        {"entry_id": "a", "entry_ids": ["a"], "subject": "s", "mode": "whole"}]})
+
+
+# Run cli-db2df7ec03ba (2026-11-01): 142 of 143 entries were already committed
+# by earlier passes and the last one deferred.  P4a had nothing to group, the
+# contract demanded a group, and the run died there instead of reaching P6,
+# which is the stage that reports a deferral.
+
+def test_an_all_committed_plan_passes_with_an_empty_roster():
+    blk = find_block(load_root(), "P4a")
+    schema = [c for c in blk.output_contract if c.name == "commit_plan"][0].schema_
+    from jsonschema import Draft202012Validator
+    ok = Draft202012Validator(schema).is_valid
+    base = {"status": "partial", "gate": {"passed": True}, "groups": []}
+    assert ok({**base, "already_committed_entries": ["e1"]})
+    assert not ok({**base, "already_committed_entries": []})
+    text = blk.instructions or ""
+    assert "EMPTY ROSTER IS NOT ITSELF A REFUSAL" in text
+    assert "not in 'groups_done'" in text, "committed entries count as accounted for"
+
+
+# Run cli-4d15fd5c2684 (2026-10-31): one Bedrock stream went silent for 26 min
+# inside the serial commit loop (900 s thinking wait + 300 s socket timeout)
+# with nothing bounding the iteration.
+
+def test_the_serial_mutating_stages_carry_a_time_budget():
+    root = load_root()
+    loop = find_block(root, "Commit one group").scope.time_budget_secs
+    residue = find_block(root, "Sweep the residue").scope.time_budget_secs
+    assert loop and 300 <= loop <= 900
+    assert residue and loop <= residue <= 1800
 
 
 def test_the_residue_sweep_does_not_commit_without_a_ready_plan():

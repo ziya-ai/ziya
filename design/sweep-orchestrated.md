@@ -274,12 +274,22 @@ New files and uncited hunks: an untracked file's attribution maps it to one
 entry and `split` writes no patch (it ships whole); a hunk no entry
 describes goes to `new:<slug>` with a drafted entry in
 `<attrib dir>/<flattened>.drafts.json`, which P4a turns into a group.
-P4a carries an output contract requiring `status: "ready"`, `gate.passed`
-and a non-empty roster, so a refused plan fails the block and stops the run
-there instead of reaching P5 (run cli-81921cb9b5eb: the gate refused, P4a
-reported done anyway, P4b ran an empty roster, and P5 committed 13 entries
-on its own before its loop ran out). P5 now refuses to commit without a
-ready plan.
+P4a carries an output contract requiring `status: "ready"` or `"partial"`,
+`gate.passed`, and a roster that is either non-empty or empty with a
+non-empty `already_committed_entries` list, so a refused plan fails the
+block and stops the run there instead of reaching P5 (run cli-81921cb9b5eb:
+the gate refused, P4a reported done anyway, P4b ran an empty roster, and P5
+committed 13 entries on its own before its loop ran out). P5 now refuses to
+commit without a ready plan. The empty-roster form exists for a resumed
+sweep whose every entry is already committed or deferred (run
+cli-db2df7ec03ba: 142 of 143 committed, one deferred, and a contract that
+demanded a group stopped the run at P4a instead of letting P6 report the
+deferral); P4b then runs zero iterations and P6 refuses with the deferred
+list. The two serial mutating stages, the commit loop (600 s per group) and
+the residue sweep (900 s per pass), carry `time_budget_secs` so a Bedrock
+stream that goes silent is cut off and the iteration fails into the residue
+sweep rather than waiting out the 900 s thinking ceiling plus the 300 s
+socket timeout (run cli-4d15fd5c2684: 26 minutes idle on one request).
 
 The index is a shared resource across the serial commit loop, so a stage that
 dies between staging and committing poisons every later iteration (run
