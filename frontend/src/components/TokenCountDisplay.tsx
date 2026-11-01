@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef, useLayoutEffect, memo } from 'react';
 import { Message } from '../utils/types';
 import { useFolderContext } from "../context/FolderContext";
-import { Tooltip, Spin, Progress, Typography, message, ProgressProps, Dropdown, Modal } from "antd";
+import { Tooltip, Spin, message, ProgressProps, Dropdown, Modal } from "antd";
 import { debounce } from "lodash";
 import { useTheme } from '../context/ThemeContext';
 import { ModelSettings } from './ModelConfigModal';
@@ -11,8 +11,11 @@ import { CheckCircleOutlined, CloseCircleOutlined, DashboardOutlined } from '@an
 import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
 import { folderTotalTokens, expandCheckedKeysToFiles } from '../utils/contextTokenTotals';
 import { dispatchHandoffOpen } from '../utils/handoffOpen';
+import { publishPanelStatus } from '../utils/panelStatus';
+import { TokenBreakdownBar, fmtK } from './TokenBreakdownBar';
 import { handoffAffordance, handoffPressureTier } from '../utils/handoffPressure';
 import { getHandoffState } from '../api/handoffApi';
+import { elideInlineImages } from '../utils/elideInlineImages';
 // Global request deduplication cache
 const activeRequests = new Map<string, Promise<any>>();
 
@@ -72,7 +75,10 @@ const getTokenCountForMessages = async (messages: Message[]): Promise<number> =>
         .filter(msg => msg.muted !== true)
         .map(msg => ({
             role: msg.role,
-            content: msg.content || '',
+            // Rendered-image <img> tags are display-only and can total tens of
+            // MB; the server elides them anyway, so do not upload them (413).
+            content: msg.role === 'assistant'
+                ? elideInlineImages(msg.content || '') : (msg.content || ''),
             muted: false,
             images: (msg.images || []).map(img => ({
                 width: img.width,
@@ -619,6 +625,24 @@ export const TokenCountDisplay = memo(() => {
     const fileTokens = serverEstimate ? serverEstimate.file_tokens : totalTokenCount;
     const toolTokens = serverEstimate ? serverEstimate.overhead_tokens : (mcpEnabled && mcpServerCount > 0 ? mcpTokenCount : 0);
     const combinedTokenCount = fileTokens + chatTokenCount + (astCountsInTotal ? astTokenCount : 0) + toolTokens;
+    // Budget zone: drives the bar outline and the total row's colour.  The
+    // legend figures stay in the text colour — three green numbers over a
+    // grey legend read as an alert when nothing was wrong.
+    const budgetTier: 'ok' | 'warning' | 'danger' =
+        combinedTokenCount >= dangerThreshold ? 'danger'
+        : combinedTokenCount >= warningThreshold ? 'warning' : 'ok';
+
+    // The collapsed-panel strip (CollapsedPanelStrip) shows this breakdown
+    // while the footer is unmounted; publish the figures as computed here so
+    // the two surfaces cannot disagree.
+    const cacheWorking: boolean | null = cacheHealth ? !!cacheHealth.health_summary?.cache_working : null;
+    useEffect(() => {
+        publishPanelStatus({ tokens: {
+            files: fileTokens, chat: chatTokenCount, ast: astCountsInTotal ? astTokenCount : 0,
+            tools: toolTokens, total: combinedTokenCount, limit: tokenLimit, cacheWorking,
+            warning: budgetTier === 'warning', danger: budgetTier === 'danger',
+        } });
+    }, [fileTokens, chatTokenCount, astCountsInTotal, astTokenCount, toolTokens, combinedTokenCount, tokenLimit, cacheWorking, budgetTier]);
 
     const performTokenCalculation = useCallback(() => {
         // Pure helper so the rule is unit-tested; see utils/contextTokenTotals.ts
@@ -747,16 +771,9 @@ export const TokenCountDisplay = memo(() => {
         return () => clearTimeout(timer);
     }, [checkedKeys, folders, activeModelPin?.model, currentConversationId]);
 
-    const getTokenColor = (count: number): string => {
-        if (count >= dangerThreshold) return '#ff4d4f';  // Red
-        if (count >= warningThreshold) return '#faad14'; // Orange
-        return '#52c41a';  // Green
-    };
-
-    const getTokenStyle = (count: number) => ({
-        color: getTokenColor(count),
-        fontWeight: 'bold'
-    });
+    // Legend figures are plain bold; the budget zone is shown by the bar's
+    // outline and the total row, not by colouring every number.
+    const numStyle = { fontWeight: 'bold' };
 
     const currentConversationRef = useRef<string>('');
     const previousMessagesRef = useRef<string>('');
@@ -926,7 +943,7 @@ export const TokenCountDisplay = memo(() => {
                 + (unreadable.length ? `\n${unreadable.length} selected path(s) could not be read and are not counted: ${unreadable.slice(0, 5).join(', ')}${unreadable.length > 5 ? '…' : ''}` : '')
             : 'Tokens from selected files (tree estimate)'}>
             <span style={{ fontSize: '10px' }}>
-                Files: <span style={getTokenStyle(fileTokens)}>{getFileTokenDisplay()}</span>
+                <i className="sw files" />files <span style={numStyle}>{getFileTokenDisplay()}</span>
                 {unreadable.length > 0 && <span style={{ color: '#faad14', marginLeft: 3 }}>⚠{unreadable.length}</span>}
             </span>
         </Tooltip>
@@ -940,11 +957,21 @@ export const TokenCountDisplay = memo(() => {
                 ? `Tool schema + fixed system overhead (${serverEstimate.overhead_source === 'learned_baseline' ? 'learned from billed usage' : 'estimated from schema size'})`
                 : `MCP tool tokens from ${mcpServerCount} server${mcpServerCount !== 1 ? 's' : ''}`}>
                 <span style={{ fontSize: '10px' }}>
-                    {serverEstimate ? 'Tools' : 'MCP'}: <span style={getTokenStyle(toolTokens)}>{toolTokens.toLocaleString()}</span>
+                    <i className="sw tools" />{serverEstimate ? 'tools' : 'mcp'} <span style={numStyle}>{toolTokens.toLocaleString()}</span>
                 </span>
             </Tooltip>
         );
     }
+
+    // Chat before AST: the legend is evenly justified and wraps from the
+    // trailing item on a narrow panel, so AST is the one to drop first.
+    breakdownItems.push(
+        <Tooltip key="chat" title="Tokens from chat history">
+            <span style={{ fontSize: '10px' }}>
+                <i className="sw chat" />chat <span style={numStyle}>{chatTokenCount.toLocaleString()}</span>
+            </span>
+        </Tooltip>
+    );
 
     // Add AST if enabled
     if (astCountsInTotal && astTokenCount > 0) {
@@ -973,12 +1000,12 @@ export const TokenCountDisplay = memo(() => {
                         e.currentTarget.style.borderColor = 'transparent';
                     }}
                 >
-                    AST: <span style={getTokenStyle(astTokenCount)}>{astTokenCount.toLocaleString()}</span>
+                    <i className="sw ast" />ast <span style={numStyle}>{astTokenCount.toLocaleString()}</span>
                 </span>
             </Dropdown>
         ) : (
             <span style={{ fontSize: '10px', opacity: 0.6 }}>
-                AST: <span style={getTokenStyle(astTokenCount)}>
+                <i className="sw ast" />ast <span style={numStyle}>
                     {astTokenCount.toLocaleString()}
                 </span>
                 {astResolutionLoading && <span style={{ marginLeft: '4px' }}>⟳</span>}
@@ -991,15 +1018,6 @@ export const TokenCountDisplay = memo(() => {
             </Tooltip>
         );
     }
-
-    // Always show Chat
-    breakdownItems.push(
-        <Tooltip key="chat" title="Tokens from chat history">
-            <span style={{ fontSize: '10px' }}>
-                Chat: <span style={getTokenStyle(chatTokenCount)}>{chatTokenCount.toLocaleString()}</span>
-            </span>
-        </Tooltip>
-    );
 
     // Only refresh cache health when modal is open
     useEffect(() => {
@@ -1039,11 +1057,8 @@ export const TokenCountDisplay = memo(() => {
     const tokenDisplay = useMemo(() => (
         <div ref={containerRef} className="token-summary" style={{
             backgroundColor: 'inherit',
-            padding: '4px',
-            borderBottom: '1px solid',
-            borderBottomColor: isDarkMode ? '#303030' : '#e8e8e8',
+            padding: '6px 2px 2px',
             transition: 'all 0.3s ease',
-            minHeight: '70px',
             boxSizing: 'border-box',
             position: 'relative'
         }}>
@@ -1067,58 +1082,34 @@ export const TokenCountDisplay = memo(() => {
             <div style={{
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '4px',
+                gap: '5px',
                 opacity: isLoading ? 0.5 : 1,
                 transition: 'opacity 0.3s ease'
             }}>
-                {/* Header row with Token Estimate and Total */}
-                <div style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginBottom: '2px'
-                }}>
-                    <Typography.Text strong style={{ fontSize: '12px' }}>
-                        Token Estimate
-                    </Typography.Text>
-                    <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} tokens (${Math.round((combinedTokenCount / tokenLimit) * 100)}%)`}>
-                        <span style={{ fontSize: '11px' }}>
-                            {containerWidth > 180 && 'Total: '}
-                            <span style={getTokenStyle(combinedTokenCount)}>
-                                {containerWidth > 250
-                                    ? `${combinedTokenCount.toLocaleString()} / ${tokenLimit.toLocaleString()}`
-                                    : combinedTokenCount.toLocaleString()}
-                            </span>
-                        </span>
-                    </Tooltip>
-                </div>
-
-                {/* Breakdown row */}
-                <div style={{
-                    display: 'flex',
-                    gap: '8px',
-                    flexWrap: 'wrap',
-                    alignItems: 'center',
-                    fontSize: '10px'
-                }}>
-                    {breakdownItems}
-                </div>
-
+                {/* design/visual-refresh.md: the budget bar is stacked by what is
+                    spending it, and the legend carries the matching swatches.  The
+                    same TokenBreakdownBar renders in the collapsed strip. */}
                 <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens used`} mouseEnterDelay={0.5}>
                     <div>
-                        <Progress
-                            percent={Math.min(100, Math.max(0, Math.round((combinedTokenCount / tokenLimit) * 100)))}
-                            size="small"
-                            status={getProgressStatus(combinedTokenCount)}
-                            showInfo={false}
-                            strokeWidth={4}
-                            style={{ margin: '4px 0', transition: 'all 0.3s ease' }}
-                        />
+                        <TokenBreakdownBar
+                            breakdown={{ files: fileTokens, chat: chatTokenCount, tools: toolTokens,
+                                ast: astCountsInTotal ? astTokenCount : 0, limit: tokenLimit }}
+                            warning={budgetTier === 'warning'} danger={budgetTier === 'danger'} />
                     </div>
                 </Tooltip>
+                <div className="ziya-tok-legend">
+                    {breakdownItems}
+                </div>
+                <div className={`ziya-tok-total ${budgetTier}`} data-testid="token-total-row">
+                    <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} tokens`}>
+                        <span><b>{fmtK(combinedTokenCount)}</b> / {fmtK(tokenLimit)}</span>
+                    </Tooltip>
+                    <span className="pct">{tokenLimit > 0 ? Math.round((combinedTokenCount / tokenLimit) * 100) : 0}%</span>
+                </div>
             </div>
         </div>
-    ), [isLoading, combinedTokenCount, getProgressStatus, isDarkMode, breakdownItems, tokenLimit, containerWidth]);
+    ), [isLoading, combinedTokenCount, breakdownItems, tokenLimit, fileTokens, chatTokenCount, toolTokens,
+        astCountsInTotal, astTokenCount, budgetTier]);
 
     return (
         <>
