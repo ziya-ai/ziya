@@ -14,6 +14,7 @@ import { BlockOutline } from './BlockOutline';
 import { BlockScopeButton } from './BlockScopeButton';
 import { cardVersionLabel } from './cardVersionLabel';
 import { SelfImproveSection } from './SelfImproveSection';
+import { GatherContractSection } from './GatherContractSection';
 import { TaskCardDragProvider } from './DragContext';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { CARD_SCOPE_REFRESH_EVENT } from './useCardSignatureStatus';
@@ -333,10 +334,16 @@ export const TaskCardEditor: React.FC<Props> = ({
           dispatches each fire as an independent run rooted at the
           body, so a root-level improve flag would never execute. */}
       {card.root.block_type === 'group' && (
-        <SelfImproveSection
-          block={card.root}
-          onChange={patch => setRoot({ ...card.root, ...patch })}
-        />
+        <>
+          <SelfImproveSection
+            block={card.root}
+            onChange={patch => setRoot({ ...card.root, ...patch })}
+          />
+          <GatherContractSection
+            block={card.root}
+            onChange={patch => setRoot({ ...card.root, ...patch })}
+          />
+        </>
       )}
       {layout === 'outline' ? (
         <div className="tc-card-canvas tc-card-canvas--outline">

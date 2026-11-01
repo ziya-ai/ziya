@@ -8,13 +8,13 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Modal, Input, Button, Tooltip, message, Empty, Popconfirm, Tag, Dropdown,
+  Modal, Input, Button, Tooltip, message, Empty, Popconfirm, Tag, Dropdown, Segmented,
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, CopyOutlined, SearchOutlined,
   PlayCircleOutlined, StopOutlined, ReloadOutlined, InboxOutlined,
   MoreOutlined, PushpinOutlined, FolderOutlined, FolderAddOutlined,
-  DownloadOutlined, UploadOutlined,
+  DownloadOutlined, UploadOutlined, AppstoreOutlined, ClockCircleOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
 import { useChatContext } from '../../context/ChatContext';
@@ -30,12 +30,15 @@ import { TaskCardEditor } from './TaskCardEditor';
 import { LessonsPanel } from './LessonsPanel';
 import type { LessonCardSummary } from '../../services/taskCardApi';
 import { BlockScopeButton } from './BlockScopeButton';
+import { ImportCwdMapModal } from './ImportCwdMapModal';
 import { DeckRunList } from './DeckRunList';
 import {
   hasLiveRuns, indexRunsByCard, summarizeCardRuns,
 } from './deckRunIndex';
 import { PROPOSED_TAG } from '../TaskCardLaunchButton';
 import { CalleeHoldPanel } from './CalleeHoldPanel';
+import { SchedulesPanel } from './SchedulesPanel';
+import { SCHEDULES_OPEN_EVENT } from './scheduleCadence';
 import { layoutViewportHeight, layoutViewportWidth, toLayoutPx } from '../../utils/uiScale';
 
 // Client-only pin set, mirroring the conversation sidebar's
@@ -81,7 +84,10 @@ function loadSidebarWidth(): number {
 const DIALOG_SIZE_KEY = 'ZIYA_TASK_DECK_DIALOG_SIZE';
 const DIALOG_MIN_WIDTH = 640;
 const DIALOG_MIN_HEIGHT = 320;
-const DIALOG_DEFAULT_WIDTH = 1000;
+// The deck exists to edit card content, so the default is the available
+// viewport, not a fixed 1000px that is under half of a large display.
+const defaultDialogWidth = (): number => Math.round(layoutViewportWidth() * 0.92);
+const defaultDialogHeight = (): number => layoutViewportHeight() - DIALOG_CHROME_HEIGHT;
 
 // Chrome the Modal adds around the body (title bar, paddings) plus its
 // default 100px top offset.  The stored height is the body's inner
@@ -96,9 +102,10 @@ const clampDialogHeight = (h: number): number =>
   Math.max(DIALOG_MIN_HEIGHT, Math.min(layoutViewportHeight() - DIALOG_CHROME_HEIGHT, h));
 
 function loadDialogSize(): { width: number; height: number } {
-  // Default height matches the previous hard-coded 70vh body.
-  const fallbackWidth = DIALOG_DEFAULT_WIDTH;
-  const fallbackHeight = Math.round(window.innerHeight * 0.7);
+  // Layout px (zoom-aware), the same measure resetDialogSize uses, so the
+  // first open and a reset agree under UI zoom.
+  const fallbackWidth = defaultDialogWidth();
+  const fallbackHeight = defaultDialogHeight();
   try {
     const raw = localStorage.getItem(DIALOG_SIZE_KEY);
     if (raw) {
@@ -157,6 +164,9 @@ interface Props {
   /** When set, the deck opens directly into this card's editor (inline
    *  tile "Edit card" backlink).  One-shot: consumed on open. */
   initialCardId?: string;
+  /** Which tab the dialog opens on.  "Manage schedules" links open it on
+   *  Schedules; everything else opens on Cards. */
+  initialView?: 'cards' | 'schedules';
 }
 
 function emptyRoot(): Block {
@@ -167,7 +177,7 @@ function emptyRoot(): Block {
 }
 
 export const TaskCardsLibrary: React.FC<Props> = ({
-  visible, onClose, chatId, anchorMessageId, initialCardId,
+  visible, onClose, chatId, anchorMessageId, initialCardId, initialView,
 }) => {
   const { currentProject, updateProject } = useProject();
   const {
@@ -187,6 +197,16 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   }, [currentProject, updateProject]);
 
   const [cards, setCards] = useState<TaskCard[]>([]);
+  // Cards or Schedules.  Schedules live here rather than behind their own
+  // header button: they are a property of cards, and opening one from the
+  // list lands on it in the Cards tab.
+  const [view, setView] = useState<'cards' | 'schedules'>(initialView ?? 'cards');
+  // Already open (e.g. "Manage schedules" from a Schedule block in the editor).
+  useEffect(() => {
+    const onOpen = () => setView('schedules');
+    window.addEventListener(SCHEDULES_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(SCHEDULES_OPEN_EVENT, onOpen);
+  }, []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TaskCard | null>(null);
   const [loading, setLoading] = useState(false);
@@ -293,8 +313,8 @@ export const TaskCardsLibrary: React.FC<Props> = ({
 
   const resetDialogSize = useCallback(() => {
     setDialogSize({
-      width: clampDialogWidth(DIALOG_DEFAULT_WIDTH),
-      height: clampDialogHeight(Math.round(layoutViewportHeight() * 0.7)),
+      width: clampDialogWidth(defaultDialogWidth()),
+      height: clampDialogHeight(defaultDialogHeight()),
     });
   }, []);
 
@@ -459,6 +479,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     if (!visible) { consumedInitialId.current = undefined; return; }
     if (initialCardId && consumedInitialId.current !== initialCardId) {
       consumedInitialId.current = initialCardId;
+      setView('cards');
       loadCard(initialCardId);
     }
   }, [visible, initialCardId, loadCard]);
@@ -558,18 +579,16 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   // Import: a hidden <input type=file> is the whole picker.  Imported
   // cards get fresh block ids, so an escalating card arrives unsigned —
   // the deck badge and the editor banner carry the ziya-approve command.
+  // Before writing, the file is inspected for absolute scope.cwd paths
+  // (they belong to the exporting machine); if any, ImportCwdMapModal
+  // lets the user map each to a local directory.
   const importInputRef = useRef<HTMLInputElement | null>(null);
-  const handleImportFile = useCallback(async (file: File | undefined) => {
-    if (!projectId || !file) return;
-    let payload: unknown;
+  const [pendingImport, setPendingImport] = useState<
+    { payload: unknown; cwds: string[]; count: number } | null>(null);
+  const runImport = useCallback(async (payload: unknown, cwdMap?: Record<string, string>) => {
+    if (!projectId) return;
     try {
-      payload = JSON.parse(await file.text());
-    } catch {
-      message.error(`${file.name} is not valid JSON`);
-      return;
-    }
-    try {
-      const result = await taskCardApi.importCards(projectId, payload);
+      const result = await taskCardApi.importCards(projectId, payload, cwdMap);
       await reload();
       if (result.cards.length === 1) loadCard(result.cards[0].id);
       message.success(result.count === 1
@@ -592,6 +611,31 @@ export const TaskCardsLibrary: React.FC<Props> = ({
       message.error(`Import failed: ${String(e)}`);
     }
   }, [projectId, reload, loadCard]);
+  const handleImportFile = useCallback(async (file: File | undefined) => {
+    if (!projectId || !file) return;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      message.error(`${file.name} is not valid JSON`);
+      return;
+    }
+    let cwds: string[] = [];
+    let count = 0;
+    try {
+      const insp = await taskCardApi.inspectImport(projectId, payload);
+      cwds = insp.cwds;
+      count = insp.count;
+    } catch (e) {
+      message.error(`Import failed: ${String(e)}`);
+      return;
+    }
+    if (cwds.length > 0) {
+      setPendingImport({ payload, cwds, count });
+      return;
+    }
+    await runImport(payload);
+  }, [projectId, runImport]);
 
   // "Folders" are just tags prefixed with FOLDER_TAG_PREFIX (see note near
   // the constant above) — no dedicated backend model, so these mutate a
@@ -1062,13 +1106,29 @@ export const TaskCardsLibrary: React.FC<Props> = ({
 
   return (
     <Modal
-      title="Task Cards"
+      title={
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+          Task Cards
+          <Segmented size="small" value={view} data-testid="deck-view-switch"
+            onChange={v => setView(v as 'cards' | 'schedules')}
+            options={[
+              { label: 'Cards', value: 'cards', icon: <AppstoreOutlined /> },
+              { label: 'Schedules', value: 'schedules', icon: <ClockCircleOutlined /> },
+            ]} />
+        </span>
+      }
       open={visible}
       onCancel={onClose}
       width={dialogSize.width}
       footer={null}
       destroyOnClose
     >
+      {view === 'schedules' ? (
+        <div style={{ height: dialogSize.height, overflowY: 'auto', paddingRight: 4 }}>
+          <SchedulesPanel projectId={projectId} active={visible}
+            onOpenCard={(id: string) => { setView('cards'); void loadCard(id); }} />
+        </div>
+      ) : (
       <div style={{ display: 'flex', gap: 12, height: dialogSize.height }}>
         {/* Left: list */}
         <div style={{ width: effectiveSidebarWidth, flexShrink: 0, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1104,6 +1164,20 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                 e.target.value = '';
               }}
             />
+            {pendingImport && (
+              <ImportCwdMapModal
+                open
+                cwds={pendingImport.cwds}
+                cardCount={pendingImport.count}
+                projectPath={currentProject?.path ?? null}
+                onCancel={() => setPendingImport(null)}
+                onImport={async (cwdMap) => {
+                  const { payload } = pendingImport;
+                  setPendingImport(null);
+                  await runImport(payload, cwdMap);
+                }}
+              />
+            )}
             <Tooltip title="Export all cards"><Button size="small" icon={<DownloadOutlined />} onClick={() => handleExport()} disabled={cards.length === 0} /></Tooltip>
           </div>
           <div style={{ overflowY: 'auto', flex: 1, border: '1px solid rgba(128,128,128,0.2)', borderRadius: 4 }}>
@@ -1263,6 +1337,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
           )}
         </div>
       </div>
+      )}
       {/* Bottom-right grip: drag to resize the dialog itself */}
       <div
         onMouseDown={handleDialogResizeStart}
