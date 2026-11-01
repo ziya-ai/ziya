@@ -230,16 +230,101 @@ def test_withheld_lookup_fails_open(monkeypatch):
     def boom(*_a):
         raise RuntimeError("storage exploded")
     monkeypatch.setattr(svc, "withheld_mcp_servers", boom)
+    monkeypatch.setattr(svc, "mcp_effective", boom, raising=False)
     assert bp.withheld_mcp_for_root("/repo", CID) == set()
+    assert bp.mcp_placements_for_root("/repo", CID) == {}
 
 
 def test_executor_withholds_after_project_modes_and_before_task_allowlist():
     import inspect
     from app.streaming_tool_executor import StreamingToolExecutor
     src = inspect.getsource(StreamingToolExecutor._load_and_prepare_tools)
-    call = src.index("withheld_mcp_for_root(project_root, conversation_id)")
+    call = src.index("mcp_filter_for_root(")
     assert src.index("_apply_project_modes(") < call
-    assert call < src.index("drop_withheld_tools(") < src.index("filter_tools_by_scope(")
+    assert call < src.index("apply_mcp_filter(") < src.index("filter_tools_by_scope(")
+
+
+# -- MCP within reach (design/mcp-on-demand.md, slice 9) ---------------------
+
+@pytest.fixture
+def reach_env(mcp_env, monkeypatch):
+    from app.utils import mcp_ondemand
+    monkeypatch.setattr(bp, "project_id_for_root", lambda root: PID)
+    mcp_ondemand._sticky.clear()
+    yield mcp_env
+    mcp_ondemand._sticky.clear()
+
+
+def _record(monkeypatch, **loaded):
+    from app.utils import mcp_ondemand
+    monkeypatch.setattr(mcp_ondemand, "read_record", lambda p, c: dict(loaded) if c == CID else {})
+
+
+def test_mcp_ondemand_is_accepted_and_resolves(reach_env):
+    _pin("mcp:jira", "project", "ondemand")
+    assert bp.mcp_placements_for_root("/repo", CID) == {"jira": "ondemand", "slack": "always"}
+    eff = {r.key: r.effective for r in svc.resolve_bench(PID, CID).items}
+    assert eff["mcp:jira"] == "ondemand"
+    # shelving alone is what withheld_mcp_servers reports
+    assert svc.withheld_mcp_servers(PID, CID) == set()
+
+
+def test_within_reach_is_withheld_until_loaded(reach_env):
+    _pin("mcp:jira", "project", "ondemand")
+    _pin("mcp:slack", "project", "off")
+    assert bp.withheld_mcp_for_root("/repo", CID) == {"jira", "slack"}
+
+
+def test_loaded_via_chat_record_is_per_conversation(reach_env, monkeypatch):
+    _pin("mcp:jira", "project", "ondemand")
+    _record(monkeypatch, jira="*")
+    assert bp.withheld_mcp_for_root("/repo", CID) == set()
+    assert bp.withheld_mcp_for_root("/repo", "another-chat") == {"jira"}
+
+
+def test_partial_load_withholds_the_servers_other_tools(reach_env, monkeypatch):
+    _pin("mcp:jira", "project", "ondemand")
+    _record(monkeypatch, jira=["search"])
+    f = bp.mcp_filter_for_root("/repo", CID)
+    assert f.withheld == set() and f.partial == {"jira": {"search"}} and f.order == ["jira"]
+
+
+def test_loaded_via_sticky_set_is_per_conversation(reach_env):
+    from app.utils.mcp_ondemand import remember_loaded
+    _pin("mcp:jira", "project", "ondemand")
+    remember_loaded(CID, "jira")
+    assert bp.withheld_mcp_for_root("/repo", CID) == set()
+    assert bp.withheld_mcp_for_root("/repo", "another-chat") == {"jira"}
+
+
+def test_shelving_after_a_load_withholds_again(reach_env, monkeypatch):
+    _pin("mcp:jira", "project", "ondemand")
+    _record(monkeypatch, jira="*")
+    assert bp.withheld_mcp_for_root("/repo", CID) == set()
+    _pin("mcp:jira", "project", "off")
+    assert bp.withheld_mcp_for_root("/repo", CID) == {"jira"}
+    _pin("mcp:jira", "project", "always")
+    assert bp.withheld_mcp_for_root("/repo", CID) == set()
+
+
+def test_task_scope_naming_a_tool_counts_as_loaded(reach_env):
+    from app.mcp.enhanced_tools import SecureMCPTool
+    _pin("mcp:jira", "project", "ondemand")
+    tools = [SecureMCPTool(name="mcp_search", description="d", mcp_tool_name="search",
+                           input_schema={"type": "object", "properties": {}}, server_name="jira")]
+    assert bp.withheld_mcp_for_root("/repo", CID, tools=tools, tool_allowlist=["search"]) == set()
+    assert bp.withheld_mcp_for_root("/repo", CID, tools=tools, tool_allowlist=["other"]) == {"jira"}
+
+
+def test_executor_filters_and_orders_through_the_one_seam():
+    import inspect
+    from app.streaming_tool_executor import StreamingToolExecutor
+    src = inspect.getsource(StreamingToolExecutor._load_and_prepare_tools)
+    call = src[src.index("mcp_filter_for_root("):]
+    call = call[: call.index(")\n")]
+    for kw in ("tools=all_tools", "tool_allowlist=tool_allowlist"):
+        assert kw in call, kw
+    assert src.index("mcp_filter_for_root(") < src.index("apply_mcp_filter(") < src.index("filter_tools_by_scope(")
 
 
 # -- placement provenance: who wrote a pin, so a lens "+n" is explainable ----
@@ -267,7 +352,7 @@ def test_view_model_carries_meta_only_for_layers_holding_a_placement(env):
     svc.place(PID, CID, f"skill:{PINNED}", "project", "always", via="migration")
     svc.place(PID, CID, f"skill:{PINNED}", "conversation", "off")
     items = svc.collect_items(PID)
-    vm = _view_model(items, svc.resolve_bench(PID, CID, items), CID, svc.placement_meta(PID))
+    vm = _view_model(PID, items, svc.resolve_bench(PID, CID, items), CID, svc.placement_meta(PID))
     item = next(i for i in vm["items"] if i["key"] == f"skill:{PINNED}")
     assert item["meta"]["project"]["via"] == "migration"
     assert item["meta"]["conversation"] is None      # chat record keeps no meta
@@ -287,7 +372,7 @@ def test_item_detail_loads_the_skill_body_the_list_leaves_unloaded(env):
     # GET /bench items never carry the body
     from app.api.bench import _view_model
     items = svc.collect_items(PID)
-    vm = _view_model(items, svc.resolve_bench(PID, CID, items), CID)
+    vm = _view_model(PID, items, svc.resolve_bench(PID, CID, items), CID)
     assert all("prompt" not in i for i in vm["items"])
     for bad in (f"skill:Nope", "mcp:nope", "garbage", "skill:"):
         with pytest.raises(svc.ItemNotFound):
