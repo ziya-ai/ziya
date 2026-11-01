@@ -1,8 +1,51 @@
 import {
   captureEditorRange,
   chooseRecordingMimeType,
+  formatByteSize,
+  formatFileTranscript,
   insertTranscript,
+  transcriptHeader,
+  MAX_TRANSCRIPTION_BYTES,
+  partitionAudioFiles,
+  transcribableAudioType,
 } from '../voiceInput';
+
+describe('transcribable audio files', () => {
+  const file = (name: string, type = '') => new File(['x'], name, { type });
+
+  test('m4a and wav map to one canonical upload type whatever the browser reported', () => {
+    expect(transcribableAudioType(file('memo.m4a', 'audio/x-m4a'))).toBe('audio/mp4');
+    expect(transcribableAudioType(file('memo.M4A'))).toBe('audio/mp4');
+    expect(transcribableAudioType(file('take.wav', 'audio/wave'))).toBe('audio/wav');
+    expect(transcribableAudioType(file('take.WAV', 'audio/vnd.wave'))).toBe('audio/wav');
+  });
+
+  test('other files, extensionless names, and inherited keys are not audio', () => {
+    expect(transcribableAudioType(file('song.mp3', 'audio/mpeg'))).toBeNull();
+    expect(transcribableAudioType(file('notes.md'))).toBeNull();
+    expect(transcribableAudioType(file('wav'))).toBeNull();
+    expect(transcribableAudioType(file('x.constructor'))).toBeNull();
+    expect(transcribableAudioType(file('x.wav.txt'))).toBeNull();
+  });
+
+  test('size limits read naturally in warnings', () => {
+    expect(formatByteSize(1024 * 1024 * 1024)).toBe('1 GB');
+    expect(formatByteSize(345 * 1024 * 1024)).toBe('345 MB');
+    expect(formatByteSize(1.5 * 1024 * 1024)).toBe('1.5 MB');
+  });
+
+  test('the fallback ceiling fits a 30-minute 48 kHz stereo WAV', () => {
+    expect(MAX_TRANSCRIPTION_BYTES).toBeGreaterThan(30 * 60 * 48_000 * 2 * 2);
+  });
+
+  test('partition separates audio and keeps arrival order in each group', () => {
+    const batch = [file('a.wav'), file('b.png', 'image/png'), file('c.m4a'), file('d.md')];
+    const { audio, other } = partitionAudioFiles(batch);
+    expect(audio.map(f => f.name)).toEqual(['a.wav', 'c.m4a']);
+    expect(other.map(f => f.name)).toEqual(['b.png', 'd.md']);
+  });
+});
+
 
 describe('chooseRecordingMimeType', () => {
   test('selects the first supported browser format', () => {
@@ -94,5 +137,56 @@ describe('composer transcript insertion', () => {
   test('does not insert an empty transcript', () => {
     const editor = document.createElement('div');
     expect(insertTranscript(editor, '   ')).toBe(false);
+  });
+});
+
+describe('file transcript headers', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    window.getSelection()?.removeAllRanges();
+  });
+
+  test('the header names the transcription, the source type and the file', () => {
+    expect(transcriptHeader('standup.m4a')).toBe('[Transcribed from M4A audio file: standup.m4a]');
+    expect(transcriptHeader('Take 2.WAV')).toBe('[Transcribed from WAV audio file: Take 2.WAV]');
+    expect(transcriptHeader('recording')).toBe('[Transcribed from audio file: recording]');
+    expect(formatFileTranscript('a.wav', '  hello world ')).toBe(
+      '[Transcribed from WAV audio file: a.wav]\nhello world',
+    );
+  });
+
+  test('consecutive file transcripts land as separate blocks with real line breaks', () => {
+    const editor = document.createElement('div');
+    document.body.appendChild(editor);
+
+    expect(insertTranscript(editor, formatFileTranscript('a.wav', 'first'), null, { block: true })).toBe(true);
+    // The next file is inserted at the cursor the first insertion left behind,
+    // exactly as transcribeAudioFiles captures it.
+    const next = captureEditorRange(editor);
+    expect(next).not.toBeNull();
+    expect(insertTranscript(editor, formatFileTranscript('b.m4a', 'second'), next, { block: true })).toBe(true);
+
+    expect(editor.innerHTML).toBe(
+      '[Transcribed from WAV audio file: a.wav]<br>first<br>'
+      + '[Transcribed from M4A audio file: b.m4a]<br>second<br>',
+    );
+  });
+
+  test('a block after existing text starts on its own line', () => {
+    const editor = document.createElement('div');
+    editor.textContent = 'notes';
+    document.body.appendChild(editor);
+
+    insertTranscript(editor, formatFileTranscript('a.wav', 'spoken'), null, { block: true });
+    expect(editor.innerHTML).toBe('notes<br>[Transcribed from WAV audio file: a.wav]<br>spoken<br>');
+  });
+
+  test('dictation without block mode is still inserted inline', () => {
+    const editor = document.createElement('div');
+    editor.textContent = 'say ';
+    document.body.appendChild(editor);
+
+    insertTranscript(editor, 'hello');
+    expect(editor.innerHTML).toBe('say hello');
   });
 });
