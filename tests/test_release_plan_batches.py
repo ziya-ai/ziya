@@ -81,6 +81,40 @@ def test_exclude_on_a_tracked_modification_is_rebatched(tmp_path, capsys):
     assert out["triaged"] == 2      # the untracked exclude and the assign stand
 
 
+def test_assign_to_an_entry_not_in_the_index_is_rebatched(tmp_path, capsys):
+    """Run cli-188224db41e6 (2026-10-31): prior-release batches, and batches
+    written before CHANGELOG.md was rewritten, assigned paths to entry ids
+    the current Unreleased section no longer has.  The plan builder deferred
+    all 69, but batches counted them triaged, so no stage re-triaged them."""
+    (tmp_path / "ledger.json").write_text(json.dumps({"entry_index": {
+        "unclaimed": ["a/old.py", "a/cur.py", "a/new.py"],
+        "untracked": [],
+        "entries": [{"entry_id": "live-entry"}]}}))
+    tri = tmp_path / "triage"
+    tri.mkdir()
+    (tri / "batch-old.json").write_text(json.dumps({"verdicts": [
+        {"path": "a/old.py", "disposition": "assign", "entry_id": "gone-entry"},
+        {"path": "a/cur.py", "disposition": "assign", "entry_id": "live-entry"},
+        {"path": "a/new.py", "disposition": "new_entry", "draft_entry": "x"}]}))
+    out = _run(tmp_path, capsys)
+    assert [p for b in out["batches"] for p in b["paths"]] == ["a/old.py"]
+    assert out["stale_assigns"] == ["a/old.py"]
+    assert out["triaged"] == 2      # the live assign and the new_entry stand
+
+
+def test_a_later_valid_assign_wins_over_a_stale_one(tmp_path, capsys):
+    (tmp_path / "ledger.json").write_text(json.dumps({"entry_index": {
+        "unclaimed": ["a/x.py"], "entries": [{"entry_id": "live"}]}}))
+    tri = tmp_path / "triage"
+    tri.mkdir()
+    (tri / "batch-1.json").write_text(json.dumps({"verdicts": [
+        {"path": "a/x.py", "disposition": "assign", "entry_id": "gone"}]}))
+    (tri / "batch-2.json").write_text(json.dumps({"verdicts": [
+        {"path": "a/x.py", "disposition": "assign", "entry_id": "live"}]}))
+    out = _run(tmp_path, capsys)
+    assert out["batches"] == [] and out["stale_assigns"] == [] and out["triaged"] == 1
+
+
 def test_nothing_pending_gives_an_empty_list(tmp_path, capsys):
     _setup(tmp_path, ["a/1.py"], {"batch-q.json": [{"path": "a/1.py", "disposition": "assign"}]})
     assert _run(tmp_path, capsys)["batches"] == []
