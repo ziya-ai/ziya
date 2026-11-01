@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Replayed iteration dots — a resumed loop showing its preserved prefix.
  *
  * The defect: the dot strip is built from ``iteration_summaries``, and a

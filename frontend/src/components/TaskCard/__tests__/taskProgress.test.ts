@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Rail chip progress (taskProgress.ts).
  *
  * The rail renders from bindings, which carry no progress.  The tile owns
