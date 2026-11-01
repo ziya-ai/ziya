@@ -125,10 +125,20 @@ conversation id; the prelude tells the model these resolve via `chat_read`.
 ### Who drafts
 
 **Drawer → "Ask the model to draft it"** runs a **background, non-persisted
-turn** on the conversation's own model with its full live context: the same
-history / checked files / skills / model pin a normal send carries, through
-the same `/api/chat` path, but the stream is drained and discarded by the
-client. Nothing goes into the composer and nothing streams into the
+turn** with the conversation's full live context: the same history / checked
+files / skills a normal send carries, through the same `/api/chat` path, but
+the stream is drained and discarded by the client. The **model** is the one
+thing it does not inherit: the turn is pinned (per-request `modelSelection`)
+to the portable **`medium` tier — the standard model — by default**, resolved
+through `/api/model-tiers` for the active endpoint, because drafting is a
+summary task and a frontier-pinned conversation would spend ~20x on a
+document the user then edits. A selector beside the button offers the other
+rungs and "this conversation's model" (its pin); the choice is remembered per
+browser (`ZIYA_HANDOFF_DRAFT_TIER`), and an unreadable tier table falls back
+to the pin rather than failing the request
+(`frontend/src/utils/handoffDraftModel.ts`). The automatic draft written
+under context pressure is different: it is part of the model's own turn, so
+it runs on whatever model answered that turn. Nothing goes into the composer and nothing streams into the
 transcript. The turn's only durable effect is the `handoff_write` the model
 performs server-side. The drawer shows a spinner and the draft appears in
 place when it lands; the transcript gets a **local notice** (role `system`,
@@ -334,6 +344,20 @@ record).
    document + predecessor + shared open beads; closing via the child drops
    the source's openBeadCount), `frontend/.../HandoffBanner.test.tsx`.
    A continuation nests under its source like a fork.
+
+6. **Fork forward link.** `forkConversation` (ChatContext) leaves the same
+   local notice on the SOURCE that a handoff commit does — system + muted,
+   `handoffNotice: { kind: 'forked', targetId: <fork id> }` — appended at
+   the moment of forking, so it marks the fork point and anything the
+   source says afterwards follows it. The fork's copy is taken before the
+   append, so a fork never carries its own back-reference. `HandoffNotice`
+   renders it with the fork glyph and an "Open “…”" link; a fork notice
+   never borrows the record's `handedOffTo` and offers no "Review handoff".
+   In the sidebar a fork child carries the fork glyph in the leading slot
+   (replacing the chat bubble), as a continuation carries ⛓. Tests:
+   `frontend/src/components/__tests__/HandoffNotice.test.tsx` (forked kind),
+   `frontend/src/context/__tests__/forkForwardNotice.test.ts`,
+   `frontend/src/components/__tests__/forkGlyph.test.tsx`.
 5. **Reverted.** Chat-list chain row (`buildHandoffChains`, `handoffSegment`
    children, "N segments" pill). Shipped, then removed after use: the source
    disappeared from the list. See "Chat list" under UX surfaces. The ⛓ / ⇢
