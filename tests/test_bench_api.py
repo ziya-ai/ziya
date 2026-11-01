@@ -126,12 +126,17 @@ def test_environment_item_409_on_put(client):
     assert r.json()["detail"]["reason"] == "environment_not_placeable"
 
 
-def test_mcp_ondemand_409_and_leaves_no_trace(client):
+def test_mcp_ondemand_is_accepted(client):
     r = _put(client, "mcp:jira", "project", "ondemand")
-    assert r.status_code == 409
-    assert r.json()["detail"]["reason"] == "mcp_ondemand_unsupported"
-    assert _item(_get(client), "mcp:jira")["placements"]["project"] is None
-    assert client.mcp_calls == []
+    assert r.status_code == 200, r.text
+    it = _item(_get(client), "mcp:jira")
+    assert it["placements"]["project"] == "ondemand" and it["effective"] == "ondemand"
+    assert client.mcp_calls == []          # project layer never touches the enable switch
+
+
+def test_user_mcp_ondemand_keeps_the_server_enabled(client):
+    assert _put(client, "mcp:jira", "user", "ondemand").status_code == 200
+    assert client.mcp_calls == [("jira", True)]
 
 
 def test_unknown_key_and_bad_layer_409(client):

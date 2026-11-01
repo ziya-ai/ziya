@@ -60,7 +60,7 @@ def env(tmp_path, monkeypatch):
 def _vm(cid=None):
     from app.api.bench import _view_model
     items = svc.collect_items(PID)
-    return _view_model(items, svc.resolve_bench(PID, cid, items), cid)
+    return _view_model(PID, items, svc.resolve_bench(PID, cid, items), cid)
 
 
 def test_quarantined_server_is_held_not_disconnected(env):
