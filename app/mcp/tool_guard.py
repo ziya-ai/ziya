@@ -55,9 +55,51 @@ _INJECTION_PATTERNS: List[re.Pattern] = [
         r"bypass\s+(any|all|the)\s+(restrictions?|limits?|safeguards?|filters?)",
         r"execute\s+(this|the\s+following)\s+(silently|quietly|without)",
         r"hidden\s+instruction",
-        r"<!-{2,}.*?-{2,}>",  # HTML comments hiding content
     ]
 ]
+
+# HTML comments can hide instructions from a human skimming a description,
+# so they are an injection signal. Checked separately from the regex list
+# so a documented *marker syntax* can be exempted: Pippin and Chorus tell
+# the model that their documents are delimited by markers such as
+# ``<!-- comment:ID -->`` and ``<!-- id=..., type=... -->``, which is
+# documentation of a format, not hidden text. The literal pattern string
+# is kept in the warning so existing log greps and tests keep matching.
+_HTML_COMMENT_PATTERN = r"<!-{2,}.*?-{2,}>"
+_HTML_COMMENT_RE = re.compile(r"<!-{2,}(.*?)-{2,}>")
+
+# A marker token is a short ``key:value`` / ``key=value`` of identifier
+# characters (``...`` allowed as a placeholder value), optionally followed
+# by a comma. No bare words, no spaces, no URL characters: nothing that
+# can express an instruction.
+_MARKER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-]{1,24}[:=][A-Za-z0-9_.\-]{0,24},?$")
+_MARKER_MAX_TOKENS = 3
+_MARKER_MAX_LEN = 48
+
+
+def _is_placeholder_marker(body: str) -> bool:
+    """True if an HTML comment body is a benign marker-syntax placeholder.
+
+    Accepts ``comment:ID`` and ``id=..., type=...``; rejects ``secret
+    payload``, ``note: ignore the user``, anything with a URL, more than
+    three tokens, or more than 48 characters.
+    """
+    body = body.strip()
+    if not body or len(body) > _MARKER_MAX_LEN:
+        return False
+    tokens = body.split()
+    if not 1 <= len(tokens) <= _MARKER_MAX_TOKENS:
+        return False
+    return all(_MARKER_TOKEN_RE.match(t) for t in tokens)
+
+
+def _first_hidden_html_comment(text: str) -> Optional[str]:
+    """Return the first HTML comment in *text* that is not a placeholder
+    marker, or None if every comment is a benign marker."""
+    for m in _HTML_COMMENT_RE.finditer(text):
+        if not _is_placeholder_marker(m.group(1)):
+            return m.group(0)
+    return None
 
 
 # Common Cyrillic / Greek homoglyphs → Latin lookalikes. NFKC does not fold
@@ -124,6 +166,16 @@ def scan_tool_description(tool_name: str, description: str) -> List[str]:
                 warnings.append(
                     f"Tool '{tool_name}': description matches injection pattern "
                     f"'{pattern.pattern}' near: ...{match.group()[:60]}..."
+                )
+        # HTML comments: blocking unless every comment is a documented
+        # placeholder marker (see _is_placeholder_marker).
+        if _HTML_COMMENT_PATTERN not in seen:
+            hidden = _first_hidden_html_comment(target)
+            if hidden is not None:
+                seen.add(_HTML_COMMENT_PATTERN)
+                warnings.append(
+                    f"Tool '{tool_name}': description matches injection pattern "
+                    f"'{_HTML_COMMENT_PATTERN}' near: ...{hidden[:60]}..."
                 )
     # Mixed-script tokens are a strong homoglyph-obfuscation signal even when
     # no pattern matched (e.g. partial substitution that didn't fold cleanly).
