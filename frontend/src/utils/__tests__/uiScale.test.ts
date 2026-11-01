@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Automatic UI zoom for narrow viewports (utils/uiScale.ts).
  *
  * Field data (Sep 2026): a MacBook Air on macOS "Larger Text" scaling
