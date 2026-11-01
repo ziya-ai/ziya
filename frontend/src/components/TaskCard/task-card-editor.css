@@ -743,6 +743,24 @@ body:not(.dark) .tc-chip { background: rgba(0,0,0,0.05); }
   font-size: 11px;
   opacity: 0.75;
 }
+/* ── Gather contract section (📥) ─────────────────────────────── */
+.tc-gather-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.tc-gather-head { display: flex; align-items: center; gap: 6px; }
+.tc-gather-section--on {
+  border-left: 2px solid rgba(96, 165, 250, 0.55);
+  padding-left: 8px;
+  border-radius: 2px;
+}
+.tc-gather-entry { display: flex; flex-direction: column; gap: 4px; }
+.tc-gather-name { width: 110px; }
+.tc-gather-schema { flex: 1 1 140px; min-width: 120px; }
+.tc-gather-producer { flex: 1 1 160px; min-width: 120px; }
 /* Revision rows in the run inspector's Events tab. */
 .tc-tile__inspector-event--improve {
   border-left: 2px solid rgba(45, 212, 191, 0.7);

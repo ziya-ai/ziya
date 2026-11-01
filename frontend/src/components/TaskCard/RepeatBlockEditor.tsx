@@ -7,6 +7,7 @@ import type { Block, RepeatMode, PropagateMode, TaskScope } from '../../types/ta
 import { BlockBody } from './BlockBody';
 import { BlockScopeButton } from './BlockScopeButton';
 import { SelfImproveSection } from './SelfImproveSection';
+import { GatherContractSection } from './GatherContractSection';
 import { DragHandle } from './DragContext';
 import { RequiredToggle } from './RequiredToggle';
 import './task-card-editor.css';
@@ -166,6 +167,7 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, 
           title={block.name || 'this Repeat block'}
         />
         <SelfImproveSection block={block} onChange={update} />
+        <GatherContractSection block={block} onChange={update} />
       </div>
       <BlockBody
         parentId={block.id}
