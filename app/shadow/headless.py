@@ -67,6 +67,14 @@ def main(argv=None) -> int:
     # to init and reaped by the system when it ends.  Without this the host
     # would linger as a zombie of the chat process that spawned it (which
     # never waits), so liveness checks would report it alive forever.
+    if not hasattr(os, "fork"):
+        # The pty host needs fork, fcntl and termios; say so over the
+        # announce pipe instead of dying mid-daemonize, so the spawner
+        # can surface why the session never appeared.
+        _announce(args.announce_fd,
+                  "error: shadow sessions require a POSIX pty "
+                  "and are not available on Windows")
+        return 1
     if os.fork() != 0:
         os._exit(0)
 
