@@ -12,6 +12,7 @@ import type { Block, TaskScope } from '../../types/task_card';
 import { BlockBody } from './BlockBody';
 import { BlockScopeButton } from './BlockScopeButton';
 import { SelfImproveSection } from './SelfImproveSection';
+import { GatherContractSection } from './GatherContractSection';
 import { DragHandle } from './DragContext';
 import { RequiredToggle } from './RequiredToggle';
 import './task-card-editor.css';
@@ -50,6 +51,7 @@ export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
           title={block.name || 'this Parallel block'}
         />
         <SelfImproveSection block={block} onChange={update} />
+        <GatherContractSection block={block} onChange={update} />
       </div>
       <BlockBody
         parentId={block.id}
