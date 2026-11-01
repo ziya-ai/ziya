@@ -123,10 +123,27 @@ class _DeltaFilter:
     _THINK_OPEN = "<thinking-data>"
     _THINK_CLOSE = "</thinking-data>"
     _SA = "<self_assessment"
+    _PROG = "<progress"  # <progress note=.../> is a live UI note, not prose
 
     def __init__(self) -> None:
         self._buf = ""
         self._in_think = False
+        self._gap = False   # a progress tag was just removed
+        self._last = ""     # last character emitted
+
+    def _put(self, out, s: str) -> None:
+        """Append visible text.  Where a progress tag was removed between
+        two non-space characters, insert one space so the sentences either
+        side are not glued (mirrors completion_check.strip_progress_tags).
+        """
+        if not s:
+            return
+        if self._gap:
+            if not s[0].isspace() and self._last and not self._last.isspace():
+                s = " " + s
+            self._gap = False
+        out.append(s)
+        self._last = s[-1]
 
     @staticmethod
     def _tail_prefix_len(buf: str, cands) -> int:
@@ -151,9 +168,9 @@ class _DeltaFilter:
                 break
             lt = self._buf.find("<")
             if lt == -1:
-                out.append(self._buf); self._buf = ""; break
+                self._put(out, self._buf); self._buf = ""; break
             if lt > 0:
-                out.append(self._buf[:lt]); self._buf = self._buf[lt:]
+                self._put(out, self._buf[:lt]); self._buf = self._buf[lt:]
             if self._buf.startswith(self._THINK_OPEN):
                 self._buf = self._buf[len(self._THINK_OPEN):]
                 self._in_think = True
@@ -164,20 +181,32 @@ class _DeltaFilter:
                     self._buf = self._buf[gt + 1:]
                     continue
                 break  # incomplete self_assessment tag — wait for more
-            if any(c.startswith(self._buf) for c in (self._THINK_OPEN, self._SA)):
+            if self._buf.startswith(self._PROG):
+                gt = self._buf.find(">")
+                if gt != -1:
+                    self._buf = self._buf[gt + 1:]
+                    self._gap = True
+                    continue
+                break  # incomplete progress tag — wait for more
+            if any(c.startswith(self._buf) for c in (self._THINK_OPEN, self._SA, self._PROG)):
                 break  # buffered '<' could still become a tag
-            out.append("<"); self._buf = self._buf[1:]  # a real '<' (math/code)
+            self._put(out, "<"); self._buf = self._buf[1:]  # a real '<' (math/code)
         return "".join(out)
 
     def flush(self) -> str:
         """Emit any safe remainder at stream end.  An unclosed thinking
-        block is dropped (never completed → never shown)."""
+        block is dropped (never completed → never shown), and so is an
+        unterminated self_assessment tag."""
         if self._in_think:
             self._buf = ""
             return ""
         out = self._buf
         self._buf = ""
-        return out
+        if out.startswith((self._SA, self._PROG)):
+            return ""
+        res = []
+        self._put(res, out)
+        return "".join(res)
 
 
 class _IterationTally:
@@ -293,11 +322,16 @@ class _StdoutSink:
         self._mid_text = False  # True while a delta stream is open on the line
         self._filter = None     # per-task _DeltaFilter, reset on task_started
 
-    def _break_text(self) -> None:
-        if self._filter is not None:
+    def _break_text(self, end_task: bool = False) -> None:
+        """End the open text line.  The per-task delta filter is flushed
+        and discarded only when the task ends (``end_task``): a tool call
+        mid-task must keep it, or every delta after the first tool call —
+        including the trailing self_assessment tag — prints unfiltered."""
+        if end_task and self._filter is not None:
             tail = self._filter.flush()
             if tail:
                 sys.stdout.write(tail)
+                self._mid_text = True
             self._filter = None
         if self._mid_text:
             print()
@@ -306,7 +340,7 @@ class _StdoutSink:
     async def send_json(self, event: dict) -> None:
         etype = event.get("type")
         if etype == "task_started":
-            self._break_text()
+            self._break_text(end_task=True)
             label = event.get("block_name") or event.get("block_id") or "task"
             print(_c("36", f"  ▸ {label}"))
             self._filter = _DeltaFilter()
@@ -321,10 +355,11 @@ class _StdoutSink:
             self._break_text()
             print(_c("90", f"    ⚙ {event.get('tool_name') or 'tool'}"))
         elif etype == "task_finished":
-            self._break_text()
+            self._break_text(end_task=True)
             if not event.get("ok", True):
                 print(_c("31", f"    ✗ {event.get('error', '')}"))
         elif etype == "iteration_started":
+            self._break_text()
             idx = event.get("index")
             if idx is not None:
                 print(_c("90", f"  ↻ iteration {idx}"))
