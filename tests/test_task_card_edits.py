@@ -337,3 +337,72 @@ async def test_tool_refuses_root_and_edits_together(env):
         card_id=card.id, root=_card_root(),
         edits=[{"block_id": "s", "set": {"name": "x"}}])
     assert out.get("error") is True
+
+
+# ── state_variables.<name> (2026-10-28) ─────────────────────────
+# Attribution: a model changing three variables on a State block whose
+# state_variables held a ~10 KB rules text got "the only dotted keys are
+# 'scope.<field>'" and had to resend (retype) the whole dict.
+
+def _state_root():
+    root = _card_root()
+    root["body"][0]["state_variables"] = {
+        "rules_v2": "R" * 10_000, "narrow_ct_min": 3}
+    return root
+
+
+class TestStateVariableEdits:
+    def test_sets_and_adds_one_variable_leaving_others_identical(self):
+        new, touched, problems = apply_block_edits(_state_root(), [
+            {"block_id": "s", "set": {"state_variables.narrow_ct_min": 5,
+                                      "state_variables.min_free_gb": 20}}])
+        assert problems == []
+        assert touched == 1
+        sv = new["body"][0]["state_variables"]
+        assert sv == {"rules_v2": "R" * 10_000, "narrow_ct_min": 5,
+                      "min_free_gb": 20}
+
+    def test_null_removes_a_variable(self):
+        new, _, problems = apply_block_edits(_state_root(), [
+            {"block_id": "s", "set": {"state_variables.narrow_ct_min": None}}])
+        assert problems == []
+        assert "narrow_ct_min" not in new["body"][0]["state_variables"]
+        assert "rules_v2" in new["body"][0]["state_variables"]
+
+    def test_creates_dict_on_block_without_variables(self):
+        new, _, problems = apply_block_edits(_card_root(), [
+            {"block_id": "s", "set": {"state_variables.x": "y"}}])
+        assert problems == []
+        assert new["body"][0]["state_variables"] == {"x": "y"}
+
+    def test_removing_missing_variable_is_a_problem_and_nothing_applies(self):
+        root = _state_root()
+        new, touched, problems = apply_block_edits(root, [
+            {"block_id": "s", "set": {"state_variables.nope": None,
+                                      "state_variables.narrow_ct_min": 9}}])
+        assert touched == 0 and problems and "nope" in problems[0]
+        assert new is root
+        assert root["body"][0]["state_variables"]["narrow_ct_min"] == 3
+
+    def test_other_dotted_heads_still_refused_and_message_names_both(self):
+        _, _, problems = apply_block_edits(_card_root(), [
+            {"block_id": "s", "set": {"foo.bar": 1}}])
+        assert problems and "state_variables.<name>" in problems[0]
+        assert "scope.<field>" in problems[0]
+
+
+@pytest.mark.asyncio
+async def test_tool_edits_one_state_variable_and_persists(env):
+    from app.mcp.tools.task_card_tools import TaskCardWriteTool
+    from app.storage.task_cards import TaskCardStorage
+    from app.models.task_card import TaskCardCreate, Block
+    storage = TaskCardStorage(env["project_dir"])
+    card = storage.create(TaskCardCreate(name="Rules", root=Block(**_state_root())))
+    out = await TaskCardWriteTool().execute(card_id=card.id, edits=[
+        {"block_id": "s", "set": {"state_variables.narrow_ct_min": 7,
+                                  "state_variables.rules_v3": "new"}}])
+    assert out.get("success") is True, out
+    sv = storage.get(card.id).root.body[0].state_variables
+    assert sv["narrow_ct_min"] == 7
+    assert sv["rules_v3"] == "new"
+    assert sv["rules_v2"] == "R" * 10_000
