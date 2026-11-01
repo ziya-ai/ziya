@@ -72,6 +72,31 @@
 }
 .tc-rail-chip__attempt { color: var(--tc-muted, #888); font-size: 11px; }
 
+/* ── Job chips: a shell process, not a card ────────────────────────── */
+.tc-rail-chip__name--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.tc-job-popover__meta {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  opacity: 0.8;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+}
+.tc-job-popover__tail {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.45;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 4px;
+}
+
 /* ── Tile slot: scroll target + flash ─────────────────────────────── */
 .tc-tile-slot { scroll-margin-top: 48px; border-radius: 8px; }
 .tc-tile-slot--flash {
