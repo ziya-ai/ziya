@@ -31,7 +31,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import resource
+try:
+    import resource
+except ImportError:  # Windows: no resource module; peak RSS stays None
+    resource = None
 import signal
 import subprocess
 import sys
