@@ -843,9 +843,10 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
     for i, hunk in enumerate(hunks, 1):
         hunk_id = hunk.get('number', i)
         
-        # Check if the hunk is malformed
+        # Check if the hunk is malformed.  Counts are optional in a unified
+        # diff header ("@@ -63 +63 @@"); the parser defaults them to 1.
         if 'header' in hunk and '@@ -' in hunk['header']:
-            header_match = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@', hunk['header'])
+            header_match = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', hunk['header'])
             if not header_match:
                 logger.warning(f"Malformed hunk header detected: {hunk['header']}")
                 malformed_hunks.append(hunk_id)

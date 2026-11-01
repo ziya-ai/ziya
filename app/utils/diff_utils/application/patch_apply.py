@@ -2444,36 +2444,52 @@ def apply_diff_with_difflib_hybrid_forced(
                     is_simple_replacement = has_additions and has_removals and len(h.get('old_block', [])) == len(new_lines_content)
                     
                     if is_simple_replacement:
-                        # Try to preserve context lines for simple replacements
-                        added_set = set(a.strip() for a in h.get('added_lines', []))
-                        old_block = h.get('old_block', [])
-                        removed_set = set(r.strip() for r in h.get('removed_lines', []))
-                        
-                        old_idx = 0
-                        for new_line in new_lines_content:
-                            new_stripped = new_line.strip()
-                            is_addition = new_stripped in added_set
-                            
-                            if is_addition and old_idx < len(old_block):
-                                # Check if this replaces a removed line
-                                old_stripped = old_block[old_idx].strip()
-                                if old_stripped in removed_set:
-                                    # Replacement - use new line
-                                    new_lines_with_endings.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
+                        # Preserve the file's own context lines (their exact
+                        # whitespace) and take only '+' lines from the diff.
+                        # The walk is driven by the hunk's raw diff markers so
+                        # the old-side cursor advances for every ' ' and '-'
+                        # line exactly as the diff states.  The previous
+                        # version walked new_lines against old_block in
+                        # lockstep, guessing from content which lines were
+                        # additions and consuming at most one old line per
+                        # '+'.  A hunk that adds one line and replaces two
+                        # with one has equal old/new length (so it entered
+                        # this branch) but misaligns by one: the trailing
+                        # context was then copied from the wrong file line,
+                        # keeping a removed line and dropping a kept one
+                        # (kpop-chunnel.md, 2026-10-17).  Fall back to plain
+                        # reconstruction when the raw markers do not account
+                        # for old_block/new_lines exactly.
+                        raw_markers = []
+                        for raw_line in (h.get('lines') or []):
+                            if raw_line.startswith('\\'):
+                                continue
+                            m = raw_line[:1]
+                            if m not in ('+', '-', ' '):
+                                m = ' ' if raw_line.strip() == '' else None
+                            if m is not None:
+                                raw_markers.append(m)
+                        n_old = sum(1 for m in raw_markers if m in (' ', '-'))
+                        n_new = sum(1 for m in raw_markers if m in (' ', '+'))
+                        if raw_markers and n_old == len(h.get('old_block', [])) and n_new == len(new_lines_content):
+                            old_idx = 0
+                            new_idx = 0
+                            for m in raw_markers:
+                                if m == '-':
                                     old_idx += 1
-                                else:
-                                    # Addition - use new line, don't consume old
-                                    new_lines_with_endings.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
-                            elif not is_addition:
-                                # Context - preserve from file
-                                if insert_pos + old_idx < len(final_lines_with_endings):
+                                    continue
+                                new_line = new_lines_content[new_idx]
+                                new_idx += 1
+                                if m == ' ' and insert_pos + old_idx < len(final_lines_with_endings):
+                                    # Context - preserve from file
                                     new_lines_with_endings.append(final_lines_with_endings[insert_pos + old_idx])
                                 else:
                                     new_lines_with_endings.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
-                                old_idx += 1
-                            else:
-                                # Fallback
-                                new_lines_with_endings.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
+                                if m == ' ':
+                                    old_idx += 1
+                        else:
+                            for line in new_lines_content:
+                                new_lines_with_endings.append(line + dominant_ending)
                     else:
                         # Standard reconstruction for complex cases
                         for line in new_lines_content:
