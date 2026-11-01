@@ -111,12 +111,12 @@ describe('query: per-source columns', () => {
         expect(screen.getByRole('status')).toHaveTextContent('jira-notes installed → on hand');
     });
     it('a 409 from install is phrased, not swallowed', async () => {
-        const install = jest.fn(async () => { throw Object.assign(new Error('x'), { reason: 'mcp_ondemand_unsupported' }); });
+        const install = jest.fn(async () => { throw Object.assign(new Error('x'), { reason: 'environment_not_placeable' }); });
         setup({ install });
         await screen.findByTestId('find-home');
         await type('jira');
         await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Install SetB within reach' })); });
-        expect(screen.getByRole('status')).toHaveTextContent('coming soon');
+        expect(screen.getByRole('status')).toHaveTextContent('part of the environment');
     });
     it('MCP hits link to the registry and never offer a local install', async () => {
         const openRegistry = jest.fn();

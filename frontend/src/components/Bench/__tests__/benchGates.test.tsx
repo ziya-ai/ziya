@@ -65,6 +65,24 @@ it('a held item is not on hand in the gauge; re-authorizing from the drawer clea
     expect(f).not.toHaveBeenCalled();
 });
 
+it('the gate sits at the top of the drawer, above the placement and provenance sections', async () => {
+    // Those sections (and the tool table under them) can run long; the action the
+    // gate asks for must be visible without scrolling past them.
+    const detail = async () => ({ key: 'mcp:pippin', kind: 'mcp' as const, name: 'pippin', description: 'a long description',
+                                  tools: ['mcp_scan'], connected: true, gate: GATE });
+    render(<BenchPanel bench={{ ready: true, error: null, items: [held()], dropped: [], weight: { always: 0, ondemand: 0, environment: 0 },
+                                deltas: { conversation: 0, project: 0, user: 0 }, lenses: ['project'], lens: 'project',
+                                setLens: () => {}, place: async () => {}, detail, reauthorize: async () => ({}) } as any} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Details for pippin' }));
+    const gate = await screen.findByTestId('detail-gate');
+    const before = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(before(screen.getByTestId('detail-close'), gate)).toBe(true);           // still under the header row
+    expect(before(gate, screen.getByText('a long description'))).toBe(true);
+    expect(before(gate, screen.getByTestId('sits-effective'))).toBe(true);          // above WHERE IT SITS
+    expect(before(gate, screen.getByTestId('detail-tools'))).toBe(true);            // above the tool table
+    expect(screen.getByTestId('detail-reauthorize')).toBeInTheDocument();           // positive: the button is in the gate
+});
+
 it('without a reauthorize callback the drawer states the gate but offers no button', async () => {
     const detail = async () => ({ key: 'mcp:pippin', kind: 'mcp' as const, name: 'pippin', description: '', gate: GATE });
     render(<BenchPanel bench={{ ready: true, error: null, items: [held()], dropped: [], weight: { always: 0, ondemand: 0, environment: 0 },
