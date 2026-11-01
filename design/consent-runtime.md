@@ -169,6 +169,21 @@ optional; tools without one get `preflight: null` and the panel shows args.
      else. The frontend replays it only if the last message is still the
      human's (`decideReattach` "answer already persisted" refusal).
    - No `conversation_id` → legacy response-owned stream (one-shot callers).
+   - Reload sweep (2026-10-28): the watcher originally checked only the
+     viewed conversation, so a reload cancelled (via grace expiry) any turn
+     running in another conversation. `GET /api/chat/turns`
+     (`all_statuses()`) is read once per page load and every known
+     non-viewed conversation's turn goes through `decideReattach`.
+   - Durable turns (2026-10-28): every tool call holds the turn
+     (`held(conv, "tool:<id>")`), and a turn that has run a tool uses
+     `ZIYA_CHAT_TURN_UNWATCHED_GRACE_SECS` (default 0 = never cancelled for
+     lack of a viewer) instead of the 60 s grace, for headless and batch work.
+     Each turn is checkpointed to `~/.ziya/chat_turns/<conv>.{status,frames}.json`
+     (`app/agents/chat_turn_store.py`, `conversation_data` encryption), and
+     the read API falls back to the record after the in-memory 5 min. A
+     record left `active` by another boot id reads as interrupted. Still
+     open: the server does not write the answer into the chat record
+     itself; it reaches chat history only when a browser reattaches.
    - Explicit `git <sub>` shell grants and the CLI `/shell git` path are
      unaffected; nothing here touches permissions.
 2. `ConsentLedger` extracted from task-run storage; `_execute_ask` adapted;
