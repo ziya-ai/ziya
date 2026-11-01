@@ -19,25 +19,30 @@ from app.mcp.client import MCPClient
 
 
 class _TransportReached(Exception):
-    """Marker raised in place of the real transport.
+    """Raised by the stand-in transport after it records the URL it got.
 
-    Deliberately NOT one of (ImportError, OSError, RuntimeError,
-    asyncio.TimeoutError, ConnectionError) -- the ones ``_connect_remote``
-    catches -- so it propagates out of the coroutine and is unambiguous
-    evidence that execution got past the URL guard.
+    ``_connect_remote`` catches every exception from the transport and
+    returns False, so neither reaching nor not reaching the transport is
+    visible from the return value or from an escaping exception. Assertions
+    are made on ``transport_marker.urls`` instead: empty means the guard
+    refused before any transport was built.
     """
 
 
 @pytest.fixture
 def transport_marker(monkeypatch):
-    """Replace the StreamableHTTP transport with the marker."""
-    def _boom(*args, **kwargs):
-        raise _TransportReached(args[0] if args else "")
+    """Replace the StreamableHTTP transport with a recorder."""
+    urls = []
 
+    def _record(*args, **kwargs):
+        urls.append(args[0] if args else kwargs.get("url"))
+        raise _TransportReached(urls[-1])
+
+    _record.urls = urls
     monkeypatch.setattr(
-        "mcp.client.streamable_http.streamable_http_client", _boom
+        "mcp.client.streamable_http.streamable_http_client", _record
     )
-    return _boom
+    return _record
 
 
 def _client(url, name="remote-test"):
@@ -70,8 +75,8 @@ class TestRefusedUrls:
     async def test_no_transport_constructed(self, url, transport_marker):
         """The marker must never fire -- the guard runs before the transport."""
         client = _client(url)
-        result = await client._connect_remote()  # would raise if it got through
-        assert result is False
+        assert await client._connect_remote() is False
+        assert transport_marker.urls == []
 
     @pytest.mark.parametrize("url", REFUSED_URLS)
     async def test_no_session_left_behind(self, url, transport_marker):
@@ -96,17 +101,15 @@ class TestPositiveControl:
         """Proves the path runs at all, and that the guard is not a blanket
         refusal that happens to satisfy every rejection case above."""
         client = _client("https://mcp.example.com/mcp")
-        with pytest.raises(_TransportReached) as exc:
-            await client._connect_remote()
-        assert "https://mcp.example.com/mcp" in str(exc.value)
+        assert await client._connect_remote() is False  # the stand-in raised
+        assert transport_marker.urls == ["https://mcp.example.com/mcp"]
 
     async def test_validated_url_passed_through_unmodified(self, transport_marker):
         """Whitespace is stripped but the destination is otherwise untouched --
         a guard that rewrote the URL would be a different bug."""
         client = _client("  https://mcp.example.com/mcp?x=1  ")
-        with pytest.raises(_TransportReached) as exc:
-            await client._connect_remote()
-        assert str(exc.value) == "https://mcp.example.com/mcp?x=1"
+        await client._connect_remote()
+        assert transport_marker.urls == ["https://mcp.example.com/mcp?x=1"]
 
 
 class TestEntryPointSeam:
