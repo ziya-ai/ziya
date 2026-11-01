@@ -527,3 +527,51 @@ class TestCwdConfinedToProject:
         assert merge_scopes(TaskScope(cwd="svc"), None).cwd == "svc"
         assert merge_scopes(TaskScope(cwd="svc"), TaskScope(cwd="svc/api")).cwd == "svc/api"
         assert merge_scopes(TaskScope(cwd="svc"), TaskScope(tools=["x"])).cwd == "svc"
+
+
+# ── hand-built JSON stores ─────────────────────────────────────────
+#
+# The cards that left gigabytes of derived JSON under .ziya/ all carried
+# instructions of the first shape below and none of the second.
+
+class TestAdHocJsonStoreWarning:
+    def _warnings(self, instructions):
+        res = _validate(_task(instructions=instructions))
+        assert not res.errors
+        return [w.message for w in res.warnings]
+
+    def test_state_json_recipe_without_data_tool_warns(self):
+        msgs = self._warnings(
+            "FIRST: file_read .ziya/card-state.json; it holds {backlog, done}. "
+            "LAST: file_write the file back with your item moved to done."
+        )
+        assert any("hand-built JSON store" in m and "analyze(" in m for m in msgs), msgs
+
+    def test_python_json_dump_without_data_tool_warns(self):
+        msgs = self._warnings(
+            "Run python3 to collect results, then json.dump(results, open('.ziya/out/r.json','w'))."
+        )
+        assert any("hand-built JSON store" in m for m in msgs), msgs
+
+    def test_per_record_history_copies_warn(self):
+        msgs = self._warnings(
+            "After each record, copy backlog.json to history/<ts>/backlog.json."
+        )
+        assert any("hand-built JSON store" in m for m in msgs), msgs
+
+    def test_same_instructions_naming_analyze_are_clean(self):
+        msgs = self._warnings(
+            "Append one line per event to .ziya/card-log.jsonl; FIRST analyze("
+            "sql='SELECT id, arg_max(status, ts) AS status FROM log GROUP BY id', "
+            "inputs={'log': '.ziya/card-log.jsonl'}) to find what is left."
+        )
+        assert not any("hand-built JSON store" in m for m in msgs), msgs
+
+    def test_store_output_counts_as_a_data_tool(self):
+        msgs = self._warnings(
+            "Read the previous json.load output and keep each finding with store_output."
+        )
+        assert not any("hand-built JSON store" in m for m in msgs), msgs
+
+    def test_instructions_without_json_handling_are_clean(self):
+        assert not self._warnings("Run the test suite and report failures.")
