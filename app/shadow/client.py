@@ -389,6 +389,13 @@ def spawn_headless(argv: List[str], *, label: Optional[str] = None,
         raise ShadowError("spawn_denied", why)
     if ceiling not in ("gated", "unrestricted"):
         raise ShadowError("bad_request", f"invalid ceiling: {ceiling!r}")
+    if sys.platform == "win32":
+        # The headless host needs fork, fcntl and termios, and Popen has
+        # no pass_fds here to hand it the announce pipe either.  The same
+        # message the host itself would have announced.
+        raise ShadowError("spawn_failed",
+                          "shadow sessions require a POSIX pty "
+                          "and are not available on Windows")
     r, w = os.pipe()
     cmd = [sys.executable, "-m", "app.shadow.headless",
            "--ceiling", ceiling, "--spawned-by", _json.dumps(spawned_by or {}),
