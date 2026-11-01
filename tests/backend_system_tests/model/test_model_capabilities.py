@@ -251,6 +251,59 @@ def test_streaming(endpoint, model):
 
 # --- Context window tests ---
 
+_API_KEY_ENV = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
+                "google": "GOOGLE_API_KEY", "zai": "ZAI_API_KEY", "meta": "META_API_KEY"}
+
+
+def invoke_via_provider(endpoint, model, prompt, max_output_tokens=1024):
+    """One call through the production provider path (app/providers/factory).
+
+    init_model() builds the legacy LangChain wrapper from
+    ModelManager.initialize_model, which chat no longer streams through;
+    it sends ``max_tokens`` that GPT-6 on Bedrock rejects and returns an
+    empty body for Anthropic direct, so a large-context failure there said
+    nothing about the product.  Provider errors fail the test by name.
+    """
+    cfg_raw = config.MODEL_CONFIGS.get(endpoint, {}).get(model, {})
+    if cfg_raw.get("preview"):
+        pytest.skip(f"{endpoint}/{model} is preview — model may not be deployed")
+    from app.providers.base import ProviderConfig
+    from app.providers.factory import create_provider, is_endpoint_supported
+    if not is_endpoint_supported(endpoint):
+        pytest.skip(f"no provider for endpoint {endpoint}")
+    cfg = ModelManager.get_model_config(endpoint, model)
+    model_id = cfg["model_id"]
+    if isinstance(model_id, dict):
+        model_id = model_id.get("us") or next(iter(model_id.values()))
+    provider = create_provider(
+        endpoint, model_id, cfg,
+        aws_profile=os.environ.get("ZIYA_AWS_PROFILE") or os.environ.get("AWS_PROFILE") or "ziya",
+        region=os.environ.get("AWS_REGION") or "us-west-2",
+        api_key=os.environ.get(_API_KEY_ENV.get(endpoint, ""), None),
+    )
+
+    async def _call():
+        out, errors = [], []
+        stop = None
+        async for ev in provider.stream_response(
+                [{"role": "user", "content": prompt}], None, [],
+                ProviderConfig(max_output_tokens=max_output_tokens, temperature=None,
+                               model_config=cfg)):
+            content = getattr(ev, "content", None)
+            if getattr(ev, "type", None) == "error" or "error" in type(ev).__name__.lower():
+                errors.append(str(getattr(ev, "message", None) or content or ev)[:300])
+            elif isinstance(content, str):
+                out.append(content)
+            stop = getattr(ev, "stop_reason", None) or stop
+        return "".join(out), errors, stop
+
+    text, errors, stop = asyncio.run(_call())
+    assert not errors, f"{endpoint}/{model} provider error: {errors[0]}"
+    # A refusal ends the stream with no text; say so rather than fail on "".
+    assert stop != "refusal", f"{endpoint}/{model} refused the prompt (stop_reason=refusal)"
+    return text
+
+
 def get_large_context_models():
     """Models with token_limit >= 200000."""
     models = []
@@ -267,14 +320,17 @@ def get_large_context_models():
 @pytest.mark.parametrize("endpoint,model", get_large_context_models())
 def test_large_context(endpoint, model):
     """Test that large-context models can handle substantial input."""
-    llm, model_config = init_model(endpoint, model)
 
     # ~10k tokens of padding + a hidden fact
     padding = "The quick brown fox jumps over the lazy dog. " * 500
-    hidden = "The secret code is ZIYA42."
-    prompt = f"Read the following text carefully and find the secret code.\n\n{padding}\n{hidden}\n{padding}\n\nWhat is the secret code? Answer with just the code."
+    # Benign wording: Claude Sonnet 4.6 answered "find the secret code"
+    # with stop_reason=refusal, which read as an empty response.
+    hidden = "The project reference number is ZIYA42."
+    prompt = (f"Read the following text and find the project reference number.\n\n"
+              f"{padding}\n{hidden}\n{padding}\n\n"
+              f"What is the project reference number? Answer with just the number.")
 
-    content = invoke_model(llm, [HumanMessage(content=prompt)])
+    content = invoke_via_provider(endpoint, model, prompt)
     assert content is not None and len(content) > 0
     assert "ZIYA42" in content, f"Expected 'ZIYA42' in response from {endpoint}/{model}, got: {content[:200]}"
     print(f"✅ {endpoint}/{model} large context - found hidden code")
