@@ -189,6 +189,89 @@ async def test_double_retract_second_errors():
     assert "no pending proposal" in second["message"].lower()
 
 
+# ── the id survives into the replayed chat record ───────────────────
+#
+# The frontend persists only the formatter's message line into the
+# message (mcpFormatter.formatMemoryResult uses obj.message), and that
+# line is what the model sees on later turns.  A model that proposed
+# something last turn and wanted to take it back reported "that tool
+# call didn't return an ID, so I can't retract it" — the id existed, but
+# only in a sibling field the record dropped.
+
+@pytest.mark.asyncio
+async def test_propose_message_line_names_the_id():
+    tool = MemoryProposeTool()
+    result = await tool.execute(content="Mobility is not deployed in prod.",
+                                conversation_id=CONV_A)
+    assert result["proposal_id"] in result["message"], result
+
+
+# ── retract by content, when the id is gone ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_retract_by_exact_content_without_id():
+    content = "Mobility is not deployed in production."
+    pid = await _propose(content, CONV_A)
+    tool = MemoryRetractProposalTool()
+    result = await tool.execute(content=content, conversation_id=CONV_A)
+    assert result.get("success") is True, result
+    assert result["proposal_id"] == pid
+    assert pid not in _pending_ids()
+
+
+@pytest.mark.asyncio
+async def test_retract_by_unique_substring_of_own_proposal():
+    pid = await _propose("The planner cell for mobility is not deployed anywhere yet.", CONV_A)
+    other = await _propose("An unrelated fact about shard counts.", CONV_A)
+    tool = MemoryRetractProposalTool()
+    result = await tool.execute(content="mobility is not deployed", conversation_id=CONV_A)
+    assert result.get("success") is True, result
+    assert result["proposal_id"] == pid
+    assert pid not in _pending_ids() and other in _pending_ids()
+
+
+@pytest.mark.asyncio
+async def test_retract_by_content_never_reaches_another_conversation():
+    # The substring fallback is scoped to the caller's own proposals, and
+    # the exact-hash path still meets the ownership gate.
+    content = "B's fact about mobility deployment."
+    pid = await _propose(content, CONV_B)
+    tool = MemoryRetractProposalTool()
+    exact = await tool.execute(content=content, conversation_id=CONV_A)
+    assert exact.get("error") is True, exact
+    fuzzy = await tool.execute(content="mobility deployment", conversation_id=CONV_A)
+    assert fuzzy.get("error") is True, fuzzy
+    assert pid in _pending_ids()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_content_is_refused_and_own_proposals_listed():
+    p1 = await _propose("Mobility is not deployed in us-east.", CONV_A)
+    p2 = await _propose("Mobility is not deployed in eu-west.", CONV_A)
+    tool = MemoryRetractProposalTool()
+    result = await tool.execute(content="not deployed", conversation_id=CONV_A)
+    assert result.get("error") is True, result
+    # The refusal tells the model what it CAN retract, by id.
+    assert p1 in result["message"] and p2 in result["message"]
+    assert p1 in _pending_ids() and p2 in _pending_ids()
+
+
+@pytest.mark.asyncio
+async def test_unknown_id_lists_own_open_proposals():
+    pid = await _propose("Something this conversation proposed.", CONV_A)
+    result = await _retract("prop_doesnotexist", CONV_A)
+    assert result.get("error") is True
+    assert pid in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_retract_requires_id_or_content():
+    tool = MemoryRetractProposalTool()
+    result = await tool.execute(conversation_id=CONV_A)
+    assert result.get("error") is True
+    assert "required" in result["message"].lower()
+
+
 # ── isolation: retracting A's proposal leaves B's intact ────────────
 
 @pytest.mark.asyncio
