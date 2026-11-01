@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Tests for the "stage is running" indicator in TaskRunMap.
  *
  * The original signal was one 9%-alpha row tint plus an icon animated

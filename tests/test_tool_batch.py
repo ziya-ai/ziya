@@ -81,7 +81,10 @@ class TestIsReadOnlyCall:
             assert is_read_only_call(name, {}) is True
 
     def test_write_and_unknown_tools_are_serial(self):
-        for name in ("file_write", "context_add_file", "render_diagram", "some_external_tool"):
+        # render_diagram only observes (it renders to an image the model
+        # looks at) and overlaps since 2026-10-16; context_add_file mutates
+        # the conversation's context and stays a barrier.
+        for name in ("file_write", "context_add_file", "job_start", "some_external_tool"):
             assert is_read_only_call(name, {}) is False
 
     def test_shell_delegates_to_command_predicate(self):
