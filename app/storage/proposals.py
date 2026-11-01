@@ -33,7 +33,6 @@ Design choices:
 from __future__ import annotations
 
 import hashlib
-import fcntl
 import json
 import os
 import time
@@ -42,6 +41,7 @@ from threading import RLock
 from typing import Any, Dict, Iterable, List, Optional
 
 from app.models.memory import MemoryProposal
+from app.utils.file_locking import lock_exclusive, unlock
 from app.utils.logging_utils import logger
 
 
@@ -124,7 +124,7 @@ class ProposalsStore:
             self._store._lock.acquire()
             try:
                 self._fd = os.open(self._store._lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-                fcntl.flock(self._fd, fcntl.LOCK_EX)
+                lock_exclusive(self._fd)
             except Exception:
                 if self._fd is not None:
                     os.close(self._fd)
@@ -139,7 +139,7 @@ class ProposalsStore:
         def __exit__(self, *exc):
             try:
                 if self._fd is not None:
-                    fcntl.flock(self._fd, fcntl.LOCK_UN)
+                    unlock(self._fd)
                     os.close(self._fd)
             finally:
                 self._store._lock.release()

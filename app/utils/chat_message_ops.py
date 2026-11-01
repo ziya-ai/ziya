@@ -37,11 +37,12 @@ heals itself after one round trip.
 """
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+from app.utils.file_locking import lock_exclusive, unlock
 
 # Fields of a message that only an explicit endpoint (or the server turn
 # writer) may change.  Everything else on a message (muted, _edited,
@@ -91,11 +92,11 @@ def chat_record_lock(storage: Any) -> Iterator[None]:
     lock_path = storage.chats_dir / ".messages.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        lock_exclusive(fh)
         try:
             yield
         finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            unlock(fh)
 
 
 # ── identity ──────────────────────────────────────────────────────────────

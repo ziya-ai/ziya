@@ -32,7 +32,6 @@ Appends are serialised with ``flock`` like the evidence ledger's.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -40,6 +39,7 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
+from app.utils.file_locking import lock_exclusive, unlock
 
 STORE_DIR = Path(".ziya") / "outputs"
 _FAMILY_RE = re.compile(r"^(?:ziya|project):([A-Za-z0-9][A-Za-z0-9_.-]*?)(?:/v\d+)?$")
@@ -98,7 +98,7 @@ def append(
     path.parent.mkdir(parents=True, exist_ok=True)
     key = data.get("id") if isinstance(data, Mapping) and isinstance(data.get("id"), str) else None
     with path.open("a+", encoding="utf-8") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        lock_exclusive(fh)
         try:
             version = 1
             if key is not None:
@@ -119,7 +119,7 @@ def append(
             fh.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
             fh.flush()
         finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            unlock(fh)
     return rec
 
 
