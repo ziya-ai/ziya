@@ -7342,4 +7342,4 @@ tokens = ["tiktoken"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "83cb1d00ea4b31765b4d1f239ea6d24b408482ef18e36ce13f9d99cb3bb60784"
+content-hash = "be254abea4872b809e53449713e33d9be3f3a37016dd78f19df94bfa1f8be681"
