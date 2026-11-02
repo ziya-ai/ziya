@@ -123,12 +123,12 @@ class SessionEntry:
         if sys.platform == "win32":
             # os.kill(pid, 0) is no probe on Windows: recently exited
             # pids report live and unknown pids raise OSError (winerror
-            # 87).  psutil (a hard dependency) raises NoSuchProcess, an
-            # OSError subclass, for anything gone or unreachable.
+            # 87). psutil (a hard dependency) reports a missing or
+            # inaccessible process through its own exception hierarchy.
+            import psutil
             try:
-                import psutil
                 psutil.Process(self.pid)
-            except OSError:
+            except (psutil.Error, OSError):
                 return False
         else:
             try:

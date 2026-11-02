@@ -36,6 +36,7 @@ UNGRANTED_MAX_RUNTIME_S = 24 * 3600
 MAX_JOBS_PER_OWNER = 8
 MAX_JOBS_PER_USER = 32
 KILL_GRACE_S = 10.0
+_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 WAIT_CAP_S = 3600
 
 
@@ -455,10 +456,10 @@ class JobManager:
                 break
             time.sleep(0.1)
         if pgid and _group_alive(pgid):
-            _killpg(pgid, signal.SIGKILL)
+            _killpg(pgid, _KILL_SIGNAL)
         if wrapper and _pid_alive(wrapper):
             try:
-                os.kill(wrapper, signal.SIGKILL)
+                os.kill(wrapper, _KILL_SIGNAL)
             except OSError:
                 pass
         time.sleep(0.2)

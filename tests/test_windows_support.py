@@ -578,6 +578,58 @@ def test_mcp_servers_do_not_receive_the_consoles_ctrl_c():
     assert spawn.call_args.kwargs["creationflags"] == getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 
+# -- process cleanup -----------------------------------------------------------
+
+@windows_only
+def test_shadow_registry_treats_an_exited_process_as_dead(tmp_path):
+    from app.shadow.registry import SessionEntry
+
+    proc = subprocess.Popen([sys.executable, "-c", "pass"],
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+    proc.wait(timeout=10)
+    entry = SessionEntry("exited", proc.pid, "exited", [], str(tmp_path), "",
+                         str(tmp_path / "socket"), str(tmp_path / "journal"))
+    assert entry.is_alive() is False
+
+
+@windows_only
+def test_job_max_runtime_stops_the_child_and_records_exit(tmp_path):
+    """Exercise the real wrapper watchdog, including Windows tree termination."""
+    import json
+    from app.jobs.wrap import _git_sh
+
+    if shutil.which("sh") is None and _git_sh() is None:
+        pytest.skip("Git for Windows is required for job commands")
+    python = sys.executable.replace("\\", "/")
+    command = (f'"{python}" -c "import os,time; '
+               'print(os.getpid(), flush=True); time.sleep(60)"')
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "app.jobs.wrap", "--job-dir", str(tmp_path),
+         "--cwd", str(tmp_path), "--max-runtime", "1", "--", command],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        out, err = proc.communicate(timeout=20)
+    finally:
+        if proc.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=10)
+            proc.communicate(timeout=5)
+    assert proc.returncode == 0, (out, err)
+    assert b"Traceback" not in err and b"Exception in thread" not in err
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["state"] == "exited" and status["reason"] == "max_runtime"
+    assert status["exit_code"] != 0
+    import psutil
+    assert not psutil.pid_exists(status["pgid"])
+    records = [json.loads(line) for line in (tmp_path / "journal.jsonl").read_text().splitlines()]
+    child_pids = [int(record["text"].strip()) for record in records if record["t"] == "output"]
+    assert child_pids, "the command must start before the watchdog fires"
+    for pid in child_pids:
+        assert not psutil.pid_exists(pid)
+
+
 # -- ziya-install-extras --------------------------------------------------------
 
 @pytest.fixture

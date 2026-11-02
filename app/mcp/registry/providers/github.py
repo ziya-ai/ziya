@@ -246,7 +246,7 @@ class GitHubRegistryProvider(RegistryProvider):
                     InstallationHelper.install_pypi_package, pip_package, install_dir)
                 if not install_result['success']:
                     raise RuntimeError(install_result['error'])
-                pip_command = install_result['command']            
+                pip_command = install_result['command']
             # git clone installation
             elif service.repository_url:
                 result = await asyncio.to_thread(
