@@ -23,7 +23,6 @@ the spec's SQLite cache is deferred until a project is large enough to need it.
 """
 from __future__ import annotations
 
-
 import contextlib
 import hashlib
 import hmac

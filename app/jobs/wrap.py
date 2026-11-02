@@ -46,6 +46,7 @@ OUTPUT_CHUNK_BYTES = 64 * 1024
 ROTATION_CAP_BYTES = 50 * 1024 * 1024
 TOTAL_CAP_BYTES = 200 * 1024 * 1024
 KILL_GRACE_S = 10.0
+_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 def _ts() -> str:
@@ -121,7 +122,6 @@ def _write_status(job_dir: str, status: dict) -> None:
 
 def _git_sh() -> Optional[str]:
     """Git for Windows' ``sh.exe`` from the common install roots, or None."""
-    import shutil
     roots = [os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", ""),
              os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")]
     for root in roots:
@@ -136,12 +136,9 @@ def _git_sh() -> Optional[str]:
 def _killpg(pgid: int, sig: int) -> None:
     if sys.platform == "win32":
         # No process groups on Windows; the recorded pgid is the child's
-        # pid.  /T reaches the whole tree; /F only on the escalation, so a
-        # bare taskkill can post WM_CLOSE first, like the TERM-then-KILL
-        # order the POSIX path uses.
-        import shutil
-        force = ["/F"] if sig == signal.SIGKILL else []
-        subprocess.run(["taskkill", *force, "/T", "/PID", str(pgid)],
+        # pid. Console jobs have no WM_CLOSE handler, so terminate their
+        # tree directly. Windows has no SIGKILL or POSIX TERM grace period.
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pgid)],
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL)
         return
@@ -204,7 +201,7 @@ def run(job_dir: str, cwd: str, command: str, max_runtime_s: float) -> int:
         while proc.poll() is None and time.monotonic() < deadline:
             time.sleep(0.1)
         if proc.poll() is None:
-            _killpg(pgid, signal.SIGKILL)
+            _killpg(pgid, _KILL_SIGNAL)
 
     # The manager's job_kill signals THIS wrapper with TERM; relay to the
     # group so the whole tree goes, not just us.
