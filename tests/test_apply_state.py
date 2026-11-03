@@ -143,9 +143,11 @@ index 1234567..abcdefg 100644
         self.assertFalse(result["changes_written"],
                         "changes_written should be False for already applied changes")
         
-        # Status should be success
-        self.assertEqual(result["status"], "success",
-                        f"Status should be success for already applied changes, got {result['status']}")
+        # An already-present change is reported as its own status, not as a
+        # fresh success: nothing was written, and the caller can tell the two
+        # apart (the apply button reads this).
+        self.assertEqual(result["status"], "already_applied",
+                        f"Status should be already_applied, got {result['status']}")
         
         # already_applied should have entries
         self.assertTrue(len(result["details"]["already_applied"]) > 0,

@@ -151,32 +151,6 @@ def _run_language_validation(pipeline: "DiffPipeline", file_path: str, original_
         # Language validation must never crash the pipeline.
         logger.warning(f"Language validation skipped (error): {_lang_exc}")
 
-def clean_duplicate_headers(diff_content: str) -> str:
-    """
-    Clean up duplicate header lines in a diff that can cause 'trailing garbage' errors.
-    
-    Args:
-        diff_content: The diff content to clean
-        
-    Returns:
-        The cleaned diff content
-    """
-    lines = diff_content.splitlines()
-    cleaned_lines = []
-    seen_headers = set()
-    
-    for line in lines:
-        # Skip duplicate +++ or --- lines
-        if line.startswith('+++ ') or line.startswith('--- '):
-            if line in seen_headers:
-                continue
-            seen_headers.add(line)
-        
-        cleaned_lines.append(line)
-    
-    return '\n'.join(cleaned_lines)
-
-
 def _norm_diff_path(p: str) -> str:
     p = os.path.normpath(p.strip())
     while p.startswith("./"):
@@ -256,6 +230,15 @@ def clean_duplicate_headers(diff_content: str) -> str:
     seen_headers = set()
     
     for line in lines:
+        # Dedupe WITHIN one file block only.  A combined diff that carries
+        # the same file in several ``diff --git`` blocks (a model emitting one
+        # block per hunk) repeats identical ---/+++ lines legitimately; with
+        # a text-wide set the later blocks lost their file headers,
+        # split_combined_diff could not attach their hunks to a file, and
+        # every hunk after the first was silently dropped
+        # (markdown_renderer_fence_lookahead_false_applied).
+        if line.startswith('diff --git '):
+            seen_headers = set()
         # Skip duplicate +++ or --- lines
         if line.startswith('+++ ') or line.startswith('--- '):
             if line in seen_headers:
@@ -358,6 +341,13 @@ def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optio
                 git_diff = matching_diffs[0]
             logger.debug(f"Found matching diff for target file: {file_path}")
             pipeline.current_diff = git_diff
+            # The stages do not read current_diff: extract_remaining_hunks()
+            # feeds them original_diff, which until here was still the raw
+            # multi-block text.  Left unmerged, the second block's
+            # ``--- a/`` / ``+++ b/`` header lines were parsed as hunk
+            # content and written into the file verbatim
+            # (markdown_renderer_fence_lookahead_false_applied).
+            pipeline.original_diff = git_diff
         else:
             logger.warning(f"No matching diff found for target file: {file_path}")
             logger.debug(f"Available diff targets: {[extract_target_file_from_diff(d) for d in individual_diffs]}")
@@ -535,6 +525,18 @@ def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optio
             # sanitize_patch_for_git_apply, as a pure recount.
             if additive_converted:
                 pipeline.original_diff = git_diff
+
+        # The one count correction that IS safe for every stage: a header that
+        # declares more lines than its body has.  Left in place it makes the
+        # hunk parser read past the hunk (into the next block's +++ header)
+        # and the single-hunk path mistake the hunk for a whole-file
+        # replacement.  Pure and direction-limited, so it carries none of the
+        # heuristics the comment above keeps away from original_diff.
+        from ..parsing.diff_preprocessor import lower_overcounted_hunk_headers
+        _lowered = lower_overcounted_hunk_headers(pipeline.original_diff)
+        if _lowered != pipeline.original_diff:
+            logger.info("diff_preprocessor: lowered over-counted hunk header(s) for the apply stages")
+            pipeline.original_diff = _lowered
 
         logger.debug(f"Before parsing hunks, git_diff first 10 lines:\n{git_diff.splitlines()[:10]}")
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
@@ -1809,8 +1811,16 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             # AND covers most of the file, treat as full replacement
             # But only if the discrepancy is significant (not just a few lines off)
             actual_old_lines = sum(1 for line in lines if line.startswith(('-', ' ')))
+            # A whole-file header with a short body reads as a truncated
+            # rewrite (the model stopped emitting the old side) and the file
+            # is replaced by the body's new side.  Only when the surplus is
+            # substantial: an 8-line header on a 6-line body (json_escape_
+            # sequence) is a miscount, and treating it as a rewrite deleted
+            # the two lines the body never mentioned.
+            _missing_old = old_count - actual_old_lines
             is_truncated_full_file = (old_count >= file_line_count * 0.9
-                                      and actual_old_lines < old_count * 0.8)
+                                      and actual_old_lines < old_count * 0.8
+                                      and _missing_old >= 5)
             is_miscounted_full_file = (actual_new_lines > new_count * 1.5
                                        and actual_new_lines > file_line_count
                                        and old_count >= file_line_count * 0.9)
@@ -1826,6 +1836,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     if bl.startswith((' ', '-')) and bl[1:].strip():
                         first_old_line = bl[1:].strip()
                         break
+                pos = 0
                 if first_old_line:
                     for idx, orig in enumerate(original_lines):
                         if orig.strip().rstrip('\n') == first_old_line:
@@ -1833,10 +1844,33 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                 new_content_lines.extend(
                                     line.rstrip('\n') for line in original_lines[:idx]
                                 )
+                            pos = idx
                             break
 
+                # Walk the body against the file.  A context line is taken
+                # from the FILE when it matches ignoring whitespace: the
+                # diff's copy may carry the model's indentation, and context
+                # must never rewrite what is there.  A removal consumes its
+                # file line.  Lines after the body's reach are NOT kept: this
+                # path exists for a header that spans the file, which says the
+                # body's new side IS the file (markdown_renderer_language_cache
+                # replaces an implementation whose tail the model never listed
+                # as removed).  The miscount case that would make that
+                # destructive is excluded above (``_missing_old``).
+                def _same(a: str, b: str) -> bool:
+                    return a.strip() == b.strip()
+
                 for line in lines:
-                    if line.startswith(('+', ' ')):
+                    if line.startswith(' '):
+                        if pos < len(original_lines) and _same(original_lines[pos], line[1:]):
+                            new_content_lines.append(original_lines[pos].rstrip('\n'))
+                            pos += 1
+                        else:
+                            new_content_lines.append(line[1:])
+                    elif line.startswith('-'):
+                        if pos < len(original_lines) and _same(original_lines[pos], line[1:]):
+                            pos += 1
+                    elif line.startswith('+'):
                         new_content_lines.append(line[1:])
 
                 logger.info(f"Applying full file replacement: {len(new_content_lines)} lines")
@@ -1844,6 +1878,11 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 new_content = '\n'.join(new_content_lines) + '\n' if not any('\n' in l for l in new_content_lines) else ''.join(new_content_lines)
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(new_content)
+                # Say so: this path wrote the file but reported
+                # changes_written=False, so callers saw "no changes needed"
+                # for a file that had changed, and the language validation
+                # (gated on changes_written) never looked at the result.
+                pipeline.result.changes_written = True
                 hunk_confidence = pipeline.result.hunks[1].hunk_data.get('correction_confidence', 1.0)
                 pipeline.update_hunk_status(1, PipelineStage.DIFFLIB, HunkStatus.SUCCEEDED, confidence=hunk_confidence)
                 pipeline.complete()

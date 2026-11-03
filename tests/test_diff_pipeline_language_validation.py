@@ -46,20 +46,28 @@ def _set_codebase_dir(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_syntax_breaking_python_diff_is_rolled_back(tmp_path):
-    """A diff that applies cleanly but produces invalid Python must be
-    rejected by the language-validation stage, the file must be rolled
-    back to its original bytes, and every succeeded hunk must be demoted
-    to ``failed`` with stage ``language_validation``."""
+    """A FUZZY-placed diff that produces invalid Python must be rejected by
+    the language-validation stage, the file rolled back to its original
+    bytes, and every succeeded hunk demoted to ``failed`` with stage
+    ``language_validation``.
+
+    Fuzzy on purpose: the rollback exists to catch the APPLIER mislaying a
+    line, which can only happen when a fuzzy stage placed the hunk.  Since
+    3ab92b0c a hunk that landed at an exact anchor (system patch / git
+    apply) is kept even if the result is invalid -- the invalidity is then
+    the diff author's, not ours (see _run_language_validation and the
+    companion test below).  The context line here carries an extra leading
+    space the file does not have, so patch and git apply both refuse it and
+    the difflib stage places the hunk.
+    """
     subject = _write(tmp_path, "broken.py", ORIGINAL_PY)
 
-    # Structurally clean diff — the @@ header and context match the file
-    # exactly — but the replacement line introduces an unclosed paren.
     bad_diff = (
         "diff --git a/broken.py b/broken.py\n"
         "--- a/broken.py\n"
         "+++ b/broken.py\n"
         "@@ -1,2 +1,2 @@\n"
-        " def add(a, b):\n"
+        "  def add(a, b):\n"
         "-    return a + b\n"
         "+    return (a + b\n"
     )
@@ -102,6 +110,26 @@ def test_syntax_breaking_python_diff_is_rolled_back(tmp_path):
         f"hunk_statuses={hunk_statuses!r}"
     )
 
+
+
+def test_exact_anchor_syntax_breaking_diff_is_kept(tmp_path):
+    """The other half of the rule: a hunk that applies at an EXACT anchor and
+    still produces invalid Python is kept.  The application stage is not a
+    linter; rolling back a faithfully applied diff hid the author's own
+    error behind a misleading 'apply failed' (3ab92b0c)."""
+    subject = _write(tmp_path, "broken.py", ORIGINAL_PY)
+    bad_diff = (
+        "diff --git a/broken.py b/broken.py\n"
+        "--- a/broken.py\n"
+        "+++ b/broken.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " def add(a, b):\n"
+        "-    return a + b\n"
+        "+    return (a + b\n"
+    )
+    result = apply_diff_pipeline(bad_diff, str(subject))
+    assert result.get("status") == "success", result.get("status")
+    assert subject.read_text() == "def add(a, b):\n    return (a + b\n"
 
 # ---------------------------------------------------------------------------
 # 2. Syntactically valid diff still succeeds (regression)

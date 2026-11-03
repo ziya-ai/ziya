@@ -260,8 +260,10 @@ index 1234567..abcdefg 100644
         # ran successfully — it doesn't compare before/after content.
         content_changed = original_content != modified_content
         
-        self.assertTrue(result["status"] in ("success", "partial"),
-                       f"Expected success/partial for no-op diff, got {result['status']}")
+        # A no-op diff (its - and + lines identical) is detected as already
+        # applied rather than reported as a fresh success.
+        self.assertTrue(result["status"] in ("success", "partial", "already_applied"),
+                       f"Expected success/partial/already_applied for no-op diff, got {result['status']}")
         self.assertFalse(content_changed,
                         "No-op diff should not alter file content")
     
