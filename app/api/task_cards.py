@@ -1074,8 +1074,9 @@ async def launch_task_card(
 def get_schedule_state(project_id: str, card_id: str) -> dict:
     """Return the scheduler's per-card fire-history record.
 
-    Empty dict if the card has no schedule block, or has one but has
-    never fired yet.  When populated:
+    Always carries ``registered`` / ``enabled`` (the registration flags the
+    schedule status line reads).  No fire-history keys if the card has no
+    schedule block, or has one but has never fired yet.  When populated:
 
         {
           "block_id":      "<schedule block id>",
