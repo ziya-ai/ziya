@@ -8,6 +8,10 @@ from botocore.exceptions import ClientError, NoCredentialsError
 import subprocess
 import json
 
+# Calls live providers / STS with real credentials; excluded from the default
+# run by pytest.ini (addopts = -m "not integration").
+pytestmark = pytest.mark.integration
+
 def test_boto3_session_direct():
     """Test direct boto3 session creation."""
     try:

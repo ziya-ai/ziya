@@ -65,12 +65,12 @@ def test_validate_model_and_endpoint():
         (is_valid, error_message, corrected_endpoint)
     """
     # Test valid model and endpoint
-    is_valid, error_message, _ = validate_model_and_endpoint("bedrock", "sonnet3.5")
+    is_valid, error_message, _ = validate_model_and_endpoint("bedrock", "sonnet4.6")
     assert is_valid
     assert error_message is None
 
     # Test invalid endpoint
-    is_valid, error_message, _ = validate_model_and_endpoint("invalid-endpoint", "sonnet3.5")
+    is_valid, error_message, _ = validate_model_and_endpoint("invalid-endpoint", "sonnet4.6")
     assert not is_valid
     assert "Invalid endpoint" in error_message
 
@@ -95,7 +95,7 @@ def _make_args(**overrides):
         exclude=[],
         profile=None,
         endpoint="bedrock",
-        model="sonnet3.5",
+        model="sonnet4.6",
         model_id=None,
         max_depth=5,
         ast=False,
@@ -120,7 +120,7 @@ def _make_args(**overrides):
     {},  # Default values
     {"exclude": ["node_modules", "venv"]},
     {"profile": "test-profile"},
-    {"endpoint": "bedrock", "model": "sonnet3.5"},
+    {"endpoint": "bedrock", "model": "sonnet4.6"},
     {"model_id": "anthropic.claude-3-sonnet-20240229-v1:0"},
     {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "max_output_tokens": 2000},
 ])

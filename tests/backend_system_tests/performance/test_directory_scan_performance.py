@@ -195,16 +195,11 @@ This is a test project for performance testing.
         accurate_time = time.time() - start_time
         
         self.assertLess(accurate_time, 5.0, f"Accurate counting took {accurate_time:.3f}s, should be < 5s")
-        # get_accurate_token_count deliberately reports 0 for files above its
-        # 50k-token cap (this one is ~250k) so oversized files are excluded
-        # from context totals rather than counted.  The positive-count
-        # behaviour is asserted on a file under the cap.
-        self.assertEqual(accurate_tokens, 0, "Files over the 50k-token cap are excluded (0)")
-        small_file = os.path.join(self.test_dir, 'under_cap.txt')
-        with open(small_file, 'w') as f:
-            f.write(content * 200)  # ~2k tokens
-        self.assertGreater(get_accurate_token_count(small_file), 0,
-                           "Accurate counting should return positive tokens under the cap")
+        # Large files are counted, not skipped: the old 50k-token skip made
+        # the file explorer show 0/N for folders whose checked files had
+        # real counts (e8399a1f), so get_accurate_token_count reports the
+        # real figure for oversized files too.
+        self.assertGreater(accurate_tokens, 0, "Accurate counting should return positive tokens")
     
     def test_many_small_files_performance(self):
         """Test performance when handling many small files."""

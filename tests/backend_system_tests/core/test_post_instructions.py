@@ -128,8 +128,12 @@ class TestPostInstructions(unittest.TestCase):
     
     def test_gemini_post_instruction(self):
         """Test the Gemini post-instruction."""
-        # Import the Gemini post-instruction
+        # setUp wiped the registry, and the module is already imported (and
+        # cached) by the time this test runs, so its @post_instruction
+        # decorator must be re-run to register again.
+        import importlib
         from app.extensions.post_instructions import gemini_post_instructions
+        importlib.reload(gemini_post_instructions)
         
         # Test applying the Gemini post-instruction
         query = "How do I implement a binary search tree?"

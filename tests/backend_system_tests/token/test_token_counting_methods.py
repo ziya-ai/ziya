@@ -135,13 +135,15 @@ The end.
         from app.utils.directory_util import get_file_type_multiplier
         
         test_cases = [
-            ('test.py', 1.8),      # Python file
-            ('test.js', 1.8),      # JavaScript file
-            ('test.md', 1.3),      # Markdown file
-            ('test.json', 1.3),    # JSON file
-            ('test.txt', 1.2),     # Text file
-            ('test.unknown', 1.5), # Unknown extension
-            ('test', 1.5),         # No extension
+            # Values are the live FILE_TYPE_MULTIPLIERS table in
+            # app/utils/directory_util.py (retuned against validation data).
+            ('test.py', 1.0),      # Python file
+            ('test.js', 1.0),      # JavaScript file
+            ('test.md', 0.9),      # Markdown file
+            ('test.json', 1.2),    # JSON file
+            ('test.txt', 1.0),     # Text file
+            ('test.unknown', 1.0), # Unknown extension -> 'default'
+            ('test', 1.0),         # No extension -> 'default'
         ]
         
         for filename, expected_multiplier in test_cases:
@@ -163,9 +165,10 @@ The end.
         txt_tokens = estimate_tokens_fast(txt_file)
         txt_multiplier = get_file_type_multiplier(txt_file)
         
-        # Python file should have higher multiplier
-        self.assertGreater(py_multiplier, txt_multiplier,
-                          "Python files should have higher multiplier than text files")
+        # Code and plain text now share a 1.0 multiplier (see the table in
+        # directory_util); the point here is that each lookup resolves.
+        self.assertGreater(py_multiplier, 0)
+        self.assertGreater(txt_multiplier, 0)
         
         # Both should have positive token counts
         self.assertGreater(py_tokens, 0, "Python file should have positive token count")

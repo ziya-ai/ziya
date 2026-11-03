@@ -6,6 +6,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
+from app.utils import custom_bedrock as custom_bedrock_module
 from app.utils.custom_bedrock import CustomBedrockClient
 
 
@@ -14,6 +15,19 @@ class TestCustomBedrockClient(unittest.TestCase):
     
     def setUp(self):
         """Set up the test case."""
+        # The streaming executor publishes the active conversation id as a
+        # MODULE GLOBAL on custom_bedrock (streaming_tool_executor.py, "Set
+        # conversation_id in custom_bedrock module global") and never clears
+        # it.  After any streaming test has run, a client built here finds a
+        # stale id and routes an overflow through the per-conversation
+        # extended-context branch instead of the plain max_tokens reduction
+        # these tests exercise.  Pin it to None for the test's duration.
+        self._saved_conversation_id = custom_bedrock_module._current_conversation_id
+        custom_bedrock_module._current_conversation_id = None
+        self.addCleanup(
+            setattr, custom_bedrock_module, "_current_conversation_id",
+            self._saved_conversation_id,
+        )
         self.mock_client = MagicMock()
         self.mock_client.invoke_model_with_response_stream = MagicMock(return_value={"body": []})
         self.mock_client.invoke_model = MagicMock(return_value={"body": b"{}"})

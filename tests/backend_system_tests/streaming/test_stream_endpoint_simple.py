@@ -13,7 +13,7 @@ app = FastAPI()
 
 # Create a simple streaming endpoint
 @app.post("/test_stream")
-async def test_stream_endpoint(request: Request):
+async def _stream_endpoint(request: Request):
     # Get the request body
     body = await request.json()
     

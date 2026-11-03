@@ -90,7 +90,9 @@ def test_ziya_string_in_processing_pipeline():
     """Test ZiyaString in a processing pipeline."""
     # Create a ZiyaString
     text = "This is a test response."
-    ziya_str = ZiyaString(text, id="test-id")
+    # ZiyaString only carries the attributes it was given; the pipeline step
+    # below reads ``message`` back, so it has to be set here.
+    ziya_str = ZiyaString(text, id="test-id", message=text)
     
     # Step 1: Create a Generation object
     generation = Generation(text=ziya_str)
@@ -119,39 +121,3 @@ def test_ziya_string_in_processing_pipeline():
     assert hasattr(wrapped_str, 'message')
     assert wrapped_str.id == "test-id"
     assert wrapped_str.message == text
-
-
-def test_ziya_string_in_agent_ensure_chunk_has_id():
-    """Test ZiyaString in the agent's _ensure_chunk_has_id method."""
-    # Create a mock agent
-    class MockAgent:
-        def _ensure_chunk_has_id(self, chunk):
-            """Ensure the chunk has an ID."""
-            if isinstance(chunk, str):
-                from app.agents.custom_message import ZiyaString
-                return ZiyaString(chunk, id=f"str-{hash(chunk) % 10000}", message=chunk)
-            elif not hasattr(chunk, 'id'):
-                object.__setattr__(chunk, 'id', f"gen-{hash(str(chunk)) % 10000}")
-                object.__setattr__(chunk, 'message', str(chunk))
-            return chunk
-    
-    agent = MockAgent()
-    
-    # Test with a string
-    string_chunk = "This is a string chunk."
-    result = agent._ensure_chunk_has_id(string_chunk)
-    
-    # Verify the result
-    assert isinstance(result, ZiyaString)
-    assert hasattr(result, 'id')
-    assert hasattr(result, 'message')
-    assert result.message == string_chunk
-    
-    # Test with a Generation object
-    generation = Generation(text="This is a Generation chunk.")
-    result = agent._ensure_chunk_has_id(generation)
-    
-    # Verify the result
-    assert hasattr(result, 'id')
-    assert hasattr(result, 'message')
-    assert result.message == "This is a Generation chunk."

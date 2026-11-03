@@ -17,11 +17,16 @@ Environment:
     AWS_REGION         — Bedrock region (default: us-east-1)
 """
 
+import pytest
 import json
 import os
 import sys
 import unittest
 from typing import Any, Dict, List, Optional
+
+# Calls live providers / STS with real credentials; excluded from the default
+# run by pytest.ini (addopts = -m "not integration").
+pytestmark = pytest.mark.integration
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 

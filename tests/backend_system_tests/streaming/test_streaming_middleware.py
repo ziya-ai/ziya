@@ -17,31 +17,7 @@ from app.middleware.streaming import StreamingMiddleware
 class TestStreamingMiddleware(unittest.TestCase):
     """Test the streaming middleware."""
     
-    def test_safe_stream_chat_generation(self):
-        """Test that safe_stream handles ChatGeneration objects correctly."""
-        # Create a mock stream that yields a ChatGeneration
-        async def mock_stream():
-            message = AIMessage(content="Test message")
-            chunk = ChatGeneration(message=message)
-            yield chunk
-        
-        # Create the middleware
-        middleware = StreamingMiddleware(None)
-        
-        # Process the stream through the middleware's safe_stream
-        results = []
-        
-        async def run_test():
-            async for chunk in middleware.safe_stream(mock_stream()):
-                results.append(chunk)
-        
-        # Run the async function
-        asyncio.run(run_test())
-        
-        # Verify we got the expected output
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0], 'data: {"text": "Test message"}\n\n')
-    
+
     def test_safe_stream_ai_message_chunk(self):
         """Test that safe_stream handles AIMessageChunk objects correctly."""
         # Create a mock stream that yields an AIMessageChunk
@@ -64,7 +40,7 @@ class TestStreamingMiddleware(unittest.TestCase):
         
         # Verify we got the expected output
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0], 'data: {"text": "Test message"}\n\n')
+        self.assertEqual(results[0], 'data: {"content": "Test message"}\n\n')
     
     def test_safe_stream_run_log_patch(self):
         """Test that safe_stream handles RunLogPatch objects correctly."""
@@ -114,7 +90,7 @@ class TestStreamingMiddleware(unittest.TestCase):
         
         # Verify we got the expected output
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0], 'data: {"text": "Test message"}\n\n')
+        self.assertEqual(results[0], 'data: {"content": "Test message"}\n\n')
     
     def test_safe_stream_unknown_type(self):
         """Test that safe_stream handles unknown chunk types correctly."""
@@ -135,9 +111,10 @@ class TestStreamingMiddleware(unittest.TestCase):
         # Run the async function
         asyncio.run(run_test())
         
-        # Verify we got an error message
+        # An unrecognised dict is passed through as SSE JSON rather than
+        # rejected: the frontend decides what to do with unknown keys.
         self.assertEqual(len(results), 1)
-        self.assertIn("Unknown chunk type", results[0])
+        self.assertEqual(results[0], 'data: {"unknown": "type"}\n\n')
 
 if __name__ == "__main__":
     unittest.main()

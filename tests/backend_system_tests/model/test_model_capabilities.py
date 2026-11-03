@@ -12,6 +12,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 import app.config.models_config as config
 from app.agents.models import ModelManager
 
+# Calls live providers / STS with real credentials; excluded from the default
+# run by pytest.ini (addopts = -m "not integration").
+pytestmark = pytest.mark.integration
+
 
 def get_all_models():
     models = []

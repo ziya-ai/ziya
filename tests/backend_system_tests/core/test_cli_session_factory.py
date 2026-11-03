@@ -39,7 +39,7 @@ def _make_cli_args(**overrides):
 class TestInitAndAuthenticate:
     """Tests for _init_and_authenticate factory function."""
 
-    @patch('app.cli._check_auth_quick', return_value=True)
+    @patch('app.cli._check_auth_quick', return_value=(True, ''))
     @patch('app.plugins.initialize')
     @patch('app.cli.setup_env')
     def test_calls_setup_env_plugins_and_auth(self, mock_setup, mock_plugins, mock_auth):
@@ -53,7 +53,7 @@ class TestInitAndAuthenticate:
         mock_plugins.assert_called_once()
         mock_auth.assert_called_once_with(None)  # profile=None
 
-    @patch('app.cli._check_auth_quick', return_value=True)
+    @patch('app.cli._check_auth_quick', return_value=(True, ''))
     @patch('app.plugins.initialize')
     @patch('app.cli.setup_env')
     def test_passes_profile_to_auth_check(self, mock_setup, mock_plugins, mock_auth):
@@ -65,7 +65,7 @@ class TestInitAndAuthenticate:
 
         mock_auth.assert_called_once_with("my-profile")
 
-    @patch('app.cli._check_auth_quick', return_value=False)
+    @patch('app.cli._check_auth_quick', return_value=(False, 'bad credentials'))
     @patch('app.cli._print_auth_error')
     @patch('app.plugins.initialize')
     @patch('app.cli.setup_env')
@@ -80,7 +80,7 @@ class TestInitAndAuthenticate:
         assert exc_info.value.code == 1
         mock_print_err.assert_called_once()
 
-    @patch('app.cli._check_auth_quick', return_value=True)
+    @patch('app.cli._check_auth_quick', return_value=(True, ''))
     @patch('app.plugins.initialize')
     @patch('app.cli.setup_env')
     def test_skip_setup_env(self, mock_setup, mock_plugins, mock_auth):
@@ -117,10 +117,11 @@ class TestCreateCliSession:
         mock_cli_cls.assert_called_once_with(files=["src/main.py"])
         assert result == mock_cli_cls.return_value
 
+    @patch('app.cli.add_auto_included_docs', side_effect=lambda files, root: files)
     @patch('app.cli.CLI')
     @patch('app.cli.resolve_files')
     @patch('app.cli._init_and_authenticate')
-    def test_explicit_files_skips_resolve(self, mock_init, mock_resolve, mock_cli_cls):
+    def test_explicit_files_skips_resolve(self, mock_init, mock_resolve, mock_cli_cls, _mock_docs):
         """When files= is passed explicitly, resolve_files should not be called."""
         from app.cli import _create_cli_session
         args = _make_cli_args()
@@ -151,7 +152,7 @@ class TestCreateCliSession:
 class TestResumePathAuthFix:
     """Regression test: --resume must authenticate (previously bypassed)."""
 
-    @patch('app.cli._check_auth_quick', return_value=False)
+    @patch('app.cli._check_auth_quick', return_value=(False, 'bad credentials'))
     @patch('app.cli._print_auth_error')
     @patch('app.plugins.initialize')
     @patch('app.cli.setup_env')
