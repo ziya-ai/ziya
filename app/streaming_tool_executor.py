@@ -291,6 +291,18 @@ class StreamingToolExecutor:
         model_name = model_override or ziya_env("ZIYA_MODEL")
         self.model_config = ModelManager.get_model_config(endpoint, model_name)
         self.endpoint = endpoint
+        # The session region was resolved for the SERVER-WIDE model.  A model
+        # pinned to this conversation may not be served there (2026-10-07:
+        # global.anthropic.claude-fable-5-1 sent from eu-west-1, which the
+        # eu failover had written, and rejected).  Clamp once, for this
+        # request only, before the model id is resolved and the client and
+        # provider are built from ``region``; a model with a profile for the
+        # session's geography keeps it (see app/utils/model_region.py).
+        from app.utils.model_region import region_for_model
+        _clamped = region_for_model(region, self.model_config)
+        if _clamped != region:
+            logger.info(f"🌍 REGION: {region} -> {_clamped} for {model_name or 'default model'}")
+        region = region_for_model(region, self.model_config)
         # Kept for the usage ledger: prices are keyed by billing endpoint +
         # resolved model id + region (design/CostModel.md).
         self.region = region
