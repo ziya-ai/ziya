@@ -285,3 +285,23 @@ async def test_retract_is_targeted():
     pending = _pending_ids()
     assert pid_a not in pending
     assert pid_b in pending  # untouched
+
+
+@pytest.mark.asyncio
+async def test_retract_echoes_the_retracted_text():
+    """The chat widget shows what was withdrawn, not just the id.
+
+    mcpFormatter.formatMemoryResult builds the 'Proposal retracted' card
+    from the result's content/layer/tags; without the echo the card falls
+    back to the bare message line.
+    """
+    tool = MemoryProposeTool()
+    res = await tool.execute(content="Retract me with tags.", layer="decision",
+                             tags=["memory", "ui"], conversation_id=CONV_A)
+    pid = res["proposal_id"]
+
+    result = await _retract(pid, CONV_A)
+    assert result.get("success") is True, result
+    assert result["content"] == "Retract me with tags."
+    assert result["layer"] == "decision"
+    assert result["tags"] == ["memory", "ui"]
