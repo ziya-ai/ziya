@@ -1022,6 +1022,15 @@ class DiagramRenderer:
         self._browser: Any = None
         self._base_url: str = ""
         self._lock = asyncio.Lock()
+        # Guards the render itself (new_page -> goto -> __renderDiagram ->
+        # screenshot), which _lock does not: _lock only guards browser
+        # creation.  One shared Chromium serves every render_diagram call;
+        # letting N calls open N pages and lay out concurrently makes
+        # measurement-sensitive renderers (mermaid's getBBox pass most of
+        # all) intermittently emit an empty or degenerate SVG for input that
+        # renders fine alone.  Mirrors the frontend's MermaidRenderQueue,
+        # which serializes in-page renders for the same reason.
+        self._render_lock = asyncio.Lock()
 
     # -- Lifecycle ----------------------------------------------------
 
@@ -1251,9 +1260,18 @@ class DiagramRenderer:
         async with self._lock:
             await self._ensure_browser()
 
-        page = await self._browser.new_page(
-            viewport={"width": viewport_width, "height": viewport_height},
-        )
+        # Serialize the render (see _render_lock in __init__).  Held from
+        # just before the page is opened until it is closed in the finally
+        # below, so the whole page lifetime is inside the critical section.
+        await self._render_lock.acquire()
+        try:
+            page = await self._browser.new_page(
+                viewport={"width": viewport_width, "height": viewport_height},
+            )
+        except BaseException:
+            # new_page failed before the try/finally that releases the lock.
+            self._render_lock.release()
+            raise
 
         # Capture console messages and page errors so we can include them
         # in any diagnostic dump on failure.
@@ -1490,7 +1508,10 @@ class DiagramRenderer:
             return clamp_png_dimensions(png_bytes), diagnostics
 
         finally:
-            await page.close()
+            try:
+                await page.close()
+            finally:
+                self._render_lock.release()
 
 
 # -- Module-level singleton ----------------------------------------------
