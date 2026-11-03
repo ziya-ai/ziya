@@ -28,6 +28,44 @@ from typing import Dict, List, Optional, Tuple, Any
 
 from app.utils.logging_utils import logger
 
+
+def payload_text_chars(*parts: Any) -> int:
+    """Characters of TEXT in a payload: strings, text blocks, nested
+    ``content`` (tool results, LangChain messages).  Image and document
+    blocks contribute nothing.
+
+    This is the char count every chars/token ratio must be built on.  The
+    calibrator used to sum ``len(str(message['content']))``, which for a
+    block list is the Python repr -- so a pinned 500 KB screenshot counted
+    as ~700k characters of "text" that Bedrock bills at ~1.5k tokens.  With
+    a few images in context every turn's whole-payload ratio came out ~5x
+    too high, and because the per-file split cancels algebraically in the
+    attribution, every sample carried that inflated ratio (one user's
+    opus-5-5 bucket learned 13.4 chars/token; the tokenizer does ~2.5).
+    """
+    total = 0
+    stack: List[Any] = list(parts)
+    while stack:
+        p = stack.pop()
+        if p is None or isinstance(p, (bool, int, float)):
+            continue
+        if isinstance(p, str):
+            total += len(p)
+        elif isinstance(p, (list, tuple)):
+            stack.extend(p)
+        elif isinstance(p, dict):
+            t = p.get('text')
+            if isinstance(t, str):
+                total += len(t)
+            c = p.get('content')
+            if c is not None:
+                stack.append(c)
+        else:
+            c = getattr(p, 'content', None)
+            if c is not None:
+                stack.append(c)
+    return total
+
 @dataclass
 class CalibrationSample:
     """A single calibration data point from actual Bedrock usage."""
@@ -59,6 +97,13 @@ class TokenCalibrator:
     # No real tokenizer produces less than ~1 char/token or more than ~15.
     MIN_CHARS_PER_TOKEN = 1.0
     MAX_CHARS_PER_TOKEN = 15.0
+    # Per-family band a whole-payload chars/token ratio must fall in to be
+    # believed.  The generic [1, 15] band let inflated samples through:
+    # a tokenizer never does 13 chars/token on code or prose, but a char
+    # count that included base64 image bytes did, every turn, and piled
+    # samples up just under the 15 cap (see payload_text_chars).  Claude's
+    # tokenizer runs ~2.4 on line-numbered code and ~4.5 on English prose.
+    PLAUSIBLE_RATIO_BANDS: Dict[str, Tuple[float, float]] = {'claude': (1.5, 6.0)}
     
     def __init__(self, cache_file: str = None):
         # Fixed overhead baselines (measured once from first request)
@@ -153,6 +198,7 @@ class TokenCalibrator:
                     self.stats_by_model_and_type = defaultdict(dict, data.get('stats_by_model_and_type', {}))
                     self.global_by_model = data.get('global_by_model', {})
                     self._load_samples(data)
+                    self._discard_implausible_samples()
                     self.document_cache = data.get('document_cache', {})
                     self.global_fallback = data.get('global_fallback', 4.1)
                     
@@ -466,12 +512,14 @@ class TokenCalibrator:
             actual_ratio = total_chars / actual_tokens
             
             # Sanity check: reject samples with implausible ratios.
-            # A ratio below MIN means the token count is inflated (e.g.
-            # unaccounted tool-definition overhead was attributed to files).
-            if actual_ratio < self.MIN_CHARS_PER_TOKEN or actual_ratio > self.MAX_CHARS_PER_TOKEN:
+            # A ratio below the band means the token count is inflated (e.g.
+            # unaccounted tool-definition overhead was attributed to files);
+            # above it the char count is (image bytes counted as text).
+            lo, hi = self.plausible_band(model_id or model_family)
+            if actual_ratio < lo or actual_ratio > hi:
                 logger.warning(f"📊 CALIBRATION: Rejecting implausible ratio {actual_ratio:.3f} "
                              f"({total_chars:,} chars / {actual_tokens:,} tokens). "
-                             f"Valid range: [{self.MIN_CHARS_PER_TOKEN}, {self.MAX_CHARS_PER_TOKEN}]")
+                             f"Valid range: [{lo}, {hi}]")
                 return
             
             # Record under the model's own bucket AND its family bucket.
@@ -518,6 +566,59 @@ class TokenCalibrator:
             if model_samples % 50 == 0 and model_samples > 0:
                 self._log_calibration_update(model_family)
     
+    def plausible_band(self, bucket_or_model: Optional[str]) -> Tuple[float, float]:
+        """``(lo, hi)`` chars/token a sample for this bucket may have.  The
+        bucket may be a family ('claude') or a model key
+        ('anthropic.claude-opus-5-5'); both resolve through the family."""
+        family = self._infer_model_family(bucket_or_model or '')
+        return self.PLAUSIBLE_RATIO_BANDS.get(
+            family, (self.MIN_CHARS_PER_TOKEN, self.MAX_CHARS_PER_TOKEN))
+
+    def _discard_implausible_samples(self) -> None:
+        """Drop persisted samples outside their bucket's plausible band and
+        recompute what depended on them.  A file written before the band
+        existed can carry hundreds of inflated samples (and a global ratio
+        of 13.4); left in place they keep every estimate in the process
+        wrong, and the tributary-fold gate stops folding exactly when the
+        context is about to overflow."""
+        touched = False
+        for bucket in list(self.samples_by_model_and_type):
+            lo, hi = self.plausible_band(bucket)
+            types = self.samples_by_model_and_type[bucket]
+            dropped = 0
+            for ext in list(types):
+                kept = [s for s in types[ext] if lo <= s.chars_per_token <= hi]
+                dropped += len(types[ext]) - len(kept)
+                if kept:
+                    types[ext] = kept
+                else:
+                    del types[ext]
+                    self.stats_by_model_and_type.get(bucket, {}).pop(ext, None)
+            g = self.global_by_model.get(bucket)
+            bad_global = g is not None and not (lo <= float(g) <= hi)
+            if not dropped and not bad_global:
+                continue
+            touched = True
+            if types:
+                self._recalculate_stats(bucket)
+            else:
+                self.samples_by_model_and_type.pop(bucket, None)
+                self.stats_by_model_and_type.pop(bucket, None)
+                self.global_by_model.pop(bucket, None)
+            logger.info(f"📊 CALIBRATION: {bucket}: discarded {dropped} sample(s) outside "
+                        f"[{lo}, {hi}] chars/token"
+                        + (f"; global ratio {float(g):.2f} reset" if bad_global else "")
+                        + f" -> now {self.global_by_model.get(bucket, 'unset')}")
+        # Stale globals for buckets with no samples at all.
+        for bucket, g in list(self.global_by_model.items()):
+            lo, hi = self.plausible_band(bucket)
+            if not (lo <= float(g) <= hi):
+                self.global_by_model.pop(bucket, None)
+                touched = True
+                logger.info(f"📊 CALIBRATION: {bucket}: dropped implausible global ratio {float(g):.2f}")
+        if touched:
+            self.has_unsaved_data = True
+
     def _infer_model_family(self, model_id: str) -> str:
         """Infer model family from model ID."""
         model_id_lower = model_id.lower()
@@ -731,9 +832,8 @@ class TokenCalibrator:
             if model_ratios:
                 model_ratios.sort()
                 median = model_ratios[len(model_ratios) // 2]
-                self.global_by_model[model] = max(
-                    self.MIN_CHARS_PER_TOKEN, min(median, self.MAX_CHARS_PER_TOKEN)
-                )
+                lo, hi = self.plausible_band(model)
+                self.global_by_model[model] = max(lo, min(median, hi))
                 
                 logger.debug(f"📊 {model}: {self.global_by_model[model]:.2f} chars/token "
                            f"({len(model_ratios)} samples, {len(self.samples_by_model_and_type[model])} types)")

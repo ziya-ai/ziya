@@ -2652,13 +2652,14 @@ class StreamingToolExecutor:
             effective_input = content_input
 
             # Derive file-only tokens by proportional character attribution:
-            # estimate file content's share of total input characters.
+            # estimate file content's share of total input characters.  Text
+            # only: str() of a block list is its repr, so a base64 image block
+            # counted as ~700k chars of "text" billed at ~1.5k tokens and the
+            # whole-payload ratio (which is what every sample carries, since
+            # the split cancels) came out ~5x high (13.4 learned for opus-5-5).
+            from app.utils.token_calibrator import payload_text_chars
             file_chars = sum(len(c) for c in file_contents.values())
-            system_chars = len(system_content or '')
-            conversation_chars = sum(
-                len(str(m.get('content', ''))) for m in conversation
-            )
-            total_input_chars = max(1, system_chars + conversation_chars)
+            total_input_chars = max(1, payload_text_chars(system_content, conversation))
             file_only_tokens = int(effective_input * (file_chars / total_input_chars))
 
             # Pre-validate before handing the sample to the calibrator.
@@ -2673,8 +2674,8 @@ class StreamingToolExecutor:
                     f"0 tokens from {effective_input:,} effective input)")
                 return
             implied_ratio = file_chars / file_only_tokens
-            if not (calibrator.MIN_CHARS_PER_TOKEN <= implied_ratio
-                    <= calibrator.MAX_CHARS_PER_TOKEN):
+            _lo, _hi = calibrator.plausible_band(str(model_id))
+            if not (_lo <= implied_ratio <= _hi):
                 logger.debug(
                     f"📊 CALIBRATION: Skipping implausible ratio {implied_ratio:.3f} "
                     f"({file_chars:,} chars / {file_only_tokens:,} tokens)")
@@ -3247,7 +3248,9 @@ class StreamingToolExecutor:
                     calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
                     calibrator.baselines_measured.add(model_family)
                     calibrator.baseline_tool_counts[model_family] = mcp_tool_count
-                    calibrator._save_calibration_data()
+                    # Off the event loop: the save is a synchronous file write
+                    # and this runs inside the stream (see token_calibrator).
+                    calibrator.request_save()
                     if not chat_mode:
                         logger.info(f"✅ BASELINE: {baseline_tokens:,} tokens via {_baseline_src} "
                                     f"({len(baseline_system_text):,} chars, {mcp_tool_count} tools)")
