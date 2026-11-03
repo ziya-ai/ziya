@@ -66,13 +66,15 @@ def is_stop_directive(message: str) -> bool:
     if not normalized:
         return False
 
-    if _NEGATION.search(normalized):
-        return False
-
     tokens = [t for t in normalized.split() if t not in _FILLERS]
     if not tokens:
         return False
 
+    # Whole-phrase match first: "never mind" is a stop phrase, and running
+    # the negation scan before this check made its own "never" veto it.
+    # Anything else -- extra content, or a negation like "don't stop" -- is
+    # feedback for the model, not a stop (see _NEGATION for the shapes that
+    # motivated the whole-message rule).
     return " ".join(tokens) in _STOP_PHRASES
 
 
