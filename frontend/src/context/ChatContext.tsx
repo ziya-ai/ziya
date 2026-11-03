@@ -71,6 +71,11 @@ interface ChatContext {
     setReasoningContentMap: Dispatch<SetStateAction<Map<string, ThinkingBlockData[]>>>;
     isStreaming: boolean;
     getProcessingState: (conversationId: string) => ProcessingState;
+    // Epoch ms of the last processing-state activity for a conversation
+    // (state transition, or a ≥30s-stale refresh while content streams).
+    // The sidebar shows this while a row is streaming, since lastAccessedAt
+    // only moves when a message is appended.
+    getProcessingActivityAt: (conversationId: string) => number | undefined;
     updateProcessingState: (conversationId: string, state: ProcessingState) => void;
     isStreamingAny: boolean;
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
@@ -516,13 +521,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const updateProcessingState = useCallback((conversationId: string, state: ProcessingState) => {
         setProcessingStates(prev => {
-            // No-op when unchanged.  chatApi resets to 'idle' on every content
-            // chunk; a fresh Map each time gave getProcessingState a new
-            // identity, which changed the ActiveChatContext and ChatContext
-            // values and re-rendered every consumer (the sidebar, header and
-            // closed modals) per chunk.  Nothing reads lastUpdated, so keeping
-            // the old entry loses nothing.
-            if (prev.get(conversationId)?.state === state) return prev;
+            // Mostly a no-op when unchanged.  chatApi resets to 'idle' on
+            // every content chunk; a fresh Map each time gave
+            // getProcessingState a new identity, which changed the
+            // ActiveChatContext and ChatContext values and re-rendered every
+            // consumer (the sidebar, header and closed modals) per chunk.
+            // lastUpdated feeds the sidebar's "time since last activity"
+            // while streaming, so refresh it at most once per 30s during a
+            // long uninterrupted text stream -- one re-render per half
+            // minute per streaming conversation, not one per chunk.
+            const cur = prev.get(conversationId);
+            if (cur?.state === state && Date.now() - cur.lastUpdated < 30_000) return prev;
             const next = new Map(prev);
             next.set(conversationId, {
                 state,
@@ -678,6 +687,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const getProcessingState = useCallback((conversationId: string): ProcessingState => {
         return processingStates.get(conversationId)?.state || 'idle';
+    }, [processingStates]);
+    const getProcessingActivityAt = useCallback((conversationId: string): number | undefined => {
+        return processingStates.get(conversationId)?.lastUpdated;
     }, [processingStates]);
 
     // Surface sustained persistence failures to the user without spamming.
@@ -5228,6 +5240,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setStreamedContentMap,
         setReasoningContentMap,
         getProcessingState,
+        getProcessingActivityAt,
         updateProcessingState,
         isStreaming,
         isStreamingAny,
@@ -5299,6 +5312,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         lastResponseIncomplete,
         setStreamedContentMap,
         getProcessingState,
+        getProcessingActivityAt,
         updateProcessingState,
         isStreaming,
         isStreamingAny,
@@ -5473,6 +5487,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         setStreamedContentMap={setStreamedContentMap}
                         setReasoningContentMap={setReasoningContentMap}
                         getProcessingState={getProcessingState}
+                        getProcessingActivityAt={getProcessingActivityAt}
                         updateProcessingState={updateProcessingState}
                         lastResponseIncomplete={lastResponseIncomplete}
                         setDisplayMode={setDisplayMode}

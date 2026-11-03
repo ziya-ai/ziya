@@ -59,6 +59,7 @@ export interface ActiveChatContextValue {
   setReasoningContentMap: Dispatch<SetStateAction<Map<string, ThinkingBlockData[]>>>;
   // Processing state
   getProcessingState: (conversationId: string) => ProcessingState;
+  getProcessingActivityAt: (conversationId: string) => number | undefined;
   updateProcessingState: (conversationId: string, state: ProcessingState) => void;
   // Misc active-chat state
   lastResponseIncomplete: boolean;
@@ -101,6 +102,7 @@ export const ActiveChatProvider: React.FC<
       setStreamedContentMap: value.setStreamedContentMap,
       setReasoningContentMap: value.setReasoningContentMap,
       getProcessingState: value.getProcessingState,
+      getProcessingActivityAt: value.getProcessingActivityAt,
       updateProcessingState: value.updateProcessingState,
       lastResponseIncomplete: value.lastResponseIncomplete,
       setDisplayMode: value.setDisplayMode,
@@ -130,7 +132,7 @@ export const ActiveChatProvider: React.FC<
       value.setIsStreaming, value.addStreamingConversation,
       value.removeStreamingConversation,
       value.setStreamedContentMap, value.setReasoningContentMap,
-      value.getProcessingState, value.updateProcessingState,
+      value.getProcessingState, value.getProcessingActivityAt, value.updateProcessingState,
       value.setDisplayMode,
       value.toggleMessageMute, value.removeMessage, value.replaceMessages, value.setChatContexts,
       value.setThrottlingRecoveryData,

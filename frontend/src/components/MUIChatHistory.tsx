@@ -151,6 +151,9 @@ interface ChatTreeItemProps {
   isGlobalByInheritanceOnly?: boolean;
   isEphemeralItem?: boolean;
   isStreaming?: boolean;
+  // While streaming: epoch ms of the last stream activity (tool call,
+  // tool result, content).  Shown in the time slot instead of lastActiveAt.
+  activityAt?: number;
   // Conversation has a task card with a non-terminal run.  Renders a
   // distinct gear affordance instead of the chat-streaming spinner.
   isRunningTask?: boolean;
@@ -253,6 +256,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     isGlobalByInheritanceOnly = false,
     isEphemeralItem = false,
     isStreaming = false,
+    activityAt,
     isRunningTask = false,
     taskBindings,
     taskStatusCounts,
@@ -269,6 +273,19 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     lastActiveAt,
     onToggleFlag,
     onSetFlagColor,
+  } = props;
+
+  // The time slot is computed at render.  A streaming row whose stream has
+  // stalled gets no re-render, so its "time since last activity" would
+  // freeze at "now" -- the one case the label exists to expose.  Tick while
+  // streaming so it ages; idle rows keep the existing render-time label.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (!isStreaming) return;
+    const t = setInterval(() => forceTick(n => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, [isStreaming]);
+  const {
     onEdit,
     onDelete,
     onAddChat,
@@ -595,10 +612,19 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 {isTaskPlanFolder && taskPlanProgress && (
                   <Typography variant="caption" sx={{ ml: 0.5, px: 0.5, borderRadius: '8px', backgroundColor: '#52c41a', color: '#fff', fontWeight: 600, fontSize: 10 }}>{taskPlanProgress}</Typography>
                 )}
-                {!isFolder && lastActiveAt ? (
-                  <Typography variant="caption" title={formatAbsolute(lastActiveAt)} data-testid="chat-row-time"
+                {/* lastActiveAt is stamped when a message is appended, so for
+                    the whole of a long tool-heavy turn it points at the
+                    previous turn's end.  While streaming, show time since the
+                    last stream activity instead: "now" while tool calls are
+                    flowing, and visibly ageing when the turn has stalled. */}
+                {!isFolder && (isStreaming ? (activityAt || lastActiveAt) : lastActiveAt) ? (
+                  <Typography variant="caption"
+                    title={isStreaming
+                      ? `Last activity ${formatAbsolute(activityAt || lastActiveAt)}`
+                      : formatAbsolute(lastActiveAt)}
+                    data-testid="chat-row-time"
                     sx={{ ml: 0.75, fontSize: '10.5px', color: 'var(--z-text-faint)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatRelativeShort(lastActiveAt)}
+                    {formatRelativeShort(isStreaming ? (activityAt || lastActiveAt) : lastActiveAt)}
                   </Typography>
                 ) : null}
 
@@ -1165,6 +1191,7 @@ const MUIChatHistory = () => {
     streamingConversations,
     runningTaskConversations,
     conversationTaskBindings,
+    getProcessingActivityAt,
   } = useActiveChat();
 
   const { isDarkMode } = useTheme();
@@ -4454,6 +4481,7 @@ const MUIChatHistory = () => {
                       isCurrentItem={isCurrentItem} isGlobalItem={isGlobalItem}
                       isEphemeralItem={isEphemeralItem}
                       isStreaming={isStreamingConv} hasUnreadResponse={hasUnreadResponse}
+                      activityAt={isStreamingConv && convId ? getProcessingActivityAt(convId) : undefined}
                       isRunningTask={isRunningTaskConv}
                       taskBindings={rowTaskBindings}
                       taskStatusCounts={rowTaskCounts}
