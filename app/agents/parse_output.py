@@ -63,6 +63,30 @@ def extract_text_from_json(content):
         
     return content
 
+def _error_agent_finish(content: str):
+    """``AgentFinish`` for a structured error payload, else None.
+
+    Backends surface failures as ``{"error": "<kind>", "detail": "..."}``;
+    the user should see ``Error: <detail>``, not the raw JSON.
+    """
+    try:
+        error_data = json.loads(content)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(error_data, dict) or not error_data.get('error'):
+        return None
+    kind = error_data.get('error')
+    default = {
+        'validation_error': 'Unknown validation error',
+        'throttling_error': 'Rate limit exceeded',
+    }.get(kind, 'Unknown error')
+    logger.warning(f"{kind} response detected: {error_data}")
+    return AgentFinish(
+        return_values={"output": f"Error: {error_data.get('detail', default)}"},
+        log=content,
+    )
+
+
 def parse_output(message: Any) -> AgentFinish:
     """Parse and sanitize the output from the language model."""
     logger.info("parse_output called with type: %s", type(message))
@@ -96,6 +120,14 @@ def parse_output(message: Any) -> AgentFinish:
             logger.warning(f"Content is not a string, converting: {type(content)}")
             content = str(content)
 
+        # A structured error payload ({"error": ..., "detail": ...}) is
+        # reported as "Error: <detail>", not handed on as JSON text.  This
+        # check used to live after the return below, where nothing could
+        # reach it.
+        error_finish = _error_agent_finish(content)
+        if error_finish is not None:
+            return error_finish
+
         # Try to extract text from JSON formats
         cleaned_content = extract_text_from_json(content)
         
@@ -111,41 +143,3 @@ def parse_output(message: Any) -> AgentFinish:
         # Provide a safe fallback
         return AgentFinish(return_values={"output": f"Error processing response: {str(e)}"}, 
                           log=f"Error processing response: {str(e)}")
-
-    if not content:
-        return AgentFinish(return_values={"output": ""}, log="")
-
-    try:
-        # Check if this is an error message
-        error_data = json.loads(content)
-        if error_data.get('error') == 'validation_error':
-            logger.warning(f"Validation error detected: {error_data}")
-            return AgentFinish(
-                return_values={"output": f"Error: {error_data.get('detail', 'Unknown validation error')}"}, 
-                log=content
-            )
-        elif error_data.get('error') == 'throttling_error':
-            logger.warning(f"Throttling error detected: {error_data}")
-            return AgentFinish(
-                return_values={"output": f"Error: {error_data.get('detail', 'Rate limit exceeded')}"}, 
-                log=content
-            )
-        elif error_data.get('error'):
-            logger.warning(f"Error response detected: {error_data}")
-            return AgentFinish(
-                return_values={"output": f"Error: {error_data.get('detail', 'Unknown error')}"}, 
-                log=content
-            )
-    except (json.JSONDecodeError, AttributeError):
-        # Not a JSON error message, continue processing
-        pass
-
-    try:
-        # If not a diff or error, clean and return the content
-        text = clean_backtick_sequences(content)
-        logger.info(f"parse_output extracted content size: {len(content)} chars, cleaned size: {len(text)} chars")
-        return AgentFinish(return_values={"output": text}, log=text)
-    except Exception as e:
-        logger.error(f"Error in parse_output content processing: {str(e)}")
-        # Provide a safe fallback
-        return AgentFinish(return_values={"output": content}, log=content)
