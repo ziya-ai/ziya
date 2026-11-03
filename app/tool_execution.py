@@ -206,7 +206,7 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         await asyncio.sleep(0)  # yield to let monitor deposit items
         for fb in ctx.drain_feedback_fn():
             fb_msg = fb.get('message', '')
-            if fb['type'] == 'interrupt' or any(w in fb_msg.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+            if is_stop_feedback(fb):
                 logger.info(f"🔄 FEEDBACK_INTEGRATION: Stop requested: {fb_msg}")
                 yield ctx.track_yield_fn({'type': 'text', 'content': f"\n\n**User feedback received:** {fb_msg}\n**Stopping tool execution as requested.**\n\n"})
                 await asyncio.sleep(0.1)
