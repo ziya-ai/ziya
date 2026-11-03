@@ -45,7 +45,7 @@ from app.providers.bedrock_region_router import BedrockRegionRouter
 from app.utils import service_tier as _service_tier
 
 from app.config.env_registry import ziya_env
-from app.utils.retention_diagnostics import log_retention_diagnosis, user_summary
+from app.utils.retention_diagnostics import log_retention_diagnosis, remediation_hint, user_summary
 logger = get_mode_aware_logger(__name__)
 
 
@@ -412,6 +412,12 @@ class BedrockProvider(LLMProvider):
                            f" Automatic restore failed: {_heal_err}.")
                         + (" " + user_summary(_diag) if _diag and user_summary(_diag) else "")
                     )
+                    # What the user can do about it: built from the restore's
+                    # denied IAM action and the diagnosis.  Empty when neither
+                    # names an action, so a plain gate error is unchanged.
+                    _hint = remediation_hint(_diag, _heal_err, self.model_id, self._region, _mode)
+                    if _hint:
+                        error_str += " " + _hint
 
                 classified = self._classify_error(error_str)
                 logger.warning(
