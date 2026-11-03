@@ -2280,9 +2280,14 @@ class StreamingToolExecutor:
             try:
                 from app.agents.models import ModelManager
                 from app.utils.handoff_prelude import record_context_pressure
+                from app.utils.token_calibrator import payload_text_chars
                 _ceiling = (ModelManager.get_model_settings().get("max_input_tokens")
                             or effective_limit)
-                record_context_pressure(conversation_id, effective_input, int(_ceiling))
+                # The text size of what was billed lets the tributary-fold
+                # gate convert fold savings at this payload's own ratio
+                # (tool_history_rewrite.fold_pressure_for).
+                record_context_pressure(conversation_id, effective_input, int(_ceiling),
+                                        chars=payload_text_chars(system_content, conversation))
             except Exception as e:
                 logger.debug(f"Context-pressure record skipped: {e}")
 
@@ -2529,6 +2534,36 @@ class StreamingToolExecutor:
                     else:
                         tokens += len(text) // 4
         return tokens
+
+    def _record_overflow_pressure(self, conversation_id: Optional[str], error_str: str) -> None:
+        """Record a context-length rejection as this turn's context pressure.
+
+        A rejected send produces no usage event, so the pressure cache would
+        keep server.py's pre-send estimate; when that estimate is low the
+        tributary-fold gate sees a half-full context and the next send
+        replays the same over-limit payload (mbcohn, 2026-11-02: six
+        identical 1,003,527-token sends against a gate reading ~460k).
+        Recording the size the provider reported makes the next rewrite
+        fold.  Called from BOTH surfaces a rejection reaches: the
+        non-retryable ErrorEvent a provider yields (Bedrock, the common
+        case) and the exception path for providers that raise.
+        """
+        if not conversation_id:
+            return
+        try:
+            from app.agents.models import ModelManager
+            from app.utils.handoff_prelude import record_context_overflow
+            _base_limit = self.model_config.get('token_limit', 200000) if self.model_config else 200000
+            _eff_limit = (
+                self.model_config.get('extended_context_limit', _base_limit)
+                if self.model_config and self.model_config.get('supports_extended_context')
+                else _base_limit
+            )
+            _ceiling = (ModelManager.get_model_settings().get("max_input_tokens")
+                        or _eff_limit)
+            record_context_overflow(conversation_id, error_str, int(_ceiling))
+        except Exception as _ov_e:  # noqa: BLE001 - bookkeeping must never break error handling
+            logger.debug(f"Context-overflow pressure record skipped: {_ov_e}")
 
     def _record_calibration(
         self,
@@ -3725,6 +3760,8 @@ class StreamingToolExecutor:
                         else:
                             # Non-retryable (e.g. CONTEXT_LIMIT) — surface to user
                             non_retryable_error_surfaced = True
+                            if stream_event.error_type == ErrorType.CONTEXT_LIMIT:
+                                self._record_overflow_pressure(conversation_id, stream_event.message)
                             if stream_event.error_type == ErrorType.AUTH:
                                 # Route through the same credential-help
                                 # template every other auth-error surface
@@ -5595,6 +5632,9 @@ Please retry the tool call with valid JSON. Ensure:
                         )
                     except Exception as _dbg_e:  # noqa: BLE001 - diagnostics must never break error handling
                         logger.debug(f"context_debug.record_failure call failed (non-fatal): {_dbg_e}")
+                    # Providers that raise instead of yielding an ErrorEvent
+                    # land here; same record as the ErrorEvent branch.
+                    self._record_overflow_pressure(conversation_id, error_str)
 
                 # Classify error and determine handling strategy
                 error_info = self._classify_and_handle_error(

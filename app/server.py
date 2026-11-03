@@ -521,7 +521,8 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     # over the whole context every turn.
     try:
         from app.agents.models import ModelManager
-        from app.utils.handoff_prelude import estimate_messages_tokens, record_context_pressure
+        from app.utils.handoff_prelude import (
+            estimate_messages_tokens, messages_text_chars, record_context_pressure)
         _mcfg = ModelManager.get_model_config(
             model_info.get("endpoint"), model_info.get("model_name")) or {}
         # Same ceiling the frontend bar uses (TokenCountDisplay: the user's
@@ -531,8 +532,8 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         _limit = (ModelManager.get_model_settings().get("max_input_tokens")
                   or _mcfg.get("token_limit"))
         if _limit:
-            record_context_pressure(conversation_id,
-                                    estimate_messages_tokens(messages), int(_limit))
+            record_context_pressure(conversation_id, estimate_messages_tokens(messages),
+                                    int(_limit), chars=messages_text_chars(messages))
     except Exception as e:
         logger.debug(f"Context-pressure measurement skipped: {e}")
 

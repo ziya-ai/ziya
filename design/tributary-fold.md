@@ -245,6 +245,27 @@ folds under `fold_pressure_ratio` × limit; above it, eligible spans fold
 oldest first until the projected size is under the ratio minus
 `FOLD_PRESSURE_HYSTERESIS` (0.15).
 
+**Savings must be in the units of the recorded pressure.**  The pressure
+is tokens the provider billed (or a pre-send estimate); the savings are
+chars.  Converting them at an independently *learned* chars/token ratio
+mixes units, and when that ratio is wrong the gate oscillates (2026-11-02,
+mbcohn: a bucket had learned 13.4 chars/token against a real ~2.5, so one
+turn folded 970k down to 350k, the next reconstructed the unfolded size as
+~550k and folded nothing, alternating until an unfolded payload crossed
+1M).  Both producers of pressure now record the payload's *text* chars
+beside the tokens (`record_context_pressure(..., chars=)`), and
+`fold_pressure_for` derives this payload's own ratio
+(`chars / (tokens − fixed overhead)`, believed only within 1–8), carried on
+`FoldPressure.chars_per_token`; both the add-back and `plan_folds`'
+deduction use it.  A record without chars falls back to the learned ratio.
+
+**A rejected send is pressure.**  A "prompt is too long" rejection yields
+no usage event, so the cache kept the pre-send estimate; when that was low
+every retry replayed the same over-limit payload.  The executor's
+context-length handler now calls `record_context_overflow`, which records
+the token count from the error message (or the limit) as the turn's size,
+so the next rewrite folds.
+
 Two properties follow from gating on the unfolded figure.  It is monotone
 in practice (it only grows with the conversation), so the folded set is a
 prefix that only extends: a span folded once stays folded, which is what

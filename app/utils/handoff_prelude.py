@@ -54,6 +54,7 @@ prompt construction.
 """
 
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -74,6 +75,11 @@ DEFAULT_NUDGE_RATIO = 0.9
 
 # conversation_id -> (tokens, limit) from the last assembled turn.
 _pressure_cache: Dict[str, Tuple[int, int]] = {}
+# conversation_id -> text chars of the payload the cached tokens measure.
+# Lets the tributary-fold gate turn "chars a fold saved" into tokens at the
+# ratio THIS payload was actually billed at, instead of at a separately
+# learned ratio that can be wrong (tool_history_rewrite.fold_pressure_for).
+_pressure_chars: Dict[str, int] = {}
 
 
 def nudge_ratio() -> float:
@@ -95,29 +101,69 @@ def estimate_messages_tokens(messages: List[Any]) -> int:
     and Bedrock then rejected the same payload at 1,017,040 tokens (the
     model's ratio on line-numbered code is ~2.4, plus ~168k of tool schema
     the messages do not contain at all)."""
-    total = 0
-    for m in messages or []:
-        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict):
-                    t = block.get("text")
-                    if isinstance(t, str):
-                        total += len(t)
-                elif isinstance(block, str):
-                    total += len(block)
     from app.utils.context_debug import estimate_payload_tokens
-    return estimate_payload_tokens(total)
+    return estimate_payload_tokens(messages_text_chars(messages))
+
+
+def messages_text_chars(messages: List[Any]) -> int:
+    """Text characters of assembled messages (image/document blocks count 0)."""
+    from app.utils.token_calibrator import payload_text_chars
+    return payload_text_chars(messages or [])
 
 
 def record_context_pressure(conversation_id: Optional[str], tokens: int,
-                            limit: Optional[int]) -> None:
-    """Remember the assembled size of this turn for the NEXT turn's nudge."""
+                            limit: Optional[int], chars: Optional[int] = None) -> None:
+    """Remember the assembled size of this turn for the NEXT turn's nudge.
+
+    ``chars`` is the text size of the payload ``tokens`` measures, when the
+    caller has it; the fold gate derives this payload's own chars/token
+    from the pair.  A record without chars replaces any earlier chars for
+    the conversation -- a stale char count against a newer token count
+    would give a wrong ratio."""
     if not conversation_id or not limit or limit <= 0:
         return
     _pressure_cache[conversation_id] = (int(tokens), int(limit))
+    if chars is not None and chars > 0:
+        _pressure_chars[conversation_id] = int(chars)
+    else:
+        _pressure_chars.pop(conversation_id, None)
+
+
+_OVERFLOW_TOKENS_RE = re.compile(r"(\d[\d,]*)\s*tokens", re.IGNORECASE)
+
+
+def record_context_overflow(conversation_id: Optional[str], error_message: str,
+                            limit: Optional[int]) -> Optional[int]:
+    """The provider rejected the prompt as too long: record THAT as the
+    turn's pressure so the next send folds.
+
+    A rejected send never produces a usage event, so without this the only
+    pressure on record is the pre-send estimate -- and when that estimate
+    is low (a mis-learned ratio, or just an estimate), the fold gate sees a
+    half-full context and sends the identical over-limit payload again on
+    every retry (mbcohn, 2026-11-02: 1,003,527 tokens rejected six times
+    while the gate read ~460k).  The token count in the message
+    ("prompt is too long: 1003527 tokens > 1000000 maximum") is the real
+    size; without one, the limit itself is the floor of what was sent.
+    Returns the tokens recorded, or None when nothing was."""
+    if not conversation_id or not limit or limit <= 0:
+        return None
+    m = _OVERFLOW_TOKENS_RE.search(error_message or "")
+    tokens = int(limit)
+    if m:
+        try:
+            tokens = max(tokens, int(m.group(1).replace(",", "")))
+        except ValueError:
+            pass
+    record_context_pressure(conversation_id, tokens, int(limit))
+    return tokens
+
+
+def get_context_pressure_chars(conversation_id: Optional[str]) -> Optional[int]:
+    """Text chars of the payload the cached pressure measures, if recorded."""
+    if not conversation_id:
+        return None
+    return _pressure_chars.get(conversation_id)
 
 
 def get_context_pressure_detail(conversation_id: Optional[str]) -> Optional[Tuple[int, int]]:
@@ -143,6 +189,7 @@ def get_context_pressure(conversation_id: Optional[str]) -> Optional[float]:
 
 def clear_pressure_cache() -> None:
     _pressure_cache.clear()
+    _pressure_chars.clear()
 
 # Bound on the predecessor walk; a handoff chain is linear so this is a
 # cycle guard, not a real limit.

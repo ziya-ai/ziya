@@ -575,6 +575,11 @@ class FoldPressure:
     a fold happened — which keeps the fold prefix monotone (see plan_folds)."""
     tokens: int
     limit: int
+    # chars/token the measured payload was actually billed at, when the
+    # measurement recorded its text size.  Savings are converted at THIS
+    # ratio so they stay in the same units as ``tokens``; None falls back
+    # to the learned ratio (_chars_to_tokens).
+    chars_per_token: Optional[float] = None
 
 
 def _chars_to_tokens(chars: int) -> int:
@@ -587,6 +592,53 @@ def _chars_to_tokens(chars: int) -> int:
             chars, include_baseline=False))
     except Exception:  # noqa: BLE001
         return int(chars / 4)
+
+
+def _saved_tokens(chars: int, pressure: Optional[FoldPressure]) -> int:
+    """Tokens a fold of ``chars`` saves, in the units of ``pressure.tokens``.
+
+    The recorded pressure is what the provider billed (or the pre-send
+    estimate); converting savings at a *different*, independently learned
+    ratio mixes units.  With that ratio wrong by 5x (a user's bucket had
+    learned 13.4 chars/token) the gate overfolded 970k -> 350k on one turn,
+    then reconstructed the unfolded size as ~550k and folded nothing the
+    next, alternating every turn until an unfolded payload crossed the
+    1M limit."""
+    if chars <= 0:
+        return 0
+    if pressure is not None and pressure.chars_per_token:
+        return int(chars / pressure.chars_per_token)
+    return _chars_to_tokens(chars)
+
+
+# Only ratios in this band are believed as a payload's own chars/token.  A
+# text-char count against a bill that included many image tokens comes out
+# low; a count against a bill that excluded cache writes comes out high.
+# Either way the learned ratio is the better fallback.
+_PAYLOAD_RATIO_BAND = (1.0, 8.0)
+
+
+def _baseline_tokens() -> int:
+    """Fixed per-request overhead (tool schemas, static prompt) the bill
+    includes and the payload's text chars do not; 0 when unknown."""
+    try:
+        from app.utils.token_calibrator import get_token_calibrator
+        cal = get_token_calibrator()
+        return max(0, int(cal.get_baseline_overhead(cal._get_current_model_family())))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _payload_ratio(tokens: int, chars: Optional[int]) -> Optional[float]:
+    """chars/token the measured payload was billed at, or None."""
+    if not chars or chars <= 0 or tokens <= 0:
+        return None
+    content_tokens = tokens - _baseline_tokens()
+    if content_tokens <= 0:
+        return None
+    ratio = chars / content_tokens
+    lo, hi = _PAYLOAD_RATIO_BAND
+    return ratio if lo <= ratio <= hi else None
 
 
 @dataclass(frozen=True)
@@ -734,7 +786,7 @@ def plan_folds(history: List[Any],
         if remaining <= target:
             break
         chosen[key] = span
-        remaining -= _chars_to_tokens(fold_saving_chars(span))
+        remaining -= _saved_tokens(fold_saving_chars(span), pressure)
     return chosen
 
 
@@ -750,15 +802,20 @@ def fold_pressure_for(conversation_id: Optional[str]) -> Optional[FoldPressure]:
     if not conversation_id:
         return None
     try:
-        from app.utils.handoff_prelude import get_context_pressure_detail
+        from app.utils.handoff_prelude import (
+            get_context_pressure_chars, get_context_pressure_detail)
         hit = get_context_pressure_detail(conversation_id)
+        chars = get_context_pressure_chars(conversation_id) if hit else None
     except Exception:  # noqa: BLE001
         return None
     if not hit:
         return None
     tokens, limit = hit
     saved = _fold_savings.get(conversation_id, 0)
-    return FoldPressure(tokens=int(tokens) + _chars_to_tokens(saved), limit=int(limit))
+    ratio = _payload_ratio(int(tokens), chars)
+    measured = FoldPressure(tokens=int(tokens), limit=int(limit), chars_per_token=ratio)
+    return FoldPressure(tokens=int(tokens) + _saved_tokens(saved, measured),
+                        limit=int(limit), chars_per_token=ratio)
 
 
 def record_fold_savings(conversation_id: Optional[str], saved_chars: int) -> None:
