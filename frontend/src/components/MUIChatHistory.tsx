@@ -22,6 +22,10 @@ import { sortComparator } from '../utils/chatTreeSort';
 import { computeStructuralHash, fnv1a } from '../utils/chatTreeHash';
 import { folderBadge, countDirectSubfolders, isTargetFolderRow, withParentExpanded } from '../utils/chatTreeFolderBadge';
 import { formatAbsolute, formatRelativeShort } from '../utils/relativeTime';
+import {
+  applyRecencyFilter, loadRecencyWindow, RECENCY_STORAGE_KEY, RECENCY_WINDOWS, RECENCY_WINDOW_LABELS,
+} from '../utils/chatTreeRecency';
+import type { RecencyWindow } from '../utils/chatTreeRecency';
 import { useAppearancePrefs } from './AppearancePopover';
 import {
   chatListItemCount,
@@ -61,6 +65,7 @@ import SyncIcon from '@mui/icons-material/Sync';
 import SettingsIcon from '@mui/icons-material/Settings';
 import SearchIcon from '@mui/icons-material/Search';
 import SortIcon from '@mui/icons-material/Sort';
+import HistoryIcon from '@mui/icons-material/History';
 import CloseIcon from '@mui/icons-material/Close';
 import AddCommentIcon from '@mui/icons-material/AddComment';
 import RunStatusGears from './TaskCard/RunStatusGears';
@@ -1261,6 +1266,16 @@ const MUIChatHistory = () => {
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  // Recency filter: hides conversations whose last write is older than the
+  // window, and folders left empty by that.  Global preference, persisted
+  // like pinned folders.  Applied to the cached tree below, not inside the
+  // tree memo (see utils/chatTreeRecency.ts for why).
+  const [recencyWindow, setRecencyWindow] = useState<RecencyWindow>(() => loadRecencyWindow());
+  const [recencyMenuAnchor, setRecencyMenuAnchor] = useState<null | HTMLElement>(null);
+  useEffect(() => {
+    try { localStorage.setItem(RECENCY_STORAGE_KEY, recencyWindow); } catch { /* storage unavailable */ }
+  }, [recencyWindow]);
+
   const [isSearching, setIsSearching] = useState(false);
   const [searchAllProjects, setSearchAllProjects] = useState(false);
   // Result ordering. 'relevance' is a weighted score computed server-side
@@ -3573,6 +3588,22 @@ const MUIChatHistory = () => {
     return result;
   }, [conversations, folders, pinnedFolders, isProjectSwitching, currentProject?.id, streamingConversations, runningTaskConversations, conversationTaskBindings, runStatusIndex, jobsSeen]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Recency view.  The current, streaming and running-task conversations
+  // are always shown; with the window at 'all' this returns treeDataRaw
+  // itself, so the identity check in the debounce below still short-circuits.
+  const recencyExempt = useMemo(() => {
+    const s = new Set<string>();
+    if (currentConversationId) s.add(currentConversationId);
+    streamingConversations.forEach(id => s.add(id));
+    runningTaskConversations.forEach(id => s.add(id));
+    return s;
+  }, [currentConversationId, streamingConversations, runningTaskConversations]);
+  const recencyFiltered = useMemo(
+    () => applyRecencyFilter(treeDataRaw, { window: recencyWindow, now: Date.now(), exempt: recencyExempt }),
+    [treeDataRaw, recencyWindow, recencyExempt]
+  );
+  const treeDataVisible = recencyFiltered.nodes;
+
   // Debounce treeData updates: during startup, conversations change 4+ times
   // in rapid succession. Only rebuild the flattened tree once things settle.
   const [treeData, setTreeData] = useState<any[]>([]);
@@ -3581,12 +3612,12 @@ const MUIChatHistory = () => {
     if (treeDataTimerRef.current) clearTimeout(treeDataTimerRef.current);
     // If tree is empty OR the raw reference is identical (useMemo cache hit),
     // update immediately. Otherwise debounce to coalesce rapid changes.
-    if (treeData.length === 0 || treeDataRaw === treeData) {
-      setTreeData(treeDataRaw);
+    if (treeData.length === 0 || treeDataVisible === treeData) {
+      setTreeData(treeDataVisible);
     } else {
-      treeDataTimerRef.current = setTimeout(() => setTreeData(treeDataRaw), 150);
+      treeDataTimerRef.current = setTimeout(() => setTreeData(treeDataVisible), 150);
     }
-  }, [treeDataRaw]);
+  }, [treeDataVisible]);
 
   // Virtualization: flatten visible tree nodes
   const expandedSet = useMemo(() => new Set(expandedNodes.map(String)), [expandedNodes]);
@@ -4066,6 +4097,44 @@ const MUIChatHistory = () => {
               </Menu>
             </>
           )}
+          {/* Recency filter — hidden while searching; search has its own
+              sort and the filter does not apply to results. */}
+          {!searchQuery && (
+            <>
+              <Tooltip title={recencyWindow === 'all' ? 'Show recently active only' : RECENCY_WINDOW_LABELS[recencyWindow]}>
+                <IconButton
+                  size="small"
+                  data-testid="recency-filter-button"
+                  aria-pressed={recencyWindow !== 'all'}
+                  onClick={(e) => setRecencyMenuAnchor(e.currentTarget)}
+                  sx={{
+                    color: recencyWindow !== 'all' ? '#1890ff' : (isDarkMode ? '#888' : '#999'),
+                    border: `1px solid ${recencyWindow !== 'all' ? '#1890ff' : (isDarkMode ? '#555' : '#ccc')}`,
+                    width: 32,
+                    height: 32,
+                    flexShrink: 0
+                  }}
+                >
+                  <HistoryIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </Tooltip>
+              <Menu
+                anchorEl={recencyMenuAnchor}
+                open={Boolean(recencyMenuAnchor)}
+                onClose={() => setRecencyMenuAnchor(null)}
+              >
+                {RECENCY_WINDOWS.map((w) => (
+                  <MenuItem
+                    key={w}
+                    selected={recencyWindow === w}
+                    onClick={() => { setRecencyWindow(w); setRecencyMenuAnchor(null); }}
+                  >
+                    {RECENCY_WINDOW_LABELS[w]}
+                  </MenuItem>
+                ))}
+              </Menu>
+            </>
+          )}
           <Tooltip title="New folder">
             <IconButton
               size="small"
@@ -4097,6 +4166,27 @@ const MUIChatHistory = () => {
             </IconButton>
           </Tooltip>
         </Box>
+
+        {/* Recency caption: hidden rows are never a mystery, and "show all"
+            is one click away. */}
+        {recencyWindow !== 'all' && !searchQuery && (
+          <Box
+            data-testid="recency-filter-caption"
+            sx={{
+              px: 2, py: 0.5, display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              fontSize: 11, color: isDarkMode ? '#888' : '#999',
+              borderBottom: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8',
+            }}
+          >
+            <span>
+              {RECENCY_WINDOW_LABELS[recencyWindow]}
+              {recencyFiltered.hiddenConversations > 0 ? ` · ${recencyFiltered.hiddenConversations} hidden` : ''}
+            </span>
+            <Box component="span" onClick={() => setRecencyWindow('all')} sx={{ cursor: 'pointer', color: '#1890ff' }}>
+              show all
+            </Box>
+          </Box>
+        )}
 
         {/* Search Results or Tree View */}
         {searchQuery && searchResults.length > 0 ? (
