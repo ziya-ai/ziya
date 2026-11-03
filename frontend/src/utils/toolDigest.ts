@@ -48,6 +48,8 @@ export interface ToolDigest {
     keys?: string[];
     /** collection: rebuilt from a payload that was cut off mid-object. */
     truncated?: boolean;
+    /** shell: the full command, including a heredoc body or continuation lines. */
+    command?: string;
 }
 
 export function formatBytes(n: number): string {
@@ -81,9 +83,31 @@ const EXIT_RE = /^\[Exit code: (\d+)\]$/;
 const RECORD_RE = /^(\[[^\]\n]{1,40}\]|[-*•]\s|\d+[.)]\s)/;
 /** A line with at least one word; "/**", "{" and "*" have none. */
 const MEANINGFUL_RE = /[A-Za-z0-9]{3,}/;
-/** Truncation marker a server appends after cutting a payload. */
-const TRUNC_TAIL_RE = /\s*(?:\.\.\.|…)?\s*\[[^\]\n]*truncated[^\]\n]*\]\s*$/i;
+/**
+ * Truncation marker a server appends after cutting a payload.  Anchored only
+ * at the end, so it must never be run over a whole payload: from every "["
+ * the engine scans to the next "]" and backtracks, which is quadratic on a
+ * long single-line JSON blob (160 KB took ~12 s; a 1 MB payload hung the tab).
+ * Use stripTruncTail(), which applies it to the last few hundred bytes only.
+ * The bracket body excludes "[" so the match starts at the marker's own
+ * bracket, not at an earlier "[" inside a payload string.
+ */
+const TRUNC_TAIL_RE = /\s*(?:\.\.\.|…)?\s*\[[^\[\]\n]*truncated[^\[\]\n]*\]\s*$/i;
+const TRUNC_TAIL_WINDOW = 256;
+
+function stripTruncTail(raw: string): string {
+    const start = Math.max(0, raw.length - TRUNC_TAIL_WINDOW);
+    const m = TRUNC_TAIL_RE.exec(raw.slice(start));
+    return m ? raw.slice(0, start + m.index) : raw;
+}
 const DIFF_HEAD_RE = /^(diff --git |--- (a\/|\/dev\/null))/;
+const HEREDOC_RE = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/;
+const TRACEBACK_RE = /^Traceback \(most recent call last\):/;
+/**
+ * A whole line that reports a failure.  Anchored at both ends, so a line that
+ * merely mentions an error class ("raise ValueError here") does not match.
+ */
+const SHELL_ERROR_RE = /^(?:[A-Za-z_][\w.]*(?:Error|Exception):\s.*|.*: command not found|.*: No such file or directory|fatal: .+|error: .+|Error: .+)$/;
 
 const isScalar = (v: unknown): v is string | number | boolean =>
     typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
@@ -273,7 +297,7 @@ function digestRecord(value: unknown, raw: string): ToolDigest | null {
  * (one whose nested array happened to close) is dropped rather than kept.
  */
 export function salvageTruncatedJson(raw: string): unknown | undefined {
-    const s = raw.replace(TRUNC_TAIL_RE, '');
+    const s = stripTruncTail(raw);
     const stack: string[] = [];
     let inStr = false;
     let esc = false;
@@ -358,24 +382,59 @@ function digestUnparsedJson(raw: string): ToolDigest {
     };
 }
 
+/**
+ * Split a "$ command\noutput" transcript (renderToolPart.ts).  The command
+ * may span lines: a heredoc runs through its delimiter line and a trailing
+ * backslash continues onto the next line.  Those lines are the command, not
+ * output, so a heredoc script that printed one line counts as one line.
+ */
+export function splitShellCommand(lines: string[]): { command: string; output: string[] } {
+    if (!/^\$ /.test(lines[0] ?? '')) return { command: '', output: lines };
+    let end = 0;
+    const heredoc = lines[0].match(HEREDOC_RE);
+    if (heredoc) {
+        const delim = heredoc[2];
+        for (let i = 1; i < lines.length; i++) {
+            if (lines[i].trim() === delim) { end = i; break; }
+        }
+    } else {
+        while (end < lines.length - 1 && /\\$/.test(lines[end])) end++;
+    }
+    return { command: lines.slice(0, end + 1).join('\n').slice(2), output: lines.slice(end + 1) };
+}
+
+/** The one output line that says the command failed, if any. */
+function shellErrorLine(output: string[]): string | undefined {
+    const tb = output.findIndex(l => TRACEBACK_RE.test(l.trim()));
+    if (tb >= 0) {
+        // Frames are indented; the exception line that ends the traceback is not.
+        for (let i = tb + 1; i < output.length; i++) {
+            if (output[i].trim() && !/^\s/.test(output[i])) return output[i].trim();
+        }
+    }
+    return output.map(l => l.trim()).find(l => SHELL_ERROR_RE.test(l));
+}
+
 function digestShell(raw: string): ToolDigest {
     const all = raw.replace(/\r\n/g, '\n').split('\n');
+    const { command, output: body } = splitShellCommand(all);
     const chips: DigestChip[] = [];
     const output: string[] = [];
-    for (const line of all) {
-        if (/^\$ /.test(line)) continue;
+    for (const line of body) {
         const exit = line.trim().match(EXIT_RE);
         if (exit) { chips.push({ label: `exit ${exit[1]}`, tone: 'err' }); continue; }
         output.push(line);
     }
     while (output.length && !output[output.length - 1].trim()) output.pop();
     while (output.length && !output[0].trim()) output.shift();
+    const warning = shellErrorLine(output);
     const preview = output.slice(0, PREVIEW_LINES).map(l => clip(l, 160));
     return {
         kind: 'shell',
         headline: output.length ? `${plural(output.length, 'line')} of output` : 'no output',
         byline: `${plural(output.length, 'line')} · ${formatBytes(raw.length)}`,
         chips, facts: [], preview, moreLines: Math.max(0, output.length - preview.length),
+        command: command || undefined, warning: warning ? clip(warning, 200) : undefined,
     };
 }
 

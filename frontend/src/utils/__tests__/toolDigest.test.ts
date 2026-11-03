@@ -140,6 +140,44 @@ describe('shell digest', () => {
         const d = digestToolResult('mcp_run_shell_command', '$ true');
         expect(d.headline).toBe('no output');
     });
+
+    // Ported from the never-landed Oct 2 row-model design (toolRowDigest):
+    // the command may span lines, and a failure line is the fact worth showing.
+    it('a heredoc body belongs to the command, not the output', () => {
+        const d = digestToolResult('mcp_run_shell_command', "$ python3 - <<'EOF'\nimport json\nprint(1)\nEOF\n1");
+        expect(d.command).toBe("python3 - <<'EOF'\nimport json\nprint(1)\nEOF");
+        expect(d.headline).toBe('1 line of output');
+        expect(d.preview).toEqual(['1']);
+    });
+
+    it('an unclosed heredoc keeps only the first line as the command', () => {
+        const d = digestToolResult('mcp_run_shell_command', '$ cat <<EOF\nline a\nline b');
+        expect(d.command).toBe('cat <<EOF');
+        expect(d.preview).toEqual(['line a', 'line b']);
+    });
+
+    it('follows backslash continuations', () => {
+        const d = digestToolResult('mcp_run_shell_command', '$ echo a \\\n  b\na b');
+        expect(d.command).toBe('echo a \\\n  b');
+        expect(d.preview).toEqual(['a b']);
+    });
+
+    it('surfaces the exception line of a traceback as the warning, not its frames', () => {
+        const d = digestToolResult('mcp_run_shell_command',
+            "$ python3 x.py\nTraceback (most recent call last):\n  File \"x.py\", line 3, in <module>\nKeyError: 'measure_name'\ntrailing noise");
+        expect(d.warning).toBe("KeyError: 'measure_name'");
+    });
+
+    it('flags "command not found" even after ordinary output lines', () => {
+        const d = digestToolResult('mcp_run_shell_command', '$ frob\nok\nbash: frob: command not found');
+        expect(d.warning).toBe('bash: frob: command not found');
+    });
+
+    it('does not flag output that merely mentions an error class', () => {
+        const d = digestToolResult('mcp_run_shell_command', '$ grep -rn Error src\nsrc/a.py: raise ValueError raised here\nsrc/b.py: ok');
+        expect(d.warning).toBeUndefined();
+        expect(d.headline).toBe('2 lines of output');
+    });
 });
 
 describe('JSON that does not parse (truncated payload)', () => {
@@ -161,6 +199,32 @@ describe('plain text', () => {
         expect(d.headline).toBe('Query: "foo" - 4 results of 10 total');
         expect(d.preview).toEqual(['line 2', 'line 3', 'line 4']);
         expect(d.byline).toBe('5 lines · 64 B');
+    });
+});
+
+describe('large single-line payload that does not parse', () => {
+    // Regression: TRUNC_TAIL_RE (anchored at $ only) was run over the whole
+    // payload.  From every "[" it scanned to the next "]" and backtracked,
+    // which is quadratic on a long one-line blob: 160 KB took ~12 s and a
+    // ~1 MB MCP result pegged the main thread until Chrome killed the tab
+    // (RESULT_CODE_HUNG) every time the conversation was opened.
+    it('digests a 400 KB truncated array of "["-bearing strings in well under a second', () => {
+        const raw = '[' + '"item [x",'.repeat(40_000);   // one line, 40k "[" and no "]"
+        const t0 = Date.now();
+        const d = digestToolResult('mcp_search', raw);
+        expect(Date.now() - t0).toBeLessThan(2000);
+        // Positive assertion that the truncated-JSON path actually ran.
+        expect(d.byline).toContain('truncated');
+    });
+
+    it('still strips a trailing truncation marker and salvages the complete elements', () => {
+        const raw = '[' + '{"n":1,"s":"a [b"},'.repeat(5000) + '{"n":2,"s":"cut' + ' ...[content truncated]';
+        const t0 = Date.now();
+        const d = digestToolResult('mcp_search', raw);
+        expect(Date.now() - t0).toBeLessThan(2000);
+        expect(d.kind).toBe('collection');
+        expect(d.truncated).toBe(true);
+        expect(d.headline).toContain('5000');
     });
 });
 
