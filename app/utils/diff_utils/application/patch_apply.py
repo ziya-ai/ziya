@@ -340,11 +340,12 @@ def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], posi
                 # If file has extra content after the removed line content, preserve it
                 if file_stripped.startswith(removed_stripped) and len(file_stripped) > len(removed_stripped):
                     trailing = file_stripped[len(removed_stripped):]
-                    new_line = added_line.rstrip() + trailing
+                    new_line = added_line.rstrip('\r\n') + trailing
                 else:
-                    new_line = added_line.rstrip()
+                    new_line = added_line.rstrip('\r\n')
                 
-                line_ending = file_line[len(file_line.rstrip()):]
+                # Newline only (see the region rebuild above for why).
+                line_ending = file_line[len(file_line.rstrip('\r\n')):]
                 new_section.append(new_line + line_ending)
                 added_idx += 1
         else:
@@ -458,10 +459,14 @@ def _apply_changes_by_structure(original_lines: List[str], hunk: Dict[str, Any],
             else:
                 return None
 
+    # Only the newline is the line ending.  rstrip() also took the anchor's
+    # trailing spaces into ``ending`` and stripped an added line's own
+    # trailing whitespace, so a ``+`` line that legitimately ends in a space
+    # came out without it (json_escape_sequence).
     ending = '\n'
     if region_start < len(original_lines):
         anchor = original_lines[region_start]
-        ending = anchor[len(anchor.rstrip()):] or '\n'
+        ending = anchor[len(anchor.rstrip('\r\n')):] or '\n'
 
     # Rebuild the region: context lines preserved verbatim from the file (so we
     # never "fix" the file's own context), added lines taken from the diff.
@@ -469,7 +474,7 @@ def _apply_changes_by_structure(original_lines: List[str], hunk: Dict[str, Any],
     ctx_i = 0
     for line, is_add in zip(new_lines, flags):
         if is_add:
-            rebuilt.append(line.rstrip() + ending)
+            rebuilt.append(line.rstrip('\r\n') + ending)
         else:
             rebuilt.append(original_lines[ctx_file_idx[ctx_i]])
             ctx_i += 1
@@ -523,7 +528,7 @@ def apply_surgical_changes_by_content(original_lines: List[str], hunk: Dict[str,
     
     result = original_lines.copy()
     first_pos = min(file_indices)
-    ending = result[first_pos][len(result[first_pos].rstrip()):] or '\n'
+    ending = result[first_pos][len(result[first_pos].rstrip('\r\n')):] or '\n'
     
     # Remove in reverse order
     for idx in sorted(file_indices, reverse=True):
@@ -531,7 +536,7 @@ def apply_surgical_changes_by_content(original_lines: List[str], hunk: Dict[str,
     
     # Insert added lines at first removal position
     for i, line in enumerate(added_lines):
-        result.insert(first_pos + i, line.rstrip() + ending)
+        result.insert(first_pos + i, line.rstrip('\r\n') + ending)
     
     return result
 
@@ -1639,12 +1644,14 @@ def apply_diff_with_difflib_hybrid_forced(
                             # (i.e., it's at or relative to first_added_indent)
                             if first_added_indent is not None and current_indent >= first_added_indent:
                                 new_indent = max(0, current_indent + indent_adjustment)
-                                new_lines_content.append(' ' * new_indent + line.strip())
+                                # Re-indent only: the line's own trailing
+                                # whitespace is content, not indentation.
+                                new_lines_content.append(' ' * new_indent + line.lstrip().rstrip('\r\n'))
                             else:
                                 # Line already has correct indentation, don't adjust
                                 new_lines_content.append(line)
                         elif has_indent_mismatch and line.strip():
-                            new_lines_content.append(line.rstrip())
+                            new_lines_content.append(line.rstrip('\r\n'))
                         else:
                             new_lines_content.append(line)
                     else:
@@ -1802,11 +1809,10 @@ def apply_diff_with_difflib_hybrid_forced(
                 old_block_idx = 0
                 for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
                     if is_add:
-                        # Added line - use from diff (strip trailing whitespace from non-empty lines)
-                        if line.strip():
-                            preserved_new_lines.append(line.rstrip())
-                        else:
-                            preserved_new_lines.append(line)
+                        # Added line - taken from the diff as written.  Only the
+                        # newline comes off: an author's trailing space is part
+                        # of the line (git apply keeps it; json_escape_sequence).
+                        preserved_new_lines.append(line.rstrip('\r\n'))
                     else:
                         # Context line - use original file's line to preserve exact content
                         file_idx = remove_pos + old_block_idx
@@ -2457,7 +2463,7 @@ def apply_diff_with_difflib_hybrid_forced(
                         # this branch) but misaligns by one: the trailing
                         # context was then copied from the wrong file line,
                         # keeping a removed line and dropping a kept one
-                        # (example-notes.md, 2026-10-17).  Fall back to plain
+                        # (kpop-chunnel.md, 2026-10-17).  Fall back to plain
                         # reconstruction when the raw markers do not account
                         # for old_block/new_lines exactly.
                         raw_markers = []
