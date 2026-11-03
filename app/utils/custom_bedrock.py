@@ -254,6 +254,20 @@ class CustomBedrockClient:
             return result
         except Exception as retry_error:
             retry_error_str = str(retry_error)
+            # A service-tier rejection must reach BedrockProvider with its
+            # wording intact: that is what the provider keys its standard-
+            # tier retry and per-model memo on.  The blanket
+            # ValidationException branch below would rewrite it into a
+            # context-size error, so the model would never be marked and
+            # the tier would be re-probed on every call.  Reachable on the
+            # first call to a model inside a task run when the proactive
+            # path sends extended context before the plain attempt.
+            if is_service_tier_unsupported_error(retry_error_str):
+                logger.debug(
+                    f"service tier rejected for {kwargs.get('modelId')} on the "
+                    f"extended-context attempt; caller retries at the standard tier"
+                )
+                raise
             logger.error(f"🚀 EXTENDED_CONTEXT: Retry failed with error: {retry_error_str}")
             
             # Enhanced error handling for extended context failures
