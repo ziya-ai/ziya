@@ -75,7 +75,7 @@ import {
     parseHunkStatuses
 } from '../apis/chatApi';
 import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffParts, findRejectedDiffIndices, isDiffRejectedMarkerBlock } from '../utils/diffUtils';
-import { formatMCPOutput, parsePythonLiteral } from '../utils/mcpFormatter';
+import { formatMCPOutput, parsePythonLiteral, MEMORY_TOOL_NAMES } from '../utils/mcpFormatter';
 import { MemoryCard } from './MemoryCard';
 import { digestToolResult } from '../utils/toolDigest';
 import { DigestPreview, ToolResultViewer, chooseBody } from './ToolDigestView';

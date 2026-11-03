@@ -238,13 +238,32 @@ export interface FormattedOutput {
   memory?: MemoryCardData;
 }
 
+/** One memory as listed by memory_search / memory_expand. */
+export interface MemoryEntry {
+  id: string;
+  layer: string;
+  content: string;
+  tags: string[];
+  /** 'contested' or 'probationary — unverified' when the store flagged it. */
+  flag?: string;
+}
+
 export interface MemoryCardData {
-  kind: 'proposed' | 'saved';
+  kind: 'proposed' | 'saved' | 'deleted' | 'retracted' | 'recalled';
+  /** Single-memory kinds: the memory text.  recalled: the raw tool text. */
   content: string;
   layer: string;
   tags: string[];
   id: string;
   pendingCount?: number;
+  /** recalled: parsed memories, in result order. */
+  entries?: MemoryEntry[];
+  /** recalled: the count the tool reported (includes probationary hits). */
+  count?: number;
+  /** recalled: what was looked up — the query or node id. */
+  subject?: string;
+  /** deleted: the reason the model gave. */
+  reason?: string;
 }
 
 /**
@@ -347,10 +366,74 @@ export function coerceToolResultObject(result: any): Record<string, any> | null 
   return null;
 }
 
-const MEMORY_TOOL_KIND: Record<string, MemoryCardData['kind']> = {
+export const MEMORY_TOOL_KIND: Record<string, MemoryCardData['kind']> = {
   memory_propose: 'proposed', mcp_memory_propose: 'proposed',
   memory_save: 'saved', mcp_memory_save: 'saved',
+  memory_delete: 'deleted', mcp_memory_delete: 'deleted',
+  memory_retract_proposal: 'retracted', mcp_memory_retract_proposal: 'retracted',
+  memory_search: 'recalled', mcp_memory_search: 'recalled',
+  memory_expand: 'recalled', mcp_memory_expand: 'recalled',
+  memory_context: 'recalled', mcp_memory_context: 'recalled',
 };
+
+/** Tool names the memory card handles; ToolBlock routes these to formatMCPOutput. */
+export const MEMORY_TOOL_NAMES: string[] = Object.keys(MEMORY_TOOL_KIND);
+
+// `[m_1a2b] (layer) [flag] text…` — the entry line memory_search and
+// memory_expand emit (memory_tools.py).  The flag is optional.
+const MEMORY_ENTRY_RE = /^\[([^\]\n]+)\]\s+\(([^)\n]+)\)\s+(?:\[([^\]\n]+)\]\s+)?([\s\S]*)$/;
+const MEMORY_TAGS_RE = /\s{2,}tags:\s*([^\n]*)$/;
+
+/**
+ * Parse the entry list memory_search / memory_expand return.  Entries are
+ * blank-line separated; a paragraph that does not open with `[id] (layer)`
+ * is a continuation of the previous entry's content (memory text may hold
+ * blank lines).  Returns [] when nothing parses, so the caller shows the
+ * text as-is.
+ */
+export function parseMemoryEntries(text: string): MemoryEntry[] {
+  const entries: MemoryEntry[] = [];
+  const paras = text.replace(/\r\n/g, '\n').split(/\n\s*\n/);
+  for (const para of paras) {
+    const p = para.trim();
+    if (!p) continue;
+    const m = p.match(MEMORY_ENTRY_RE);
+    if (m) {
+      entries.push({ id: m[1].trim(), layer: m[2].trim(), flag: m[3]?.trim() || undefined, content: m[4], tags: [] });
+    } else if (entries.length) {
+      entries[entries.length - 1].content += `\n\n${p}`;
+    } else {
+      return [];
+    }
+  }
+  for (const e of entries) {
+    const t = e.content.match(MEMORY_TAGS_RE);
+    if (t) {
+      e.tags = t[1].split(',').map(s => s.trim()).filter(Boolean);
+      e.content = e.content.slice(0, t.index).trimEnd();
+    }
+    e.content = e.content.trim();
+  }
+  return entries;
+}
+
+function formatMemoryRecall(obj: Record<string, any>, input: any, raw: string): FormattedOutput {
+  const content = typeof obj.content === 'string' ? obj.content : '';
+  if (!content) return { content: obj.message || raw, type: 'text', collapsed: false };
+  const entries = parseMemoryEntries(content);
+  const count = typeof obj.count === 'number' ? obj.count : entries.length;
+  const subject = typeof input?.query === 'string' ? input.query
+    : (typeof input?.node_id === 'string' ? input.node_id : undefined);
+  // `content` stays the full tool text: the chat record persists it and the
+  // model reads it on later turns.
+  return {
+    content,
+    type: 'text',
+    collapsed: false,
+    renderAs: 'memory',
+    memory: { kind: 'recalled', content, layer: '', tags: [], id: '', entries, count, subject },
+  };
+}
 
 function formatMemoryResult(toolName: string, result: any, input: any): FormattedOutput {
   const kind = MEMORY_TOOL_KIND[toolName];
@@ -361,6 +444,7 @@ function formatMemoryResult(toolName: string, result: any, input: any): Formatte
     const errText = typeof obj.error === 'string' ? obj.error : (obj.message || 'Unknown error');
     return { content: `❌ Error: ${errText}`, type: 'error', collapsed: false };
   }
+  if (kind === 'recalled') return formatMemoryRecall(obj, input, raw);
   // Content comes from the result (backend echoes it) or, failing that, the
   // tool input.  Results persisted before the echo was added have neither;
   // those keep the plain message line rather than an empty card.
@@ -371,12 +455,13 @@ function formatMemoryResult(toolName: string, result: any, input: any): Formatte
   const layer = typeof obj.layer === 'string' && obj.layer ? obj.layer : (input?.layer || 'domain_context');
   const id = String(obj.proposal_id || obj.memory_id || '');
   const pendingCount = typeof obj.pending_count === 'number' ? obj.pending_count : undefined;
+  const reason = kind === 'deleted' && typeof input?.reason === 'string' ? input.reason : undefined;
   return {
     content: obj.message || content,
     type: 'text',
     collapsed: false,
     renderAs: 'memory',
-    memory: { kind, content, layer, tags: tagsSrc.map(String), id, pendingCount },
+    memory: { kind, content, layer, tags: tagsSrc.map(String), id, pendingCount, reason },
   };
 }
 

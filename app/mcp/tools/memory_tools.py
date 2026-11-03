@@ -773,10 +773,17 @@ class MemoryRetractProposalTool(_OffLoopMemoryBase):
         # False if already terminal).
         if store.mark_archived(proposal_id, reason="retracted_by_agent"):
             logger.info(f"↩️ Retracted own-session proposal {proposal_id}: {target.get('content','')[:60]}")
+            # Echo what was retracted so the tool widget can show the text
+            # being withdrawn (the id alone is opaque to the user).
+            _tags = target.get("tags") or []
             return {
                 "success": True,
                 "message": f"Retracted proposal {proposal_id}.",
                 "proposal_id": proposal_id,
+                "content": str(target.get("content", "")),
+                "layer": target.get("layer") or "domain_context",
+                "tags": list(_tags) if not isinstance(_tags, str) else
+                        [t.strip() for t in _tags.split(",") if t.strip()],
             }
         return {
             "error": True,
@@ -877,4 +884,5 @@ class MemoryDeleteTool(_OffLoopMemoryBase):
             "memory_id": memory_id,
             "content": mem.content,
             "layer": mem.layer,
+            "tags": list(mem.tags or []),
         }
