@@ -1,7 +1,7 @@
 diff --git a/test.py b/test.py
 --- a/test.py
 +++ b/test.py
-@@ -6,13 +6,14 @@ class DataProcessor:
+@@ -6,18 +6,23 @@ class DataProcessor:
      def __init__(self, config=None):
          self.config = config or {}
          self.data = []
@@ -11,18 +11,26 @@ diff --git a/test.py b/test.py
      def load_data(self, source):
          """Load data from the specified source"""
 -        if source.type == "file":
+-            self._load_from_file(source.path)
+-        elif source.type == "api":
+-            self._load_from_api(source.url, source.params)
+-        elif source.type == "database":
+-            self._load_from_database(source.connection, source.query)
+-        elif source.type == "memory":
+-            self.data = source.data
+-        else:
+-            raise ValueError(f"Unsupported source type: {source.type}")
 +        try:
 +            if source.type == "file":
-                 self._load_from_file(source.path)
--        elif source.type == "api":
++                self._load_from_file(source.path)
 +            elif source.type == "api":
-                 self._load_from_api(source.url, source.params)
-             elif source.type == "database":
-                 self._load_from_database(source.connection, source.query)
-@@ -20,6 +21,9 @@ class DataProcessor:
-                 self.data = source.data
-             else:
-                 raise ValueError(f"Unsupported source type: {source.type}")
++                self._load_from_api(source.url, source.params)
++            elif source.type == "database":
++                self._load_from_database(source.connection, source.query)
++            elif source.type == "memory":
++                self.data = source.data
++            else:
++                raise ValueError(f"Unsupported source type: {source.type}")
 +        except Exception as e:
 +            self.errors.append(str(e))
 +            raise

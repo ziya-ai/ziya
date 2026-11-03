@@ -19,69 +19,19 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
 
     // ... lots of other hooks and logic ...
 
-    const renderSystemMessage = (msg: any, index: number) => {
+    const renderRetryButton = (index: number) => {
         return (
-            <div className="system-message" key={index}>
-                <div className="message-header">
-                    <span className="role-label">System</span>
-                </div>
-                <div className="message-content">
-                    {isRawMode ? (
-                        <pre className="raw-markdown-view">{msg.content}</pre>
-                    ) : (
-                        <MarkdownRenderer
-                            markdown={msg.content}
-                            enableCodeApply={enableCodeApply}
-                            onOpenShellConfig={onOpenShellConfig}
-                                isStreaming={false}
-                        />
-                    )}
-                </div>
-            </div>
+            <button className="retry-btn" onClick={() => console.log('retry', index)}>
+                Retry
+            </button>
         );
     };
 
-    // ... more component logic, helper functions, etc ...
-
-    const renderToolCall = (toolCall: any) => {
+    const renderFeedback = (msg: any) => {
         return (
-            <div className="tool-call">
-                <div className="tool-name">{toolCall.name}</div>
-                <div className="tool-args">
-                    <MarkdownRenderer
-                        markdown={JSON.stringify(toolCall.args, null, 2)}
-                        enableCodeApply={false}
-                        onOpenShellConfig={onOpenShellConfig}
-                            isStreaming={false}
-                    />
-                </div>
-            </div>
-        );
-    };
-
-    const renderInlineCode = (code: string) => {
-        return <code className="inline-code">{code}</code>;
-    };
-
-    const renderCodeBlock = (block: any) => {
-        return (
-            <div className="code-block">
-                <div className="code-header">{block.language}</div>
-                <pre><code>{block.content}</code></pre>
-            </div>
-        );
-    };
-
-    // ... many more helper functions ...
-
-    const renderAttachments = (attachments: any[]) => {
-        return (
-            <div className="attachments">
-                {attachments.map((att, i) => (
-                    <div key={i} className="attachment-item">
-                        <span>{att.name}</span>
-                    </div>
-                ))}
+            <div className="feedback-controls">
+                <button className="thumbs-up">👍</button>
+                <button className="thumbs-down">👎</button>
             </div>
         );
     };
@@ -97,8 +47,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
             </div>
         );
     };
-
-    // ... even more helpers to push line count up ...
 
     const renderCopyButton = (content: string) => {
         return (
@@ -118,56 +66,20 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         );
     };
 
-    const renderRetryButton = (index: number) => {
+    const renderBranchIndicator = (msg: any) => {
+        if (!msg.branches || msg.branches.length <= 1) return null;
         return (
-            <button className="retry-btn" onClick={() => console.log('retry', index)}>
-                Retry
-            </button>
-        );
-    };
-
-    const renderFeedback = (msg: any) => {
-        return (
-            <div className="feedback-controls">
-                <button className="thumbs-up">👍</button>
-                <button className="thumbs-down">👎</button>
+            <div className="branch-indicator">
+                <span>Branch {msg.currentBranch + 1} of {msg.branches.length}</span>
             </div>
         );
     };
 
-    // Padding functions to reach line ~500+
-    const computeMessageStats = () => {
-        const total = messages.length;
-        const human = messages.filter(m => m.role === 'human').length;
-        const assistant = messages.filter(m => m.role === 'assistant').length;
-        return { total, human, assistant };
+    const getMessageClassName = (msg: any, index: number) => {
+        const classes = ['message', `message-${msg.role}`];
+        if (index === messages.length - 1) classes.push('last-message');
+        return classes.join(' ');
     };
-
-    const formatMessageForExport = (msg: any) => {
-        return {
-            role: msg.role,
-            content: msg.content,
-            timestamp: msg.timestamp,
-        };
-    };
-
-    const exportConversation = () => {
-        const exported = messages.map(formatMessageForExport);
-        const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'conversation.json';
-        a.click();
-    };
-
-    const scrollToBottom = useCallback(() => {
-        // scroll logic
-    }, []);
-
-    const handleScroll = useCallback((e: React.UIEvent) => {
-        // scroll handler
-    }, []);
 
     const renderLoadingIndicator = () => {
         if (!isStreaming) return null;
@@ -189,24 +101,46 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         );
     };
 
-    // More padding to ensure we're past line 500
+    // Helper functions padding
     const filterMessages = (query: string) => {
         return messages.filter(m =>
             m.content.toLowerCase().includes(query.toLowerCase())
         );
     };
 
+    const formatMessageForExport = (msg: any) => {
+        return { role: msg.role, content: msg.content, timestamp: msg.timestamp };
+    };
+
+    const exportConversation = () => {
+        const exported = messages.map(formatMessageForExport);
+        const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'conversation.json';
+        a.click();
+    };
+
+    const scrollToBottom = useCallback(() => {
+        // scroll logic
+    }, []);
+
+    const handleScroll = useCallback((e: React.UIEvent) => {
+        // scroll handler
+    }, []);
+
+    const computeMessageStats = () => {
+        const total = messages.length;
+        const human = messages.filter(m => m.role === 'human').length;
+        const assistant = messages.filter(m => m.role === 'assistant').length;
+        return { total, human, assistant };
+    };
+
     const highlightSearchTerm = (content: string, term: string) => {
         if (!term) return content;
         const regex = new RegExp(`(${term})`, 'gi');
         return content.replace(regex, '<mark>$1</mark>');
-    };
-
-    const getMessageClassName = (msg: any, index: number) => {
-        const classes = ['message', `message-${msg.role}`];
-        if (index === messages.length - 1) classes.push('last-message');
-        if (msg.isError) classes.push('error-message');
-        return classes.join(' ');
     };
 
     const renderStreamingContent = (content: string) => {
@@ -223,66 +157,39 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         );
     };
 
-    const renderMessagePair = (humanMsg: any, assistantMsg: any, pairIndex: number) => {
-        return (
-            <div className="message-pair" key={pairIndex}>
-                {renderAvatar('human')}
-                <div className="human-content">{humanMsg.content}</div>
-                {assistantMsg && (
-                    <>
-                        {renderAvatar('assistant')}
-                        <div className="assistant-content">
-                            <MarkdownRenderer
-                                markdown={assistantMsg.content}
-                                enableCodeApply={enableCodeApply}
-                                onOpenShellConfig={onOpenShellConfig}
-                                    isStreaming={false}
-                            />
-                        </div>
-                    </>
-                )}
-            </div>
-        );
-    };
-
-    const renderBranchIndicator = (msg: any) => {
-        if (!msg.branches || msg.branches.length <= 1) return null;
-        return (
-            <div className="branch-indicator">
-                <span>Branch {msg.currentBranch + 1} of {msg.branches.length}</span>
-                <button onClick={() => console.log('prev branch')}>←</button>
-                <button onClick={() => console.log('next branch')}>→</button>
-            </div>
-        );
-    };
-
-    const renderEditForm = (msg: any, index: number) => {
-        return (
-            <div className="edit-form">
-                <textarea defaultValue={msg.content} />
-                <div className="edit-actions">
-                    <button>Save</button>
-                    <button>Cancel</button>
-                </div>
-            </div>
-        );
-    };
-
-    // Main render - this is where the target MarkdownRenderer block lives
-    // The block below at approximately line 586 is NOT yet wrapped in isRawMode
+    // Main render
     return (
         <div className="conversation-container">
             {renderEmptyState()}
             {renderLoadingIndicator()}
             <div className="messages-list">
                 {messages.map((msg, actualIndex) => {
-                    if (msg.role === 'system') {
-                        return renderSystemMessage(msg, actualIndex);
-                    }
-
                     return (
                         <div key={actualIndex} className={getMessageClassName(msg, actualIndex)}>
-                            {msg.role === 'assistant' ? (
+                            {msg.role === 'assistant' && msg.isCompact ? (
+                                <>
+                                    {renderBranchIndicator(msg)}
+                                    <div className="message-header">
+                                        {renderAvatar(msg.role)}
+                                        {renderTimestamp(msg.timestamp)}
+                                        {renderRetryButton(actualIndex)}
+                                    </div>
+                                    <div className="message-content">
+                                                {isRawMode ? (
+                                                    <pre className="raw-markdown-view">{msg.content}</pre>
+                                                ) : (
+                                                    <MarkdownRenderer
+                                                        markdown={msg.content}
+                                                        enableCodeApply={enableCodeApply}
+                                                        onOpenShellConfig={onOpenShellConfig}
+                                                            isStreaming={false}
+                                                    />
+                                                )}
+                                    </div>
+                                </>
+                            ) : null}
+
+                            {msg.role === 'assistant' && !msg.isCompact ? (
                                 <>
                                     {renderBranchIndicator(msg)}
                                     <div className="message-header">

@@ -1,5 +1,5 @@
 {
-    "description": "Test case where a similar MarkdownRenderer block elsewhere in the file already has the isRawMode wrapper, causing false 'already applied' detection for a different block that needs the change",
+    "description": "Test case where a similar MarkdownRenderer block elsewhere in the file already has the isRawMode wrapper, causing false 'already applied' detection for a different block that needs the change NOTE (2026-11-02): expected.tsx was regenerated from original.tsx \u2014 the committed one had been built from a different revision of Conversation.tsx and differed from original.tsx in 229 lines outside the hunk, so the fixture could never pass. The hunk's own indentation (48 spaces) is deeper than the file's (40); the applied lines keep the diff's indentation, as git apply --ignore-whitespace would.",
     "target_file": "frontend/src/components/Conversation.tsx",
     "expected_to_fail": false
 }

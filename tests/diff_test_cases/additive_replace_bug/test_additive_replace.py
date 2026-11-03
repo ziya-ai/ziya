@@ -89,8 +89,10 @@ class TestAdditiveReplaceBug(unittest.TestCase):
         expected = self._load_fixture('expected.tsx')
         target = metadata['target_file']
 
-        self._setup_file(original, target)
-        use_git_to_apply_code_diff(diff, target)
+        # The pipeline takes the path as given (no join with the codebase
+        # dir), so pass the absolute path _setup_file wrote.
+        target_path = self._setup_file(original, target)
+        use_git_to_apply_code_diff(diff, target_path)
         result = self._read_file(target)
 
         # PRIMARY CHECK: no line should appear as both key={index} AND key={sk}
@@ -126,8 +128,10 @@ class TestAdditiveReplaceBug(unittest.TestCase):
         diff = self._load_fixture('changes.diff')
         target = metadata['target_file']
 
-        self._setup_file(original, target)
-        use_git_to_apply_code_diff(diff, target)
+        # The pipeline takes the path as given (no join with the codebase
+        # dir), so pass the absolute path _setup_file wrote.
+        target_path = self._setup_file(original, target)
+        use_git_to_apply_code_diff(diff, target_path)
         result = self._read_file(target)
 
         old_count = self._count_pattern(result, 'key={index}')
@@ -148,8 +152,10 @@ class TestAdditiveReplaceBug(unittest.TestCase):
         target = metadata['target_file']
 
         original_count = self._count_pattern(original, 'key={index}')
-        self._setup_file(original, target)
-        use_git_to_apply_code_diff(diff, target)
+        # The pipeline takes the path as given (no join with the codebase
+        # dir), so pass the absolute path _setup_file wrote.
+        target_path = self._setup_file(original, target)
+        use_git_to_apply_code_diff(diff, target_path)
         result = self._read_file(target)
 
         new_count = self._count_pattern(result, 'key={sk}')
@@ -177,8 +183,10 @@ class TestAdditiveReplaceBug(unittest.TestCase):
         diff = self._load_fixture('changes.diff')
         target = metadata['target_file']
 
-        self._setup_file(original, target)
-        use_git_to_apply_code_diff(diff, target)
+        # The pipeline takes the path as given (no join with the codebase
+        # dir), so pass the absolute path _setup_file wrote.
+        target_path = self._setup_file(original, target)
+        use_git_to_apply_code_diff(diff, target_path)
         result = self._read_file(target)
 
         lines = result.split('\n')
@@ -220,8 +228,10 @@ class TestAdditiveReplaceBug(unittest.TestCase):
         expected = self._load_fixture('expected.tsx')
         target = metadata['target_file']
 
-        self._setup_file(original, target)
-        use_git_to_apply_code_diff(diff, target)
+        # The pipeline takes the path as given (no join with the codebase
+        # dir), so pass the absolute path _setup_file wrote.
+        target_path = self._setup_file(original, target)
+        use_git_to_apply_code_diff(diff, target_path)
         result = self._read_file(target)
 
         expected_lines = len(expected.split('\n'))

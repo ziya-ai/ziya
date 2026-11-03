@@ -1,5 +1,6 @@
 {
     "target_file": "test.py",
-    "description": "Multiple functions with the same name",
-    "date_added": "2024-01-17"
+    "description": "Diff deliberately adds a second top-level ``def process()``. The hunk applies (fuzzy; the header points past EOF), but the Python language validator refuses the result: a new same-named top-level definition is the signature of a replace-hunk misapplied as an insertion, and a shadowing duplicate is never what a user wants silently. The pipeline must fail loudly and leave the file unchanged.",
+    "date_added": "2024-01-17",
+    "expect_error": true
 }
