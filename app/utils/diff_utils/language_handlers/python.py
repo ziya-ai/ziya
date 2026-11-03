@@ -280,6 +280,15 @@ class PythonHandler(LanguageHandler):
                     # Only flag if there are strictly MORE occurrences than in the
                     # original.  Existing repeated names (e.g. keybinding handlers
                     # named `_`, multiple `__init__`) are not new duplications.
+                    #
+                    # Deliberately NOT narrowed to textually identical copies:
+                    # a "replace def X" hunk misapplied as an insertion leaves
+                    # the old body beside the new one -- same name, different
+                    # body -- and that is the commonest misplacement this check
+                    # exists to catch (tests/test_diff_language_handlers.py).
+                    # A diff that intentionally adds a shadowing same-named
+                    # function is refused for the same reason
+                    # (diff_test_cases/function_collision, expect_error).
                     if len(occurrences) > original_count:
                         line_numbers = ", ".join(str(line) for line in occurrences)
                         duplicates.append(f"{func_name} (lines {line_numbers})")
