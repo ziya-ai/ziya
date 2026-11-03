@@ -243,8 +243,10 @@ def test_configured_always_does_not_skip_a_human_only_op(gate):
 
 def test_a_session_grant_does_not_cover_a_human_only_op(gate, monkeypatch):
     monkeypatch.setattr(cg, "_consent_config", lambda: {})  # declared ask
-    cg._grants.remember(cg.SCOPE_SESSION, "fake", "plain", None)
-    cg._grants.remember(cg.SCOPE_SESSION, "fake", "rewrite", None)
+    # SCOPE_SESSION / SCOPE_ALWAYS were folded into SCOPE_PROJECT in
+    # 8f209cec; a project-wide grant is the broadest non-once scope now.
+    cg._grants.remember(cg.SCOPE_PROJECT, "fake", "plain", None)
+    cg._grants.remember(cg.SCOPE_PROJECT, "fake", "rewrite", None)
     assert _decide("plain")["approved"] is True             # control: grant covers
     assert _decide("rewrite")["approved"] is False
 

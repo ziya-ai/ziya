@@ -160,7 +160,9 @@ class TestLoadAndPrepareToolsEnforcement:
         from app.streaming_tool_executor import StreamingToolExecutor
         # Bypass __init__ entirely — it builds providers/boto clients that
         # are irrelevant to tool-list assembly.
-        return StreamingToolExecutor.__new__(StreamingToolExecutor)
+        ex = StreamingToolExecutor.__new__(StreamingToolExecutor)
+        ex.provider = None  # _load_and_prepare_tools reads it
+        return ex
 
     @pytest.mark.asyncio
     async def test_allowlist_narrows_registered_tools(self):

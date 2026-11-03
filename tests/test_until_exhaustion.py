@@ -55,7 +55,7 @@ def _clean_body(n):
     """A body whose every iteration is a clean, distinct agent turn."""
     calls = [0]
 
-    async def stub(b, project_root=None, project_id=None, run_id=None):
+    async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
         calls[0] += 1
         return Artifact(summary=f"cycle {calls[0]}: deferred the rest", tokens=5)
     return stub, calls

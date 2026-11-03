@@ -191,7 +191,9 @@ class TestLoaderSeam:
 
     def _executor(self):
         from app.streaming_tool_executor import StreamingToolExecutor
-        return StreamingToolExecutor.__new__(StreamingToolExecutor)
+        ex = StreamingToolExecutor.__new__(StreamingToolExecutor)
+        ex.provider = None  # __init__ skipped; _load_and_prepare_tools reads it
+        return ex
 
     async def _load(self, registered, project_root):
         from unittest.mock import MagicMock, patch

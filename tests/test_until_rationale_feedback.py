@@ -74,7 +74,7 @@ def _capturing_body(summary_fn, data_fn=None):
     """Body stub that records the instructions each dispatch received."""
     seen: list = []
 
-    async def stub(b, project_root=None, project_id=None, run_id=None):
+    async def stub(b, project_root=None, project_id=None, run_id=None, **_kw):
         seen.append(b.instructions)
         i = len(seen) - 1
         outputs = []
@@ -307,7 +307,7 @@ class TestUnreachableCondition:
     async def test_a_failed_iteration_is_left_to_the_stall_breaker(self, storage, run):
         calls = [0]
 
-        async def body(b, project_root=None, project_id=None, run_id=None):
+        async def body(b, project_root=None, project_id=None, run_id=None, **_kw):
             calls[0] += 1
             return Artifact(summary="boom", failed=True, tokens=1)
         ctx = ExecutionContext(run_id=run.id, storage=storage)

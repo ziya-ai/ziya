@@ -136,7 +136,7 @@ class TestExecuteBlockSeam:
         from app.agents.block_executor import execute_block, ExecutionContext
         from app.models.task_card import Artifact
 
-        async def _stub(block, project_root=None, project_id=None, run_id=None):
+        async def _stub(block, project_root=None, project_id=None, run_id=None, **_kw):
             seen.append(get_task_service_tier())
             return Artifact(summary="ok", failed=False, tokens=1, duration_ms=1)
 
@@ -424,7 +424,11 @@ class TestServiceModelSeam:
             def client(self, *a, **k):
                 return client
 
-        with patch("boto3.Session", _Session):
+        # _call_bedrock caches the client per (profile, region); without
+        # clearing, the first test's _RecordingClient is reused by the rest
+        # and their own ``client.calls`` never fills.
+        with patch("boto3.Session", _Session), \
+             patch.dict(model_resolver._SERVICE_CLIENTS, {}, clear=True):
             return asyncio.run(model_resolver._call_bedrock(
                 {"model_id": "deepseek.v3.2", "region": "us-west-2"},
                 "sys", "user", 16, 0.0,

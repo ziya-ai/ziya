@@ -94,7 +94,7 @@ async def _run(block, ctx, *, summary, objective_met, failed,
     """
     calls = [0]
 
-    async def body(b, project_root=None, project_id=None, run_id=None):
+    async def body(b, project_root=None, project_id=None, run_id=None, **_kw):
         calls[0] += 1
         return _artifact(summary(calls[0]), objective_met, failed)
 
@@ -268,7 +268,7 @@ class TestBreakerStillFires:
         ctx = ExecutionContext(run_id=until_run.id, storage=storage)
         calls = [0]
 
-        async def body(b, project_root=None, project_id=None, run_id=None):
+        async def body(b, project_root=None, project_id=None, run_id=None, **_kw):
             calls[0] += 1
             n = calls[0]
             # stall, stall, progress, stall, stall, progress, ...

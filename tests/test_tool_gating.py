@@ -169,6 +169,7 @@ class TestExecutorSeam:
                       DirectMCPTool(ShadowListTool())]
         ex = object.__new__(StreamingToolExecutor)
         ex.model_config = {}
+        ex.provider = None  # __init__ skipped; _load_and_prepare_tools reads it
         with patch("app.mcp.manager.get_mcp_manager",
                    return_value=SimpleNamespace(is_initialized=True)), \
              patch("app.mcp.enhanced_tools.create_secure_mcp_tools", return_value=list(fake_tools)), \
@@ -210,6 +211,7 @@ class TestExecutorSeam:
         from app.streaming_tool_executor import StreamingToolExecutor
         ex = object.__new__(StreamingToolExecutor)
         ex.model_config = {}
+        ex.provider = None  # __init__ skipped; _load_and_prepare_tools reads it
         seen = {}
 
         def fake_detect(messages=None, project_root=None, conversation_id=None):

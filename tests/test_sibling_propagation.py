@@ -100,7 +100,7 @@ def _recording_stub(summaries_by_id: dict):
     task actually received, keyed by block id."""
     received: dict = {}
 
-    async def _stub(block, project_root=None, project_id=None, run_id=None):
+    async def _stub(block, project_root=None, project_id=None, run_id=None, **_kw):
         received[block.id] = block.instructions
         return Artifact(summary=summaries_by_id.get(block.id, "ok"), failed=False)
 

@@ -104,7 +104,7 @@ def _group(id: str, body: list) -> Block:
 def _recording_stub(summaries_by_id: dict):
     received: dict = {}
 
-    async def _stub(block, project_root=None, project_id=None, run_id=None):
+    async def _stub(block, project_root=None, project_id=None, run_id=None, **_kw):
         received[block.id] = block.instructions
         return Artifact(summary=summaries_by_id.get(block.id, "ok"), failed=False)
 
@@ -162,7 +162,7 @@ async def test_loop_rerun_last_write_wins(ctx):
     reference sees the most recent result."""
     calls = {"n": 0}
 
-    async def stub(block, project_root=None, project_id=None, run_id=None):
+    async def stub(block, project_root=None, project_id=None, run_id=None, **_kw):
         if block.id == "body":
             calls["n"] += 1
             return Artifact(summary=f"iter-{calls['n']}", failed=False)

@@ -44,7 +44,7 @@ def _art(summary="ok", failed=False, **kw) -> Artifact:
 def _stub(responses):
     it = iter(responses)
 
-    async def _s(block, project_root=None, project_id=None, run_id=None):
+    async def _s(block, project_root=None, project_id=None, run_id=None, **_kw):
         return next(it)
     return _s
 

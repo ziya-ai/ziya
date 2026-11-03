@@ -10,7 +10,30 @@ seconds for checks that enforce nothing.  The runtime gate keeps logging.
 import inspect
 import logging
 
+import pytest
+
 from app.utils import scope_approvals as sa
+
+# app.utils.logging_utils.logger is a ModeAwareLogger wrapping a stdlib logger
+# configured with propagate=False, so caplog's root-level handler never sees
+# its records; the positive control below read as "nothing logged" for that
+# reason alone.  Attach caplog's handler to the underlying logger directly
+# (same fixture as test_scope_authz_query_path_is_quiet.py).
+_UNDERLYING = sa.logger._logger
+
+
+@pytest.fixture
+def denial_log(caplog):
+    # First use clears handlers (lazy configuration); do it before attaching.
+    sa.logger._ensure_configured()
+    _UNDERLYING.addHandler(caplog.handler)
+    prev = _UNDERLYING.level
+    _UNDERLYING.setLevel(logging.DEBUG)
+    try:
+        yield caplog
+    finally:
+        _UNDERLYING.removeHandler(caplog.handler)
+        _UNDERLYING.setLevel(prev)
 
 
 class _Scope:
@@ -25,9 +48,9 @@ def _hash_is_nonempty():
     return bool(sc.task_scope_hash(_Scope()))
 
 
-def test_log_false_suppresses_denial_lines(caplog, monkeypatch):
+def test_log_false_suppresses_denial_lines(denial_log, monkeypatch):
+    caplog = denial_log
     if not _hash_is_nonempty():  # scope shape not privilege-bearing in this build
-        import pytest
         pytest.skip("stand-in scope carries no escalation")
     monkeypatch.setattr(sa, "get_record", lambda task_id: None)
     with caplog.at_level(logging.INFO):

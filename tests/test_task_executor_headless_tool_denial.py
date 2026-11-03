@@ -171,6 +171,7 @@ class TestProjectModeEnabledToolIsStillDenied:
         executor drop the tool project modes just added."""
         from app.streaming_tool_executor import StreamingToolExecutor
         ex = StreamingToolExecutor.__new__(StreamingToolExecutor)
+        ex.provider = None  # __init__ skipped; _load_and_prepare_tools reads it
         registry = [_tool("file_read"), _tool("emit_artifact")]  # no git
         mgr = SimpleNamespace(is_initialized=True)
         with patch("app.mcp.manager.get_mcp_manager", return_value=mgr), \
@@ -201,6 +202,7 @@ class TestExecutorAppliesDenylist:
     async def test_denylist_removes_tool_before_allowlist(self):
         from app.streaming_tool_executor import StreamingToolExecutor
         ex = StreamingToolExecutor.__new__(StreamingToolExecutor)
+        ex.provider = None  # __init__ skipped; _load_and_prepare_tools reads it
         registry = [_tool("git", "ask"), _tool("file_read"), _tool("emit_artifact")]
         mgr = SimpleNamespace(is_initialized=True)
         with patch("app.mcp.manager.get_mcp_manager", return_value=mgr), \
