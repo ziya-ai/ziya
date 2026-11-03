@@ -41,9 +41,11 @@ async def _scheduled_root(home, pid, pdir, card_id, request_root=None):
     from app.context import set_project_root
     seen = {}
 
-    def _capture(coro):
-        seen["root"] = coro.cr_frame.f_locals.get("project_root")
-        coro.close()
+    def _capture(launch):
+        # The launch no longer schedules a coroutine itself; it hands a
+        # RunLaunch to app.agents.run_driver.start_run, which carries the
+        # resolved project_root as a field.
+        seen["root"] = launch.project_root
         return None
 
     if request_root is not None:
@@ -52,7 +54,7 @@ async def _scheduled_root(home, pid, pdir, card_id, request_root=None):
          patch("app.api.task_cards.get_project_dir", return_value=pdir), \
          patch("app.api.task_cards.get_ziya_home", return_value=home), \
          patch("app.utils.paths.get_ziya_home", return_value=home), \
-         patch("app.api.task_cards.asyncio.create_task", new=_capture):
+         patch("app.agents.run_driver.start_run", new=_capture):
         await tc._launch_run_for_card(project_id=pid, card_id=card_id)
     assert "root" in seen, "run was never scheduled"
     return seen["root"]

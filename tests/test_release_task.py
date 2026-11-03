@@ -79,9 +79,24 @@ def test_release_task_yaml_is_valid(tasks: dict):
     assert isinstance(tasks, dict) and tasks
 
 
-def test_sweep_still_exists(tasks: dict):
-    """release delegates to sweep; sweep disappearing breaks Step 1."""
-    assert "sweep" in tasks
+@pytest.fixture(scope="module")
+def sweep():
+    """The sweep task as ``ziya task sweep`` would resolve it: tasks.yaml,
+    else the project's deck card of that name.  Module scope on purpose --
+    see tests/sweep_task_source.py."""
+    from tests.sweep_task_source import load_sweep
+    return load_sweep()
+
+
+def test_sweep_still_exists(sweep):
+    """release delegates to ``ziya task sweep``; sweep disappearing breaks
+    Step 1.  The CLI resolves that name against tasks.yaml first and the
+    project's deck second (the orchestrated card superseded the linear file
+    task on 2026-10-01), so either place satisfies this."""
+    from tests import sweep_task_source as _sts
+    assert sweep is not None, (
+        "neither a tasks.yaml 'sweep' entry nor a deck card named 'sweep' "
+        f"exists ({_sts.last_error})")
 
 
 # --------------------------------------------------------------------------
@@ -255,16 +270,23 @@ def test_explicitly_forbids_redoing_sweeps_work(flat: str):
     assert "never commits, tags, bumps" in flat
 
 
-def test_sweep_no_longer_posts_to_interest(tasks: dict):
+@pytest.fixture(scope="module")
+def sweep_flat(sweep) -> str:
+    if sweep is None:
+        pytest.skip("no sweep task or card on this machine")
+    return sweep.text
+
+
+def test_sweep_no_longer_posts_to_interest(sweep_flat: str):
     """Ownership moved to release.  If sweep still posted there, every
     release would double-post, and sweep's post would claim availability
     before anything was actually installable."""
-    sweep_flat = re.sub(r"\s+", " ", tasks["sweep"].get("prompt", ""))
-    assert "Do NOT post to `#ziya-interest` here" in sweep_flat
+    # "Do NOT post to `#ziya-interest` here" (linear) / "Do NOT post to
+    # #ziya-interest." (card) -- the instruction, not its punctuation.
+    assert re.search(r"Do NOT post to `?#ziya-interest", sweep_flat)
 
 
-def test_sweep_still_owns_the_dev_channel(tasks: dict):
-    sweep_flat = re.sub(r"\s+", " ", tasks["sweep"].get("prompt", ""))
+def test_sweep_still_owns_the_dev_channel(sweep_flat: str):
     assert "#ziya-dev" in sweep_flat
 
 

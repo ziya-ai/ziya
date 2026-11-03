@@ -132,14 +132,16 @@ class TestScheduleStateEndpoint:
 
     def test_empty_state_for_unfired_scheduled_card(self, client):
         """Card has a schedule block but the scheduler has never written
-        a state record yet → endpoint returns {} (not None, not 404)."""
+        a state record yet → endpoint returns no fire history (not None,
+        not 404), only the registration flags the status line reads
+        (frontend scheduleCadence.registrationPhrase)."""
         tc, pid, _ = client
         card_id = _create_card(tc, pid, _schedule_root())
         resp = tc.get(
             f"/api/v1/projects/{pid}/task-cards/{card_id}/schedule-state"
         )
         assert resp.status_code == 200
-        assert resp.json() == {}
+        assert resp.json() == {"registered": False, "enabled": None}
 
     def test_returns_persisted_record(self, client):
         """When the scheduler has written a record, the endpoint returns
@@ -232,7 +234,9 @@ class TestScheduleStateEndpoint:
             f"/api/v1/projects/{pid}/task-cards/{plain_card_id}/schedule-state"
         )
         assert resp.status_code == 200
-        assert resp.json() == {}
+        # No fire history leaks from the other card; only the registration
+        # flags every response carries.
+        assert resp.json() == {"registered": False, "enabled": None}
 
 
 # ── Launch routing for new block types ─────────────────────────────

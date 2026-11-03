@@ -120,12 +120,10 @@ async def _launch_resume(pdir, pid: str, card_id: str) -> Any:
         for i in BANKED
     ]
 
-    def _no_exec(coro):
-        # Close it so Python does not warn about a coroutine never awaited.
-        try:
-            coro.close()
-        except Exception:  # noqa: BLE001
-            pass
+    def _no_exec(launch):
+        # The launch hands a RunLaunch to run_driver.start_run; swallowing
+        # it here keeps the run from executing while the persisted record
+        # is inspected.
         return None
 
     # ``get_project_dir`` must be patched in the task_cards NAMESPACE, not
@@ -143,7 +141,7 @@ async def _launch_resume(pdir, pid: str, card_id: str) -> Any:
     with patch.dict("os.environ", {"ZIYA_SKIP_CARD_VALIDATION": "1"}), \
          patch("app.api.task_cards.get_project_dir", return_value=pdir), \
          patch("app.api.task_cards.get_ziya_home", return_value=home), \
-         patch("app.api.task_cards.asyncio.create_task", new=_no_exec):
+         patch("app.agents.run_driver.start_run", new=_no_exec):
         return await tc._launch_run_for_card(
             project_id=pid,
             card_id=card_id,

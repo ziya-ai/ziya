@@ -59,9 +59,21 @@ def skill_flat(skill_text: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def sweep_prompt() -> str:
-    data = yaml.safe_load(TASKS_PATH.read_text(encoding="utf-8"))
-    return data["sweep"]["prompt"]
+def sweep():
+    """The sweep task as ``ziya task sweep`` would resolve it: tasks.yaml,
+    else the project's deck card of that name.  Module scope on purpose --
+    see tests/sweep_task_source.py."""
+    from tests.sweep_task_source import load_sweep
+    src = load_sweep()
+    if src is None:
+        pytest.skip("no sweep task or card on this machine")
+    return src
+
+
+@pytest.fixture(scope="module")
+def sweep_prompt(sweep) -> str:
+    """Whitespace-flattened text of every instruction in the sweep task."""
+    return sweep.text
 
 
 # ---------------------------------------------------------------------------
@@ -160,28 +172,42 @@ def test_sweep_reads_diffstat_for_new_modules(sweep_prompt: str):
 # 3. Step ordering
 # ---------------------------------------------------------------------------
 
-def test_github_release_precedes_slack(sweep_prompt: str):
-    """Reversed, the Slack post cannot link to the release it describes."""
-    steps = re.findall(r"^\s*## Step (\d+) — (.+)$", sweep_prompt, re.M)
-    by_title = {title.strip(): int(num) for num, title in steps}
-    assert by_title["GitHub Release"] < by_title["Notify Slack"]
+def test_github_release_precedes_slack(sweep):
+    """Reversed, the Slack post cannot link to the release it describes.
+    Order is the "## Step N" numbering in the linear prompt and block
+    execution order in the card."""
+    assert sweep.step_index("GitHub Release") < sweep.step_index("Slack")
 
 
-def test_step_numbers_are_sequential_and_unique(sweep_prompt: str):
-    """A duplicate or skipped number breaks Step 0's resume-point logic."""
+def test_step_numbers_are_sequential_and_unique(sweep, sweep_prompt: str):
+    """A duplicate or skipped number breaks Step 0's resume-point logic.
+
+    A linear-prompt concern only: the card's order is its block order,
+    which cannot have gaps or duplicates."""
+    if sweep.kind != "yaml":
+        pytest.skip("step numbering is a property of the linear prompt")
     nums = [int(n) for n, _ in re.findall(r"^\s*## Step (\d+) — (.+)$",
                                           sweep_prompt, re.M)]
     assert nums == sorted(set(nums)) == list(range(min(nums), max(nums) + 1))
 
 
-def test_best_effort_rules_name_the_current_step_numbers(sweep_prompt: str):
-    """The trailing RULES block hardcodes step numbers.
+def test_best_effort_rules_name_the_current_step_numbers(sweep, sweep_prompt: str):
+    """GitHub Release and Slack are best-effort; the mutating steps are not.
 
-    After the swap it must say GitHub=8 / Slack=9; the stale pairing would
-    mark the wrong step best-effort and let a real failure pass silently.
+    Linear prompt: its trailing RULES block hardcodes the step numbers and
+    must say GitHub=8 / Slack=9 after the swap -- the stale pairing marks
+    the wrong step best-effort and lets a real failure pass silently.
+    Card: both announce tasks must sit in the group that carries the
+    best-effort marking, and nothing else may.
     """
-    assert "GitHub Release (step 8) and Slack (step 9)" in sweep_prompt
-    assert "Slack (step 8) and GitHub Release (step 9)" not in sweep_prompt
+    if sweep.kind == "yaml":
+        assert "GitHub Release (step 8) and Slack (step 9)" in sweep_prompt
+        assert "Slack (step 8) and GitHub Release (step 9)" not in sweep_prompt
+        return
+    best_effort = {name for name, group in sweep.tasks if "best-effort" in group.lower()}
+    assert any("GitHub Release" in n for n in best_effort), sweep.tasks
+    assert any("Slack" in n for n in best_effort), sweep.tasks
+    assert all("GitHub" in n or "Slack" in n for n in best_effort), best_effort
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +217,8 @@ def test_best_effort_rules_name_the_current_step_numbers(sweep_prompt: str):
 def test_highlights_go_to_the_channel_not_the_thread(sweep_prompt: str):
     """Previously the channel showed only "pushed to public", so the
     highlights required expanding a thread to see."""
-    assert "CHANNEL, not the thread" in sweep_prompt
+    # "CHANNEL, not the thread" (linear prompt) / "CHANNEL (not the thread)" (card)
+    assert re.search(r"CHANNEL,? ?\(?not the thread", sweep_prompt)
 
 
 def test_both_slack_destinations_are_named(sweep_prompt: str):
