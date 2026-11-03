@@ -13,7 +13,7 @@ import { folderTotalTokens, expandCheckedKeysToFiles } from '../utils/contextTok
 import { dispatchHandoffOpen } from '../utils/handoffOpen';
 import { publishPanelStatus } from '../utils/panelStatus';
 import { TokenBreakdownBar, fmtK } from './TokenBreakdownBar';
-import { handoffAffordance, handoffPressureTier } from '../utils/handoffPressure';
+import { HANDOFF_WARNING_RATIO, handoffAffordance, handoffPressureTier } from '../utils/handoffPressure';
 import { getHandoffState } from '../api/handoffApi';
 import { elideInlineImages } from '../utils/elideInlineImages';
 // Global request deduplication cache
@@ -628,9 +628,21 @@ export const TokenCountDisplay = memo(() => {
     // Budget zone: drives the bar outline and the total row's colour.  The
     // legend figures stay in the text colour — three green numbers over a
     // grey legend read as an alert when nothing was wrong.
+    // The zone consults the higher of the client estimate and the server's
+    // record of the last send's actual size, the same rule the Hand-off
+    // affordance uses: a mis-calibrated estimate once painted the bar 20%
+    // green while the provider was rejecting the send as too long.  The
+    // figure SHOWN stays the estimate (it is what responds to muting); when
+    // the server figure is what drove the zone, the tooltip says so.
+    const pressureTier = handoffPressureTier(combinedTokenCount, tokenLimit, serverPressure);
     const budgetTier: 'ok' | 'warning' | 'danger' =
-        combinedTokenCount >= dangerThreshold ? 'danger'
-        : combinedTokenCount >= warningThreshold ? 'warning' : 'ok';
+        pressureTier === 'none' ? 'ok' : pressureTier;
+    const clientRatio = tokenLimit > 0 ? combinedTokenCount / tokenLimit : 0;
+    const serverAboveEstimate = typeof serverPressure === 'number'
+        && serverPressure > clientRatio * 1.15 && serverPressure >= HANDOFF_WARNING_RATIO;
+    const zoneNote = serverAboveEstimate
+        ? ` — the last send used about ${Math.round(serverPressure * 100)}% of the context; this estimate is lower than what was actually sent`
+        : '';
 
     // The collapsed-panel strip (CollapsedPanelStrip) shows this breakdown
     // while the footer is unmounted; publish the figures as computed here so
@@ -1089,7 +1101,7 @@ export const TokenCountDisplay = memo(() => {
                 {/* design/visual-refresh.md: the budget bar is stacked by what is
                     spending it, and the legend carries the matching swatches.  The
                     same TokenBreakdownBar renders in the collapsed strip. */}
-                <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens used`} mouseEnterDelay={0.5}>
+                <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens used${zoneNote}`} mouseEnterDelay={0.5}>
                     <div>
                         <TokenBreakdownBar
                             breakdown={{ files: fileTokens, chat: chatTokenCount, tools: toolTokens,
@@ -1101,7 +1113,7 @@ export const TokenCountDisplay = memo(() => {
                     {breakdownItems}
                 </div>
                 <div className={`ziya-tok-total ${budgetTier}`} data-testid="token-total-row">
-                    <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} tokens`}>
+                    <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} tokens${zoneNote}`}>
                         <span><b>{fmtK(combinedTokenCount)}</b> / {fmtK(tokenLimit)}</span>
                     </Tooltip>
                     <span className="pct">{tokenLimit > 0 ? Math.round((combinedTokenCount / tokenLimit) * 100) : 0}%</span>
@@ -1109,7 +1121,7 @@ export const TokenCountDisplay = memo(() => {
             </div>
         </div>
     ), [isLoading, combinedTokenCount, breakdownItems, tokenLimit, fileTokens, chatTokenCount, toolTokens,
-        astCountsInTotal, astTokenCount, budgetTier]);
+        astCountsInTotal, astTokenCount, budgetTier, zoneNote]);
 
     return (
         <>
