@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.9.0.0"
+version = "0.9.0.1"
 description = "Self-hosted AI harness for technical work: chat UI and coding agent in one local tool. Bring any model (Bedrock, Anthropic, OpenAI, Gemini, Ollama), apply validated diffs to your real repo, and get diagrams rendered inline. Runs alongside your editor, not instead of it."
 authors = ["Dan Cohn <chroma@gmail.com>",
            "Vishnu Krishnaprasad <vishnukool@gmail.com>"]
