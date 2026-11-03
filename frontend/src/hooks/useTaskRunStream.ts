@@ -244,6 +244,11 @@ export function dispatchTaskRunEvent(
     case 'run_stepped':
     case 'iteration_completed':
     case 'block_completed':
+    // A steer note changed status on disk (queued → delivered/expired,
+    // or a new queued one); the tile's chip reads run.steer_notes.
+    case 'task_steer_queued':
+    case 'task_steer_delivered':
+    case 'task_steer_expired':
       // State has changed — persisted snapshot is the source of
       // truth, so refetch rather than mutate locally.
       return { kind: 'refetch' };

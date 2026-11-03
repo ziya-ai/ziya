@@ -18,6 +18,8 @@ import type { IterationsResponse, RunStatus } from '../../types/task_run';
  import { TaskMarkdown } from './TaskMarkdown';
  import { stripTaskMetaTags } from './completionCheck';
  import { isRunOver } from './runControls';
+import { SteerComposer, type SteerTarget } from './SteerComposer';
+import type { SteerNote } from '../../types/task_run';
 
 interface Props {
   live: LiveTaskState;
@@ -26,6 +28,17 @@ interface Props {
   defaultOpen?: boolean;
   persistedIterations?: IterationsResponse['items'];
   runStatus?: RunStatus;
+  /**
+   * Operator steer channel.  Present only while the run is live; the
+   * composer renders under the Live output tab, where the transcript
+   * it addresses already streams.
+   */
+  steer?: {
+    targets: SteerTarget[];
+    notes?: SteerNote[];
+    busy?: boolean;
+    onSend: (target: SteerTarget, text: string, hold: boolean) => void;
+  };
 }
 
 type TabKey = 'live' | 'tools' | 'events';
@@ -47,7 +60,7 @@ const formatTs = (ts?: number): string => {
 };
 
 export const TaskRunInspector: React.FC<Props> = ({
-  live, onClear, defaultOpen = false, runStatus,
+  live, onClear, defaultOpen = false, runStatus, steer,
 }) => {
   const [open, setOpen] = useState(defaultOpen);
   const [tab, setTab] = useState<TabKey>('live');
@@ -106,10 +119,18 @@ export const TaskRunInspector: React.FC<Props> = ({
 
       <div className="tc-tile__inspector-body">
         {tab === 'live' && (
-          <LiveTextTab
-            text={live.text} iterations={live.iterations}
-            isTerminal={isTerminal}
-          />
+          <>
+            <LiveTextTab
+              text={live.text} iterations={live.iterations}
+              isTerminal={isTerminal}
+            />
+            {steer && !isTerminal && (
+              <SteerComposer
+                targets={steer.targets} notes={steer.notes}
+                busy={steer.busy} onSend={steer.onSend}
+              />
+            )}
+          </>
         )}
         {tab === 'tools' && <ToolCallsTab calls={live.toolCalls} iterations={live.iterations} isTerminal={isTerminal} />}
         {tab === 'events' && <EventsTab events={live.events} isTerminal={isTerminal} />}

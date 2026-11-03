@@ -457,6 +457,18 @@ class TaskRun(BaseModel):
     # then resumed.  First answer wins (see record_ask_answer).
     ask_answers: Dict[str, Any] = Field(default_factory=dict)
 
+    # ---- Operator steer notes ----
+    # Messages the operator sent to a RUNNING block, oldest first:
+    # {id, block_id, index, text, hold, status, created_at, delivered_at}
+    # where status is queued | delivered | expired.  A note is delivered
+    # when the executor injects it before a model round and expires when
+    # the block's stream ends first.  Persisted (not kept in the executor
+    # frame) so the tile can show "queued" across reloads and so "did it
+    # ever see my note?" has a durable answer.  Capped by
+    # app/utils/task_steer.MAX_STEER_NOTES.  Delivery itself travels over
+    # the existing feedback channel keyed by task_steer.steer_key.
+    steer_notes: List[Dict[str, Any]] = Field(default_factory=list)
+
     # Top-level artifact produced by the root block
     artifact: Optional[Artifact] = None
 
@@ -599,12 +611,6 @@ class TaskRun(BaseModel):
     updated_at: int = 0
 
 
-    # Every timestamp on this record and its nested states is integer
-    # epoch MILLISECONDS (schema 2).  Records written before 2026-09 left
-    # the executor-side fields in seconds; TaskRunStorage upgrades those
-    # on read via app.utils.run_time.normalize_run_record, keyed on this
-    # field being absent.
-    schema_version: int = RUN_RECORD_SCHEMA_VERSION
 class TaskRunCreate(BaseModel):
     """Internal — constructed by the launch endpoint, not user-facing."""
     card_id: str

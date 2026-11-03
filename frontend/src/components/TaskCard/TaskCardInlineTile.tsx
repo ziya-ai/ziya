@@ -26,12 +26,13 @@ import type { TaskBinding } from '../../types/task_binding';
 import type {
   TaskRun, RunStatus, IterationsResponse, ProgressNote,
 } from '../../types/task_run';import type { TaskCard, Block, Artifact } from '../../types/task_card';
-import { cancelTaskRun, pauseTaskRun, resumeTaskRun, stepTaskRun, resumeRunFromBlock, resumeRunFromIteration, listIterations, getIterationArtifact, getRunLineage, answerTaskRunAsk } from '../../services/taskRunApi';import type { IterationResumeMode, ResumeMode } from '../../services/taskRunApi';import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
+import { cancelTaskRun, pauseTaskRun, resumeTaskRun, stepTaskRun, resumeRunFromBlock, resumeRunFromIteration, listIterations, getIterationArtifact, getRunLineage, answerTaskRunAsk, steerTaskRun } from '../../services/taskRunApi';import type { IterationResumeMode, ResumeMode } from '../../services/taskRunApi';import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
 import { TASK_BINDING_EVENT, TASK_CARD_OPEN_EVENT, TASK_CARD_SAVED_EVENT } from '../../hooks/useTaskBindings';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { CommandBlock } from '../CommandBlock';
 import { TaskRunInspector } from './TaskRunInspector';
+import type { SteerTarget } from './SteerComposer';
 import { TaskRunMap } from './TaskRunMap';
 import { AskAnswerPanel } from './AskAnswerPanel';
 import { BlockDetailPanel } from './BlockDetailPanel';
@@ -534,6 +535,7 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [rerunning, setRerunning] = useState(false);
   const [answering, setAnswering] = useState(false);
+  const [steering, setSteering] = useState(false);
   // Focus: which block (and optional loop iteration) the output region
   // shows detail for.  null = the whole-run artifact (default).  This
   // is the "uplevel": the run map navigates, the region below reflects
@@ -643,6 +645,34 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
   const controls = deriveRunControls(run);
   const isTerminal = controls.isTerminal;
   const isLive = run != null && !isTerminal;
+
+  /**
+   * Where a steer note can land: every live iteration bucket the
+   * inspector shows.  Keyed (blockId, index) exactly as the executor
+   * tags deltas, so a note reaches the iteration whose transcript the
+   * user was reading and not a sibling.  ``index`` is always passed —
+   * for a bare task the bucket's synthetic 0 is discarded server-side.
+   */
+  const steerTargets = useMemo<SteerTarget[]>(() => {
+    if (!isLive || !displayCard) return [];
+    return live.iterations
+      .filter(it => it.status === 'running' && it.blockId)
+      .map(it => {
+        const b = findBlockInRun(
+          displayCard.root, run?.call_snapshots, it.blockId!);
+        const name = b ? blockLabel(b) : it.blockId!;
+        const isLoop = b?.block_type === 'repeat' || b?.block_type === 'until';
+        return {
+          blockId: it.blockId!,
+          index: it.index,
+          label: isLoop ? `${name} · #${it.index}` : name,
+        };
+      });
+  }, [isLive, displayCard, live.iterations, run?.call_snapshots]);
+  const queuedSteers = useMemo(
+    () => (run?.steer_notes ?? []).filter(n => n.status === 'queued').length,
+    [run?.steer_notes]);
+
   /**
    * Whether the user's most recent request was a step.  Not derivable
    * from the run record — a spent credit leaves step_budget at 0 and
@@ -855,6 +885,31 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
       setCancelError(String(err));
     } finally {
       setAnswering(false);
+    }
+  }, [projectId, run, refresh]);
+
+  /**
+   * Send an operator note to one live block/iteration.  ``hold`` asks
+   * the server to also grant a step credit, so the run holds at the
+   * next block boundary — the Step button's semantics, not a new one.
+   * The tile refetches on the WS ``task_steer_queued`` event too; the
+   * explicit refresh covers a slow socket so the chip appears at once.
+   */
+  const handleSteer = useCallback(async (
+    target: SteerTarget, text: string, hold: boolean,
+  ) => {
+    if (!projectId || !run) return;
+    setSteering(true);
+    try {
+      await steerTaskRun(projectId, run.id, {
+        block_id: target.blockId, index: target.index, text, hold,
+      });
+      if (hold) setStepping(true);
+      refresh();
+    } catch (err) {
+      setCancelError(String(err));
+    } finally {
+      setSteering(false);
     }
   }, [projectId, run, refresh]);
 
@@ -1556,6 +1611,16 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
                 : (progressNote || 'Executing…')}
               {iterCounts && ` (${iterCounts.passed + iterCounts.failed} iterations)`}
             </span>
+            {steerTargets.length > 0 && (
+              <span
+                className={`tc-tile__steer-chip${queuedSteers > 0 ? ' tc-tile__steer-chip--queued' : ''}`}
+                title="Open Inspect → Live output to send a note to a running block"
+              >
+                {queuedSteers > 0
+                  ? `💬 ${queuedSteers} queued`
+                  : '💬 say something'}
+              </span>
+            )}
             {activity && (
               <span
                 style={{
@@ -1730,6 +1795,10 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
           defaultOpen={isLive}
           persistedIterations={iterations}
           runStatus={run.status as RunStatus}
+          steer={isLive ? {
+            targets: steerTargets, notes: run.steer_notes,
+            busy: steering, onSend: handleSteer,
+          } : undefined}
         />
       </div>
     </div>

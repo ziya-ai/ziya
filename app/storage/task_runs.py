@@ -24,7 +24,6 @@ from ..models.task_run import (
     TaskRun, TaskRunCreate, TaskRunBlockState, IterationSummary, ProgressNote,
     TERMINAL_RUN_STATUSES,
 )
-from ..utils.run_time import normalize_artifact, normalize_run_record
 
 # Cap on the retained progress trail.  Bounded because a long campaign
 # emits a note per tool call: the trail is a readable narrative, not an
@@ -760,6 +759,80 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         self._write_json(self._run_file(run_id), run.model_dump())
         self._invalidate_status_index()
         return run
+
+    # ---- operator steer notes ---------------------------------------
+    #
+    # The record side of app/utils/task_steer.  Delivery goes over the
+    # feedback channel; these three methods only track each note's fate.
+
+    def enqueue_steer(
+        self, run_id: str, block_id: str, index: Optional[int], text: str,
+        hold: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Record a queued note against ``(block_id, index)``; returns it."""
+        from ..utils.task_steer import new_steer_note, trim_notes
+        run = self.get(run_id)
+        if not run:
+            return None
+        note = new_steer_note(
+            block_id, index, text, hold=hold, created_at=now_ms(),
+        )
+        run.steer_notes = trim_notes(list(run.steer_notes or []) + [note])
+        run.updated_at = now_ms()
+        self._write_json(self._run_file(run_id), run.model_dump())
+        self._invalidate_status_index()
+        self._touch_source_conversation(run)
+        return note
+
+    def mark_steer_delivered(
+        self, run_id: str, block_id: str, index: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        """Settle the OLDEST queued note for a target as delivered.
+
+        FIFO because the executor's ``feedback_delivered`` chunk carries
+        no id, and the pending list it drains is itself FIFO, so the
+        oldest queued note is the one that was just injected.
+        """
+        from ..utils.task_steer import next_queued
+        run = self.get(run_id)
+        if not run:
+            return None
+        notes = [dict(n) for n in (run.steer_notes or [])]
+        target = next_queued(notes, block_id, index)
+        if target is None:
+            return None
+        target["status"] = "delivered"
+        target["delivered_at"] = now_ms()
+        run.steer_notes = notes
+        run.updated_at = now_ms()
+        self._write_json(self._run_file(run_id), run.model_dump())
+        self._invalidate_status_index()
+        return target
+
+    def expire_steers(
+        self, run_id: str, block_id: str, index: Optional[int],
+    ) -> List[Dict[str, Any]]:
+        """Every still-queued note for a target becomes expired.
+
+        Called when the block's stream ends: there is no further model
+        round to deliver into, and leaving them ``queued`` would tell the
+        operator the block might still read them.
+        """
+        from ..utils.task_steer import queued_for
+        run = self.get(run_id)
+        if not run:
+            return []
+        notes = [dict(n) for n in (run.steer_notes or [])]
+        expired = queued_for(notes, block_id, index)
+        if not expired:
+            return []
+        for n in expired:
+            n["status"] = "expired"
+        run.steer_notes = notes
+        run.updated_at = now_ms()
+        self._write_json(self._run_file(run_id), run.model_dump())
+        self._invalidate_status_index()
+        return expired
 
     # ---- live-run registry -----------------------------------------
     #

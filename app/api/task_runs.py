@@ -11,6 +11,8 @@ under ``list_task_runs`` (2026-10-09).  Only handlers that genuinely await
 ``tests/test_task_runs_api_not_event_loop_blocking.py`` enforces this.
 """
 
+import time
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -441,6 +443,89 @@ def step_task_run(project_id: str, run_id: str, count: int = 1):
             status_code=422, detail="count must be >= 1",
         )
     return storage.request_step(run_id, count)
+
+
+class SteerRequest(BaseModel):
+    block_id: str
+    # Loop iteration ordinal.  Required for a loop block, ignored for any
+    # other — see task_steer.resolve_steer_target for why the server, not
+    # the tile, decides.
+    index: Optional[int] = None
+    text: str
+    # Also hold at the next block boundary (the /step semantics), so the
+    # operator can read the block's reaction before the run moves on.
+    hold: bool = False
+
+
+@router.post("/{run_id}/steer", response_model=TaskRun)
+async def steer_task_run(project_id: str, run_id: str, body: SteerRequest):
+    """Send a note to a RUNNING block of a live run.
+
+    The note is delivered as a ``[User feedback]`` user turn before the
+    block's next model round, over the same channel chat mid-stream
+    feedback uses, keyed per block/iteration (``task_steer.steer_key``).
+    Delivery is therefore bounded but not instant: a block in its final
+    text generation makes no more rounds, and the note expires when its
+    stream ends.  The run record tracks each note's fate in
+    ``steer_notes``; ``task_steer_queued`` / ``_delivered`` / ``_expired``
+    events mirror the transitions on the run's WebSocket.
+
+    409 on a terminal run (nothing is listening); 404 for a block not in
+    the run's card; 422 for empty text, a loop block with no index, or a
+    run with no card_snapshot.  ``async`` because it awaits the relay push.
+    """
+    from ..agents import task_run_stream_relay as _relay
+    from ..utils.task_steer import resolve_steer_target, steer_key
+
+    storage = _get_storage(project_id)
+    run = storage.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if run.status in TERMINAL_RUN_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"run is {run.status}; no block is listening",
+        )
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="text must be non-empty")
+    target, err = resolve_steer_target(
+        run.card_snapshot, run.call_snapshots, body.block_id, body.index,
+    )
+    if target is None:
+        status = 404 if "not in this run" in (err or "") else 422
+        raise HTTPException(status_code=status, detail=err)
+    block_id, index = target
+
+    note = storage.enqueue_steer(run_id, block_id, index, text, hold=body.hold)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    # The delivery channel.  ``app.server`` is imported lazily: it imports
+    # this router at module load, so a top-level import would be circular.
+    from ..server import _enqueue_feedback
+    _enqueue_feedback(
+        steer_key(run_id, block_id, index),
+        {"type": "tool_feedback", "message": text, "feedback_id": note["id"]},
+    )
+    await _relay.safe_push(run_id, {
+        "type": "task_steer_queued",
+        "run_id": run_id,
+        "block_id": block_id,
+        "index": index,
+        "note_id": note["id"],
+        "text": text[:200],
+        "ts": time.time(),
+    })
+    if body.hold:
+        # Same call the Step button makes: sets pause_requested and grants
+        # one credit, so the run crosses the current boundary and holds.
+        held = storage.request_step(run_id, 1)
+        if held is not None:
+            return held
+    return storage.get(run_id) or run
+
+
 @router.get("/{run_id}/iterations")
 def list_iterations(
     project_id: str, run_id: str,

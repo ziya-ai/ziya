@@ -2172,3 +2172,74 @@ body:not(.dark) .tc-tile__iter--failed .tc-tile__iter-status { color: #cf222e; }
 .tc-res__files { margin-top: 6px; }
 .tc-res__files ul { margin: 4px 0 0 14px; padding: 0; font-size: 11px; }
 .tc-res__files code { font-size: 10.5px; }
+
+/* ── Steer: say something to a running block ─────────────────────────────
+   Violet, matching the held/paused vocabulary: an operator hand on the
+   run, not a fault.  Lives under the Live output tab. */
+.tc-steer {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--tc-border, rgba(128,128,128,.35));
+}
+.tc-steer__notes {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  font-size: 11px;
+}
+.tc-steer__note {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 8px;
+  margin-bottom: 3px;
+  border-left: 3px solid #8957e5;
+  background: rgba(137, 87, 229, .08);
+  border-radius: 3px;
+}
+.tc-steer__note--expired { border-left-color: #d29922; opacity: .8; }
+.tc-steer__note--delivered { border-left-color: #2da44e; }
+.tc-steer__note-text { flex: 1; min-width: 0; white-space: pre-wrap; }
+.tc-steer__note-status { opacity: .7; white-space: nowrap; }
+.tc-steer__input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--tc-border, rgba(128,128,128,.35));
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+}
+.tc-steer__actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 11px;
+}
+.tc-steer__target {
+  font: inherit; font-size: 11px;
+  padding: 2px 6px; border-radius: 4px;
+  background: transparent; color: inherit;
+  border: 1px solid var(--tc-border, rgba(128,128,128,.35));
+}
+.tc-steer__send {
+  font: inherit; font-size: 11px;
+  padding: 3px 9px; border-radius: 4px; cursor: pointer;
+  border: 1px solid #8957e5; background: #8957e5; color: #fff;
+}
+.tc-steer__send--hold { background: transparent; color: inherit; }
+.tc-steer__send:disabled { opacity: .5; cursor: default; }
+.tc-steer__hint { opacity: .55; margin-left: auto; }
+
+.tc-tile__steer-chip {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #8957e5;
+  opacity: .85;
+  white-space: nowrap;
+}
+.tc-tile__steer-chip--queued { opacity: 1; font-weight: 600; }

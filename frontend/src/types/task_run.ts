@@ -236,6 +236,26 @@ export interface PendingAsk {
   opened_at: number;
 }
 
+export type SteerNoteStatus = 'queued' | 'delivered' | 'expired';
+
+/**
+ * One operator note sent to a running block (app/utils/task_steer.py).
+ * ``queued`` = enqueued, not yet injected; ``delivered`` = injected as a
+ * user turn before a model round; ``expired`` = the block's stream ended
+ * before another round.  ``index`` is the loop iteration, null for a task
+ * outside a loop.
+ */
+export interface SteerNote {
+  id: string;
+  block_id: string;
+  index: number | null;
+  text: string;
+  hold: boolean;
+  status: SteerNoteStatus;
+  created_at: number;
+  delivered_at: number | null;
+}
+
 export interface TaskRun {
   id: string;
   card_id: string;
@@ -298,6 +318,8 @@ export interface TaskRun {
    * ``pending_ask && !ask_answers[pending_ask.block_id]``.
    */
   ask_answers?: Record<string, { decision: string; answer: string }>;
+  /** Operator steer notes, oldest first.  See SteerNote. */
+  steer_notes?: SteerNote[];
   total_tokens: number;
   total_tool_calls: number;
   /** Heartbeat: epoch ms of most recent executor activity (schema 2). */

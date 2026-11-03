@@ -1082,6 +1082,7 @@ async def execute_task_block(
     )
 
     def _stream(msgs, closing: bool = False):
+        from ..utils.task_steer import steer_key
         return executor.stream_with_tools(
             msgs, tools=tools, project_root=effective_root,
             # The list actually enforced.  ``tools`` above is retained only
@@ -1099,6 +1100,14 @@ async def execute_task_block(
             # fail with "no conversation_id is set in the current request
             # context". run_id is unique per run and stable for its duration.
             conversation_id=run_id,
+            # Operator steer notes arrive on the feedback channel under
+            # THIS block/iteration's key, not the run id: every task in a
+            # run shares conversation_id=run_id, so a note keyed on it
+            # would reach whichever parallel iteration drained first.
+            feedback_key=(
+                steer_key(run_id, delta_block_id or "", delta_index)
+                if run_id else None
+            ),
         )
 
     async def _stream_with_contract_correction():
@@ -1366,6 +1375,27 @@ async def execute_task_block(
                             )
                     else:
                         _consecutive_tool_failures = 0
+                elif ctype == "feedback_delivered":
+                    # The executor injected a pending note as a user turn
+                    # before this model round.  Settle the oldest queued
+                    # note for this target so the tile's "queued" chip
+                    # clears and the record says the block saw it.
+                    _delivered = None
+                    if _hb_storage is not None and run_id:
+                        try:
+                            _delivered = _hb_storage.mark_steer_delivered(
+                                run_id, delta_block_id or "", delta_index)
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug("mark_steer_delivered failed: %s", e)
+                    if _delivered:
+                        await _emit({
+                            "type": "task_steer_delivered",
+                            "run_id": run_id,
+                            "block_id": delta_block_id,
+                            "index": delta_index,
+                            "note_id": _delivered.get("id"),
+                            "ts": time.time(),
+                        })
                 elif ctype in ("consent_opened", "consent_answered"):
                     # A tool parked on the consent ledger waiting for a human.
                     # Forwarded as a task event so every sink can SAY the run is
@@ -1507,6 +1537,27 @@ async def execute_task_block(
         # grants, so the collector can never leak across task
         # boundaries even on error paths.
         emitted_outputs = finish_artifact_collection(artifact_token)
+        # A note still queued for this block can no longer be delivered:
+        # the stream is over, so there is no next model round.  Settled
+        # here (sync, no await) so the record is right on the error path
+        # too; the events below are best-effort and skipped if we unwind.
+        _expired_steers: List[Dict[str, Any]] = []
+        if _hb_storage is not None and run_id:
+            try:
+                _expired_steers = _hb_storage.expire_steers(
+                    run_id, delta_block_id or "", delta_index)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("expire_steers failed: %s", e)
+
+    for _n in _expired_steers:
+        await _emit({
+            "type": "task_steer_expired",
+            "run_id": run_id,
+            "block_id": delta_block_id,
+            "index": delta_index,
+            "note_id": _n.get("id"),
+            "ts": time.time(),
+        })
 
     elapsed_ms = int((time.time() - start_time) * 1000)
     _cpu_ms = max(0, cpu_children_ms() - _cpu_start_ms)

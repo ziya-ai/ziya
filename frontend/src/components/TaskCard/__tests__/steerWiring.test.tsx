@@ -13,6 +13,17 @@ import { TaskRunInspector } from '../TaskRunInspector';
 import { dispatchTaskRunEvent } from '../../../hooks/useTaskRunStream';
 import type { LiveTaskState } from '../../../hooks/useTaskRunStream';
 
+// TaskMarkdown pulls in MarkdownRenderer and with it the full marked /
+// katex / mermaid stack, which Jest cannot transform (marked ships ESM)
+// and which is irrelevant here: the assertion is whether the composer is
+// mounted, not how the transcript renders.  Same mock the other inspector
+// suites use.
+jest.mock('../TaskMarkdown', () => ({
+  TaskMarkdown: ({ markdown }: { markdown: string }) => (
+    <div data-testid="md">{markdown}</div>
+  ),
+}));
+
 const live: LiveTaskState = {
   text: { t1: 'working…' },
   toolCalls: [], events: [],

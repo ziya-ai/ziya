@@ -2693,7 +2693,7 @@ class StreamingToolExecutor:
         except (ImportError, KeyError, AttributeError, OSError, ValueError) as calib_error:
             logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
 
-    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False, feedback_key: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Public entry point — wraps _stream_with_tools_impl with refcounted
         cleanup of the shared per-conversation pending-feedback list (see
         app.server.pending_feedback_lists).  Multiple concurrent generators
@@ -2728,11 +2728,20 @@ class StreamingToolExecutor:
         polling forever -- 46 of them in the sweep run cli-695c6e36c9f8.
         ``_monitor`` is a one-slot holder the impl fills when it creates the
         task; ``Task.cancel()`` is synchronous, so the finally stays await-free.
+
+        ``feedback_key`` names the pending-feedback list (and the server
+        feedback queue) this generator drains.  It defaults to
+        ``conversation_id`` (chat: one list per conversation).  Task Card
+        runs pass a per-block/iteration key (app/utils/task_steer.steer_key)
+        while keeping ``conversation_id=run_id`` for the context tools,
+        because every task in a run shares the run id and a note enqueued
+        under it would reach whichever parallel iteration drained first.
         """
-        if conversation_id:
+        _fb_key = feedback_key or conversation_id
+        if _fb_key:
             from app.server import pending_feedback_lists, pending_feedback_refcounts
-            pending_feedback_refcounts[conversation_id] = (
-                pending_feedback_refcounts.get(conversation_id, 0) + 1)
+            pending_feedback_refcounts[_fb_key] = (
+                pending_feedback_refcounts.get(_fb_key, 0) + 1)
         _monitor: List[Optional[asyncio.Task]] = [None]
         try:
             async for chunk in self._stream_with_tools_impl(
@@ -2742,6 +2751,7 @@ class StreamingToolExecutor:
                 tool_allowlist=tool_allowlist, interactive=interactive,
                 tool_denylist=tool_denylist,
                 unattended=unattended,
+                feedback_key=_fb_key,
                 _monitor_holder=_monitor,
             ):
                 yield chunk
@@ -2760,15 +2770,15 @@ class StreamingToolExecutor:
             _mt = _monitor[0]
             if _mt is not None and not _mt.done():
                 _mt.cancel()
-            if conversation_id:
-                pending_feedback_refcounts[conversation_id] -= 1
-                if pending_feedback_refcounts[conversation_id] <= 0:
-                    _lst = pending_feedback_lists.get(conversation_id)
+            if _fb_key:
+                pending_feedback_refcounts[_fb_key] -= 1
+                if pending_feedback_refcounts[_fb_key] <= 0:
+                    _lst = pending_feedback_lists.get(_fb_key)
                     if _lst is not None and not _lst:
-                        pending_feedback_lists.pop(conversation_id, None)
-                    pending_feedback_refcounts.pop(conversation_id, None)
+                        pending_feedback_lists.pop(_fb_key, None)
+                    pending_feedback_refcounts.pop(_fb_key, None)
 
-    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False, _monitor_holder: Optional[List[Optional[asyncio.Task]]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False, feedback_key: Optional[str] = None, _monitor_holder: Optional[List[Optional[asyncio.Task]]] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # Re-assert the request-scoped project root into THIS task's context.
         #
         # An async generator borrows the caller's context on each __anext__ --
@@ -2801,10 +2811,13 @@ class StreamingToolExecutor:
         # it — capture-closure and delivery-closure are decoupled.  Falls back
         # to a private list when there's no conversation_id (CLI one-shot,
         # delegate) where no cross-generator sharing is possible anyway.
-        if conversation_id:
+        # ``_fb_key`` selects WHICH list (see stream_with_tools): the
+        # conversation's by default, a per-block key for task runs.
+        _fb_key = feedback_key or conversation_id
+        if _fb_key:
             from app.server import pending_feedback_lists
             _pending_feedback: List[dict] = pending_feedback_lists.setdefault(
-                conversation_id, [])
+                _fb_key, [])
         else:
             _pending_feedback = []
         _feedback_monitor_task: Optional[asyncio.Task] = None
@@ -3081,13 +3094,13 @@ class StreamingToolExecutor:
         hallucination_retries = 0
 
         # Start the concurrent feedback monitor
-        if conversation_id:
-            _feedback_monitor_task = asyncio.create_task(_feedback_monitor(conversation_id))
+        if _fb_key:
+            _feedback_monitor_task = asyncio.create_task(_feedback_monitor(_fb_key))
             # Hand the task to stream_with_tools, whose finally is the only
             # exit path a stream_end-breaking consumer reaches (see there).
             if _monitor_holder is not None:
                 _monitor_holder[0] = _feedback_monitor_task
-            logger.debug(f"🔄 FEEDBACK_MONITOR: Started for {conversation_id}")
+            logger.debug(f"🔄 FEEDBACK_MONITOR: Started for {_fb_key}")
 
         # Guard: provider must be available
         if self.provider is None:
@@ -3343,7 +3356,7 @@ class StreamingToolExecutor:
                 await asyncio.sleep(0.1)  # Ensure message is sent
             
             # Check for user feedback at the start of each iteration
-            if conversation_id and iteration > 0:  # Skip check on first iteration
+            if _fb_key and iteration > 0:  # Skip check on first iteration
                 # Yield to event loop so the feedback monitor task can deposit
                 # any items it picked up from the asyncio Queue.
                 await asyncio.sleep(0)

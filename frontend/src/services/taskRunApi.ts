@@ -243,6 +243,42 @@ export async function stepTaskRun(
   return res.json();
 }
 
+/** Body for steerTaskRun.  ``index`` is required for a loop block and
+ *  ignored for any other — the server resolves it against the card. */
+export interface SteerRequest {
+  block_id: string;
+  index?: number | null;
+  text: string;
+  /** Also hold at the next block boundary (the Step semantics). */
+  hold?: boolean;
+}
+
+/**
+ * Send a note to a RUNNING block.  Delivered as a user turn before the
+ * block's next model round; the run's ``steer_notes`` records whether it
+ * was ``delivered`` or ``expired`` (the block finished first).
+ *
+ * 409 the run is terminal; 404 the block is not in the run's card; 422
+ * empty text or a loop block without an index.
+ */
+export async function steerTaskRun(
+  projectId: string, runId: string, body: SteerRequest,
+): Promise<TaskRun> {
+  const res = await fetch(
+    `${runsBase(projectId)}/${encodeURIComponent(runId)}/steer`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...projectHeaders() },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`steerTaskRun ${runId}/${body.block_id} failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
 /** Server response for a resume-from-block request. */
 export interface ResumeFromResult {
   /** The NEW run.  The source run is left untouched as a record. */
