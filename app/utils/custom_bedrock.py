@@ -11,6 +11,7 @@ from app.utils.logging_utils import logger
 from app.utils.extended_context_manager import get_extended_context_manager
 from app.utils.conversation_context import get_conversation_id
 from app.utils.context_debug import is_context_overflow_error
+from app.utils.service_tier import is_service_tier_unsupported_error
 from typing import Dict, List, Optional
 
 # Module global to store current conversation_id (workaround for thread boundary issues)
@@ -113,6 +114,29 @@ class CustomBedrockClient:
         """Get the extended context header for the current model."""
         return self.model_config.get("extended_context_header")
     
+    def _retry_with_reduced_max_tokens(self, kwargs, error_message, conversation_id):
+        """Retry once with ``max_tokens`` shrunk to fit the reported input.
+
+        Reads the input/limit figures out of the provider's overflow error;
+        returns the retried response, or None when the error carries no
+        figures (the caller then re-raises).  Needs no conversation id, so
+        it is the one recovery available to a direct caller.
+        """
+        limit_info = self._extract_context_limit_info(error_message)
+        if not limit_info or not isinstance(kwargs.get('body'), str):
+            return None
+        current_limit = (self.extended_context_manager.get_context_limit(
+            conversation_id, self.CLAUDE_CONTEXT_LIMIT)
+            if conversation_id else self.CLAUDE_CONTEXT_LIMIT)
+        safe_max_tokens = self._calculate_safe_max_tokens(
+            limit_info["input_tokens"], current_limit)
+        body_dict = json.loads(kwargs['body'])
+        original_max_tokens = body_dict.get("max_tokens", "not set")
+        body_dict["max_tokens"] = safe_max_tokens
+        kwargs['body'] = json.dumps(body_dict)
+        logger.info(f"Retrying with adjusted max_tokens: {original_max_tokens} -> {safe_max_tokens}")
+        return self.original_invoke(**kwargs)
+
     def _get_context_limits(self) -> tuple[int, int]:
         """Get the standard and extended context limits."""
         standard_limit = self.model_config.get("token_limit", self.CLAUDE_CONTEXT_LIMIT)
@@ -295,6 +319,19 @@ class CustomBedrockClient:
                     except Exception as e:
                         error_message = str(e)
                         self.last_error = error_message
+                        # A service-tier rejection is not a failure of this
+                        # request: BedrockProvider retries once at the
+                        # standard tier and remembers the answer per model,
+                        # so it happens once per model per process (a Task
+                        # Card whose blocks use several tiers probes each
+                        # model once).  Hand it straight back without the
+                        # WARNING/ERROR lines that made it look fatal.
+                        if is_service_tier_unsupported_error(error_message):
+                            logger.debug(
+                                f"service tier rejected for {kwargs.get('modelId')}; "
+                                f"caller retries at the standard tier"
+                            )
+                            raise
                         logger.warning(f"🔄 INITIAL_ERROR: {error_message}")
                         
                         # Check for throttling errors - let higher level retry handle it
@@ -362,7 +399,22 @@ class CustomBedrockClient:
                                 self._extended_context_failures[conversation_id] = time.time()
                                 
                                 return self._retry_with_extended_context(kwargs, error_message, conversation_id)
-                        
+
+                            # Extended context did not apply (unsupported model, or
+                            # already active): fit max_tokens to the reported
+                            # input size and retry once.
+                            reduced = self._retry_with_reduced_max_tokens(kwargs, error_message, conversation_id)
+                            if reduced is not None:
+                                return reduced
+
+                        elif is_context_overflow_error(error_message):
+                            # No conversation id (CLI one-shot, direct callers):
+                            # extended context is per conversation, but shrinking
+                            # max_tokens needs only the numbers in the error.
+                            reduced = self._retry_with_reduced_max_tokens(kwargs, error_message, None)
+                            if reduced is not None:
+                                return reduced
+
                         # Check if we should proactively use extended context
                         elif (self._supports_extended_context() and 
                               conversation_id and 
@@ -378,32 +430,16 @@ class CustomBedrockClient:
                                 return self._retry_with_extended_context(kwargs, "Proactive extended context", conversation_id)
                             
                             # Otherwise, try standard context reduction
-                            limit_info = self._extract_context_limit_info(error_message)
-                            if limit_info:
-                                # Calculate a safe max_tokens value
-                                current_limit = (self.extended_context_manager.get_context_limit(
-                                    conversation_id, self.CLAUDE_CONTEXT_LIMIT) 
-                                    if conversation_id else self.CLAUDE_CONTEXT_LIMIT)
-                                
-                                safe_max_tokens = self._calculate_safe_max_tokens(
-                                    limit_info["input_tokens"],
-                                    current_limit
-                                )
-                                
-                                # Adjust the request body with the safe max_tokens
-                                body_dict = json.loads(kwargs['body'])
-                                original_max_tokens = body_dict.get("max_tokens", "not set")
-                                body_dict["max_tokens"] = safe_max_tokens
-                                kwargs['body'] = json.dumps(body_dict)
-                                
-                                logger.info(f"Retrying with adjusted max_tokens: {original_max_tokens} -> {safe_max_tokens}")
-                                
-                                # Retry with adjusted parameters
-                                return self.original_invoke(**kwargs)
+                            reduced = self._retry_with_reduced_max_tokens(kwargs, error_message, conversation_id)
+                            if reduced is not None:
+                                return reduced
                         
                         # Re-raise the original exception if we can't handle it
                         raise
                 except Exception as e:
+                    if is_service_tier_unsupported_error(str(e)):
+                        # Already noted at DEBUG above; the caller handles it.
+                        raise
                     # Log more details about the error
                     logger.error(f"Error in custom invoke: {e}")
                     if 'modelId' in kwargs:
