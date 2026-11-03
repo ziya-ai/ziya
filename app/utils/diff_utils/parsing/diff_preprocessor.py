@@ -244,6 +244,73 @@ def _additive_to_replace(diff_text: str, original_file_lines: Optional[List[str]
 # Pass 2: recount hunk headers from actual body lines
 # ---------------------------------------------------------------------------
 
+def lower_overcounted_hunk_headers(diff_text: str) -> str:
+    """Lower any ``@@`` header whose declared counts exceed its body.
+
+    The pure, direction-limited subset of ``_recount_hunks``: it never raises
+    a count, never inserts lines, and leaves the body untouched, so it is
+    safe to apply to the text the git-apply and difflib stages parse (the
+    full recount is withheld from that text because its blank-removal and
+    truncated-header heuristics regressed git apply -- see
+    pipeline_manager).  An over-counted header is the dangerous direction:
+    a parser that trusts it reads past the hunk into whatever follows (the
+    next file's ``+++`` header, written into the file as a context line),
+    and the single-hunk path mistakes ``old_count >= file lines`` for a
+    whole-file replacement and drops the lines the body never mentioned
+    (json_escape_sequence lost its ``return parsed; }``).
+
+    Only a hunk followed by another ``@@`` or ``diff --git`` is touched; the
+    final hunk's surplus may be truncated trailing context, which the
+    full-file replacement detection and the fuzzy matcher downstream read.
+    """
+    lines = diff_text.split('\n')
+    out: List[str] = []
+    i = 0
+    while i < len(lines):
+        m = _HUNK_HEADER_RE.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        header_old = int(m.group(2)) if m.group(2) else 1
+        header_new = int(m.group(4)) if m.group(4) else 1
+        header_idx = len(out)
+        out.append(lines[i])
+        i += 1
+        body_start = i
+        while i < len(lines) and not _HUNK_HEADER_RE.match(lines[i]) and not _DIFF_GIT_RE.match(lines[i]):
+            i += 1
+        body = lines[body_start:i]
+        out.extend(body)
+        count_body = body[:-1] if (i == len(lines) and body and body[-1] == '') else body
+        ctx = rem = add = 0
+        for bline in count_body:
+            if bline.startswith('-'):
+                rem += 1
+            elif bline.startswith('+'):
+                add += 1
+            elif bline.startswith('\\'):
+                pass
+            else:
+                ctx += 1
+        body_old, body_new = ctx + rem, ctx + add
+        # Only a hunk BOUNDED by a following hunk or diff block is lowered.
+        # Its body cannot have been truncated -- the next header ends it --
+        # so a surplus in the header is simply wrong.  The last hunk in the
+        # text is left alone: there the surplus may be trailing context the
+        # model dropped, and the fuzzy matcher's placement is tuned to that
+        # count (prompts_manager_log_level_change lands on the wrong line
+        # with the header lowered).
+        bounded = i < len(lines)
+        new_old = min(header_old, body_old) if bounded else header_old
+        new_new = min(header_new, body_new) if bounded else header_new
+        if (new_old, new_new) != (header_old, header_new):
+            out[header_idx] = (
+                f'@@ -{m.group(1)},{new_old} +{m.group(3)},{new_new} @@{m.group(5)}'
+            )
+    return '\n'.join(out)
+
+
 def _recount_hunks(diff_text: str) -> str:
     """
     Walk every hunk header and recompute old_count / new_count from the

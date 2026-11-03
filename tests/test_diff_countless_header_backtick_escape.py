@@ -1,6 +1,6 @@
 """
 Three applier defects behind the 2026-10-17 kuiper-telemetry docs failure
-(README.md / SKILL.md "Malformed hunk detected"; example-notes.md "applied"
+(README.md / SKILL.md "Malformed hunk detected"; kpop-chunnel.md "applied"
 with a stale line kept and a kept line dropped).  Each test is pinned to the
 outermost surface: apply_diff_pipeline on a real temp file.
 
@@ -53,8 +53,8 @@ def _stages(result):
 # Defects 1 + 2: a single-line, count-less hunk whose line carries backticks
 # ---------------------------------------------------------------------------
 
-OLD63 = "  | Example CloudWatch | 123456789012 (4fc3) | `ExampleMetricsReadOnlyRole` via **SSO**; posix group `example-metric-readers` | unverified |"
-NEW63 = "  | Example CloudWatch | 123456789012 (4fc3) | `ExampleMetricsReadOnlyRole` via **SSO**; posix group `example-metric-readers` (allow ~8 h) | verified |"
+OLD63 = "  | Example CloudWatch | 123456789012 (4fc3) | `CloudWatchS3MetricsConfigReadOnlyRole` via **SSO**; posix group `example-metric-readers` | unverified |"
+NEW63 = "  | Example CloudWatch | 123456789012 (4fc3) | `CloudWatchS3MetricsConfigReadOnlyRole` via **SSO**; posix group `example-metric-readers` (allow ~8 h) | verified |"
 README = "\n".join([f"filler line {i}" for i in range(1, 63)] + [OLD63, "  | CT syslog | `beta-ct-logs` |", "", "## Next"]) + "\n"
 
 
@@ -128,7 +128,7 @@ ROWS = [
     "",
     "Refused: the other stacks, the",
     "cross-account role, EdgeBuilder, the",
-    "per-stack role (group-gated), and the",
+    "per-KPOP role (posix-gated), and the",
     "prodlab dataplane. **Keep me**: each stack has one",
     "of each; the list is elsewhere.",
 ]

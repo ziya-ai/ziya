@@ -46,12 +46,19 @@ MALFORMED_DIFF = """diff --git a/x.py b/x.py
 
 
 class _WarnCapture:
-    """Wraps the parser's logger.warning to count 'Malformed hunk' emissions
-    while preserving original behavior."""
+    """Wraps the parser's logger.debug to count 'Malformed hunk' emissions
+    while preserving original behavior.
+
+    ``debug``, not ``warning``: the parser deliberately logs this at debug
+    level now -- at parse time it cannot tell whether the rescue path will
+    reconcile the counts, and the apply-time checks in pipeline_manager are
+    authoritative.  The dedupe (one line per unique hunk) is what this test
+    pins, and it is unchanged.
+    """
 
     def __init__(self, logger):
         self._logger = logger
-        self._orig = logger.warning
+        self._orig = logger.debug
         self.malformed_count = 0
 
     def __enter__(self):
@@ -63,11 +70,11 @@ class _WarnCapture:
             if "Malformed hunk" in str(formatted):
                 self.malformed_count += 1
             return self._orig(msg, *args, **kwargs)
-        self._logger.warning = _wrapped
+        self._logger.debug = _wrapped
         return self
 
     def __exit__(self, *exc):
-        self._logger.warning = self._orig
+        self._logger.debug = self._orig
 
 
 @pytest.fixture(autouse=True)
