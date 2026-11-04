@@ -156,7 +156,8 @@ class InstallationHelper:
                 return {'success': False, 'error': f"{venv_error} (for {package})"}
 
             result = subprocess.run(
-                [str(python), '-m', 'pip', 'install', package],                capture_output=True,
+                [str(python), '-m', 'pip', 'install', package],
+                capture_output=True,
                 text=True,
                 timeout=300
             )
