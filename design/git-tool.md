@@ -30,7 +30,8 @@ every other builtin and the write policy manager is directly callable.
 ```
 git(op, **args)
   op ∈ { status, grep, add, unstage, commit, stash (alias of stash_push),
-         stash_push, stash_pop, fetch, push, switch, checkout, clone }
+         stash_push, stash_pop, fetch, push, switch, checkout, clone,
+         cherry_pick, cherry_pick_continue, cherry_pick_abort }
 ```
 
 Structured arguments only. There is no flag passthrough, so there is nothing to
@@ -53,9 +54,15 @@ with env forced to `GIT_EDITOR=:`, `GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0`,
 | `unstage` | `paths: [str]` | — | — (index only; `git restore --staged -- paths`, fully recoverable) |
 | `commit` | `message: str` (required, non-empty), `paths?: [str]` | something staged (or `paths` given); if `paths`, each passes write policy | empty message; nothing to commit; `--amend`, `--no-verify` inexpressible — hooks always run |
 | `fixup` (2026-10-10) | `target: str` (required), `message?: str` (body), `paths?: [str]` | target is a commit and an ancestor of HEAD; file selection as `commit`; plan lists `commits_after_target`, the final message `fixup! <target subject>` and `fold_in` (the `rebase -i --autosquash` command that folds it, `--root` for a root target); warns when the target is on a remote-tracking branch (`target_published_on`) or a merge sits at/after it | target not on the current branch; empty target subject; the rebase itself is never run — history rewriting stays out of the tool |
-| `stash_push` (alias `stash`, 2026-10-02) | `message?: str` | tree has tracked changes | — (`stash drop/clear` not offered) |
+| `stash_push` (alias `stash`, 2026-10-02) | `message?: str` | tree has tracked changes | — (`stash clear` not offered) |
+| `stash_drop` (2026-11-04) | `index?: int \| "stash@{n}"` (default 0) | plan lists the stash's `files` (worktree + index vs its base), `untracked_files` (`stash^3`), `already_in_head` (files whose stashed content equals HEAD; a `note` says the stash is redundant when all do) and `recover` (`git stash apply <sha>`, valid until gc).  Consent op is human-only: asks on every call | a stash that does not exist |
+| `delete_fetched_ref` (2026-11-04) | `ref: str` (full, or the part after `refs/ziya/fetched/`) | ref lies under `refs/ziya/fetched/` and passes `check-ref-format`; plan lists `commit`, `subject`, `commits_only_here` (commits reachable from no other ref).  Runs `update-ref -d <ref> <planned sha>`, so a ref re-fetched after approval is kept | any other ref (branches, tags, remote-tracking refs); `..` components; a missing ref (the error lists `fetched_refs`) |
 | `stash_pop` (2026-10-02) | `index?: int \| "stash@{n}"` (default 0) | **clean tree**; plan lists `to_write` = files changed by the stash against its base (worktree and index) plus its untracked commit (`stash^3`), repository-relative so files outside the project root are seen; each passes the write policy; warns when the stash base ≠ HEAD | a file outside the project root; overwriting an untracked file; on conflict git keeps the stash and the error lists `conflicted` |
 | `fetch` (2026-10-02) | `remote?: str` (default: `branch.<cur>.remote`, then `origin`, then the only remote) | remote is a **configured** remote name (a URL could name any transport) | `--prune` inexpressible and `--no-prune` always passed (overrides `fetch.prune`); no refspec argument, so no `+src:dst`.  Reports `new_refs` / `updated_refs` (symrefs excluded) and ahead/behind |
+| `fetch` with `url` (2026-11-03) | `url: str`, `branch: str` (both required; `remote` must be absent) | URL rule and `GIT_ALLOW_PROTOCOL` exactly as `clone`; destination is the private ref `refs/ziya/fetched/<owner>/<repo>/<branch>` (`into`), never `refs/heads` or `refs/remotes`; reports `replaces` (the ref's previous sha) | `--no-tags --no-prune`; the refspec is fixed (`+refs/heads/<branch>:<into>`), so the `+` can only ever force-update the private ref. Result: `commit`, `merge_base`, `commits_not_in_head` |
+| `cherry_pick` (2026-11-03) | `rev: str` — a commit, or `A..B` | HEAD exists; **clean tracked tree**; no merge/rebase/revert/pick in progress; plan lists every commit (`%h %s (%an)`), `to_write` (every file the commits change, repository-relative so outside-root is seen), each policy-checked as for `stash_pop`; warns on patch-equivalent commits (`already_applied`, via `--cherry-mark`) | `A...B`; merge commits (no mainline offered); commits already reachable from HEAD; > 500 commits; overwriting untracked files; files outside the project root. A conflict is `status: "stopped"` with `conflicted`, `stopped_at`, `applied`, `remaining`, `next` — not an error |
+| `cherry_pick_continue` (2026-11-03) | — | a pick in progress; nothing unmerged; no staged file with conflict markers; no unstaged tracked changes (continue commits the index); plan lists `committing`, `staged`, `remaining` and their `to_write` (policy-checked) | an empty stopped commit (nothing staged): abort instead; `--skip` is not offered |
+| `cherry_pick_abort` (2026-11-03) | — | a pick in progress; plan lists `returns_to`, `drops_commits` (picked so far, still in the reflog), `discards_uncommitted`, `to_write` (policy-checked); warns when the picked commits are already on a remote branch | files outside the project root |
 | `clone` (2026-10-02) | `url: str`, `dest?: str` (default: repo name), `branch?: str` | needs no repository; `dest` is new (never existing), inside the project root (realpath of its parent too), passes the write policy | URL other than `https://`/`ssh://`/`git://`/`user@host:path`; `GIT_ALLOW_PROTOCOL=https:ssh:git` set for this op only, so git refuses `file`/`ext`/`fd` even on redirect or submodule; `--no-recurse-submodules`; `--config`/`--template`/`--upload-pack` inexpressible |
 | `push` | `remote: str`, `branch: str`, `set_upstream?: bool` | `branch` is the current branch | force inexpressible; non-fast-forward rejected by git itself; `--delete/--mirror/--prune` inexpressible |
 | `switch` | `branch: str`, `create?: bool` | **clean tree**: no tracked modifications (untracked ok) | switching over uncommitted changes |
@@ -80,8 +87,23 @@ Where the table rows above say a path "passes the write policy", read it as
 **Not offered, at any permission level:** `reset --hard`, `checkout <branch>`
 (that is `switch`), `restore` (worktree — covered by `checkout` with paths),
 `clean`, `rm`, `mv`, `rebase`, `merge`, `pull` (fetch + merge/rebase),
-`fetch --prune`, `stash drop`/`clear`, `worktree`, `cherry-pick`, `branch -D`, `tag -d`,
-`filter-branch`, `push --force`.
+`fetch --prune`, `stash clear`, `worktree`, `cherry-pick --skip` and
+cherry-picks of merge commits, `branch -D`, `tag -d`, `filter-branch`, bare
+`push --force`.
+
+**Cherry-pick and URL fetch (reversed 2026-11-03).** Merging a contributor's
+pull request from a fork took two commands the tool could not express:
+fetching a branch from a repository that is not a configured remote, and
+`cherry-pick`. Both were left out with the history rewriters, but neither
+rewrites anything. A URL fetch adds objects and one private ref outside
+`refs/heads`/`refs/remotes`. A pick adds commits on top of HEAD, and like
+`stash_pop` it can be itemised in advance: the commits, their authors and
+every file written, each under the write policy, on a clean tree so a stop
+only ever mixes the picked commit with HEAD. `cherry_pick_abort` discards
+uncommitted edits (conflict resolutions), which puts it in the same class as
+`checkout` with paths: allowed because the plan names every file that loses
+edits and the human approves that list. `--skip` stays out because the
+work it discards is not itemised by git before it runs.
 
 The line is **anything that can overwrite an untracked file** (plus history
 rewriting), and — with one consented exception — anything that discards

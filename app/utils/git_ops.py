@@ -28,9 +28,22 @@ Layout:
   * ``run_op`` / ``preflight`` dispatch on the op name.
 
 Not offered at any permission level (design/git-tool.md §Op set): reset,
-restore of the worktree, clean, rm, mv, rebase, merge, cherry-pick, branch or
-tag deletion.  Those destroy uncommitted work or rewrite history; they stay
+restore of the worktree, clean, rm, mv, rebase, merge, branch or tag
+deletion.  Those destroy uncommitted work or rewrite history; they stay
 behind the shell's signed bare-``git`` grant.
+
+Added 2026-11-04: ``stash_drop`` (the plan lists the stash's files and which
+already match HEAD; asks on every call) and ``delete_fetched_ref`` (only refs
+under ``refs/ziya/fetched/``, deleted with ``update-ref -d <ref> <sha>`` so a
+ref that moved after approval is kept).  ``stash clear`` and deleting any
+other ref remain unavailable.
+
+Added 2026-11-03: ``cherry_pick`` / ``cherry_pick_continue`` /
+``cherry_pick_abort``, and ``fetch`` with ``url`` + ``branch``.  A pick adds
+commits on top of HEAD and can be itemised before it runs (the commits, their
+authors and every file written), which is what keeps it apart from rebase and
+merge.  A URL fetch lands in ``refs/ziya/fetched/<owner>/<repo>/<branch>``,
+never in a local branch, so it still only adds objects and private refs.
 
 Added 2026-10-13: ``commit`` with ``amend`` and ``push`` with ``force``.  Both
 rewrite history, so the tool gives them their own consent ops
@@ -69,7 +82,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 OPS = ("status", "grep", "add", "unstage", "commit", "fixup", "stash", "stash_push",
-       "stash_pop", "fetch", "push", "switch", "checkout", "clone")
+       "stash_pop", "stash_drop", "fetch", "delete_fetched_ref", "push", "switch",
+       "checkout", "clone", "cherry_pick", "cherry_pick_continue", "cherry_pick_abort")
 READ_ONLY_OPS = ("status", "grep")
 # Ops that do not need the project root to be a git work tree.
 _NO_REPO_OPS = ("clone",)
@@ -83,6 +97,12 @@ COMMIT_TIMEOUT = 180   # hooks run; a pre-commit suite can take a while
 PUSH_TIMEOUT = 300     # network + pre-push hooks
 FETCH_TIMEOUT = 300    # network
 CLONE_TIMEOUT = 900    # network + checkout of a whole repository
+PICK_TIMEOUT = 300     # one invocation applies every commit in the range
+_PICK_MAX = 500        # commits per cherry_pick call
+
+# Where ``fetch`` with a url puts the branch it fetched.  Not under
+# refs/heads or refs/remotes, so no local branch or remote-tracking ref moves.
+_FETCHED_NS = "refs/ziya/fetched"
 
 # Transports ``clone`` may use, enforced by git itself through
 # GIT_ALLOW_PROTOCOL (which also covers submodules and redirects).  ``ext``
@@ -981,6 +1001,106 @@ def op_stash_pop(repo: Repo, index: Any, write_check: WriteCheck) -> Dict[str, A
     return plan
 
 
+# ── stash_drop ────────────────────────────────────────────────────────────
+# ``git stash drop stash@{n}``.  Touches no file; it discards the stash entry.
+# The plan names the stash, its commit and every file it holds, and says
+# which of those files already match HEAD (a stash whose content is all in
+# HEAD is redundant).  The commit sha is reported so a mistaken drop can be
+# recovered with ``git stash apply <sha>`` until git gc prunes it.  The tool
+# marks this op human-only: it asks on every call.
+
+def plan_stash_drop(repo: Repo, index: Any) -> Dict[str, Any]:
+    n = _stash_index(index)
+    stashes = _stashes(repo)
+    if not stashes:
+        raise GitOpError("there are no stashes to drop")
+    if n >= len(stashes):
+        raise GitOpError(f"stash@{{{n}}} does not exist", stashes=_cap(stashes))
+    s = stashes[n]
+    sha = s["commit"]
+    names = set()
+    for a, b in ((f"{sha}^1", sha), (f"{sha}^1", f"{sha}^2")):
+        names.update(_lines(_run(["diff", "--name-only", "-z", "--no-renames", a, b, "--"],
+                                 repo.root)))
+    untracked: List[str] = []
+    if _run(["rev-parse", "--verify", "-q", f"{sha}^3"], repo.root, check=False).returncode == 0:
+        untracked = _lines(_run(["ls-tree", "-r", "-z", "--name-only", "--full-tree",
+                                 f"{sha}^3"], repo.root))
+    plan: Dict[str, Any] = {
+        "op": "stash_drop", "stash": s["ref"], "commit": sha, "message": s["message"],
+        "files": _cap(sorted(names)), "untracked_files": _cap(sorted(untracked)),
+        "remaining_stashes": len(stashes) - 1,
+        "recover": f"git stash apply {sha}",
+    }
+    if names and _has_head(repo):
+        differ = set(_lines(_run(["diff", "--name-only", "-z", "--no-renames", "HEAD", sha,
+                                  "--"], repo.root)))
+        same = sorted(p for p in names if p not in differ)
+        plan["already_in_head"] = _cap(same)
+        if len(same) == len(names) and not untracked:
+            plan["note"] = "every file in this stash already matches HEAD; the stash is redundant"
+    return plan
+
+
+def op_stash_drop(repo: Repo, index: Any) -> Dict[str, Any]:
+    plan = plan_stash_drop(repo, index)
+    _run(["stash", "drop", plan["stash"]], repo.root)
+    plan["dropped"] = plan["stash"]
+    return plan
+
+
+# ── delete_fetched_ref ────────────────────────────────────────────────────
+# Deletes one ref under refs/ziya/fetched/ -- the private namespace that
+# ``fetch`` with a url writes.  No other ref can be named: local branches,
+# tags and remote-tracking refs stay behind the shell's bare-git grant.
+# ``update-ref -d <ref> <sha>`` passes the sha the plan showed, so a ref
+# re-fetched between approval and execution is not deleted.
+
+def _fetched_refs(repo: Repo) -> List[str]:
+    p = _run(["for-each-ref", "--format=%(refname)", _FETCHED_NS + "/"], repo.root,
+             check=False)
+    return [ln for ln in (p.stdout or "").splitlines() if ln]
+
+
+def _valid_fetched_ref(repo: Repo, ref: Any) -> str:
+    r = str(ref or "").strip()
+    if not r:
+        raise GitOpError(f"ref is required: a ref under {_FETCHED_NS}/",
+                         fetched_refs=_cap(_fetched_refs(repo)))
+    if not r.startswith("refs/"):
+        r = f"{_FETCHED_NS}/{r}"
+    if (r.startswith("-") or not r.startswith(_FETCHED_NS + "/")
+            or ".." in r.split("/") or "\x00" in r):
+        raise GitOpError(f"ref {r!r} is not under {_FETCHED_NS}/; only refs the tool "
+                         "fetched there can be deleted")
+    if _run(["check-ref-format", r], repo.root, check=False).returncode != 0:
+        raise GitOpError(f"{r!r} is not a valid ref name")
+    return r
+
+
+def plan_delete_fetched_ref(repo: Repo, ref: Any) -> Dict[str, Any]:
+    r = _valid_fetched_ref(repo, ref)
+    sha = _run(["rev-parse", "--verify", "-q", r], repo.root, check=False).stdout.strip()
+    if not sha:
+        raise GitOpError(f"{r} does not exist", fetched_refs=_cap(_fetched_refs(repo)))
+    subject = _run(["log", "-1", "--format=%s", sha], repo.root, check=False).stdout.strip()
+    only = _run(["rev-list", "--count", sha, "--not", f"--exclude={r}", "--all"],
+                repo.root, check=False).stdout.strip()
+    plan: Dict[str, Any] = {"op": "delete_fetched_ref", "ref": r, "commit": sha,
+                            "subject": subject, "commits_only_here": int(only or 0)}
+    if plan["commits_only_here"]:
+        plan["note"] = (f"{plan['commits_only_here']} commit(s) are reachable only from this "
+                        "ref; after deletion they can be fetched again from the source")
+    return plan
+
+
+def op_delete_fetched_ref(repo: Repo, ref: Any) -> Dict[str, Any]:
+    plan = plan_delete_fetched_ref(repo, ref)
+    _run(["update-ref", "-d", plan["ref"], plan["commit"]], repo.root)
+    plan["deleted"] = plan["ref"]
+    return plan
+
+
 # ── fetch ─────────────────────────────────────────────────────────────────
 # Configured remotes only (a URL here could name any transport), never
 # prunes (``--no-prune`` overrides fetch.prune / fetch.pruneTags config), no
@@ -1041,14 +1161,70 @@ def _short_ref(ref: str) -> str:
     return ref
 
 
-def plan_fetch(repo: Repo, remote: Any) -> Dict[str, Any]:
+def _url_slug(url: str) -> str:
+    """``owner/repo`` from a fetch URL: the middle of the ref it lands in."""
+    if "://" in url:
+        rest = url.split("://", 1)[1]
+        path = rest.split("/", 1)[1] if "/" in rest else ""
+    elif _SCP_LIKE.match(url):
+        path = url.split(":", 1)[1]
+    else:
+        path = url
+    parts = [p for p in path.rstrip("/").split("/") if p][-2:]
+    if parts and parts[-1].endswith(".git"):
+        parts[-1] = parts[-1][:-4]
+    parts = [re.sub(r"[^A-Za-z0-9._-]", "_", p).strip(".") for p in parts]
+    return "/".join(p for p in parts if p) or "remote"
+
+
+def _plan_fetch_url(repo: Repo, url: str, branch: Any) -> Dict[str, Any]:
+    # Same URL rule as clone: the URL is model-supplied, so only https/ssh/git
+    # (and git itself is held to those through GIT_ALLOW_PROTOCOL).
+    u = _valid_clone_url(url)
+    b = _valid_ref_name(branch, "branch", repo.root)
+    if not b:
+        raise GitOpError("fetch with url needs branch: the branch to fetch from that repository")
+    into = f"{_FETCHED_NS}/{_url_slug(u)}/{b}"
+    if _run(["check-ref-format", into], repo.root, check=False).returncode != 0:
+        raise GitOpError(f"cannot derive a valid ref name from {_redact_url(u)!r}")
+    prev = _run(["rev-parse", "--verify", "-q", into], repo.root, check=False).stdout.strip()
+    return {"op": "fetch", "url": _redact_url(u), "branch": b, "into": into,
+            "replaces": prev or None, "tags": False, "prune": False, "_url": u}
+
+
+def plan_fetch(repo: Repo, remote: Any, url: Any = None, branch: Any = None) -> Dict[str, Any]:
+    u = str(url or "").strip()
+    if u:
+        if str(remote or "").strip():
+            raise GitOpError("give remote or url, not both")
+        return _plan_fetch_url(repo, u, branch)
     info = _resolve_remote(repo, remote)
     url = _run(["remote", "get-url", "--", info["remote"]], repo.root, check=False).stdout.strip()
     return {"op": "fetch", **info, "url": _redact_url(url) or None, "prune": False}
 
 
-def op_fetch(repo: Repo, remote: Any) -> Dict[str, Any]:
-    plan = plan_fetch(repo, remote)
+def _op_fetch_url(repo: Repo, plan: Dict[str, Any]) -> Dict[str, Any]:
+    # '+' force-updates only our private ref, so a re-fetch after the other
+    # side force-pushed still works; no local branch is ever a destination.
+    u = plan.pop("_url")
+    proc = _run(["fetch", "--no-tags", "--no-prune", "--", u,
+                 f"+refs/heads/{plan['branch']}:{plan['into']}"],
+                repo.root, timeout=FETCH_TIMEOUT, restrict_protocols=True)
+    sha = _run(["rev-parse", "--verify", plan["into"]], repo.root).stdout.strip()
+    plan["commit"] = sha
+    if _has_head(repo):
+        base = _run(["merge-base", "HEAD", sha], repo.root, check=False).stdout.strip()
+        plan["merge_base"] = base or None
+        n = _run(["rev-list", "--count", f"HEAD..{sha}"], repo.root, check=False).stdout.strip()
+        plan["commits_not_in_head"] = int(n or 0)
+    plan["output"] = _tail(proc.stderr or proc.stdout, 800)
+    return plan
+
+
+def op_fetch(repo: Repo, remote: Any, url: Any = None, branch: Any = None) -> Dict[str, Any]:
+    plan = plan_fetch(repo, remote, url, branch)
+    if "into" in plan:
+        return _op_fetch_url(repo, plan)
     r = plan["remote"]
     before = _remote_refs(repo, r)
     proc = _run(["fetch", "--no-prune", "--", r], repo.root, timeout=FETCH_TIMEOUT)
@@ -1405,6 +1581,341 @@ def op_clone(project_root: Optional[str], url: Any, dest: Any, branch: Any,
     return plan
 
 
+# ── cherry_pick ───────────────────────────────────────────────────────────
+# ``git cherry-pick <sha>...``: apply existing commits on top of HEAD, each as
+# a new commit keeping its author.  Preflight:
+#   * clean tracked tree, and no merge / rebase / revert / pick in progress,
+#     so a stop only ever mixes the picked commit with HEAD;
+#   * rev is one commit or a range A..B (the commits after A up to B, oldest
+#     first); merge commits and commits already in HEAD are refused;
+#   * the plan lists every commit and every file it writes; each file lies
+#     inside the project, is not untracked now, and passes the write policy.
+# A conflict is a stop, not a failure: git keeps the sequence, and the result
+# says what was applied, where it stopped and what remains.  Resolution goes
+# through file_write / op=add, then cherry_pick_continue or cherry_pick_abort.
+
+def _git_path(repo: Repo, name: str) -> str:
+    p = _run(["rev-parse", "--git-path", name], repo.root).stdout.strip()
+    return p if os.path.isabs(p) else os.path.join(repo.root, p)
+
+
+def _other_operation(repo: Repo) -> Optional[str]:
+    """A merge / rebase / revert in progress, which a pick must not join."""
+    for name, what in (("MERGE_HEAD", "a merge"), ("REVERT_HEAD", "a revert"),
+                       ("rebase-merge", "a rebase"), ("rebase-apply", "a rebase or am")):
+        if os.path.exists(_git_path(repo, name)):
+            return what
+    return None
+
+
+def _resolve_sha(repo: Repo, ref: str) -> Optional[str]:
+    p = _run(["rev-parse", "--verify", "-q", f"{ref}^{{commit}}"], repo.root, check=False)
+    return (p.stdout or "").strip() or None
+
+
+def _pick_state(repo: Repo) -> Optional[Dict[str, Any]]:
+    """The cherry-pick in progress, or None.
+
+    ``current`` is the commit the sequence stopped on (CHERRY_PICK_HEAD);
+    ``remaining`` the picks still queued after it (sequencer/todo, which may
+    or may not list the current one first, so it is filtered out);
+    ``orig_head`` where HEAD was before the sequence (sequencer/head; absent
+    for a single-commit pick, where HEAD has not moved).
+    """
+    if os.path.exists(_git_path(repo, "REVERT_HEAD")):
+        return None
+    cph = _git_path(repo, "CHERRY_PICK_HEAD")
+    seq = _git_path(repo, "sequencer")
+    has_cph, has_seq = os.path.isfile(cph), os.path.isdir(seq)
+    if not (has_cph or has_seq):
+        return None
+    current = None
+    if has_cph:
+        with open(cph, encoding="utf-8") as fh:
+            current = _resolve_sha(repo, fh.read().strip())
+    todo: List[str] = []
+    orig = None
+    if has_seq:
+        try:
+            with open(os.path.join(seq, "todo"), encoding="utf-8") as fh:
+                for ln in fh:
+                    parts = ln.split()
+                    if not parts or parts[0].startswith("#"):
+                        continue
+                    if parts[0] not in ("pick", "p") or len(parts) < 2:
+                        return None  # a revert sequence, not ours
+                    sha = _resolve_sha(repo, parts[1])
+                    if sha:
+                        todo.append(sha)
+        except OSError:
+            pass
+        try:
+            with open(os.path.join(seq, "head"), encoding="utf-8") as fh:
+                orig = _resolve_sha(repo, fh.read().strip())
+        except OSError:
+            pass
+    return {"current": current, "remaining": [s for s in todo if s != current],
+            "orig_head": orig}
+
+
+def _commit_lines(repo: Repo, shas: List[str]) -> List[str]:
+    if not shas:
+        return []
+    out = _run(["log", "--no-walk=unsorted", "--format=%h %s (%an)", *shas], repo.root).stdout
+    return [ln for ln in out.splitlines() if ln.strip()]
+
+
+def _files_of(repo: Repo, shas: List[str]) -> List[str]:
+    """Repository-relative paths the commits change (worktree targets of a pick)."""
+    names = set()
+    for sha in shas:
+        names.update(_lines(_run(["diff-tree", "-r", "--root", "--no-commit-id",
+                                  "--name-only", "-z", "--no-renames", sha], repo.root)))
+    return sorted(names)
+
+
+def _pick_targets(repo: Repo, shas: List[str], write_check: WriteCheck,
+                  what: str) -> "tuple[list, list]":
+    """``(to_write, outside_policy)`` for the files the picks write, or refuse."""
+    names = _files_of(repo, shas)
+    outside_root = [p for p in names if _top_to_rel(repo, p) is None]
+    if outside_root:
+        raise GitOpError(f"{what} refused: the commits touch files outside the project root",
+                         outside=_cap(outside_root))
+    to_write = [_top_to_rel(repo, p) for p in names]
+    entries = {e.rel: e for e in _entries(repo) if e.rel}
+    clobber = [p for p in to_write if p in entries and entries[p].untracked]
+    if clobber:
+        raise GitOpError(f"{what} refused: it would overwrite untracked files",
+                         untracked=_cap(clobber))
+    outside, floor = _split_policy(to_write, repo.root, write_check,
+                                   lambda p: os.path.lexists(os.path.join(repo.root, p)))
+    if floor:
+        raise GitOpError(f"{what} refused: some paths can never be written by this tool",
+                         refused=_cap(floor), to_write=_cap(to_write))
+    return to_write, outside
+
+
+def _pick_commits(repo: Repo, rev: Any) -> Dict[str, Any]:
+    r = str(rev or "").strip()
+    if not r:
+        raise GitOpError("rev is required: a commit, or a range A..B "
+                         "(the commits after A up to and including B)")
+    if "..." in r:
+        raise GitOpError("symmetric ranges (A...B) are not accepted; use A..B")
+    if ".." in r:
+        a, b = r.split("..", 1)
+        base = _valid_rev(repo, a, "range start")
+        tip = _valid_rev(repo, b, "range end")
+        shas = _run(["rev-list", "--reverse", "--topo-order",
+                     f"{base['commit']}..{tip['commit']}"], repo.root).stdout.split()
+        if not shas:
+            raise GitOpError(f"range {r!r} contains no commits")
+        spec: Dict[str, Any] = {"range": r, "base": base["commit"], "tip": tip["commit"]}
+    else:
+        info = _valid_rev(repo, r)
+        shas = [info["commit"]]
+        spec = {"rev": r, "tip": info["commit"]}
+    if len(shas) > _PICK_MAX:
+        raise GitOpError(f"{len(shas)} commits in {r!r}; at most {_PICK_MAX} per call")
+    merges = set(_run(["rev-list", "--no-walk", "--merges", *shas], repo.root).stdout.split())
+    if merges:
+        raise GitOpError("cherry_pick refused: merge commits need a mainline, which is "
+                         "not offered", merges=_cap(_commit_lines(repo, [s for s in shas
+                                                                         if s in merges])))
+    if _has_head(repo):
+        not_in_head = set(_run(["rev-list", *shas, "--not", "HEAD"], repo.root).stdout.split())
+        in_head = [s for s in shas if s not in not_in_head]
+        if in_head:
+            raise GitOpError("cherry_pick refused: these commits are already in HEAD",
+                             already_in_head=_cap(_commit_lines(repo, in_head)))
+    spec["_shas"] = shas
+    return spec
+
+
+def plan_cherry_pick(repo: Repo, rev: Any, write_check: WriteCheck) -> Dict[str, Any]:
+    if not _has_head(repo):
+        raise GitOpError("nothing to pick onto: the repository has no commits yet")
+    if _pick_state(repo):
+        raise GitOpError("a cherry-pick is already in progress; finish it with "
+                         "op=cherry_pick_continue or op=cherry_pick_abort")
+    other = _other_operation(repo)
+    if other:
+        raise GitOpError(f"cherry_pick refused: {other} is in progress")
+    dirty = [e.rel or "(outside project)" for e in _entries(repo) if not e.untracked]
+    if dirty:
+        raise GitOpError("cherry_pick refused: the working tree has uncommitted tracked "
+                         "changes (commit or stash_push them first)", uncommitted=_cap(dirty))
+    spec = _pick_commits(repo, rev)
+    shas = spec["_shas"]
+    to_write, outside = _pick_targets(repo, shas, write_check, "cherry_pick")
+    plan: Dict[str, Any] = {
+        "op": "cherry_pick", "branch": _current_branch(repo), **spec,
+        "commits": _cap(_commit_lines(repo, shas)),
+        "to_write": _cap(to_write),
+        "counts": {"commits": len(shas), "to_write": len(to_write)},
+    }
+    # Best effort: a commit whose patch is already in HEAD under another sha
+    # becomes empty and stops the sequence.
+    marks = _run(["log", "--cherry-mark", "--right-only", "--no-merges", "--format=%m %H",
+                  f"HEAD...{spec['tip']}"], repo.root, check=False).stdout
+    equivalent = [ln.split()[1] for ln in marks.splitlines()
+                  if ln.startswith("=") and len(ln.split()) == 2 and ln.split()[1] in shas]
+    if equivalent:
+        plan["already_applied"] = _cap(_commit_lines(repo, equivalent))
+        plan["warning"] = (f"{len(equivalent)} commit(s) have the same change as a commit "
+                           "already in HEAD; each will stop the pick as empty")
+    if plan["branch"] is None:
+        plan["detached"] = True
+    _note_outside(plan, outside)
+    return plan
+
+
+def _pick_outcome(repo: Repo, plan: Dict[str, Any], orig: str,
+                  proc: subprocess.CompletedProcess) -> Dict[str, Any]:
+    applied = _run(["log", "--reverse", "--format=%h %s (%an)", f"{orig}..HEAD"],
+                   repo.root, check=False).stdout
+    applied_list = [ln for ln in applied.splitlines() if ln.strip()]
+    plan["applied"] = _cap(applied_list)
+    plan.setdefault("counts", {})["applied"] = len(applied_list)
+    plan["head"] = _run(["rev-parse", "HEAD"], repo.root).stdout.strip()
+    plan["output"] = _tail(proc.stderr or proc.stdout, 800)
+    state = _pick_state(repo)
+    if proc.returncode == 0 and state is None:
+        plan["status"] = "done"
+        return plan
+    if state is None:
+        raise GitOpError(f"git cherry-pick failed: {_tail(proc.stderr or proc.stdout)}",
+                         returncode=proc.returncode, applied=_cap(applied_list))
+    conflicted = [e.rel or "(outside project)" for e in _entries(repo) if e.conflicted]
+    plan["status"] = "stopped"
+    plan["stopped_at"] = (_commit_lines(repo, [state["current"]]) or [None])[0] \
+        if state["current"] else None
+    plan["conflicted"] = _cap(conflicted)
+    plan["remaining"] = _cap(_commit_lines(repo, state["remaining"]))
+    plan["counts"]["remaining"] = len(state["remaining"])
+    back = (state["orig_head"] or orig)[:12]
+    if conflicted:
+        plan["next"] = ("resolve the conflicted files, stage them with op=add, then "
+                        "op=cherry_pick_continue; or op=cherry_pick_abort to return to "
+                        f"{back}")
+    else:
+        plan["next"] = ("the pick stopped without conflicts (most often the commit became "
+                        "empty because its change is already in HEAD); "
+                        f"op=cherry_pick_abort returns to {back}")
+    return plan
+
+
+def op_cherry_pick(repo: Repo, rev: Any, write_check: WriteCheck) -> Dict[str, Any]:
+    plan = plan_cherry_pick(repo, rev, write_check)
+    _require_granted(plan)
+    shas = plan.pop("_shas")
+    orig = _run(["rev-parse", "HEAD"], repo.root).stdout.strip()
+    proc = _run(["cherry-pick", *shas], repo.root, timeout=PICK_TIMEOUT, check=False)
+    return _pick_outcome(repo, plan, orig, proc)
+
+
+def plan_cherry_pick_continue(repo: Repo, write_check: WriteCheck) -> Dict[str, Any]:
+    state = _pick_state(repo)
+    if not state:
+        raise GitOpError("no cherry-pick is in progress")
+    entries = _entries(repo)
+    conflicted = [e.rel or "(outside project)" for e in entries if e.conflicted]
+    if conflicted:
+        raise GitOpError("unresolved conflicts: resolve these files and stage them with "
+                         "op=add first", conflicted=_cap(conflicted))
+    markers = [e.rel for e in entries if e.rel and e.staged
+               and _has_conflict_markers(os.path.join(repo.root, e.rel))]
+    if markers:
+        raise GitOpError("staged files still contain merge conflict markers",
+                         conflict_markers=_cap(markers))
+    unstaged = [e.rel for e in entries if e.rel and e.unstaged and not e.untracked]
+    if unstaged:
+        raise GitOpError("cherry_pick_continue commits the index: stage these with op=add "
+                         "(or restore them with op=checkout) first", unstaged=_cap(unstaged))
+    staged = [e.rel or "(outside project)" for e in entries if e.staged]
+    if state["current"] and not staged:
+        raise GitOpError("nothing staged: the stopped commit is now empty (its change is "
+                         "already in HEAD); op=cherry_pick_abort ends the sequence")
+    remaining = state["remaining"]
+    to_write, outside = _pick_targets(repo, remaining, write_check, "cherry_pick_continue")
+    plan: Dict[str, Any] = {
+        "op": "cherry_pick_continue", "branch": _current_branch(repo),
+        "committing": (_commit_lines(repo, [state["current"]]) or [None])[0]
+        if state["current"] else None,
+        "staged": _cap(staged),
+        "remaining": _cap(_commit_lines(repo, remaining)),
+        "to_write": _cap(to_write),
+        "counts": {"staged": len(staged), "remaining": len(remaining),
+                   "to_write": len(to_write)},
+        "_orig": state["orig_head"],
+    }
+    _note_outside(plan, outside)
+    return plan
+
+
+def op_cherry_pick_continue(repo: Repo, write_check: WriteCheck) -> Dict[str, Any]:
+    plan = plan_cherry_pick_continue(repo, write_check)
+    _require_granted(plan)
+    orig = plan.pop("_orig") or _run(["rev-parse", "HEAD"], repo.root).stdout.strip()
+    proc = _run(["cherry-pick", "--continue"], repo.root, timeout=PICK_TIMEOUT, check=False)
+    return _pick_outcome(repo, plan, orig, proc)
+
+
+def plan_cherry_pick_abort(repo: Repo, write_check: WriteCheck) -> Dict[str, Any]:
+    state = _pick_state(repo)
+    if not state:
+        raise GitOpError("no cherry-pick is in progress")
+    head = _run(["rev-parse", "HEAD"], repo.root).stdout.strip()
+    orig = state["orig_head"] or head
+    dropped = _run(["log", "--reverse", "--format=%h %s (%an)", f"{orig}..{head}"],
+                   repo.root, check=False).stdout
+    dropped_list = [ln for ln in dropped.splitlines() if ln.strip()]
+    # Everything that differs between the worktree and where HEAD returns to
+    # is rewritten (git uses reset --merge); untracked files stay.
+    names = _lines(_run(["diff", "--name-only", "-z", "--no-renames", orig, "--"], repo.root))
+    outside_root = [p for p in names if _top_to_rel(repo, p) is None]
+    if outside_root:
+        raise GitOpError("cherry_pick_abort refused: it would rewrite files outside the "
+                         "project root", outside=_cap(outside_root))
+    to_write = sorted(_top_to_rel(repo, p) for p in names)
+    outside, floor = _split_policy(to_write, repo.root, write_check, lambda p: True)
+    if floor:
+        raise GitOpError("cherry_pick_abort refused: some paths can never be written by "
+                         "this tool", refused=_cap(floor), to_write=_cap(to_write))
+    discards = [e.rel for e in _entries(repo) if e.rel and not e.untracked]
+    plan: Dict[str, Any] = {
+        "op": "cherry_pick_abort", "branch": _current_branch(repo),
+        "returns_to": orig, "drops_commits": _cap(dropped_list),
+        "discards_uncommitted": _cap(discards), "to_write": _cap(to_write),
+        "counts": {"drops_commits": len(dropped_list), "discards_uncommitted": len(discards),
+                   "to_write": len(to_write)},
+    }
+    warnings: List[str] = []
+    if dropped_list:
+        warnings.append(f"{len(dropped_list)} commit(s) already picked in this sequence "
+                        "are removed from the branch (still reachable through the reflog)")
+        published = _published_on(repo, head)
+        if published:
+            warnings.append(f"they are already on {', '.join(published[:5])}")
+    if discards:
+        warnings.append("uncommitted edits in the listed files (conflict resolutions "
+                        "included) are discarded and cannot be recovered")
+    if warnings:
+        plan["warning"] = "; ".join(warnings)
+    _note_outside(plan, outside)
+    return plan
+
+
+def op_cherry_pick_abort(repo: Repo, write_check: WriteCheck) -> Dict[str, Any]:
+    plan = plan_cherry_pick_abort(repo, write_check)
+    _require_granted(plan)
+    _run(["cherry-pick", "--abort"], repo.root, timeout=DEFAULT_TIMEOUT)
+    plan["head"] = _run(["rev-parse", "HEAD"], repo.root).stdout.strip()
+    plan["status"] = "aborted"
+    return plan
+
+
 # ── dispatch ──────────────────────────────────────────────────────────────
 
 def _public(plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -1450,8 +1961,18 @@ def run_op(
             return _public(op_stash_push(repo, a.get("message")))
         if name == "stash_pop":
             return _public(op_stash_pop(repo, a.get("index"), check))
+        if name == "stash_drop":
+            return _public(op_stash_drop(repo, a.get("index")))
+        if name == "delete_fetched_ref":
+            return _public(op_delete_fetched_ref(repo, a.get("ref")))
         if name == "fetch":
-            return _public(op_fetch(repo, a.get("remote")))
+            return _public(op_fetch(repo, a.get("remote"), a.get("url"), a.get("branch")))
+        if name == "cherry_pick":
+            return _public(op_cherry_pick(repo, a.get("rev"), check))
+        if name == "cherry_pick_continue":
+            return _public(op_cherry_pick_continue(repo, check))
+        if name == "cherry_pick_abort":
+            return _public(op_cherry_pick_abort(repo, check))
         if name == "push":
             return _public(op_push(repo, a.get("remote"), a.get("branch"),
                                    bool(a.get("set_upstream")), truthy(a.get("force"))))
@@ -1502,8 +2023,18 @@ def preflight(
             plan = plan_stash_push(repo, a.get("message"))
         elif name == "stash_pop":
             plan = plan_stash_pop(repo, a.get("index"), check)
+        elif name == "stash_drop":
+            plan = plan_stash_drop(repo, a.get("index"))
+        elif name == "delete_fetched_ref":
+            plan = plan_delete_fetched_ref(repo, a.get("ref"))
         elif name == "fetch":
-            plan = plan_fetch(repo, a.get("remote"))
+            plan = plan_fetch(repo, a.get("remote"), a.get("url"), a.get("branch"))
+        elif name == "cherry_pick":
+            plan = plan_cherry_pick(repo, a.get("rev"), check)
+        elif name == "cherry_pick_continue":
+            plan = plan_cherry_pick_continue(repo, check)
+        elif name == "cherry_pick_abort":
+            plan = plan_cherry_pick_abort(repo, check)
         elif name == "push":
             plan = plan_push(repo, a.get("remote"), a.get("branch"), bool(a.get("set_upstream")),
                              truthy(a.get("force")))

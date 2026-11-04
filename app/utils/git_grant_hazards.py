@@ -126,8 +126,11 @@ _TOOL_ALTERNATIVE: Dict[str, str] = {
                "amend=true replaces HEAD and asks on every call)"),
     "push": ("git tool op=push (current branch only; force=true is a lease on the sha "
              "you are shown, asks on every call, never the default branch)"),
-    "stash": ("git tool op=stash_push (never takes untracked files) or op=stash_pop "
-              "(clean tree; each file it writes is listed for approval)"),
+    "stash": ("git tool op=stash_push (never takes untracked files), op=stash_pop "
+              "(clean tree; each file it writes is listed for approval) or "
+              "op=stash_drop (asks on every call)"),
+    "update-ref": ("git tool op=delete_fetched_ref for `update-ref -d` of a ref under "
+                   "refs/ziya/fetched/"),
     "fetch": "git tool op=fetch (configured remotes only, never prunes)",
     "clone": ("git tool op=clone (https/ssh/git URLs only, into a new directory "
               "inside the project)"),

@@ -35,8 +35,10 @@ from app.utils import git_ops
 class GitInput(BaseModel):
     """Input schema for the git tool."""
     op: Literal["status", "grep", "add", "unstage", "commit", "fixup", "stash",
-                "stash_push", "stash_pop", "fetch", "push", "switch", "checkout",
-                "clone"] = Field(
+                "stash_push", "stash_pop", "stash_drop", "fetch",
+                "delete_fetched_ref", "push", "switch", "checkout",
+                "clone", "cherry_pick", "cherry_pick_continue",
+                "cherry_pick_abort"] = Field(
         ...,
         description=(
             "status: read the tree (no approval needed).  grep: search tracked "
@@ -51,6 +53,10 @@ class GitInput(BaseModel):
             "stash / stash_push: stash tracked changes (untracked files stay).  "
             "stash_pop: re-apply and drop a stash (clean tree required; index "
             "selects which, default the most recent).  "
+            "stash_drop: discard a stash (index selects which); asks the user on "
+            "every call.  "
+            "delete_fetched_ref: delete a ref under refs/ziya/fetched/ (the into "
+            "of a url fetch); no other ref can be deleted.  "
             "fetch: update remote-tracking refs from a configured remote (never "
             "prunes; worktree and local branches untouched).  "
             "push: push the CURRENT branch to a remote; with force=true, a "
@@ -60,7 +66,14 @@ class GitInput(BaseModel):
             "checkout: with paths, rewrite those files from the index or from rev "
             "(DISCARDS their uncommitted edits; the user approves the exact list); "
             "with rev alone, detach HEAD at that commit (refused on a dirty tree).  "
-            "clone: clone url into a new directory dest inside the project."
+            "clone: clone url into a new directory dest inside the project.  "
+            "cherry_pick: apply rev (a commit, or a range A..B = the commits "
+            "after A up to B) on top of HEAD, keeping each author (clean tree "
+            "required; merges refused).  On a conflict it stops with "
+            "status='stopped': resolve the files, stage them with op=add, then "
+            "cherry_pick_continue.  cherry_pick_abort ends the sequence and "
+            "returns HEAD to where it started (discards uncommitted edits; the "
+            "user approves the list)."
         ),
     )
     paths: Optional[List[str]] = Field(
@@ -85,7 +98,9 @@ class GitInput(BaseModel):
             "grep: search this commit instead of the worktree.  checkout: the "
             "commit to restore paths from (default: the index), or, without "
             "paths, the commit to detach HEAD at.  A branch name here is "
-            "refused for detach — use op=switch."
+            "refused for detach — use op=switch.  cherry_pick (required): a "
+            "commit, or A..B (e.g. 'abc123..refs/ziya/fetched/owner/repo/branch'); "
+            "A...B is refused."
         ),
     )
     target: Optional[str] = Field(
@@ -94,12 +109,14 @@ class GitInput(BaseModel):
                      "the fix belongs to — a sha, or e.g. 'HEAD~2'."),
     )
     remote: Optional[str] = Field(
-        None, description="push (required) / fetch (optional): a configured remote name, e.g. 'origin'.",
+        None, description=("push (required) / fetch (optional): a configured remote name, "
+                           "e.g. 'origin'.  fetch takes remote or url, not both."),
     )
     branch: Optional[str] = Field(
         None,
         description=("push: must equal the current branch.  switch: target branch.  "
-                     "clone: branch to check out (optional)."),
+                     "clone: branch to check out (optional).  fetch with url "
+                     "(required): the branch to fetch from that repository."),
     )
     set_upstream: bool = Field(False, description="push: set the remote branch as upstream.")
     amend: bool = Field(
@@ -117,10 +134,18 @@ class GitInput(BaseModel):
     )
     create: bool = Field(False, description="switch: create the branch first.")
     index: Optional[Union[int, str]] = Field(
-        None, description="stash_pop: which stash (0 = most recent, or 'stash@{n}').",
+        None, description=("stash_pop / stash_drop: which stash (0 = most recent, "
+                           "or 'stash@{n}')."),
+    )
+    ref: Optional[str] = Field(
+        None, description=("delete_fetched_ref (required): the ref, full "
+                           "(refs/ziya/fetched/owner/repo/branch) or the part after "
+                           "refs/ziya/fetched/."),
     )
     url: Optional[str] = Field(
-        None, description="clone (required): https://, ssh://, git:// or user@host:path.",
+        None, description=("clone (required) / fetch (optional, with branch): https://, "
+                           "ssh://, git:// or user@host:path.  Local paths and other "
+                           "transports are refused."),
     )
     dest: Optional[str] = Field(
         None,
@@ -130,7 +155,8 @@ class GitInput(BaseModel):
 
 
 _ARG_KEYS = ("paths", "message", "pattern", "ignore_case", "rev", "target", "remote",
-             "branch", "set_upstream", "amend", "force", "create", "index", "url", "dest")
+             "branch", "set_upstream", "amend", "force", "create", "index", "url", "dest",
+             "ref")
 
 
 def _project_root(kwargs: Dict[str, Any]) -> str:
@@ -198,7 +224,9 @@ class GitTool(BaseMCPTool):
     name: str = "git"
     description: str = (
         "Structured git for this project: status, grep, add, unstage, commit, fixup, "
-        "stash (= stash_push), stash_pop, fetch, push, switch, checkout, clone.  "
+        "stash (= stash_push), stash_pop, stash_drop, fetch, delete_fetched_ref, "
+        "push, switch, checkout, clone, "
+        "cherry_pick, cherry_pick_continue, cherry_pick_abort.  "
         "Every op except status and grep "
         "waits for the user to approve that specific call; they see exactly "
         "which files, which commit message and which commits are affected.  If "
@@ -224,10 +252,17 @@ class GitTool(BaseMCPTool):
         "checkout with rev alone detaches HEAD (clean tree required).  "
         "stash_pop needs a clean tree and lists every file it will write; on a "
         "conflict the stash is kept.  status lists the stashes.  fetch takes a "
-        "configured remote only and never prunes.  clone takes an https/ssh/git "
-        "URL and creates a new directory inside the project (no submodules).\n\n"
+        "configured remote and never prunes; with url + branch it fetches that one "
+        "branch from another repository into refs/ziya/fetched/... (the result's "
+        "into), never a local branch.  clone takes an https/ssh/git "
+        "URL and creates a new directory inside the project (no submodules).  "
+        "cherry_pick applies a commit or an A..B range onto HEAD (clean tree; the "
+        "approval lists every commit and file).  A conflict is a stop, not an "
+        "error: resolve, op=add, then cherry_pick_continue, or cherry_pick_abort "
+        "to go back.\n\n"
         "Not available at any permission level: reset, restore, clean, rm, mv, "
-        "rebase, merge, pull, cherry-pick, stash drop/clear, branch or tag "
+        "rebase, merge, pull, cherry-pick --skip or of merge commits, stash "
+        "drop/clear, branch or tag "
         "deletion, push --delete/--mirror, bare --force, fetch --prune, "
         "--no-verify, -c overrides."
     )
@@ -242,7 +277,7 @@ class GitTool(BaseMCPTool):
     # The approval panel lets the human rewrite the message before approving;
     # the approved text is what gets committed / stashed.
     # History rewriting: approved by a human on every call, never remembered.
-    consent_human_only_ops = ("commit_amend", "push_force")
+    consent_human_only_ops = ("commit_amend", "push_force", "stash_drop")
     consent_editable_args = {"commit": ("message",), "commit_amend": ("message",),
                              "stash": ("message",), "stash_push": ("message",)}
 

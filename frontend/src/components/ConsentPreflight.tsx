@@ -56,6 +56,7 @@ export function summarizeGit(op: string | undefined, d: Obj): React.ReactNode {
     case 'stash_pop':
       return <>Re-apply and drop <Code v={d.stash} />.</>;
     case 'fetch':
+      if (d.into) return <>Fetch <Code v={d.branch} /> from <Code v={d.url} /> into <Code v={d.into} /> (no local branch moves).</>;
       return <>Fetch from <Code v={d.remote} /> (never prunes).</>;
     case 'switch':
       return <>{d.create ? 'Create and switch' : 'Switch'} from <Code v={d.from} /> to <Code v={d.to} />.</>;
@@ -68,6 +69,25 @@ export function summarizeGit(op: string | undefined, d: Obj): React.ReactNode {
     }
     case 'clone':
       return <>Clone <Code v={d.url} /> into <Code v={d.dest} />.</>;
+    case 'cherry_pick': {
+      const c = (d.counts as Obj | undefined) ?? {};
+      const n = Number(c.commits ?? (list(d.commits) ?? []).length);
+      const w = Number(c.to_write ?? (list(d.to_write) ?? []).length);
+      return <>Cherry-pick {count(n, 'commit')} onto <Code v={d.branch ?? 'detached HEAD'} />, writing {count(w, 'file')}.</>;
+    }
+    case 'cherry_pick_continue': {
+      const c = (d.counts as Obj | undefined) ?? {};
+      const rem = Number(c.remaining ?? (list(d.remaining) ?? []).length);
+      return <>Commit the resolved pick{d.committing ? <> of <Code v={String(d.committing).split(' ')[0]} /></> : ''} and continue with {count(rem, 'remaining commit')}.</>;
+    }
+    case 'cherry_pick_abort': {
+      const c = (d.counts as Obj | undefined) ?? {};
+      const drop = Number(c.drops_commits ?? (list(d.drops_commits) ?? []).length);
+      const disc = Number(c.discards_uncommitted ?? (list(d.discards_uncommitted) ?? []).length);
+      return <>Abort the cherry-pick and return to <Code v={String(d.returns_to ?? '').slice(0, 7)} />
+        {drop ? <>, dropping {count(drop, 'picked commit')}</> : ''}
+        {disc ? <>, <strong>discarding uncommitted edits in {disc}</strong></> : ''}.</>;
+    }
     default:
       return null;
   }
