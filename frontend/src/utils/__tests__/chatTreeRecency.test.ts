@@ -1,5 +1,8 @@
 /**
+ * @jest-environment jsdom
+ *
  * Recency filter for the conversation sidebar (utils/chatTreeRecency.ts).
+ * (jsdom: the window-preference tests use localStorage.)
  *
  * The filter runs on the cached tree's output.  These tests pin the rules
  * the user chose: lastActiveAt (falling back to lastAccessedAt) decides

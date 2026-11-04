@@ -3021,7 +3021,11 @@ const MUIChatHistory = () => {
 
     // Sort hash: activity times and pin state that only affect ordering
     const oh = fnv1a();
-    safeConversations.forEach(c => { oh.add(String(c.lastAccessedAt || 0)); });
+    // lastActiveAt is read by the sort comparator and the recency filter;
+    // omitting it let a sync that corrected it leave the cached node holding
+    // the stale conversation object (a fork vanished from the 24h/7d view
+    // until an unrelated structural rebuild).
+    safeConversations.forEach(c => { oh.add(String(c.lastAccessedAt || 0)); oh.add(String((c as any).lastActiveAt || 0)); });
     pinnedFolders.forEach(id => oh.add(id));
     // Active-processing membership (streaming / running task cards) is an
     // ordering input: active conversations sort above idle ones, so a

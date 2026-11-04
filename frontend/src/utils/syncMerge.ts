@@ -577,7 +577,14 @@ export function mergeServerChat(
         if ((local as any)[k] == null && (sc as any)[k] != null) (lineageFill as any)[k] = (sc as any)[k];
     }
     const needsLineage = Object.keys(lineageFill).length > 0;
+    // lastActiveAt is likewise not a content field: local writes win on
+    // _version, so without this the server's activity time was discarded
+    // every cycle and the sidebar recency filter judged the row by a stale
+    // local value (a fork kept its source's time).  Forward-only.
+    const scActive = sc.lastActiveAt || 0;
+    const activeAhead = scActive > (local.lastActiveAt || 0);
     if (needsLineage
+        || activeAhead
         || scBead !== (local.openBeadCount ?? 0)
         || scWork !== (local.openWorkItemCount ?? 0)) {
         return {
@@ -585,6 +592,7 @@ export function mergeServerChat(
             record: {
                 ...local,
                 ...lineageFill,
+                ...(activeAhead ? { lastActiveAt: scActive } : {}),
                 openBeadCount: scBead,
                 openWorkItemCount: scWork,
             },

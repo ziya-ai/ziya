@@ -2845,6 +2845,13 @@ export const sendPayload = async (
 
                         processChunk(chunk);
                     } catch (error) {
+                        // The abort-event listener is the only abort() on this
+                        // controller, so an AbortError is a deliberate stop, not a
+                        // read failure: no error logs, no "Stream reading error" toast.
+                        if (isAborted || (error as any)?.name === 'AbortError') {
+                            removeStreamingConversation(conversationId);
+                            return isAborted ? 'Response generation stopped by user.' : '';
+                        }
                         console.error('❌ Error reading stream:', error);
                         console.error('Error type:', (error as any)?.constructor?.name);
                         // document.hidden is unreliable for ERR_NETWORK_IO_SUSPENDED:

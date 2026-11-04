@@ -6,6 +6,14 @@ import { formatterRegistry } from './formatterRegistry';
 // Track which formatter URLs have already been injected this page lifetime
 const loadedFormatterUrls = new Set<string>();
 
+// templates/index.html already emits a <script src> for every formatter the
+// server lists (formatter_scripts), and /api/config returns the same list.
+// Injecting it again ran each plugin twice and registered it twice.
+function scriptAlreadyInPage(path: string): boolean {
+    const href = new URL(path, window.location.href).href;
+    return Array.from(document.scripts).some(s => s.src === href);
+}
+
 export async function loadFormatters(): Promise<void> {
     try {
         // Get config from backend
@@ -27,8 +35,9 @@ export async function loadFormatters(): Promise<void> {
         
         // Load each formatter script
         for (const path of formatterPaths) {
-            // Skip if already injected (e.g. hot reload re-invoking this function)
-            if (loadedFormatterUrls.has(path)) {
+            // Skip if already injected (page template, or hot reload re-invoking this function)
+            if (loadedFormatterUrls.has(path) || scriptAlreadyInPage(path)) {
+                loadedFormatterUrls.add(path);
                 console.log(`⏭️ Formatter already loaded, skipping: ${path}`);
                 continue;
             }

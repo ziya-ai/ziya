@@ -1341,6 +1341,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             messages: [...conv.messages, message],
                             hasUnreadResponse: shouldMarkUnread,
                             lastAccessedAt: Date.now(),
+                            // A write is activity; the sidebar recency filter
+                            // reads lastActiveAt before lastAccessedAt.
+                            lastActiveAt: Date.now(),
                             _version: Date.now(),
                             // Reaching here means the SHELL_GUARD above did not
                             // arm: this record is either not a shell, or is a
@@ -1370,6 +1373,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // never auto-place inside TaskPlan (swarm) folders.
                     folderId: (currentFolderId && folders.find(f => f.id === currentFolderId)?.taskPlan) ? null : currentFolderId,
                     lastAccessedAt: Date.now(),
+                    lastActiveAt: Date.now(),
                     isActive: true, // Explicitly set to true
                     _version: Date.now(),
                     hasUnreadResponse: false
@@ -4156,7 +4160,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const localMsgCount = activeConv.messages?.length || 0;
                             const idbUnusable = !fullConv || fcMsgs.length <= localMsgCount;
                             const activePid = (activeConv as any).projectId || projectId;
-                            if (idbUnusable && activePid && !isStale() && !rehydrateCtx.isStreaming) {
+                            // Only ask for a conversation the server has listed.  A new
+                            // one whose first push has not landed 404s here on every
+                            // tick, and getChat maps the 404 to null anyway.
+                            if (idbUnusable && activePid && !isStale() && !rehydrateCtx.isStreaming
+                                && knownServerConversationIds.current.has(activeId)) {
                                 const srv = await syncApi.getChat(activePid, activeId);
                                 const srvMsgs = srv?.messages ?? [];
                                 if (!isStale()
@@ -4890,11 +4898,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
 
         const newId = uuidv4();
-        const forked: Conversation & { _isShell?: boolean; _fullMessageCount?: number } = {
+        const forked: Conversation & { _isShell?: boolean; _fullMessageCount?: number; lastActiveAt?: number } = {
             ...source,
             id: newId,
             title: `Fork: ${source.title}`,
             lastAccessedAt: Date.now(),
+            // The spread copies the source's lastActiveAt, which the sidebar
+            // prefers over lastAccessedAt; a new fork is active now.
+            lastActiveAt: Date.now(),
             // branchedFrom + lineageKind='fork' (sidebar nesting, LineageBar)
             // and the shared-root bead lineage (b2).  A fork of a branch must
             // not inherit the branch's seam fields — the helper clears them.
