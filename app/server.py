@@ -2011,11 +2011,15 @@ async def stream_chunks(body):
         # "always" is what the model receives.  The client's fields stay as
         # the fallback for one release (see bench_prompt.merge_bench_prompt).
         # Off the event loop: prompt_inputs walks the skill roots on disk.
+        # On the dedicated turn pool, not asyncio.to_thread: the default
+        # executor fills with gitignore/folder scans on the first request
+        # after startup and a turn queued there waits for the scan deadline.
         _bench_catalog_names = None
         try:
             from app.utils.bench_prompt import resolve_bench_prompt, merge_bench_prompt
             from app.context import get_project_root_or_none as _gpr
-            _bench = await asyncio.to_thread(
+            from app.utils.turn_executor import run_on_turn_executor
+            _bench = await run_on_turn_executor(
                 resolve_bench_prompt, project_root or _gpr(), conversation_id)
             system_prompt_addition, model_overrides, preferred_tool_ids, _bench_catalog_names = (
                 merge_bench_prompt(_bench, system_prompt_addition, model_overrides, preferred_tool_ids))
@@ -2077,8 +2081,11 @@ async def stream_chunks(body):
                 # a PDF with a dense/malformed object graph) that takes
                 # seconds to minutes. Run it in a worker thread so it cannot
                 # block the single-threaded asyncio event loop and starve
-                # every other in-flight request on this process.
-                messages = await asyncio.to_thread(
+                # every other in-flight request on this process.  Uses the
+                # turn pool so it is not itself starved by scan work parked
+                # on the default executor (see app/utils/turn_executor.py).
+                from app.utils.turn_executor import run_on_turn_executor
+                messages = await run_on_turn_executor(
                     build_messages_for_streaming, question, chat_history, files,
                     conversation_id, use_langchain_format=True,
                     system_prompt_addition=system_prompt_addition,
