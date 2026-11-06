@@ -288,7 +288,7 @@ class TestPipelineValidatorPathResolution(unittest.TestCase):
             '..', '..',
             'app', 'utils', 'diff_utils', 'validation', 'pipeline_validator.py'
         ))
-        with open(validator_path) as f:
+        with open(validator_path, encoding="utf-8") as f:
             return f.read()
 
     def test_cwd_fallback_present(self):

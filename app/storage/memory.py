@@ -178,7 +178,7 @@ class MemoryStorage:
                 temp.write_bytes(enc.encrypt(plaintext, "session_data"))
             else:
                 temp.write_bytes(plaintext)
-            temp.rename(filepath)
+            temp.replace(filepath)
         except Exception:
             if temp.exists():
                 temp.unlink()

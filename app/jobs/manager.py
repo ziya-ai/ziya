@@ -36,6 +36,7 @@ UNGRANTED_MAX_RUNTIME_S = 24 * 3600
 MAX_JOBS_PER_OWNER = 8
 MAX_JOBS_PER_USER = 32
 KILL_GRACE_S = 10.0
+_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 WAIT_CAP_S = 3600
 
 
@@ -76,6 +77,17 @@ def _pid_start_time(pid: int) -> Optional[float]:
 
 
 def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        # os.kill(pid, 0) is no probe on Windows: it reports recently
+        # exited pids as alive and raises OSError (winerror 87) for
+        # unknown pids, so ask psutil, which is already a hard
+        # dependency.
+        try:
+            import psutil
+            psutil.Process(pid)
+            return True
+        except Exception:  # noqa: BLE001 -- gone, or no permission
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -86,6 +98,15 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _killpg(pgid: int, sig: int) -> bool:
+    if sys.platform == "win32":
+        # No process groups on Windows; the wrapper records the child's
+        # pid as the pgid.  taskkill /T reaches the tree it started.
+        done = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pgid)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return done.returncode == 0
     try:
         os.killpg(pgid, sig)
         return True
@@ -94,6 +115,8 @@ def _killpg(pgid: int, sig: int) -> bool:
 
 
 def _group_alive(pgid: int) -> bool:
+    if sys.platform == "win32":
+        return _pid_alive(pgid)
     try:
         os.killpg(pgid, 0)
         return True
@@ -309,7 +332,9 @@ class JobManager:
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, cwd=cwd, env=env,
-                                    start_new_session=True, close_fds=True)
+                                    start_new_session=True, close_fds=True,
+                                    creationflags=(subprocess.CREATE_NO_WINDOW
+                                                   if sys.platform == "win32" else 0))
         except OSError as e:
             try:
                 job_dir.rmdir()
@@ -422,7 +447,8 @@ class JobManager:
         if wrapper:
             try:
                 os.kill(wrapper, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
+            except OSError:
+                # Gone, or (Windows) TerminateProcess could not open it.
                 pass
         deadline = time.monotonic() + KILL_GRACE_S
         while time.monotonic() < deadline:
@@ -430,11 +456,11 @@ class JobManager:
                 break
             time.sleep(0.1)
         if pgid and _group_alive(pgid):
-            _killpg(pgid, signal.SIGKILL)
+            _killpg(pgid, _KILL_SIGNAL)
         if wrapper and _pid_alive(wrapper):
             try:
-                os.kill(wrapper, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+                os.kill(wrapper, _KILL_SIGNAL)
+            except OSError:
                 pass
         time.sleep(0.2)
         final = job.state()

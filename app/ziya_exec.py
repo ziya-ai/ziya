@@ -25,18 +25,21 @@ def _check_installation():
         sys.exit(1)
 
 def frontend_start():
-    subprocess.run(["npm", "run", "start"], cwd="frontend")
+    from app.utils.process_utils import resolve_executable
+    subprocess.run([resolve_executable("npm"), "run", "start"], cwd="frontend")
 
 def frontend_install():
-    subprocess.run(["npm", "install"], cwd="frontend")
+    from app.utils.process_utils import resolve_executable
+    subprocess.run([resolve_executable("npm"), "install"], cwd="frontend")
 
 def frontend_build():
+    from app.utils.process_utils import resolve_executable
     symbols = "--symbols" in sys.argv
     env = os.environ.copy() if symbols else None
     if symbols:
         env["GENERATE_SOURCEMAP"] = "true"
         print("🗺️  Building with source maps enabled...")
-    subprocess.run(["npm", "run", "build"], cwd="frontend", env=env)
+    subprocess.run([resolve_executable("npm"), "run", "build"], cwd="frontend", env=env)
     if symbols:
         _deploy_sourcemaps()
 
@@ -65,6 +68,9 @@ def _deploy_sourcemaps():
     print(f"   cp frontend/build/static/js/main.* <site-packages>/app/templates/static/js/")
 
 def ziya():
+    from app.utils.process_utils import configure_stdio
+    configure_stdio()
+
     # Check installation before anything else
     _check_installation()
     

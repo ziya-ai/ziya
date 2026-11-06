@@ -31,17 +31,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import resource
+try:
+    import resource
+except ImportError:  # Windows: no resource module; peak RSS stays None
+    resource = None
 import signal
 import subprocess
 import sys
 import threading
 import time
+from typing import Optional
 
 OUTPUT_CHUNK_BYTES = 64 * 1024
 ROTATION_CAP_BYTES = 50 * 1024 * 1024
 TOTAL_CAP_BYTES = 200 * 1024 * 1024
 KILL_GRACE_S = 10.0
+_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 def _ts() -> str:
@@ -115,7 +120,28 @@ def _write_status(job_dir: str, status: dict) -> None:
     os.replace(tmp, os.path.join(job_dir, "status.json"))
 
 
+def _git_sh() -> Optional[str]:
+    """Git for Windows' ``sh.exe`` from the common install roots, or None."""
+    roots = [os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", ""),
+             os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")]
+    for root in roots:
+        if not root:
+            continue
+        candidate = os.path.join(root, "Git", "usr", "bin", "sh.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def _killpg(pgid: int, sig: int) -> None:
+    if sys.platform == "win32":
+        # No process groups on Windows; the recorded pgid is the child's
+        # pid. Console jobs have no WM_CLOSE handler, so terminate their
+        # tree directly. Windows has no SIGKILL or POSIX TERM grace period.
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pgid)],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+        return
     try:
         os.killpg(pgid, sig)
     except (ProcessLookupError, PermissionError):
@@ -127,11 +153,37 @@ def run(job_dir: str, cwd: str, command: str, max_runtime_s: float) -> int:
     started = time.time()
     t0 = time.monotonic()
     cmd_seq = journal.cmd(command)
+    argv = ["sh", "-c", command]
+    creationflags = 0
+    if sys.platform == "win32":
+        # Windows has no sh; Git for Windows ships one.  The shell tool
+        # puts its usr\bin on ITS children's PATH, but the wrapper is
+        # stdlib-only and resolves on its own.  Without a window: the job
+        # is background and its output is journalled, not shown.
+        import shutil
+        sh = shutil.which("sh") or _git_sh()
+        if sh is None:
+            duration = round(time.monotonic() - t0, 3)
+            journal.exit(cmd_seq, 127, signal=None, duration_s=duration,
+                         reason="spawn_failed")
+            _write_status(job_dir, {
+                "state": "exited", "wrapper_pid": os.getpid(), "pgid": 0,
+                "started_at": started, "ended_at": time.time(),
+                "exit_code": 127, "signal": None, "duration_s": duration,
+                "peak_rss_bytes": None, "reason": "spawn_failed",
+                "output_dropped_bytes": 0,
+            })
+            return 0
+        argv = [sh, "-c", command]
+        creationflags = subprocess.CREATE_NO_WINDOW
     proc = subprocess.Popen(
-        ["sh", "-c", command],
+        argv,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        cwd=cwd, start_new_session=True,
+        cwd=cwd, start_new_session=True, creationflags=creationflags,
     )
+    # On POSIX the child leads a fresh session, so its pid is the pgid the
+    # manager signals; on Windows it is simply the tree root taskkill /T
+    # starts from.
     pgid = proc.pid
     # Record the group id before anything else: the manager needs it to
     # kill the job even if this wrapper is gone.
@@ -149,7 +201,7 @@ def run(job_dir: str, cwd: str, command: str, max_runtime_s: float) -> int:
         while proc.poll() is None and time.monotonic() < deadline:
             time.sleep(0.1)
         if proc.poll() is None:
-            _killpg(pgid, signal.SIGKILL)
+            _killpg(pgid, _KILL_SIGNAL)
 
     # The manager's job_kill signals THIS wrapper with TERM; relay to the
     # group so the whole tree goes, not just us.

@@ -8,6 +8,7 @@ coordinating the flow through system patch, git apply, difflib, and LLM resolver
 import os
 import re
 import json
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -19,7 +20,10 @@ from ..file_ops.file_lock import diff_file_lock
 from ..parsing.diff_parser import parse_unified_diff_exact_plus, extract_target_file_from_diff, split_combined_diff, restore_leading_slash
 from ..parsing.diff_preprocessor import preprocess_diff
 from ..validation.validators import is_new_file_creation, is_file_deletion, is_hunk_already_applied, normalize_line_for_comparison
-from ..file_ops.file_handlers import create_new_file, delete_file, cleanup_patch_artifacts, cleanup_workspace_artifacts
+from ..file_ops.file_handlers import (
+    create_new_file, delete_file, cleanup_patch_artifacts, cleanup_workspace_artifacts,
+    preserved_line_endings, write_preserving_line_endings,
+)
 from ..application.patch_apply import apply_diff_with_difflib, apply_diff_with_difflib_hybrid_forced, apply_diff_with_difflib_hybrid_forced_hunks
 from ..application.git_diff import parse_patch_output
 
@@ -119,8 +123,7 @@ def _run_language_validation(pipeline: "DiffPipeline", file_path: str, original_
         logger.warning(f"Language validation failed for {file_path}: {lang_err}")
         # Roll the file back so the user is never left with broken code on disk.
         try:
-            with open(file_path, 'w', encoding='utf-8') as _f:
-                _f.write(original_content)
+            write_preserving_line_endings(file_path, original_content)
             logger.info(f"Rolled back {file_path} after language validation failure")
             pipeline.result.file_restored = True
         except OSError as _roll_exc:
@@ -1044,7 +1047,6 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
     
     # Backup the file before applying patch
     # If patch fails partway through, we need to restore the original
-    import shutil
     backup_path = f"{file_path}.backup"
     try:
         shutil.copy2(file_path, backup_path)
@@ -1062,15 +1064,16 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
     patch_command.extend(['--verbose', '-i', '-'])
     
     try:
-        patch_result = subprocess.run(
-            patch_command,
-            input=git_diff,
-            encoding='utf-8',
-            cwd=user_codebase_dir,
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
+        with preserved_line_endings(pipeline.file_path):
+            patch_result = subprocess.run(
+                patch_command,
+                input=git_diff,
+                encoding='utf-8',
+                cwd=user_codebase_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
         
         logger.debug(f"Patch stdout: {patch_result.stdout}")
         logger.debug(f"Patch stderr: {patch_result.stderr}")
@@ -1181,6 +1184,10 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         return False
     except Exception as e:
         logger.error(f"Error applying patch: {str(e)}")
+        # Restore and remove the backup so no <file>.backup is left behind
+        if backup_path and os.path.exists(backup_path):
+            shutil.copy2(backup_path, file_path)
+            os.remove(backup_path)
         for hunk_id in pipeline.result.hunks:
             pipeline.update_hunk_status(
                 hunk_id=hunk_id,
@@ -1203,6 +1210,18 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         True if any changes were written, False otherwise
     """
     logger.info("Starting system patch stage...")
+
+    # GNU patch is not installed by default on Windows. Defer to git apply and
+    # difflib instead of failing with FileNotFoundError on every apply.
+    if shutil.which('patch') is None:
+        logger.info("System 'patch' not found - deferring to git apply")
+        for hunk_id in pipeline.result.hunks:
+            pipeline.update_hunk_status(
+                hunk_id=hunk_id,
+                stage=PipelineStage.SYSTEM_PATCH,
+                status=HunkStatus.PENDING
+            )
+        return False
     
     # Check for partial overlap before running system patch
     # This handles cases where diff was generated against older version of file
@@ -1381,15 +1400,16 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         logger.info(f"Applying {sum(1 for v in dry_run_status.values() if v.get('status') == 'succeeded')}/{len(dry_run_status)} hunks with system patch...")
         patch_command_apply = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '-i', '-']
         command_to_run_apply = patch_command_apply
-        patch_result = subprocess.run(
-            command_to_run_apply,
-            input=git_diff,
-            encoding='utf-8',
-            cwd=user_codebase_dir,
-            capture_output=True,
-            text=True,
-            timeout=timeout  # Reuse the same adaptive timeout
-        )
+        with preserved_line_endings(pipeline.file_path):
+            patch_result = subprocess.run(
+                command_to_run_apply,
+                input=git_diff,
+                encoding='utf-8',
+                cwd=user_codebase_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout  # Reuse the same adaptive timeout
+            )
         
         logger.debug(f"Patch stdout: {patch_result.stdout}")
         logger.debug(f"Patch stderr: {patch_result.stderr}")
@@ -1568,7 +1588,8 @@ def run_git_apply_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff
              '--check', temp_path],
             cwd=user_codebase_dir,
             capture_output=True,
-            text=True
+            encoding='utf-8',
+            errors='replace'
         )
         
         logger.debug(f"Git apply --check stdout: {git_check_result.stdout}")
@@ -1589,14 +1610,16 @@ def run_git_apply_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff
             return False
         
         # Apply the diff with git apply
-        git_result = subprocess.run(
-            ['git', 'apply', '--verbose', '--ignore-whitespace',
-             '--ignore-space-change', '--whitespace=nowarn',
-             '--reject', temp_path],
-            cwd=user_codebase_dir,
-            capture_output=True,
-            text=True
-        )
+        with preserved_line_endings(pipeline.file_path):
+            git_result = subprocess.run(
+                ['git', 'apply', '--verbose', '--ignore-whitespace',
+                 '--ignore-space-change', '--whitespace=nowarn',
+                 '--reject', temp_path],
+                cwd=user_codebase_dir,
+                capture_output=True,
+                encoding='utf-8',
+                errors='replace'
+            )
         
         logger.debug(f"Git apply stdout: {git_result.stdout}")
         logger.debug(f"Git apply stderr: {git_result.stderr}")
@@ -1876,12 +1899,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 logger.info(f"Applying full file replacement: {len(new_content_lines)} lines")
                 # Join with newlines
                 new_content = '\n'.join(new_content_lines) + '\n' if not any('\n' in l for l in new_content_lines) else ''.join(new_content_lines)
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-                # Say so: this path wrote the file but reported
-                # changes_written=False, so callers saw "no changes needed"
-                # for a file that had changed, and the language validation
-                # (gated on changes_written) never looked at the result.
+                write_preserving_line_endings(file_path, new_content)
                 pipeline.result.changes_written = True
                 hunk_confidence = pipeline.result.hunks[1].hunk_data.get('correction_confidence', 1.0)
                 pipeline.update_hunk_status(1, PipelineStage.DIFFLIB, HunkStatus.SUCCEEDED, confidence=hunk_confidence)
@@ -2638,9 +2656,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                             logger.info(f"Removed duplicate, keeping {len(modified_lines) - offset} lines")
                             break
                 
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(modified_content)
-                    logger.info(f"Successfully wrote changes to {file_path}")
+                write_preserving_line_endings(file_path, modified_content)
+                logger.info(f"Successfully wrote changes to {file_path}")
                 
                 pipeline.result.changes_written = True
                 
@@ -2685,9 +2702,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         return False
                     
                     # Write the modified content that was generated before the exception
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(partial_content)
-                        logger.info(f"Successfully wrote partial changes to {file_path}")
+                    write_preserving_line_endings(file_path, partial_content)
+                    logger.info(f"Successfully wrote partial changes to {file_path}")
                     
                     pipeline.result.changes_written = True
                     
@@ -2815,10 +2831,9 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         modified_lines = modified_content.splitlines(True)
 
                         # Write changes only if we got modified content
-                        with open(file_path, 'w', encoding='utf-8') as f:
-                            f.write(modified_content)
-                            logger.info(f"Successfully wrote changes to {file_path}")
-                            logger.info("Successfully applied diff with regular difflib mode - verified content changes")
+                        write_preserving_line_endings(file_path, modified_content)
+                        logger.info(f"Successfully wrote changes to {file_path}")
+                        logger.info("Successfully applied diff with regular difflib mode - verified content changes")
                         
                         # Update all hunks to SUCCEEDED regardless of previous status
                         for hunk_id, tracker in pipeline.result.hunks.items():

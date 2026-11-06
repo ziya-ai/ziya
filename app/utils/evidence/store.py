@@ -24,7 +24,6 @@ the spec's SQLite cache is deferred until a project is large enough to need it.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import hmac
 import json
@@ -36,6 +35,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
+
+from app.utils.file_locking import lock_exclusive, unlock
 
 MAX_INLINE_BYTES = 64 * 1024
 SOURCES = ("sql", "file", "command", "tool", "computed")
@@ -173,11 +174,11 @@ class Ledger:
         self.root.mkdir(parents=True, exist_ok=True)
         fd = os.open(self._path(kind), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            lock_exclusive(fd)
             yield fd
         finally:
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                unlock(fd)
             finally:
                 os.close(fd)
 

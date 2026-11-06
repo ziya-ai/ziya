@@ -1,13 +1,13 @@
 """
 Chat group storage implementation.
 """
-import fcntl
 from pathlib import Path
 from typing import Optional, List
 from contextlib import contextmanager
 import uuid
 import time
 
+from ..utils.file_locking import lock_exclusive, unlock
 from ..models.group import ChatGroup, ChatGroupCreate, ChatGroupUpdate, ChatGroupsFile
 
 class ChatGroupStorage:
@@ -40,11 +40,11 @@ class ChatGroupStorage:
         no such nesting occurs.
         """
         with open(self._lock_path, "w") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            lock_exclusive(lock_file)
             try:
                 yield
             finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                unlock(lock_file)
     
     def _read_groups_file(self) -> ChatGroupsFile:
         """Read the groups file, creating if necessary."""
@@ -65,7 +65,7 @@ class ChatGroupStorage:
         temp_path = self.groups_file.with_suffix('.tmp')
         with open(temp_path, 'w') as f:
             json.dump(groups_file.model_dump(), f, indent=2)
-        temp_path.rename(self.groups_file)
+        temp_path.replace(self.groups_file)
     
     def get(self, group_id: str) -> Optional[ChatGroup]:
         groups_file = self._read_groups_file()

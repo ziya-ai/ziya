@@ -71,6 +71,7 @@ import traceback
 from pathlib import Path
 import sys
 from app.utils.logging_utils import logger
+from app.utils.process_utils import configure_stdio, env_hint
 from app.config.env_registry import ziya_env
 from app.utils.interruptible_input import interruptible_input
 from typing import List, Tuple 
@@ -854,7 +855,8 @@ def get_git_staged_diff() -> Optional[str]:
     """Get diff of staged changes."""
     import subprocess
     try:
-        result = subprocess.run(['git', 'diff', '--cached'], capture_output=True, text=True)
+        result = subprocess.run(['git', 'diff', '--cached'], capture_output=True,
+                                encoding='utf-8', errors='replace')
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
     except (OSError, subprocess.SubprocessError):
@@ -866,7 +868,8 @@ def get_git_diff() -> Optional[str]:
     """Get diff of unstaged changes."""
     import subprocess
     try:
-        result = subprocess.run(['git', 'diff'], capture_output=True, text=True)
+        result = subprocess.run(['git', 'diff'], capture_output=True,
+                                encoding='utf-8', errors='replace')
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
     except (OSError, subprocess.SubprocessError):
@@ -1174,7 +1177,19 @@ class CLI:
         self._attach_baseline_sig = None
         # Pending join request from `ziya chat --join`, applied in chat().
         self._pending_join = None
-        self._setup_prompt_session()
+        self._session = None
+
+    @property
+    def session(self) -> PromptSession:
+        """The interactive input prompt, built on first use.
+
+        Only interactive chat reads from it.  Building it up front made
+        one-shot commands (ask, review) fail on Windows whenever stdout is
+        not a console, because prompt_toolkit's Windows output requires one.
+        """
+        if self._session is None:
+            self._setup_prompt_session()
+        return self._session
     
     @property
     def conversation_id(self) -> str:
@@ -1494,7 +1509,7 @@ class CLI:
                 return
             buffer.validate_and_handle()
         
-        self.session = PromptSession(
+        self._session = PromptSession(
             history=FileHistory(str(history_file)),
             completer=SmartCompleter(),
             complete_while_typing=True,
@@ -2365,18 +2380,18 @@ class CLI:
         if endpoint == "bedrock":
             print("\033[33mTo fix AWS credentials:\033[0m", file=sys.stderr)
             print("  • Run: aws configure", file=sys.stderr)
-            print("  • Or set AWS_PROFILE: export AWS_PROFILE=your-profile", file=sys.stderr)
+            print(env_hint("  • Or set AWS_PROFILE: export AWS_PROFILE=your-profile"), file=sys.stderr)
             print("  • Or refresh SSO: aws sso login --profile your-profile", file=sys.stderr)
         elif endpoint == "google":
             print("\033[33mTo fix Google credentials:\033[0m", file=sys.stderr)
             print("  • Set GOOGLE_API_KEY environment variable", file=sys.stderr)
         elif endpoint == "openai":
             print("\033[33mTo fix OpenAI credentials:\033[0m", file=sys.stderr)
-            print("  • Set OPENAI_API_KEY: export OPENAI_API_KEY=sk-...", file=sys.stderr)
+            print(env_hint("  • Set OPENAI_API_KEY: export OPENAI_API_KEY=sk-..."), file=sys.stderr)
             print("  • Or set OPENAI_BASE_URL for a compatible local server", file=sys.stderr)
         elif endpoint == "anthropic":
             print("\033[33mTo fix Anthropic credentials:\033[0m", file=sys.stderr)
-            print("  • Set ANTHROPIC_API_KEY: export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
+            print(env_hint("  • Set ANTHROPIC_API_KEY: export ANTHROPIC_API_KEY=sk-ant-..."), file=sys.stderr)
         print(file=sys.stderr)
     
     async def chat(self):
@@ -4237,14 +4252,22 @@ async def _run_async_cli(cli):
             # prevent the default asyncio SIGINT teardown.
             pass
 
+    previous_handler = None
     try:
         loop.add_signal_handler(signal.SIGINT, _sigint_handler)
     except NotImplementedError:
-        # Windows doesn't support add_signal_handler; fall back to
-        # default behavior (KeyboardInterrupt).
-        pass
+        # Windows event loops have no add_signal_handler.  Left to the
+        # default, ^C raises KeyboardInterrupt wherever the main thread
+        # happens to be: sometimes that cancels the answer, sometimes it
+        # silently ends the session.
+        previous_handler = signal.signal(
+            signal.SIGINT, lambda signum, frame: loop.call_soon_threadsafe(_sigint_handler))
 
-    await cli.chat()
+    try:
+        await cli.chat()
+    finally:
+        if previous_handler is not None:
+            signal.signal(signal.SIGINT, previous_handler)
 
 
 # ============================================================================
@@ -4776,23 +4799,23 @@ def _print_auth_error(message: str = None):
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
         print("  aws sso login --profile <your-profile>", file=sys.stderr)
         print("  # or", file=sys.stderr)
-        print("  export AWS_PROFILE=<your-profile>", file=sys.stderr)
+        print(env_hint("  export AWS_PROFILE=<your-profile>"), file=sys.stderr)
         print("  # or", file=sys.stderr)
         print("  aws configure", file=sys.stderr)
     elif endpoint == "google":
         print("GOOGLE_API_KEY environment variable is not set.\n", file=sys.stderr)
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
-        print("  export GOOGLE_API_KEY=<your-api-key>", file=sys.stderr)
+        print(env_hint("  export GOOGLE_API_KEY=<your-api-key>"), file=sys.stderr)
     elif endpoint == "openai":
         print("OPENAI_API_KEY environment variable is not set.\n", file=sys.stderr)
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
-        print("  export OPENAI_API_KEY=sk-...", file=sys.stderr)
+        print(env_hint("  export OPENAI_API_KEY=sk-..."), file=sys.stderr)
     elif endpoint == "anthropic":
         print("ANTHROPIC_API_KEY environment variable is not set.\n", file=sys.stderr)
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
-        print("  export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
+        print(env_hint("  export ANTHROPIC_API_KEY=sk-ant-..."), file=sys.stderr)
         print("  # or for a compatible local server:", file=sys.stderr)
-        print("  export OPENAI_BASE_URL=http://localhost:8080/v1", file=sys.stderr)
+        print(env_hint("  export OPENAI_BASE_URL=http://localhost:8080/v1"), file=sys.stderr)
     
     print(file=sys.stderr)
 
@@ -4957,6 +4980,11 @@ def cmd_jobs(args):
 
 def cmd_shadow(args):
     """Handle: ziya shadow [--label L] [--allow-exec] [--allow-control] [--meta k=v] [cmd...]"""
+    if sys.platform == 'win32':
+        # Sessions run on a pseudo-terminal (pty/termios) and are reached
+        # over AF_UNIX sockets, none of which Windows provides.
+        print("\033[31mziya shadow is not supported on Windows.\033[0m", file=sys.stderr)
+        sys.exit(2)
     if args.list_sessions:
         from app.shadow.client import list_sessions, format_session_table
         print(format_session_table(list_sessions()))
@@ -5244,6 +5272,7 @@ def _reject_unknown_args(parser, args, unknown):
 
 def main():
     """CLI entry point."""
+    configure_stdio()
     parser = create_parser()
     
     # Save current terminal title and set ours (xterm title stack push/pop)

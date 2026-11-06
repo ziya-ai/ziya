@@ -17,6 +17,7 @@ import warnings
 from typing import Optional
 
 from app.utils.logging_utils import logger
+from app.utils.process_utils import configure_stdio, env_hint
 from app.utils.version_util import get_current_version, get_latest_version
 
 from app.config.env_registry import ziya_env
@@ -153,7 +154,23 @@ def is_package_installed_with_pipx(package_name: str) -> bool:
     except subprocess.CalledProcessError:
         return False
 
+def _upgrade_command() -> str:
+    """The command that upgrades this installation of ziya."""
+    if os.path.exists(os.path.join(sys.prefix, "uv-receipt.toml")):
+        return "uv tool upgrade ziya"
+    if os.path.exists(os.path.join(sys.prefix, "pipx_metadata.json")):
+        return "pipx upgrade ziya"
+    return f'"{sys.executable}" -m pip install --upgrade ziya'
+
+
 def update_package(current_version: str, latest_version: Optional[str]) -> None:
+    if sys.platform == "win32":
+        # Windows will not let pip replace ziya.exe while it runs.  pip fails
+        # with WinError 32 only after renaming the installed package out of
+        # the way, and does not put it back, so ziya is left uninstalled.
+        logger.warning(f"Ziya {latest_version} is available (you have {current_version}). "
+                       f"To upgrade, close ziya and run: {_upgrade_command()}")
+        return
     try:
         logger.info(f"Updating ziya from {current_version} to {latest_version}")
 
@@ -305,7 +322,7 @@ def print_info(args):
     if args.ast:
         print(f"  AST Resolution: {args.ast_resolution}")
     print(f"  MCP: {'Enabled' if args.mcp else 'Disabled'}")
-    
+
     print()
 
     # Deployment-specific diagnostics (enterprise registries, CLIs, ...)
@@ -649,7 +666,7 @@ def check_auth(args):
                 return True
             else:
                 print("\n⚠️ ERROR: GOOGLE_API_KEY environment variable is not set.")
-                print("Please set your Google API key: export GOOGLE_API_KEY=<your-key>")
+                print(env_hint("Please set your Google API key: export GOOGLE_API_KEY=<your-key>"))
                 return False
         else:
             print(f"\n⚠️ ERROR: Unknown endpoint '{args.endpoint}'")
@@ -662,6 +679,8 @@ def check_auth(args):
         return False
 
 def main():
+    configure_stdio()
+
     # Check if running as CLI subcommand (ziya chat, ziya ask, etc.)
     # Check if any argument is a CLI command (handles both "ziya chat" and "ziya --profile x chat")
     if any(arg in TOP_LEVEL_COMMANDS for arg in sys.argv[1:]):

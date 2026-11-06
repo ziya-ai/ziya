@@ -27,6 +27,7 @@ import json
 import os
 import secrets
 import socket
+import sys
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -119,15 +120,26 @@ class SessionEntry:
         treated as live: reaping unlinks the socket and journal, which
         must never happen to a running session on a slow accept.
         """
-        try:
-            os.kill(self.pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            # Process exists but isn't ours (pid reuse across users) —
-            # treat as dead for registry purposes: our sessions are
-            # always same-UID.
-            return False
+        if sys.platform == "win32":
+            # os.kill(pid, 0) is no probe on Windows: recently exited
+            # pids report live and unknown pids raise OSError (winerror
+            # 87). psutil (a hard dependency) reports a missing or
+            # inaccessible process through its own exception hierarchy.
+            import psutil
+            try:
+                psutil.Process(self.pid)
+            except (psutil.Error, OSError):
+                return False
+        else:
+            try:
+                os.kill(self.pid, 0)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # Process exists but isn't ours (pid reuse across
+                # users) — treat as dead for registry purposes: our
+                # sessions are always same-UID.
+                return False
         if self.pid == os.getpid():
             return True
         if _socket_answers_as(self.socket, self.session_id) is not False:

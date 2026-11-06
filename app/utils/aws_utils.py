@@ -8,6 +8,7 @@ import boto3
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError, NoCredentialsError, ProfileNotFound
 from app.utils.logging_utils import logger
+from app.utils.process_utils import env_hint
 
 def create_fresh_boto3_session(profile_name=None, is_server_startup: bool = False):
     """Create a fresh boto3 session by reloading the modules.
@@ -75,6 +76,7 @@ Please either:
 
 {profiles_hint}
 """
+    error_msg = env_hint(error_msg)
     if is_server_startup:
         print(error_msg, file=sys.stderr)
         raise SystemExit(1)

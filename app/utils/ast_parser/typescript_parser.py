@@ -13,6 +13,8 @@ import tempfile
 from typing import Dict, List, Optional, Any, Tuple
 import logging
 
+from app.utils.process_utils import resolve_executable
+
 from .registry import ASTParserPlugin
 from .unified_ast import UnifiedAST, SourceLocation
 
@@ -238,7 +240,7 @@ console.log(JSON.stringify(ast));
             try:
                 # Run npm install in the parser directory
                 result = subprocess.run(
-                    ['npm', 'install'],
+                    [resolve_executable('npm'), 'install'],
                     cwd=parser_dir,
                     capture_output=True,
                     text=True,

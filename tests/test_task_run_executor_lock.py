@@ -6,8 +6,9 @@ on another port and its startup ``reconcile_stale_runs`` swept the first
 server's healthy, in-flight run to "failed" because liveness was a
 process-local set and the reconciler assumed "live on disk == orphaned".
 
-The fix is a per-run advisory ``flock`` held by the executor for the life
-of ``_run``.  flock locks are per open-file-description, so two
+The fix is a per-run lock (``flock``; a byte-range lock on Windows) held by
+the executor for the life of ``_run``.  flock locks are per
+open-file-description and Windows locks per handle, so two
 ``TaskRunStorage`` instances over one directory model two processes
 faithfully: the second instance's probe must see the first one's lock.
 """
@@ -22,10 +23,6 @@ import pytest
 from app.models.task_run import TaskRunCreate
 from app.storage.task_runs import TaskRunStorage
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="flock-based executor lock is POSIX-only"
-)
-
 
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
@@ -36,6 +33,16 @@ def _running_run(storage: TaskRunStorage):
     run = storage.create(TaskRunCreate(card_id="card-1"))
     storage.update_status(run.id, "running")
     return storage.get(run.id)
+
+
+def _hold(run_id, pdir, started, release):
+    s = TaskRunStorage(pdir)
+    s.mark_active(run_id)
+    started.set()
+    release.wait(30)
+    # Exit WITHOUT mark_inactive: simulate a crash.
+    import os
+    os._exit(0)
 
 
 class TestExecutorLock:
@@ -75,28 +82,21 @@ class TestExecutorLock:
         assert storage.reconcile_stale_runs() == 1
 
     def test_lock_dies_with_owner_process(self, project_dir):
-        """The kernel releases flock on process death, so a crashed owner
+        """The OS releases the lock on process death, so a crashed owner
         leaves a lock FILE but not a held lock: the run must reconcile."""
         storage = TaskRunStorage(project_dir)
         run = _running_run(storage)
 
-        ctx = multiprocessing.get_context("fork")
+        ctx = multiprocessing.get_context(
+            "spawn" if sys.platform == "win32" else "fork"
+        )
         started = ctx.Event()
         release = ctx.Event()
-
-        def _hold(run_id, pdir, started, release):
-            s = TaskRunStorage(pdir)
-            s.mark_active(run_id)
-            started.set()
-            release.wait(30)
-            # Exit WITHOUT mark_inactive: simulate a crash.
-            import os
-            os._exit(0)
 
         p = ctx.Process(target=_hold, args=(run.id, project_dir, started, release))
         p.start()
         try:
-            assert started.wait(10), "child never took the lock"
+            assert started.wait(60), "child never took the lock"
             assert storage.executor_alive(run.id) is True
             assert storage.reconcile_stale_runs() == 0
         finally:

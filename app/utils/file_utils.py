@@ -1,5 +1,6 @@
 import os.path
 import os
+import re
 from typing import List, Optional
 from app.utils.logging_utils import logger
 from app.utils.document_extractor import is_document_file, extract_document_text, is_tool_backed_file
@@ -11,6 +12,16 @@ EXTERNAL_PREFIX = '[external]'
 class ExternalPathNotAllowed(ValueError):
     """Raised when an [external] path is not on the user-approved allowlist."""
     pass
+
+
+def external_key(path: str) -> str:
+    """Return the ``[external]`` tree key for the absolute *path*.
+
+    Tree keys use ``/`` and the frontend joins tree levels with ``/``, so a
+    Windows path becomes ``[external]/C:/Users/me/notes.md``.
+    """
+    p = path.replace(os.sep, '/')
+    return EXTERNAL_PREFIX + (p if p.startswith('/') else '/' + p)
 
 
 def resolve_external_path(file_path: str, base_dir: str) -> str:
@@ -25,7 +36,9 @@ def resolve_external_path(file_path: str, base_dir: str) -> str:
     s = str(file_path)
     if s.startswith(EXTERNAL_PREFIX):
         real = s[len(EXTERNAL_PREFIX):]
-        if real and not real.startswith('/'):
+        if os.name == 'nt' and re.match(r'/[A-Za-z]:', real):
+            real = real[1:]  # [external]/C:/... (see external_key)
+        elif real and not real.startswith('/') and not os.path.isabs(real):
             real = '/' + real
         # Containment gate (CWE-22/200): an [external] path is only honored if
         # it (or an ancestor) was explicitly approved via /api/add-explicit-paths.

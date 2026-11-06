@@ -81,12 +81,15 @@ class TypeScriptHandler(LanguageHandler):
             # and apply use the same compiler.  Fall back to walking
             # up from the file (preserves prior behaviour for callers
             # that don't set the env var).
+            # On Windows .bin/tsc is a POSIX shell script; tsc.cmd is the runnable shim
+            tsc_name = 'tsc.cmd' if os.name == 'nt' else 'tsc'
+
             def find_tsc(start_path: str) -> Optional[str]:
                 codebase_dir = os.environ.get('ZIYA_USER_CODEBASE_DIR')
                 if codebase_dir:
                     candidate = os.path.abspath(codebase_dir)
                     for _ in range(6):
-                        tsc_bin = os.path.join(candidate, 'node_modules', '.bin', 'tsc')
+                        tsc_bin = os.path.join(candidate, 'node_modules', '.bin', tsc_name)
                         if os.path.isfile(tsc_bin):
                             return tsc_bin
                         parent = os.path.dirname(candidate)
@@ -96,7 +99,7 @@ class TypeScriptHandler(LanguageHandler):
                 candidate = os.path.abspath(start_path)
                 for _ in range(6):  # max 6 levels up
                     candidate = os.path.dirname(candidate)
-                    tsc_bin = os.path.join(candidate, 'node_modules', '.bin', 'tsc')
+                    tsc_bin = os.path.join(candidate, 'node_modules', '.bin', tsc_name)
                     if os.path.isfile(tsc_bin):
                         return tsc_bin
                 return shutil.which('tsc')
