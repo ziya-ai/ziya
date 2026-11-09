@@ -77,3 +77,33 @@ async def test_run_on_turn_executor_propagates_exceptions():
 
     with pytest.raises(ValueError, match="turn failure"):
         await run_on_turn_executor(_boom)
+
+
+@pytest.mark.asyncio
+async def test_run_on_turn_executor_carries_request_context(tmp_path):
+    """The request-scoped project root must be visible on the turn pool.
+
+    build_messages_for_streaming runs on this pool and reads
+    app.context.get_project_root_or_none() to emit CurrentProjectRoot /
+    CurrentWorkingDirectory and resolve the write policy.  A bare
+    run_in_executor gives the worker an empty contextvars context, so the
+    header fell back to os.getcwd() (the server's launch directory) while
+    the tools, which re-assert the root in their own task, used the real
+    project root.
+    """
+    from app.context import get_project_root_or_none, set_project_root
+
+    root = str(tmp_path)
+
+    async def _in_fresh_context():
+        set_project_root(root)
+        # Positive control: the value is set in the calling context.
+        assert get_project_root_or_none() == root
+        seen = await run_on_turn_executor(get_project_root_or_none)
+        assert seen == root, f"turn pool saw project root {seen!r}, expected {root!r}"
+        thread = await run_on_turn_executor(lambda: threading.current_thread().name)
+        assert thread.startswith("ziya-turn")
+
+    # A task gets its own copy of the context, so set_project_root above
+    # does not leak into other tests.
+    await asyncio.get_running_loop().create_task(_in_fresh_context())

@@ -30,6 +30,13 @@ that you called `bead_create` (status="parked"). If you write any of them \
 without having actually made that tool call, you are misrepresenting an \
 action you did not take. Either make the `bead_create` call or do not use \
 the word. The same binding applies to saying a thread is "tracked".
+- Bead tool calls are NOT replayed in your conversation history, so a call \
+you made in an earlier turn will not appear there. To check whether an \
+earlier "parked" was carried out, read the "Pending Beads" list appended to \
+the latest user message, or call `bead_status`. Never conclude from the \
+absence of a visible call that a bead was not saved: do not re-create a bead \
+that is already listed, and do not tell the user an earlier save failed \
+unless `bead_status` shows the bead is missing.
 - Create beads proactively when you notice multiple threads developing. \
 It's better to have a bead you don't need than to lose track of a thread.
 - If the user says something like "let's come back to that" or "also, ...", \
@@ -87,8 +94,15 @@ def get_bead_directive() -> str:
     return BEAD_DIRECTIVE
 
 
-def get_bead_status_summary(turn_count: int = 0) -> str:
+def get_bead_status_summary(turn_count: int = 0,
+                            conversation_id: Optional[str] = None) -> str:
     """Return a compact summary of the current bead tree for injection.
+
+    ``conversation_id`` names the conversation explicitly.  When omitted the
+    request ContextVar is used, which is only set on threads that inherited
+    the request's context; the prompt builder passes it so the summary does
+    not depend on that (a worker without the context read an empty tree and
+    told the model, every turn, that no beads existed).
 
     Only included when there are parked beads — gives the model awareness
     of pending threads without bloating the prompt for simple conversations.
@@ -108,22 +122,30 @@ def get_bead_status_summary(turn_count: int = 0) -> str:
 
     try:
         from app.storage.beads import load_bead_tree
-        tree = load_bead_tree()
+        tree = load_bead_tree(conversation_id=conversation_id)
         parked = tree.parked_beads if tree.beads else []
         if not parked:
             # No pending threads. Stay silent for short conversations, but
             # for ongoing ones surface a one-line reminder so the trigger
             # conditions aren't lost at the bottom of a long static prompt.
             if turn_count >= 3:
+                # "No threads tracked yet" is only true of an empty tree; a
+                # tree whose beads are all completed must not read as one
+                # where earlier bead_create calls never landed.
+                state = ("no threads tracked yet" if not tree.beads else
+                         f"no parked threads ({len(tree.beads)} bead(s) on "
+                         "record, none parked)")
                 return (
-                    "\n\n### Bead check: no threads tracked yet. "
+                    f"\n\n### Bead check: {state}. "
                     "If this turn you flagged an aside, noticed an unrelated "
                     "issue ('noticed in passing'), or listed options the user "
                     "didn't all pick, park a bead now before it's lost."
                 )
             return ""
 
-        lines = ["\n\n### Pending Beads (parked threads):"]
+        lines = ["\n\n### Pending Beads (parked threads):",
+                 "(The bead store's record. Your bead tool calls are not "
+                 "shown in replayed history; a thread listed here is saved.)"]
         for b in parked:
             hint = f" — {b.context_hint}" if b.context_hint else ""
             lines.append(f"- ⏸ {b.content}{hint}")

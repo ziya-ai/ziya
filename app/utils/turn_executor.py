@@ -20,6 +20,7 @@ turns are already serialised per conversation.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, TypeVar
@@ -43,6 +44,15 @@ async def run_on_turn_executor(fn: Callable[..., T], /, *args: Any, **kwargs: An
 
     Drop-in replacement for ``asyncio.to_thread`` on the chat path: same
     signature, same return, but immune to default-executor saturation.
+
+    Like ``to_thread`` (and unlike a bare ``run_in_executor``) the call runs
+    inside a copy of the caller's ``contextvars`` context, so request-scoped
+    state such as ``app.context`` (project root, conversation id, task
+    grants) is visible to the worker.  Without this the prompt builder saw
+    ``get_project_root_or_none() is None`` and fell back to the server's
+    launch directory for ``CurrentWorkingDirectory`` and the write policy.
     """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_turn_executor, functools.partial(fn, *args, **kwargs))
+    ctx = contextvars.copy_context()
+    call = functools.partial(ctx.run, fn, *args, **kwargs)
+    return await loop.run_in_executor(_turn_executor, call)

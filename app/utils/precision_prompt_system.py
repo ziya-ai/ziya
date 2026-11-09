@@ -46,6 +46,9 @@ class PrecisionPromptSystem:
             # file state tracking (change markers, refresh from disk) operates
             # under the same ID the rest of the system uses.  Fabricated
             # precision_ IDs are invisible to the file watcher and get GC'd.
+            # The caller's id, before any fabrication below: stores keyed by
+            # conversation (beads) must never be asked about a precision_ id.
+            real_conversation_id = conversation_id or None
             if not conversation_id:
                 conversation_id = f"precision_{request_path}" if request_path else "precision_default"
             
@@ -302,7 +305,8 @@ class PrecisionPromptSystem:
                             or m.get("role") == "user"
                         )
                     )
-                    bead_status = get_bead_status_summary(turn_count)
+                    bead_status = get_bead_status_summary(
+                        turn_count, conversation_id=real_conversation_id)
                     if bead_status:
                         volatile_tail.append(bead_status)
                 except (ImportError, RuntimeError, OSError) as e:

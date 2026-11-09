@@ -43,7 +43,8 @@ class _FakePrompt:
         return msgs
 
 
-def _build(chat_history, question="current question", **extra_patches):
+def _build(chat_history, question="current question",
+           conversation_id="test-conv-volatile", **extra_patches):
     from app.utils.precision_prompt_system import PrecisionPromptSystem
     sys_obj = PrecisionPromptSystem()
     patches = [
@@ -64,7 +65,7 @@ def _build(chat_history, question="current question", **extra_patches):
                 files=[],
                 question=question,
                 chat_history=chat_history,
-                conversation_id="test-conv-volatile",
+                conversation_id=conversation_id,
             )
         finally:
             for p in reversed(patches):
@@ -104,7 +105,7 @@ class TestSystemBlockIsTurnStable:
         block must not see it."""
         nudge = "\n\n### Bead check: no threads tracked yet. park a bead now."
 
-        def fake_status(turn_count=0):
+        def fake_status(turn_count=0, conversation_id=None):
             return nudge if turn_count >= 3 else ""
 
         with mock.patch("app.utils.bead_prompt.get_bead_status_summary",
@@ -194,3 +195,57 @@ class TestFallbackWithoutSplitApi:
         finally:
             if had:
                 setattr(mp, "get_memory_prompt_sections", saved)
+
+
+class TestBeadSummaryGetsTheRealConversation:
+    """The bead summary is keyed by the caller's conversation id, never a
+    fabricated ``precision_`` id, and never only by the ContextVar (which a
+    worker thread may not have).  See tests/test_bead_summary_turn_pool.py."""
+
+    def test_caller_conversation_id_is_forwarded(self):
+        with mock.patch("app.utils.bead_prompt.get_bead_status_summary",
+                        return_value="") as summ:
+            _build(_history(3), conversation_id="real-conv-42")
+        assert summ.call_args.kwargs["conversation_id"] == "real-conv-42"
+        assert summ.call_args.args[0] == 3
+
+    def test_missing_id_is_not_replaced_by_a_fabricated_one(self):
+        with mock.patch("app.utils.bead_prompt.get_bead_status_summary",
+                        return_value="") as summ:
+            _build(_history(3), conversation_id=None)
+        assert summ.called
+        assert summ.call_args.kwargs["conversation_id"] is None
+
+    async def test_parked_beads_reach_the_user_turn_from_the_turn_pool(
+            self, tmp_path, monkeypatch):
+        """End to end: real bead store, real summary, prompt built on the
+        turn pool with NO request ContextVar set; the final user message
+        carries the parked list, not the empty-tree nudge."""
+        import asyncio
+        from app.models.bead import Bead
+        from app.storage.beads import _save_fallback
+        from app.utils.turn_executor import run_on_turn_executor
+
+        monkeypatch.setenv("ZIYA_HOME", str(tmp_path))
+        monkeypatch.delenv("ZIYA_USER_CODEBASE_DIR", raising=False)
+        monkeypatch.setattr("app.mcp.builtin_tools.is_builtin_category_enabled",
+                            lambda name: True)
+        monkeypatch.setattr("app.utils.bead_prompt._is_global_ephemeral",
+                            lambda: False)
+        cid = "conv-volatile-beads-e2e"
+        _save_fallback(cid, [Bead(id="b1", content="gateway-state UL loss",
+                                  status="parked").model_dump()])
+
+        async def _body():
+            return await run_on_turn_executor(
+                _build, _history(3), conversation_id=cid)
+
+        msgs = await asyncio.get_running_loop().create_task(_body())
+        tail = _last_user_text(msgs)
+        assert "### Pending Beads (parked threads):" in tail
+        assert "gateway-state UL loss" in tail
+        assert "no threads tracked yet" not in tail
+        # The list itself stays out of the cached system block (the static
+        # directive there mentions the list by name, so match its header).
+        assert "### Pending Beads (parked threads):" not in msgs[0]["content"]
+        assert "gateway-state UL loss" not in msgs[0]["content"]
