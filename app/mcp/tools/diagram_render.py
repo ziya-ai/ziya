@@ -63,6 +63,7 @@ SUPPORTED_DIAGRAM_TYPES: frozenset = frozenset({
     "chord",
     "force-directed", "forcedirected",
     "network",
+    "orbit",
     "music",
     "basic-chart", "chart", "bar", "line", "scatter", "bubble",
     "d3",
@@ -85,7 +86,7 @@ class RenderDiagramInput(BaseModel):
         description=(
             "Diagram type: mermaid, graphviz, vega-lite, vega, plotly, "
             "drawio, packet, railroad, wavedrom, flamegraph, joint, d2, chord, "
-            "force-directed, network, d3. "
+            "force-directed, network, orbit, d3. "
             "Also 'chat-message', which is not a diagram at all: it renders "
             "MARKDOWN (KaTeX math, fences, tables) through the real chat UI "
             "and screenshots it, so you can see how a message will actually "
@@ -98,7 +99,7 @@ class RenderDiagramInput(BaseModel):
             "Diagram source text, or the JSON specification itself. "
             "Structured types (vega-lite, vega, plotly, packet, railroad, wavedrom, "
             "flamegraph, music, "
-            "joint, chord, network, d3) accept either a JSON object/array "
+            "joint, chord, network, orbit, d3) accept either a JSON object/array "
             "or its serialized string — both are handled."
         ),
     )
@@ -292,7 +293,7 @@ class RenderDiagramTool(BaseMCPTool):
                 "mermaid", "graphviz", "vega-lite", "vega", "plotly",
                 "drawio", "packet", "railroad", "wavedrom", "flamegraph",
                 "joint", "d2", "chord",
-                "force-directed", "network", "music", "d3",
+                "force-directed", "network", "orbit", "music", "d3",
             }))
             return _error(
                 f"Unsupported diagram type '{diagram_type}'. This renderer has "

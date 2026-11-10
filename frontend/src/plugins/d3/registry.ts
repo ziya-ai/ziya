@@ -96,6 +96,13 @@ const pluginMetadata: PluginMetadata[] = [
     loader: async () => (await import('./flamegraphPlugin')).flamegraphPlugin
   },
   {
+    // Satellites, orbits, coverage and beams on a 3D globe (globe.gl/three.js,
+    // satellite.js).  WebGL; the chunk is ~1.2 MB and loads on first use.
+    name: 'orbit-renderer',
+    priority: 6,
+    loader: async () => (await import('./orbitPlugin')).orbitPlugin
+  },
+  {
     // Unlike every other entry here, this plugin renders SERVER-side: it POSTs
     // to /api/render-latex, which drives a local TeX installation, and mounts
     // the returned SVG (or PNG).  The dynamic chunk is therefore tiny -- no

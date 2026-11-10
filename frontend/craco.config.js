@@ -1,4 +1,5 @@
 const path = require('path');
+const webpack = require('webpack');
 
 module.exports = {
   webpack: {
@@ -9,6 +10,20 @@ module.exports = {
           fullySpecified: false,
         },
       });
+
+      // satellite.js re-exports an optional WASM bulk propagator whose
+      // runtimes dynamically import '#wasm-single-thread' /
+      // '#wasm-multi-thread' (Emscripten builds that contain
+      // import("node:module")).  Webpack bundles every dynamic import, so the
+      // build failed with UnhandledSchemeError on "node:module".  The orbit
+      // plugin uses only the pure-JS SGP4 path (twoline2satrec / propagate),
+      // so skip those two imports; calling the WASM runtime would reject with
+      // "Cannot find module" instead of breaking the build.
+      webpackConfig.plugins = webpackConfig.plugins || [];
+      webpackConfig.plugins.push(new webpack.IgnorePlugin({
+        resourceRegExp: /^#wasm-(single|multi)-thread$/,
+        contextRegExp: /[\\/]satellite\.js[\\/]/,
+      }));
 
       // vexflow (music notation) is an OPTIONAL dependency — see
       // optionalDependencies in package.json.  If it isn't installed,
@@ -98,6 +113,13 @@ module.exports = {
         ...(jestConfig.moduleNameMapper || {}),
         '^d3$': '<rootDir>/node_modules/d3/dist/d3.min.js',
       };
+      // satellite.js ships ESM only ("type": "module", no CJS/UMD build), so
+      // babel-jest must transform it like source.  Everything else in
+      // node_modules stays untransformed, as in CRA's default.
+      jestConfig.transformIgnorePatterns = [
+        '[/\\\\]node_modules[/\\\\](?!satellite\\.js[/\\\\]).+\\.(js|jsx|mjs|cjs|ts|tsx)$',
+        '^.+\\.module\\.(css|sass|scss)$',
+      ];
       return jestConfig;
     },
   },

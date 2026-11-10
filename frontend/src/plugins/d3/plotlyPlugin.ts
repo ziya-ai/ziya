@@ -12,6 +12,7 @@
  */
 
 import { D3RenderPlugin } from '../../types/d3';
+import { hasPlotlyDatasetRefs, resolvePlotlyDatasets } from './plotlyDatasets';
 import {
   preprocessPlotlySpec,
   demoteWebglTracesForCapture,
@@ -65,6 +66,37 @@ const PLOTLY_TRACE_TYPES = new Set([
  * render still completes.
  */
 export const PLOTLY_NEWPLOT_BUDGET_MS = 12000;
+
+/**
+ * Where Plotly's geo traces (scattergeo, choropleth) load their basemap
+ * outlines from.  The library default is https://cdn.plot.ly/un/, which the
+ * Content-Security-Policy (connect-src 'self') blocks, so a geo figure used
+ * to hang on "fetching topojson" and the chart skills banned the whole family.
+ * frontend/public/static/topojson/ carries the 110m files (populated once by
+ * scripts/fetch-topojson.sh) and the build serves them under /static/, so a
+ * map renders with no network access and the viewed area is never reported
+ * to a third party.
+ */
+export const PLOTLY_TOPOJSON_URL = '/static/topojson/';
+
+/**
+ * Only the 110m outlines ship, so `resolution: 50` on any geo subplot (geo,
+ * geo2, ...) would request a file that is not there and fail the whole
+ * figure with an "unexpected error while fetching topojson".  Clamp it to the
+ * resolution that exists; everything else on the subplot is left alone.
+ */
+export function clampGeoResolution(layout: any): any {
+  if (!layout || typeof layout !== 'object') return layout;
+  const out = { ...layout };
+  for (const key of Object.keys(out)) {
+    if (!/^geo\d*$/.test(key)) continue;
+    const geo = out[key];
+    if (geo && typeof geo === 'object' && geo.resolution !== undefined && Number(geo.resolution) !== 110) {
+      out[key] = { ...geo, resolution: 110 };
+    }
+  }
+  return out;
+}
 
 function isPlotlySpec(spec: any): boolean {
   if (!spec || typeof spec !== 'object') return false;
@@ -399,6 +431,11 @@ export function applyPlotlyTheme(layout: any, isDarkMode: boolean): any {
         bgcolor: '#1e1e1e',
         lakecolor: '#1e1e1e',
         landcolor: '#2a2a2a',
+        // Plotly's default border/coastline (#444) sits at ~1.5:1 on the dark
+        // land fill, so countries and coastlines vanished under dark theme.
+        // #8a8a8a is the same non-text token the ternary grid uses (4.1:1 here).
+        coastlinecolor: '#8a8a8a',
+        countrycolor: '#8a8a8a',
         ...(base.geo || {}),
       },
     };
@@ -807,6 +844,18 @@ export const plotlyPlugin: D3RenderPlugin = {
       throw new Error('Invalid Plotly spec: missing or empty "data" array');
     }
 
+    // Expand traces bound to ziya://dataset/<id> into inline arrays first:
+    // the preprocessor and Plotly only understand arrays.  A failed fetch
+    // names the dataset instead of drawing an empty map.
+    if (hasPlotlyDatasetRefs(plotlySpec)) {
+      const ds = await resolvePlotlyDatasets(plotlySpec);
+      if (ds.failed.length > 0) {
+        throw new Error('Could not load dataset ' + ds.failed.join(', ') +
+          ' (not registered, expired, or the server is unreachable).');
+      }
+      plotlySpec = ds.spec;
+    }
+
     // Normalize common LLM-emitted quirks before handing to Plotly.
     plotlySpec = preprocessPlotlySpec(plotlySpec);
     // Theme trace-owned surfaces (table fills/fonts) that the layout-only
@@ -870,10 +919,15 @@ export const plotlyPlugin: D3RenderPlugin = {
     // D-457: repair author-pinned title/legend/shape colours against the
     // theme-resolved surfaces (runs after applyPlotlyTheme has set them).
     Object.assign(layout, repairAuthorColorsForTheme(layout, isDarkMode));
+    // Geo subplots may only ask for the outline resolution that is shipped.
+    Object.assign(layout, clampGeoResolution(layout));
     const config = {
       responsive: true,
       displaylogo: false,
       modeBarButtonsToRemove: ['sendDataToCloud', 'toggleHover'],
+      // Serve the geo basemap from Ziya itself; the CDN default is blocked by
+      // the CSP.  An author config may still override it.
+      topojsonURL: PLOTLY_TOPOJSON_URL,
       ...plotlySpec.config,
     };
 

@@ -15,6 +15,7 @@ const FENCE_LANG_TO_D3_TYPE: Record<string, string> = {
   'force-directed': 'force-directed',
   forcedirected: 'force-directed',
   network: 'network',
+  orbit: 'orbit',
 };
 
 export const D3_SPEC_FENCE_LANGS: readonly string[] = Object.keys(FENCE_LANG_TO_D3_TYPE);
