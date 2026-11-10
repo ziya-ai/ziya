@@ -93,6 +93,8 @@ export interface BenchItemDetail {
     key: string; kind: CapabilityKind; name: string; description: string;
     // skills
     prompt?: string; path?: string | null; source?: string; tokens?: number; keywords?: string[];
+    /** Skill.id for the skills REST API, and whether it accepts writes (custom only). */
+    skill_id?: string; editable?: boolean;
     // mcp
     tools?: string[]; enabled?: boolean; connected?: boolean; builtin?: boolean;
     tool_permissions?: Record<string, boolean>;
