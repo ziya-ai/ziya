@@ -166,7 +166,22 @@ REGISTRY: List[Extra] = [
         kind="pip", pip_packages=("pyobjc-framework-Cocoa>=10",), probe_modules=("AppKit",),
         platforms=("darwin",),
     ),
+    Extra(
+        key="links", target="--links", title="ziya:// links outside the browser",
+        enables="A ziya://chat or ziya://project link pasted into Slack, a document or another app opens in the Ziya tab (protocol_handler.py).",
+        kind="handler",
+        status_fn=lambda: _protocol_handler().status(),
+        platforms=("darwin", "linux", "win32"),
+        # Changes an OS-level registration and bakes in one server's port:
+        # only ever on explicit request, never as part of --all or a refresh.
+        default_in_all=False, auto_refresh=False,
+    ),
 ]
+
+
+def _protocol_handler():
+    from . import protocol_handler
+    return protocol_handler
 
 BY_KEY: Dict[str, Extra] = {x.key: x for x in REGISTRY}
 BY_TARGET: Dict[str, Extra] = {x.target: x for x in REGISTRY}
@@ -348,6 +363,10 @@ def install_command(x: Extra) -> Optional[List[str]]:
         if script is None:
             return None
         return [shutil.which("bash") or "/bin/bash", str(script), x.target, "--yes"]
+    if x.kind == "handler":
+        # Targets the port THIS server is on: the Settings page is served by it.
+        return [sys.executable, "-m", "app.utils.protocol_handler", "register",
+                "--port", str(_protocol_handler().default_port())]
     return None
 
 

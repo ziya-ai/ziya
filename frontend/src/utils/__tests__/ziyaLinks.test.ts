@@ -1,9 +1,32 @@
 /**
+ * @jest-environment jsdom
+ *
  * ziya:// link parsing — mirror of tests/test_ziya_links.py for
  * app/utils/ziya_links.py.  Both sides must accept and reject the same
  * shapes, or a link the server hands the model will not open in the browser.
  */
-import { parseZiyaLink, chatLink, projectLink, isZiyaLink, ziyaLinkFromEvent } from '../ziyaLinks';
+import {
+  parseZiyaLink, chatLink, projectLink, isZiyaLink, ziyaLinkFromEvent,
+  deepLinkFromSearch, DEEP_LINK_PARAM,
+} from '../ziyaLinks';
+
+describe('deepLinkFromSearch', () => {
+  // The OS handler (app/utils/protocol_handler.py) opens
+  // http://localhost:<port>/?open=<link>; the param name is the contract.
+  test('reads the ?open= target the OS protocol handler delivers', () => {
+    expect(DEEP_LINK_PARAM).toBe('open');
+    expect(deepLinkFromSearch('?open=ziya://chat/abc-1/12'))
+      .toEqual({ kind: 'chat', conversationId: 'abc-1', messageIndex: 12 });
+    expect(deepLinkFromSearch('?foo=1&open=ziya://project/p1'))
+      .toEqual({ kind: 'project', projectId: 'p1' });
+    // Percent-encoded by a stricter opener: still the same target.
+    expect(deepLinkFromSearch('?open=ziya%3A%2F%2Fchat%2Fabc-1'))
+      .toEqual({ kind: 'chat', conversationId: 'abc-1', messageIndex: null });
+  });
+
+  test.each(['', '?', '?open=', '?open=https://evil', '?open=ziya://chat/../x', null, undefined])(
+    'ignores %p', (s) => { expect(deepLinkFromSearch(s as any)).toBeNull(); });
+});
 
 describe('parseZiyaLink', () => {
   test('round-trips the three shapes', () => {

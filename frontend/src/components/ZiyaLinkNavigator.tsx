@@ -12,13 +12,18 @@
  * A chat link carries no project id (conversations can move between
  * projects), so the owning project comes from the conversations already in
  * state, else from GET /api/v1/chats/{id}/locate.
+ *
+ * Links arriving from OUTSIDE the page (the OS protocol handler registered
+ * by `ziya-install-extras --links`, app/utils/protocol_handler.py) come in
+ * as `/?open=ziya://…`: read once at boot, removed from the address bar, and
+ * followed through the same path once the project has loaded.
  */
 import React, { useEffect, useRef } from 'react';
 import { message } from 'antd';
 import { useProject } from '../context/ProjectContext';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useConversationList } from '../context/ConversationListContext';
-import { ziyaLinkFromEvent, type ZiyaLinkTarget } from '../utils/ziyaLinks';
+import { DEEP_LINK_PARAM, deepLinkFromSearch, ziyaLinkFromEvent, type ZiyaLinkTarget } from '../utils/ziyaLinks';
 
 interface LocateResponse {
   conversationId: string;
@@ -40,7 +45,7 @@ export async function locateChat(conversationId: string): Promise<LocateResponse
 const PROJECT_SWITCH_SETTLE_MS = 300;
 
 const ZiyaLinkNavigator: React.FC = () => {
-  const { currentProject, projects, switchProject } = useProject();
+  const { currentProject, projects, switchProject, isLoadingProject } = useProject();
   const { loadConversation, loadConversationAndScrollToMessage } = useActiveChat();
   const { conversations } = useConversationList();
 
@@ -49,6 +54,10 @@ const ZiyaLinkNavigator: React.FC = () => {
   const stateRef = useRef({ currentProject, projects, switchProject, loadConversation, loadConversationAndScrollToMessage, conversations });
   stateRef.current = { currentProject, projects, switchProject, loadConversation, loadConversationAndScrollToMessage, conversations };
   const busyRef = useRef(false);
+  // The follow routine the click listener builds, shared with the boot path.
+  const followRef = useRef<(link: ZiyaLinkTarget) => void>(() => {});
+  // A ?open= target waiting for the project to finish loading.
+  const bootLinkRef = useRef<ZiyaLinkTarget | null>(null);
 
   useEffect(() => {
     const navigate = async (link: ZiyaLinkTarget) => {
@@ -95,6 +104,18 @@ const ZiyaLinkNavigator: React.FC = () => {
       }
     };
 
+    const follow = (link: ZiyaLinkTarget) => {
+      if (busyRef.current) return;
+      busyRef.current = true;
+      navigate(link)
+        .catch(err => {
+          console.error('ziya:// navigation failed:', err);
+          message.error('Could not open that link');
+        })
+        .finally(() => { busyRef.current = false; });
+    };
+    followRef.current = follow;
+
     const onClick = (e: MouseEvent) => {
       // Modifier clicks (new tab, etc.) mean nothing for an in-app scheme;
       // still swallow them so the browser does not show "unknown protocol".
@@ -102,18 +123,30 @@ const ZiyaLinkNavigator: React.FC = () => {
       if (!hit) return;
       e.preventDefault();
       e.stopPropagation();
-      if (busyRef.current) return;
-      busyRef.current = true;
-      navigate(hit.link)
-        .catch(err => {
-          console.error('ziya:// navigation failed:', err);
-          message.error('Could not open that link');
-        })
-        .finally(() => { busyRef.current = false; });
+      follow(hit.link);
     };
     document.addEventListener('click', onClick, true);
     return () => document.removeEventListener('click', onClick, true);
   }, []);
+
+  // Boot: a ?open= delivered by the OS handler.  Read once and dropped from
+  // the URL immediately, so a reload or a copied address does not navigate
+  // again; followed below once the project has loaded.
+  useEffect(() => {
+    const link = deepLinkFromSearch(window.location.search);
+    if (!link) return;
+    bootLinkRef.current = link;
+    const url = new URL(window.location.href);
+    url.searchParams.delete(DEEP_LINK_PARAM);
+    window.history.replaceState(window.history.state, '', url.toString());
+  }, []);
+
+  useEffect(() => {
+    if (isLoadingProject || !currentProject || !bootLinkRef.current) return;
+    const link = bootLinkRef.current;
+    bootLinkRef.current = null;
+    followRef.current(link);
+  }, [isLoadingProject, currentProject?.id]);
 
   return null;
 };

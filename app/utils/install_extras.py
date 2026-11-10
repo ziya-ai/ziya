@@ -74,6 +74,8 @@ WINDOWS_USAGE = """usage: ziya-install-extras [--browser | --latex | --all] [--d
   --latex    the TeX Live packages the LaTeX renderer needs, installed with
              TeX Live's tlmgr; without a TeX distribution, how to get one
   --all      both (the default)
+  --links    register ziya:// links with Windows so they open the Ziya tab
+             (--port N to target a server other than $ZIYA_PORT / 6969)
   --dry-run  print the plan and exit; install nothing
   --yes      skip the confirmation prompt"""
 
@@ -152,6 +154,20 @@ def run(args: List[str]) -> int:
     args = list(args)
     if "--help" in args or "-h" in args:
         return _run_script(args)
+    # OS-level ziya:// link registration (protocol_handler.py).  Handled
+    # here, like the pip targets, so the shell script never sees --links or
+    # its --port argument.  Never part of --all: it changes an OS
+    # registration and fixes one server's port.
+    args, handler_rc = _run_handler_targets(args)
+    if handler_rc is not None and not any(
+            a in PYTHON_EXTRAS or a in SCRIPT_TARGETS for a in args):
+        return handler_rc
+    return _run_pip_and_script(args) or (handler_rc or 0)
+
+
+def _run_pip_and_script(args: List[str]) -> int:
+    """The pip targets and the shell script, for ``args`` with any handler
+    target already removed."""
     py_targets = [a for a in args if a in PYTHON_EXTRAS]
     # No target at all means --all (the script's own default), and --all
     # also covers every Python-level extra that applies to this platform
@@ -175,12 +191,44 @@ def run(args: List[str]) -> int:
     return rc
 
 
+def _run_handler_targets(args: List[str]) -> "tuple[List[str], Optional[int]]":
+    """Register the OS handler when ``args`` names ``--links``.
+
+    Returns the remaining args (``--links`` and its ``--port N`` removed) and
+    the registration's exit code, or None when nothing was asked for.
+    """
+    if not any(a in HANDLER_TARGETS for a in args):
+        return args, None
+    rest: List[str] = []
+    port: Optional[int] = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in HANDLER_TARGETS:
+            pass
+        elif a == "--port" and i + 1 < len(args):
+            i += 1
+            port = int(args[i])
+        elif a.startswith("--port="):
+            port = int(a.split("=", 1)[1])
+        else:
+            rest.append(a)
+        i += 1
+    dry = "--dry-run" in args or "--plan" in args
+    from . import protocol_handler
+    rc = protocol_handler.register(port, dry_run=dry)
+    if rc == 0 and not dry:
+        _record_installed(sorted(HANDLER_TARGETS))
+    return rest, rc
+
+
 def _script_targets_requested(args: List[str]) -> List[str]:
     """The script-level targets ``args`` asks for; none / --all means all of them."""
     named = [a for a in args if a in SCRIPT_TARGETS and a != "--all"]
     if named and "--all" not in args:
         return named
-    return [x.target for x in _REGISTRY if x.kind != "pip" and x.supported()]
+    return [x.target for x in _REGISTRY
+            if x.kind not in ("pip", "handler") and x.supported()]
 
 
 def _run_script(args: List[str]) -> int:
@@ -216,7 +264,9 @@ def _run_script(args: List[str]) -> int:
 from .extras_registry import REGISTRY as _REGISTRY, BY_TARGET as _BY_TARGET  # noqa: E402
 
 PYTHON_EXTRAS = {x.target: list(x.pip_packages) for x in _REGISTRY if x.kind == "pip"}
-SCRIPT_TARGETS = {x.target for x in _REGISTRY if x.kind != "pip"} | {"--all"}
+HANDLER_TARGETS = {x.target for x in _REGISTRY if x.kind == "handler"}
+SCRIPT_TARGETS = {x.target for x in _REGISTRY
+                  if x.kind not in ("pip", "handler")} | {"--all"}
 
 # Modules whose presence means a target is already installed.  Checked before
 # pip so the default run does not pay for (or need a login to) an index just

@@ -14,6 +14,11 @@
  */
 
 export const ZIYA_LINK_SCHEME = 'ziya://';
+// How a link reaches the page from OUTSIDE it: the OS protocol handler
+// (app/utils/protocol_handler.py, `ziya-install-extras --links`) opens
+// http://localhost:<port>/?open=<ziya:// link>, and ZiyaLinkNavigator follows
+// the target once at boot.  Keep in step with protocol_handler.OPEN_PARAM.
+export const DEEP_LINK_PARAM = 'open';
 
 export type ZiyaLinkTarget =
   | { kind: 'chat'; conversationId: string; messageIndex: number | null }
@@ -52,6 +57,19 @@ export function chatLink(conversationId: string, messageIndex?: number | null): 
 
 export function projectLink(projectId: string): string {
   return `${ZIYA_LINK_SCHEME}project/${projectId}`;
+}
+
+/**
+ * The ziya:// target a page URL's `?open=` names, or null when the query
+ * has none or it does not parse (a malformed value is ignored, not an error).
+ */
+export function deepLinkFromSearch(search: string | null | undefined): ZiyaLinkTarget | null {
+  if (!search) return null;
+  try {
+    return parseZiyaLink(new URLSearchParams(search).get(DEEP_LINK_PARAM));
+  } catch {
+    return null;
+  }
 }
 
 /**
