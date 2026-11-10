@@ -32,6 +32,33 @@ export function isChatListFooterRow(index: number, nodeCount: number): boolean {
 }
 
 /**
+ * Minimum height of the Export/Import footer.  A compact list row is shorter
+ * than a small MUI button, so a footer sized to one row let the buttons
+ * spill up over the last conversation title.
+ */
+export const CHAT_LIST_FOOTER_MIN_HEIGHT = 40;
+
+/**
+ * Where the footer row is drawn inside react-window's inner container.
+ *
+ * When the rows are shorter than the viewport (e.g. a recency filter left a
+ * handful), the footer is pinned so its bottom edge meets the bottom of the
+ * viewport instead of sitting right under the last row.  It stays inside
+ * the viewport, so no scrollbar appears.  Otherwise it follows the last row.
+ * An unmeasured viewport (0) falls back to following the last row.
+ */
+export function chatListFooterBox(
+    nodeCount: number,
+    rowHeight: number,
+    viewportHeight: number,
+): { top: number; height: number } {
+    const rowsBottom = Math.max(0, nodeCount) * Math.max(0, rowHeight);
+    const height = Math.max(rowHeight, CHAT_LIST_FOOTER_MIN_HEIGHT);
+    const pinned = viewportHeight > 0 ? viewportHeight - height : 0;
+    return { top: Math.max(rowsBottom, pinned), height };
+}
+
+/**
  * True when content remains below the visible fold, i.e. the bottom fade
  * affordance should be shown.
  *
