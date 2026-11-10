@@ -86,11 +86,47 @@ TIME_BUDGET_CLOSING_MESSAGE = (
 )
 
 
+# How long the budget machinery waits for a cancelled stream to unwind
+# before abandoning it.  Run 5f83000a (2026-11-05): lanes under a 1,500 s
+# budget ran 2–3.5 h because ``asyncio.wait_for`` cancels the in-flight
+# ``__anext__`` and then WAITS for the cancellation to complete, and the
+# provider's retry ladder on expired credentials swallowed it.  A deadline
+# the bounded thing can extend is not a deadline; past this grace the task
+# is left to finish on its own and the block proceeds without it.
+TIME_BUDGET_ABANDON_SECS = 5.0
+
+
 def time_budget_grace_secs(budget_secs: int) -> int:
     """Grace for the closing turn: 10% of the budget, clamped to [60, 300]."""
     return int(min(TIME_BUDGET_GRACE_MAX_S,
                    max(TIME_BUDGET_GRACE_MIN_S,
                        budget_secs * TIME_BUDGET_GRACE_FRACTION)))
+
+
+class _aclosing_bounded:
+    """``contextlib.aclosing`` whose ``aclose()`` cannot hang the deadline.
+
+    After ``_pull_until`` abandons an in-flight ``__anext__``, the generator
+    is still running: ``aclose()`` on it raises RuntimeError, and on a
+    generator that did stop it may await a slow teardown.  Both are bounded
+    here; whatever is left is logged and left behind.
+    """
+
+    def __init__(self, agen):
+        self._agen = agen
+
+    async def __aenter__(self):
+        return self._agen
+
+    async def __aexit__(self, *exc):
+        try:
+            await asyncio.wait_for(self._agen.aclose(), timeout=TIME_BUDGET_ABANDON_SECS)
+        except (asyncio.TimeoutError, RuntimeError) as e:
+            logger.warning(f"📋 TASK_EXEC: stream did not close within "
+                           f"{TIME_BUDGET_ABANDON_SECS:.0f}s; abandoned ({type(e).__name__})")
+        except Exception as e:  # noqa: BLE001 -- closing must not mask the block's result
+            logger.debug(f"stream aclose raised: {e}")
+        return False
 
 
 def _read_launch_context(storage: Any, run_id: Optional[str]) -> str:
@@ -1164,22 +1200,48 @@ async def execute_task_block(
         """Yield ``agen``'s chunks until it ends or ``deadline`` passes.
 
         ``hit[0]`` is set when the deadline cut the stream off.  The
-        in-flight ``__anext__`` is cancelled by ``wait_for``, which throws
-        CancelledError into the generator at its await -- a tool call in
-        progress is abandoned, which is what a hard bound means.
+        in-flight ``__anext__`` is cancelled and given
+        ``TIME_BUDGET_ABANDON_SECS`` to unwind; a stream that swallows or
+        delays the cancellation (a retry ladder under ``except Exception``,
+        a slow ``finally``) is then ABANDONED, not waited for.  Before this
+        the wait was unbounded and the deadline was only as hard as the
+        stream chose to let it be (run 5f83000a: 8,200 s on a 1,500 s budget).
         """
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
                 hit[0] = True
                 return
-            try:
-                chunk = await asyncio.wait_for(agen.__anext__(), timeout=remaining)
-            except StopAsyncIteration:
-                return
-            except asyncio.TimeoutError:
+            nxt = asyncio.ensure_future(agen.__anext__())
+            done, _ = await asyncio.wait({nxt}, timeout=remaining)
+            if not done:
                 hit[0] = True
+                nxt.cancel()
+                await asyncio.wait({nxt}, timeout=TIME_BUDGET_ABANDON_SECS)
+                if not nxt.done():
+                    logger.warning(
+                        f"📋 TASK_EXEC: {block.name!r} stream ignored cancellation for "
+                        f"{TIME_BUDGET_ABANDON_SECS:.0f}s after its time budget; abandoned"
+                    )
+                    # Retrieve the eventual outcome so asyncio does not log
+                    # "exception was never retrieved" when it finally ends.
+                    nxt.add_done_callback(
+                        lambda f: (f.exception() if not f.cancelled() else None))
+                elif not nxt.cancelled() and nxt.exception() is None:
+                    # It produced one more chunk on the way out; drop it --
+                    # the deadline has passed and nothing downstream expects it.
+                    pass
                 return
+            if nxt.cancelled():
+                # Our own task was cancelled (user stop / client gone), not
+                # the budget: propagate as before.
+                raise asyncio.CancelledError()
+            exc = nxt.exception()
+            if isinstance(exc, StopAsyncIteration):
+                return
+            if exc is not None:
+                raise exc
+            chunk = nxt.result()
             yield chunk
 
     async def _stream_within_budget():
@@ -1198,7 +1260,7 @@ async def execute_task_block(
             return
         deadline = start_time + _budget_secs
         hit = [False]
-        async with aclosing(_stream_with_contract_correction()) as g:
+        async with _aclosing_bounded(_stream_with_contract_correction()) as g:
             async for c in _pull_until(g, deadline, hit):
                 yield c
         if not hit[0]:
@@ -1236,7 +1298,7 @@ async def execute_task_block(
                 "content": "\n\n", "ts": time.time(),
             })
         hit2 = [False]
-        async with aclosing(_stream(messages, closing=True)) as g:
+        async with _aclosing_bounded(_stream(messages, closing=True)) as g:
             async for c in _pull_until(g, time.time() + grace, hit2):
                 yield c
         if hit2[0]:
