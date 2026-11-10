@@ -1,5 +1,8 @@
 /**
- * SkillsSection — self-contained skills UI for the Contexts tab.
+ * SkillsSection — skills UI for the sidebar Skills tab.
+ *
+ * Activation is the bench's (design/capabilities-hub.md): a card shows its
+ * item's effective state and a toggle writes a placement at TAB_LAYER.
  *
  * Displays built-in, custom, and project-discovered skills with:
  *   - Clear explanation of what skills do
@@ -25,31 +28,10 @@ import {
 } from '@ant-design/icons';
 import { Skill, SkillCreate, SkillUpdate } from '../types/skill';
 import { useTheme } from '../context/ThemeContext';
-
-/* ------------------------------------------------------------------ */
-/*  Helper: parse a SKILL.md string into name / description / prompt  */
-/* ------------------------------------------------------------------ */
-function parseSkillMd(text: string): { name: string; description: string; prompt: string; keywords?: string[] } | null {
-  const match = text.match(/^\s*---[ \t]*\n([\s\S]*?)\n---[ \t]*\n([\s\S]*)$/);
-  if (!match) return null;
-
-  const frontmatter = match[1];
-  const body = match[2].trim();
-
-  const get = (key: string): string => {
-    const m = frontmatter.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
-    return m ? m[1].trim().replace(/^["']|["']$/g, '') : '';
-  };
-
-  const name = get('name');
-  const description = get('description');
-  if (!name || !description) return null;
-
-  const kwRaw = get('keywords');
-  const keywords = kwRaw ? kwRaw.split(/[,\s]+/).filter(Boolean) : undefined;
-
-  return { name, description, prompt: body, keywords };
-}
+import type { Layer, PlacementState } from '../utils/activation';
+import type { BenchItemView } from '../hooks/useBench';
+import { viewAtLens } from '../context/LensContext';
+import { parseSkillMd, SKILL_MD_INVALID } from '../utils/skillMd';
 
 /* ------------------------------------------------------------------ */
 /*  Source badge                                                      */
@@ -78,17 +60,41 @@ const sourceBadge = (source?: string, isDarkMode: boolean = true) => {
 /* ------------------------------------------------------------------ */
 /*  Activation level helpers                                          */
 /* ------------------------------------------------------------------ */
-type ActivationLevel = 'active' | 'on-demand' | 'off';
+export type ActivationLevel = 'active' | 'on-demand' | 'off';
 
-/** Determine the effective activation level for a skill. */
-function getLevel(skill: Skill, activeSkillIds: string[]): ActivationLevel {
-  const inActive = activeSkillIds.includes(skill.id);
-  if (skill.visibility === 'model_discoverable') {
-    // Model-discoverable: on-demand by default, user toggles into activeIds to disable
-    return inActive ? 'off' : 'on-demand';
-  }
-  // Everything else: off by default, user toggles into activeIds to enable
-  return inActive ? 'active' : 'off';
+/** The layer this tab edits.  The other layers are the Bench's. */
+export const TAB_LAYER: Layer = 'project';
+
+/** Placements are keyed by name, never Skill.id (design: Key). */
+export const benchKeyForSkill = (skill: Pick<Skill, 'name'>): string => `skill:${skill.name}`;
+
+const LEVEL_OF_STATE: Record<PlacementState, ActivationLevel> = { always: 'active', ondemand: 'on-demand', off: 'off' };
+const STATE_OF_LEVEL: Record<ActivationLevel, PlacementState> = { active: 'always', 'on-demand': 'ondemand', off: 'off' };
+const ORIGIN_TEXT: Record<string, string> = {
+  default: 'the default', project: 'this project', user: 'your defaults',
+  conversation: 'this chat', environment: 'the environment',
+};
+
+/**
+ * Level a card shows: the bench item's effective state, or, before the bench
+ * has answered, the skill's default by visibility.  One mapping for every
+ * visibility -- the legacy list read a discoverable skill's membership as OFF
+ * and anything else's as ON, so an always-on discoverable skill showed "off".
+ */
+export function tabLevel(skill: Pick<Skill, 'visibility'>, item?: BenchItemView): ActivationLevel {
+  if (item) return LEVEL_OF_STATE[item.effective];
+  return skill.visibility === 'model_discoverable' ? 'on-demand' : 'off';
+}
+
+/**
+ * Placement to write at TAB_LAYER for a chosen level: null (clear the pin)
+ * when that level is what the layer would inherit anyway, else the explicit
+ * state.  Same rule as dropping a card on its own ghost (laneDnd.dropIntent),
+ * so the tab and the Board never disagree about what a pin means.
+ */
+export function tabPlacementFor(item: BenchItemView, target: ActivationLevel): PlacementState | null {
+  const state = STATE_OF_LEVEL[target];
+  return viewAtLens(item, TAB_LAYER).inherited === state ? null : state;
 }
 
 const levelDot = (level: ActivationLevel, isDarkMode: boolean) => {
@@ -129,9 +135,11 @@ const levelLabel = (level: ActivationLevel, isDarkMode: boolean) => {
 /* ------------------------------------------------------------------ */
 interface Props {
   skills: Skill[];
-  activeSkillIds: string[];
-  addSkillToLens: (id: string) => void;
-  removeSkillFromLens: (id: string) => void;
+  /** The bench view-model's items (useBench().items); skills are looked up by key. */
+  benchItems: BenchItemView[];
+  benchReady: boolean;
+  /** Write a placement at TAB_LAYER; the caller's bench.place announces it. */
+  onPlace: (key: string, state: PlacementState | null) => Promise<unknown> | void;
   createSkill: (data: SkillCreate) => Promise<Skill>;
   updateSkill: (id: string, updates: SkillUpdate) => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
@@ -139,7 +147,7 @@ interface Props {
 }
 
 export const SkillsSection: React.FC<Props> = ({
-  skills, activeSkillIds, addSkillToLens, removeSkillFromLens,
+  skills, benchItems, benchReady, onPlace,
   createSkill, updateSkill, deleteSkill, searchQuery,
 }) => {
   const { isDarkMode } = useTheme();
@@ -164,53 +172,29 @@ export const SkillsSection: React.FC<Props> = ({
   const userSkills   = filtered.filter(s => s.source === 'custom' || s.source === 'project' || s.source === 'user' || (!s.source && !s.isBuiltIn));
   const builtinSkills = filtered.filter(s => s.source === 'builtin' || s.isBuiltIn);
 
+  /* ---- bench lookup ---- */
+  const itemFor = (skill: Skill): BenchItemView | undefined =>
+    benchItems.find(i => i.kind === 'skill' && i.key === benchKeyForSkill(skill));
+  const levelFor = (skill: Skill) => tabLevel(skill, itemFor(skill));
+
   /* ---- sort within groups: active first, then on-demand, then off ---- */
   const levelOrder: Record<ActivationLevel, number> = { 'active': 0, 'on-demand': 1, 'off': 2 };
-  const sortByLevel = (a: Skill, b: Skill) =>
-    levelOrder[getLevel(a, activeSkillIds)] - levelOrder[getLevel(b, activeSkillIds)];
+  const sortByLevel = (a: Skill, b: Skill) => levelOrder[levelFor(a)] - levelOrder[levelFor(b)];
   const sortedUser = [...userSkills].sort(sortByLevel);
   const sortedBuiltin = [...builtinSkills].sort(sortByLevel);
 
   /* ---- handlers ---- */
-  const cycleLevel = (skill: Skill) => {
-    const current = getLevel(skill, activeSkillIds);
-    if (skill.visibility === 'model_discoverable') {
-      // on-demand (default) → active → off → on-demand
-      if (current === 'on-demand') addSkillToLens(skill.id);     // → marks as "active override"
-      else if (current === 'off') removeSkillFromLens(skill.id); // → back to on-demand default
-      else addSkillToLens(skill.id);                             // active → off (toggle)
-    } else {
-      // off (default) → active → off
-      activeSkillIds.includes(skill.id) ? removeSkillFromLens(skill.id) : addSkillToLens(skill.id);
-    }
-  };
-
+  // Writes TAB_LAYER through the bench.  place() announces the change, so
+  // every other useBench() instance (the chip bar above this tab) re-fetches
+  // on its own; nothing here needs to know they exist.
   const setLevel = (skill: Skill, target: ActivationLevel) => {
-    const current = getLevel(skill, activeSkillIds);
-    if (current === target) return;
-
-    if (skill.visibility === 'model_discoverable') {
-      // Default state is on-demand (NOT in activeSkillIds)
-      // In activeSkillIds means user overrode it
-      if (target === 'on-demand') {
-        // Return to default — remove from activeSkillIds
-        if (activeSkillIds.includes(skill.id)) removeSkillFromLens(skill.id);
-      } else if (target === 'off') {
-        // Disable — add to activeSkillIds as disable marker
-        if (!activeSkillIds.includes(skill.id)) addSkillToLens(skill.id);
-      } else {
-        // 'active' — for now treat same as on-demand (always loaded)
-        // Future: track separately for full prompt injection
-        if (activeSkillIds.includes(skill.id)) removeSkillFromLens(skill.id);
-      }
-    } else {
-      // Non-discoverable: in activeSkillIds = active, not in = off
-      if (target === 'active' || target === 'on-demand') {
-        if (!activeSkillIds.includes(skill.id)) addSkillToLens(skill.id);
-      } else {
-        if (activeSkillIds.includes(skill.id)) removeSkillFromLens(skill.id);
-      }
-    }
+    const item = itemFor(skill);
+    if (!benchReady || !item || tabLevel(skill, item) === target) return;
+    Promise.resolve(onPlace(item.key, tabPlacementFor(item, target)))
+      .catch(err => {
+        console.error(`Failed to place ${item.key}:`, err);
+        message.error(`Could not change ${skill.name}`);
+      });
   };
 
   const handleCreate = async () => {
@@ -266,7 +250,7 @@ export const SkillsSection: React.FC<Props> = ({
       const text = await file.text();
       const parsed = parseSkillMd(text);
       if (!parsed) {
-        message.error('Invalid SKILL.md — needs YAML frontmatter with name and description');
+        message.error(SKILL_MD_INVALID);
         return;
       }
       await createSkill(parsed);
@@ -325,10 +309,14 @@ export const SkillsSection: React.FC<Props> = ({
 
   /* ---- render a single skill card ---- */
   const renderCard = (skill: Skill) => {
-    const level = getLevel(skill, activeSkillIds);
+    const item = itemFor(skill);
+    const level = tabLevel(skill, item);
     const isExpanded = expandedId === skill.id;
     const isEditing = editingId === skill.id;
     const isOff = level === 'off';
+    // Set at another layer (your defaults, this chat): drawn the way the
+    // Board draws an inherited card, so the tab never claims a pin it lacks.
+    const inheritedElsewhere = !!item && item.origin !== 'default' && item.origin !== TAB_LAYER;
 
     return (
       <div
@@ -336,7 +324,9 @@ export const SkillsSection: React.FC<Props> = ({
         style={{
           background: t.cardBg, borderRadius: '6px', marginBottom: '3px',
           overflow: 'hidden',
-          border: isExpanded ? `1px solid ${t.expandBorder}` : `1px solid ${t.cardBorder}`,
+          border: isExpanded
+            ? `1px solid ${t.expandBorder}`
+            : `1px ${inheritedElsewhere ? 'dashed' : 'solid'} ${inheritedElsewhere ? t.textFaint : t.cardBorder}`,
         }}
       >
         {/* Compact row */}
@@ -363,6 +353,7 @@ export const SkillsSection: React.FC<Props> = ({
             <Button
               type="text"
               size="small"
+              disabled={!benchReady}
               onClick={(e) => {
                 e.stopPropagation();
                 setLevel(skill, skill.visibility === 'model_discoverable' ? 'on-demand' : 'active');
@@ -415,6 +406,7 @@ export const SkillsSection: React.FC<Props> = ({
                   <button
                     key={opt.key}
                     onClick={() => setLevel(skill, opt.key)}
+                    disabled={!benchReady}
                     style={{
                       flex: 1, padding: '6px 4px', textAlign: 'center', cursor: 'pointer',
                       fontSize: '10px', border: 'none', display: 'flex', flexDirection: 'column',
@@ -430,6 +422,14 @@ export const SkillsSection: React.FC<Props> = ({
                 );
               })}
             </div>
+
+            {item && (
+              <div data-testid={`skill-effective-${skill.name}`}
+                   style={{ fontSize: '10px', color: t.expandText, marginBottom: '8px' }}>
+                Effective here: <b>{level === 'active' ? 'always on' : level}</b>
+                {' — from '}{ORIGIN_TEXT[item.origin] ?? item.origin}
+              </div>
+            )}
 
             {/* Keywords */}
             {skill.keywords && skill.keywords.length > 0 && (

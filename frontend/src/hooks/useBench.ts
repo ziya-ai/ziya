@@ -31,6 +31,15 @@ export const BENCH_CHANGED_EVENT = 'ziya:bench-changed';
 // from mcp_config.json only reach the bench through a refetch.
 export const MCP_STATUS_CHANGED_EVENT = 'mcpStatusChanged';
 
+// Tell every mounted useBench() for ``projectId`` that the server's bench
+// changed.  ``source`` is the instance that already holds the new view and
+// need not re-fetch; a placement made outside any instance (ProjectContext's
+// legacy write-through) passes none, so all of them re-fetch.
+export function announceBenchChanged(projectId: string, source?: symbol): void {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent(BENCH_CHANGED_EVENT, { detail: { projectId, source } }));
+}
+
 export interface UseBenchArgs {
     projectId: string | null | undefined;
     conversationId?: string | null;
@@ -69,9 +78,8 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
 
     const instanceId = useRef(Symbol('bench'));
     const announce = useCallback(() => {
-        if (typeof window === 'undefined' || !projectId) return;
-        window.dispatchEvent(new CustomEvent(BENCH_CHANGED_EVENT,
-            { detail: { projectId, source: instanceId.current } }));
+        if (!projectId) return;
+        announceBenchChanged(projectId, instanceId.current);
     }, [projectId]);
 
     useEffect(() => {

@@ -10,26 +10,37 @@ import { Input, Button, Divider, message } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import { SkillsSection } from './SkillsSection';
 import { useFolderContext } from '../context/FolderContext';
+import { useActiveChatOptional } from '../context/ActiveChatContext';
+import { useBench } from '../hooks/useBench';
+import type { PlacementState } from '../utils/activation';
 
 export const ContextsTab: React.FC = () => {
   const {
     contexts,
     skills,
     activeContextIds,
-    activeSkillIds,
     additionalFiles,
     addContextToLens,
     removeContextFromLens,
-    addSkillToLens,
-    removeSkillFromLens,
     createContext,
     createSkill,
     updateSkill,
     deleteSkill,
     tokenInfo,
+    currentProject,
   } = useProject();
   
   const { checkedKeys } = useFolderContext();
+
+  // The tab's own bench instance.  The chip bar above it mounts another;
+  // the two stay in sync through BENCH_CHANGED_EVENT, which place() fires.
+  // Toggles here write the project layer; other layers are the Bench's.
+  const activeChat = useActiveChatOptional();
+  const bench = useBench({
+    projectId: currentProject?.id,
+    conversationId: activeChat?.currentConversationId ?? null,
+  });
+  const placeSkill = (key: string, state: PlacementState | null) => bench.place(key, state, 'project');
   
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreatingContext, setIsCreatingContext] = useState(false);
@@ -153,9 +164,9 @@ export const ContextsTab: React.FC = () => {
 
         <SkillsSection
           skills={skills}
-          activeSkillIds={activeSkillIds}
-          addSkillToLens={addSkillToLens}
-          removeSkillFromLens={removeSkillFromLens}
+          benchItems={bench.items}
+          benchReady={bench.ready}
+          onPlace={placeSkill}
           createSkill={createSkill}
           updateSkill={updateSkill}
           deleteSkill={deleteSkill}

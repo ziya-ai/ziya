@@ -24,8 +24,7 @@ import {
   effectiveActiveSkillIds as computeEffectiveActiveSkillIds,
   staleSkillIds,
 } from '../utils/skillActivation';
-import { isBenchLive, placementForLegacySkill } from '../utils/benchMigration';
-import { placeBench } from '../apis/benchApi';
+import { SKILLS_CHANGED_EVENT } from '../utils/skillsChanged';
 import * as syncApi from '../api/conversationSyncApi';
 import * as folderSyncApi from '../api/folderSyncApi';
 import FirstRunProjectDialog from '../components/FirstRunProjectDialog';
@@ -146,6 +145,20 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // the OLD project — reconciling the lens against it would prune every id.
   const [skillsProjectId, setSkillsProjectId] = useState<string | null>(null);
   
+  // The Bench creates, edits and deletes skills through useBench(); it
+  // announces SKILLS_CHANGED_EVENT so this list, which the chip bar and the
+  // Skills tab resolve bench items against by name, is reloaded rather than
+  // waiting for a page reload.
+  const [skillsRevision, setSkillsRevision] = useState(0);
+  useEffect(() => {
+    const onChanged = (e: Event) => {
+      const pid = (e as CustomEvent).detail?.projectId;
+      if (!pid || pid === (window as any).__ZIYA_CURRENT_PROJECT_ID__) setSkillsRevision(r => r + 1);
+    };
+    window.addEventListener(SKILLS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(SKILLS_CHANGED_EVENT, onChanged);
+  }, []);
+
   // ── Lens persistence helpers ──────────────────────────────────────
   // Store active context/skill IDs per project in localStorage so they
   // survive page reloads AND project switches.
@@ -201,32 +214,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const _activeSkillIdsRef = React.useRef(activeSkillIds);
   React.useEffect(() => { _activeContextIdsRef.current = activeContextIds; }, [activeContextIds]);
   React.useEffect(() => { _activeSkillIdsRef.current = activeSkillIds; }, [activeSkillIds]);
-
-  // Bench write-through (design/capabilities-hub.md, slice 4).  Once the bench
-  // is authoritative for this project the server ignores the client-assembled
-  // prompt, so a legacy toggle (SkillsSection / ContextsTab) would otherwise
-  // silently do nothing until slice 6 replaces those surfaces.  Translate each
-  // toggle into a project-layer placement with the migration's converter.
-  // Before the bench is live, only re-baseline: a page-load restore of the
-  // list must not be re-PUT (it could clobber another browser's clears).
-  const _writeThroughPrev = React.useRef<string[] | null>(null);
-  React.useEffect(() => {
-    const pid = currentProject?.id;
-    if (!pid || skillsProjectId !== pid) { _writeThroughPrev.current = null; return; }
-    const prev = _writeThroughPrev.current;
-    _writeThroughPrev.current = activeSkillIds;
-    if (!isBenchLive(pid) || prev === null) return;
-    const changed = [
-      ...activeSkillIds.filter(id => !prev.includes(id)).map(id => ({ id, on: true })),
-      ...prev.filter(id => !activeSkillIds.includes(id)).map(id => ({ id, on: false })),
-    ];
-    for (const { id, on } of changed) {
-      const skill = skills.find(s => s.id === id);
-      if (!skill) continue;
-      placeBench(pid, `skill:${skill.name}`, 'project', placementForLegacySkill(skill, on))
-        .catch((e: unknown) => console.warn('bench write-through failed', skill.name, e));
-    }
-  }, [activeSkillIds, skills, currentProject?.id, skillsProjectId]);
 
   const [additionalFiles, setAdditionalFiles] = useState<string[]>([]);
   const [additionalPrompt, setAdditionalPrompt] = useState<string | null>(null);
@@ -433,7 +420,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       }
     };
     loadSkills();
-  }, [currentProject?.id]);
+  }, [currentProject?.id, skillsRevision]);
 
   // Drop lens ids that no longer resolve to a loaded skill.
   //
@@ -1051,4 +1038,10 @@ export function useProject() {
     throw new Error('useProject must be used within ProjectProvider');
   }
   return context;
+}
+
+/** Same as useProject, but undefined outside a ProjectProvider (strips and
+ *  widgets that also mount standalone or under test). */
+export function useProjectOptional(): ProjectContextType | undefined {
+  return useContext(ProjectContext);
 }
