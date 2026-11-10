@@ -158,7 +158,11 @@ class ShellWriteChecker:
         # Heredoc bodies are stdin *data*, not commands. Strip them before
         # splitting so body lines containing words like ``rm`` or ``sudo``
         # aren't mistaken for command segments.
-        scan_command = _strip_heredoc_bodies(command)
+        # Comments go too: the line split below skips a line that starts
+        # with ``#``, and an apostrophe in a comment (``# it's``) opened a
+        # quote that ran on, so ``# it's\ncp a app/x`` was one "line"
+        # starting with ``#`` and the ``cp`` was never checked.
+        scan_command = _strip_shell_comments(_strip_heredoc_bodies(command))
         # A command hidden after a heredoc terminator — e.g.
         # ``cat <<EOF\n..\nEOF\nrm /etc/passwd`` — must not collapse into a
         # single unchecked segment, so split on line boundaries here rather
@@ -798,6 +802,63 @@ def _split_unquoted_lines(text: str) -> List[str]:
             in_double = not in_double
     lines.append(''.join(current))
     return lines
+
+
+# Unescaped characters after which a ``#`` begins a word, and so a comment.
+_COMMENT_WORD_BREAKS = frozenset(' \t\n;&|()<>')
+
+
+def _strip_shell_comments(text: str) -> str:
+    """Remove shell comments from *text*, keeping every newline.
+
+    A ``#`` starts a comment when it begins a word: unquoted, unescaped,
+    and at the start of the text or right after an unescaped blank or
+    metacharacter.  ``a#b``, ``$#``, ``${#x}`` and ``a\\ #`` are not
+    comments.  The quote scanners did not know this, so an apostrophe in
+    a comment (``# don't``) opened a quote that ran to the end of the
+    command: the command was refused as unterminated, and the executor
+    ran ``#`` as a command name.
+
+    Stripping stops at the first command substitution or process
+    substitution (``$(``, backtick, ``<(``, ``>(``); the rest is copied
+    verbatim.  Inside one, whether a ``)`` or backtick after a ``#`` still
+    closes it depends on parser details this scanner does not model.
+    Leaving text in can only make a later check stricter; removing text
+    the shell would run could hide a command.
+    """
+    out: List[str] = []
+    in_sq = in_dq = False
+    word_start = True
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_sq:
+            out.append(ch)
+            in_sq = ch != "'"
+            i += 1
+            continue
+        if ch == '\\':
+            out.append(text[i:i + 2])
+            i += 2
+            word_start = False
+            continue
+        if ch == '`' or (ch in '$<>' and text.startswith('(', i + 1)):
+            out.append(text[i:])
+            break
+        if ch == '#' and word_start and not in_dq:
+            nl = text.find('\n', i)
+            if nl < 0:
+                break
+            i = nl
+            continue
+        out.append(ch)
+        i += 1
+        if ch == '"':
+            in_dq = not in_dq
+        elif ch == "'" and not in_dq:
+            in_sq = True
+        word_start = not in_dq and ch in _COMMENT_WORD_BREAKS
+    return ''.join(out)
 
 
 def _strip_heredoc_bodies(command: str) -> str:

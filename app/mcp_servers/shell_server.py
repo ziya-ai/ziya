@@ -843,7 +843,7 @@ from app.config.scope_canonical import (
 # (is_command_allowed) now both consult the same opener definition.
 from app.mcp_servers.write_policy import (
     ShellWriteChecker, _strip_heredoc_bodies, _has_heredoc,
-    _heredoc_body_commands, _strip_redirections,
+    _heredoc_body_commands, _strip_redirections, _strip_shell_comments,
 )
 
 
@@ -1561,7 +1561,10 @@ class ShellServer:
         pipeline is a command-substitution body inheriting its parent's).
         """
         effective_cwd = cwd if cwd and os.path.isdir(cwd) else None
-        segments = self._split_by_shell_operators(command)
+        # Comments are dropped as a shell would; otherwise ``# note`` ran
+        # as a command named ``#``, and an apostrophe in a comment opened a
+        # quote that swallowed the commands after it.
+        segments = self._split_by_shell_operators(_strip_shell_comments(command))
 
         # Compound shell constructs (for/while/if/case/select) require a
         # shell interpreter — they aren't standalone executables.
@@ -2017,6 +2020,9 @@ class ShellServer:
         # is still validated.
         _probe = (_strip_heredoc_bodies(command)
                   if _has_heredoc(command) else command)
+        # And without comments: ``# don't`` is not an open quote
+        # (_strip_shell_comments).
+        _probe = _strip_shell_comments(_probe)
         _lines, _unterminated = self._split_unquoted_lines(_probe)
         if _unterminated:
             return False, "unterminated quote in command"
@@ -2074,6 +2080,11 @@ class ShellServer:
         # (e.g. ``python3 -c "...\n# a python comment\n..."``) the ``#`` line
         # is data, not a comment, and must be preserved so the validated
         # string matches what _execute_pipeline actually runs.
+        # Inline comments (``echo hi # it's``) are removed first, as the
+        # executor removes them; the loop below then sees no comment
+        # apostrophes.  Heredoc bodies are data and are not touched.
+        if not _has_heredoc(command):
+            command = _strip_shell_comments(command)
         kept_lines = []
         in_single = in_double = False
         for line in command.split('\n'):
