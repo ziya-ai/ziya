@@ -10,9 +10,9 @@
  * A renderer over the bench model: heavy detail arrives through the
  * ``detail`` callback, moves go through ``place`` via the same
  * ``moveOptions`` the board and palette use, tool switches through
- * ``onToolToggle``.  Fetches nothing.  Read-only for every provenance in
- * this phase; "copy path" stands in for opening SKILL.md
- * (backlog-skills-fork-to-project.md).
+ * ``onToolToggle``, skill edits through ``onUpdateSkill`` / ``onDeleteSkill``
+ * (offered only when the detail says the skill is editable: custom skills;
+ * a SKILL.md is edited on disk, "copy path" stands in).  Fetches nothing.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import type { BenchItemDetail, BenchItemView, ReauthorizeResult, ReauthorizeVerdict, ToolDetail } from '../../hooks/useBench';
@@ -22,6 +22,7 @@ import { DropIntent, moveOptions, rejectionText } from './laneDnd';
 import { VIA_TEXT } from './LensStrip';
 import { DeltaChip } from './DeltaChip';
 import { KindMark } from './KindMark';
+import { SkillDraft, SkillEditor } from './SkillEditor';
 
 const LAYER_LABEL: Record<Layer, string> = { user: 'me', project: 'project', conversation: 'this chat' };
 const LAYERS: Layer[] = ['user', 'project', 'conversation'];
@@ -38,6 +39,10 @@ export interface CapabilityDetailProps {
     onToolToggle?: (server: string, tool: string, enabled: boolean) => Promise<BenchItemDetail>;
     /** Lift the server's rug-pull quarantine; the verdict may be a refusal with an override offered. */
     onReauthorize?: (server: string, force?: boolean) => Promise<ReauthorizeResult>;
+    /** Edit a custom skill's text, by the Skill.id the detail names. */
+    onUpdateSkill?: (skillId: string, draft: SkillDraft) => Promise<void>;
+    /** Delete a custom skill; the drawer closes on success. */
+    onDeleteSkill?: (skillId: string, key: string) => Promise<void>;
     /** Transient: how this item's tokens just moved. */
     delta?: number;
 }
@@ -56,16 +61,18 @@ export function toolRows(d: BenchItemDetail): ToolDetail[] {
     return (d.tools ?? []).map(name => ({ name, description: '', tokens: 0, enabled: d.tool_permissions?.[name] !== false }));
 }
 
-export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClose, detail, place, onToolToggle, onReauthorize, delta }) => {
+export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClose, detail, place, onToolToggle, onReauthorize, onUpdateSkill, onDeleteSkill, delta }) => {
     const [d, setD] = useState<BenchItemDetail | null>(null);
     const [err, setErr] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [filter, setFilter] = useState('');
     const [refusal, setRefusal] = useState<ReauthorizeVerdict | null>(null);
+    const [editing, setEditing] = useState(false);
+    const [armed, setArmed] = useState(false);   // delete asks twice
     const { openMcpServers } = useBenchActions();
 
     useEffect(() => {
-        setD(null); setErr(null); setNotice(null); setFilter(''); setRefusal(null);
+        setD(null); setErr(null); setNotice(null); setFilter(''); setRefusal(null); setEditing(false); setArmed(false);
         if (!detail) return;
         let live = true;
         detail(item.key).then(
@@ -115,6 +122,20 @@ export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClos
             if (r.result.success) { setRefusal(null); setNotice(r.result.message ?? `${item.name} re-authorized`); }
             else setRefusal(r.result);
         } catch (e) { setNotice(`Could not re-authorize ${item.name}: ${String((e as Error)?.message ?? e)}`); }
+    };
+
+    // Edit mode: only a custom skill, and only when the owner can write.
+    const editable = item.kind === 'skill' && !!d?.editable && !!d?.skill_id;
+    const canEdit = editable && !!onUpdateSkill;
+    const canDelete = editable && !!onDeleteSkill;
+    const saveEdit = async (draft: SkillDraft) => {
+        await onUpdateSkill!(d!.skill_id!, draft);
+        setD(prev => (prev ? { ...prev, ...draft } : prev));
+        setEditing(false);
+    };
+    const remove = async () => {
+        try { await onDeleteSkill!(d!.skill_id!, item.key); onClose(); }
+        catch (e) { setArmed(false); setNotice(`Could not delete ${item.name}: ${String((e as Error)?.message ?? e)}`); }
     };
 
     return (
@@ -224,12 +245,29 @@ export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClos
             {detail && (
                 <>
                     <div style={{ ...label, display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span>{item.kind === 'mcp' ? `TOOLS${rows.length ? ` · ${rows.length}` : ''}` : 'PROMPT · READ-ONLY'}</span>
+                        <span>{item.kind === 'mcp' ? `TOOLS${rows.length ? ` · ${rows.length}` : ''}` : canEdit ? 'PROMPT' : 'PROMPT · READ-ONLY'}</span>
                         {item.kind === 'mcp' && openMcpServers && (
                             <button type="button" data-testid="mcp-server-details" onClick={() => openMcpServers(item.name)}
                                     style={{ ...linkBtn, marginLeft: 'auto', letterSpacing: 0, opacity: 1 }}>
                                 logs, permissions, reauthorize ▸
                             </button>
+                        )}
+                        {(canEdit || canDelete) && !editing && (
+                            <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, letterSpacing: 0, opacity: 1 }}>
+                                {canEdit && (
+                                    <button type="button" data-testid="detail-edit" onClick={() => setEditing(true)} style={linkBtn}>edit</button>
+                                )}
+                                {canDelete && !armed && (
+                                    <button type="button" data-testid="detail-delete" onClick={() => setArmed(true)} style={linkBtn}>delete</button>
+                                )}
+                                {canDelete && armed && (
+                                    <>
+                                        <button type="button" data-testid="detail-delete-confirm" onClick={() => void remove()}
+                                                style={{ ...linkBtn, color: '#d4380d' }}>delete {item.name}?</button>
+                                        <button type="button" onClick={() => setArmed(false)} style={linkBtn}>keep</button>
+                                    </>
+                                )}
+                            </span>
                         )}
                     </div>
                     {err ? <div role="alert" style={{ color: '#d46b08' }}>Could not load details: {err}</div>
@@ -271,6 +309,10 @@ export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClos
                                 </div>
                             </>
                         )
+                    ) : editing && canEdit ? (
+                        <SkillEditor title="Edit skill" saveLabel="Save"
+                                     initial={{ name: d.name, description: d.description ?? '', prompt: d.prompt ?? '' }}
+                                     onSave={saveEdit} onCancel={() => setEditing(false)} />
                     ) : (
                         <pre data-testid="skill-prompt"
                              style={{ margin: 0, fontSize: 10, whiteSpace: 'pre-wrap', maxHeight: 320, overflow: 'auto',

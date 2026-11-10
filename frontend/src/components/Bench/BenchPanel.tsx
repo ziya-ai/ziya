@@ -7,6 +7,7 @@
 import React, { useState } from 'react';
 import type { BenchItemDetail, BenchItemView, FindResponse, ReauthorizeResult, TokenFlash } from '../../hooks/useBench';
 import type { Layer, PlacementState } from '../../utils/activation';
+import type { Skill, SkillCreate, SkillUpdate } from '../../types/skill';
 import type { Attention } from '../../utils/headerAttention';
 import { attentionButtonStyle, attentionTooltip } from '../../utils/headerAttention';
 import { useBenchActions } from './BenchActions';
@@ -14,6 +15,7 @@ import { BenchBoard } from './BenchBoard';
 import { BenchFind } from './BenchFind';
 import { CapabilityDetail } from './CapabilityDetail';
 import { LensStrip } from './LensStrip';
+import { SkillEditor } from './SkillEditor';
 import { WeightGauge } from './WeightGauge';
 import { EnvironmentRow } from './EnvironmentRow';
 
@@ -39,6 +41,10 @@ export interface BenchPanelModel {
     /** Find view (slice 8b); absent = no arrange/find toggle. */
     find?: (q: string, n?: number) => Promise<FindResponse>;
     install?: (source: string, id: string, state: PlacementState | null) => Promise<unknown>;
+    /** Skill editing (slice 6 edit mode).  Custom skills only; the detail says which. */
+    createSkill?: (data: SkillCreate) => Promise<Skill>;
+    updateSkill?: (skillId: string, key: string, data: SkillUpdate) => Promise<void>;
+    deleteSkill?: (skillId: string, key: string) => Promise<void>;
 }
 
 export interface BenchPanelProps {
@@ -57,6 +63,8 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
     const [selectedKey, setSelectedKey] = useState<string | null>(null);
     // arrange = the board; find = a query to the sources (slice 8b).
     const [mode, setMode] = useState<'arrange' | 'find'>('arrange');
+    // "＋ New skill": the editor takes the drawer slot until saved or cancelled.
+    const [creating, setCreating] = useState(false);
     if (!bench.ready) {
         return bench.error
             ? <div role="alert" style={{ color: '#d46b08' }}>Could not load the bench.</div>
@@ -76,6 +84,14 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
                 <LensStrip lenses={bench.lenses} lens={bench.lens} deltas={bench.deltas} onChange={bench.setLens}
                            items={bench.items} />
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    {bench.createSkill && !finding && (
+                        <button type="button" data-testid="bench-new-skill" title="Write a new custom skill for this project"
+                                onClick={() => { setSelectedKey(null); setCreating(true); }}
+                                style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, cursor: 'pointer',
+                                         color: '#0d9488', background: 'none', border: '1px solid #0d9488' }}>
+                            ＋ New skill
+                        </button>
+                    )}
                     {bench.find && (
                         <div role="tablist" aria-label="Mode"
                              style={{ display: 'inline-flex', borderRadius: 6, overflow: 'hidden',
@@ -109,9 +125,23 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
                     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                         <BenchBoard bench={bench} selectedKey={selectedKey} onSelect={setSelectedKey} />
                     </div>
-                    {selected && (
+                    {creating && bench.createSkill ? (
+                        <aside data-testid="bench-detail" aria-label="New skill"
+                               style={{ width: 420, flexShrink: 0, minHeight: 0, overflowY: 'auto', paddingLeft: 12,
+                                        borderLeft: '1px solid var(--mockup-border, rgba(127,127,127,0.35))' }}>
+                            <SkillEditor title="New skill" saveLabel="Create" allowImport
+                                         onSave={async draft => {
+                                             const s = await bench.createSkill!(draft);
+                                             setCreating(false);
+                                             setSelectedKey(`skill:${s.name}`);
+                                         }}
+                                         onCancel={() => setCreating(false)} />
+                        </aside>
+                    ) : selected && (
                         <CapabilityDetail item={selected} onClose={() => setSelectedKey(null)} detail={bench.detail}
                                           place={bench.place} onToolToggle={bench.setTool} onReauthorize={bench.reauthorize}
+                                          onUpdateSkill={bench.updateSkill ? (id, draft) => bench.updateSkill!(id, selected.key, draft) : undefined}
+                                          onDeleteSkill={bench.deleteSkill}
                                           delta={bench.flash?.byKey[selected.key]} />
                     )}
                 </div>
