@@ -162,12 +162,21 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
     // Lift a rug-pull quarantine from the drawer.  A refusal (blocking
     // injection pattern) comes back as a verdict, not a throw, so the drawer
     // can show the flagged tools and offer the override.
+    //
+    // On success the quarantine is gone server-side, which changes
+    // /api/mcp/status.  useHeaderAttention (the orange outline on the
+    // "MCP servers" button) and TokenCountDisplay re-poll only on
+    // mcpStatusChanged, so announce it the way MCPStatusModal's own
+    // Re-authorize does.  A refusal lifted nothing and stays quiet.
     const reauthorize = useCallback(async (server: string, force = false): Promise<ReauthorizeResult> => {
         if (!projectId) throw new Error('no project');
         const r = await reauthorizeBenchServer(projectId, server, force, conversationId);
         detailCache.current.set(`mcp:${server}`, Promise.resolve(r.detail));
         setView(r.view);
         announce();
+        if (r.result?.success && typeof window !== 'undefined') {
+            window.dispatchEvent(new Event(MCP_STATUS_CHANGED_EVENT));
+        }
         return r;
     }, [projectId, conversationId, announce]);
 
