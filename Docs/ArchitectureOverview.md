@@ -738,6 +738,18 @@ actively uses memory tools rather than ignoring them:
    like "This is not optional" and "At the end of a substantive
    conversation, review what was discussed and propose any facts worth
    retaining."
+3. **Per-turn core facts** (`<MemoryOverview>` block on the current user
+   message, after the cache boundary) — the domain index plus up to
+   ~2000 chars of stored facts **ranked by embedding similarity to the
+   current question and the last few human turns** (one embedding call
+   per turn; earlier turns are served from an in-process cache).  The
+   `personal` layer is never injected.  Before 2026-11 the always-on tier
+   was filled with priority layers in store order on the flat path (the
+   same handful of negative constraints on every turn, measured at 1–2%
+   downstream use) and injected nothing at all once a mind-map existed; a
+   paired offline replay (`scripts/replay_core_policy.py`) put relevance
+   ranking at 11–12% used@0.60.  `ZIYA_MEMORY_CORE_POLICY=store` restores
+   the old selection.
 
 ### Search Ranking (ByteRover-informed)
 
