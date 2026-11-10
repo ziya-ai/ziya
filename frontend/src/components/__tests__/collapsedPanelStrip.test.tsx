@@ -25,6 +25,11 @@ jest.mock('../ActiveContextBar', () => ({
 jest.mock('../ModelConfigButton', () => ({ ModelConfigButton: () => <span data-testid="model-config" /> }));
 jest.mock('../../context/ActiveChatContext', () => ({ useActiveChatOptional: () => ({ currentConversationId: 'c1' }) }));
 jest.mock('../../utils/handoffOpen', () => ({ dispatchHandoffOpen: jest.fn() }));
+// The strip reads the project id for the 📎 references count
+// (useConversationReferences).  No provider here, and the real module pulls
+// in utils/db (uuid, ESM) that jest does not transform; referencesLine.test
+// covers the count itself.
+jest.mock('../../context/ProjectContext', () => ({ useProjectOptional: () => undefined }));
 
 import { CollapsedPanelStrip, STRIP_SKILL_CAP } from '../CollapsedPanelStrip';
 import { _resetPanelStatusForTests, publishPanelStatus } from '../../utils/panelStatus';
