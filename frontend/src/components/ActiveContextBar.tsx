@@ -9,6 +9,7 @@ import { useBench, BenchItemView } from '../hooks/useBench';
 import { placementForLegacySkill } from '../utils/benchMigration';
 import type { Layer, PlacementState } from '../utils/activation';
 import { CloseOutlined } from '@ant-design/icons';
+import { ReferencesLine } from './ReferencesLine';
 
 /**
  * Always-on skill pills shown before the rest stack behind a "+N skills"
@@ -186,6 +187,7 @@ export const ActiveContextBar: React.FC = () => {
   
   const activeContexts = contexts.filter(c => activeContextIds.includes(c.id));
   const { activeSkills, pickedUpSkills, unloadSkill } = useActiveSkillRows();
+  const activeChat = useActiveChatOptional();
 
   // Stacking preferences, per project.  Hooks run before the early return.
   const projectId = currentProject?.id;
@@ -207,6 +209,12 @@ export const ActiveContextBar: React.FC = () => {
   const hasAdditionalFiles = additionalFiles.length > 0;
   const hasAnySelection = activeContexts.length > 0 || activeSkills.length > 0
     || pickedUpSkills.length > 0 || hasAdditionalFiles;
+  // 📎 references (design/conversation-references.md).  Renders nothing for
+  // a conversation with none, so it can sit in both branches below.
+  const referencesLine = (
+    <ReferencesLine projectId={projectId} conversationId={activeChat?.currentConversationId ?? null}
+      text={t.lineText} accent={t.accent} muted={t.chipBorder} />
+  );
   
   if (!hasAnySelection) {
     return (
@@ -219,6 +227,7 @@ export const ActiveContextBar: React.FC = () => {
         fontStyle: 'italic'
       }}>
         No context selected
+        {referencesLine}
       </div>
     );
   }
@@ -369,6 +378,7 @@ export const ActiveContextBar: React.FC = () => {
           >▴</button>
         )}
       </div>
+      {referencesLine}
     </div>
   );
 };
