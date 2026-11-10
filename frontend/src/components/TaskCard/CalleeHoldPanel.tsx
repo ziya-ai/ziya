@@ -33,6 +33,13 @@ interface Props {
   cardId: string | null;
   /** This card's own root, for marking up its blocks. */
   root: Block | null | undefined;
+  /**
+   * Navigate to the caller's run.  The panel can say where this card is
+   * stuck but owns none of the controls that unstick it — those live on
+   * the tile in the run's conversation — so without a way there it was
+   * a dead end: a hold reported, with no route to Resume.
+   */
+  onOpenRun?: (ctx: CalleeContext) => void;
 }
 
 const POSITION_LABELS: Record<string, string> = {
@@ -48,7 +55,7 @@ const POSITION_GLYPHS: Record<string, string> = {
 };
 
 export const CalleeHoldPanel: React.FC<Props> = ({
-  projectId, cardId, root,
+  projectId, cardId, root, onOpenRun,
 }) => {
   const [ctx, setCtx] = useState<CalleeContext | null>(null);
 
@@ -117,6 +124,17 @@ export const CalleeHoldPanel: React.FC<Props> = ({
 
   if (!ctx) return null;
 
+  const openButton = onOpenRun ? (
+    <button
+      type="button"
+      className="tc-callee__open"
+      onClick={() => onOpenRun(ctx)}
+      title="Open the conversation this run is anchored in — its tile carries Resume / Retry"
+    >
+      Open run ↗
+    </button>
+  ) : null;
+
   const chain = deriveCalleeHoldChain(ctx);
   const breadth = describeBreadth(chain.faults);
   const gate = describeGate(chain);
@@ -134,6 +152,7 @@ export const CalleeHoldPanel: React.FC<Props> = ({
           in{' '}
           <code className="tc-callee__caller">{ctx.caller_card_id}</code>
         </span>
+        {openButton}
       </div>
     );
   }
@@ -144,6 +163,7 @@ export const CalleeHoldPanel: React.FC<Props> = ({
         <span className="tc-callee__pause">⏸</span>
         {' '}Held inside{' '}
         <code className="tc-callee__caller">{ctx.caller_card_id}</code>
+        {openButton}
       </div>
 
       <div className="tc-callee__breadth">

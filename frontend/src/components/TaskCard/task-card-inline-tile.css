@@ -1307,8 +1307,20 @@ body:not(.dark) .tc-tile__header:hover { background: rgba(0,0,0,0.04); }
   flex: none;
 }
 .tc-callee__in { color: #8b949e; }
-.tc-callee__head { font-weight: 600; margin-bottom: 6px; }
+.tc-callee__head {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-weight: 600; margin-bottom: 6px;
+}
 .tc-callee__pause { color: #8957e5; }
+/* The route out: the panel reports a hold, the tile in the run's
+ * conversation carries Resume / Retry. */
+.tc-callee__open {
+  margin-left: auto; flex: none;
+  background: none; border: 1px solid rgba(137,87,229,0.5); color: #b392f0;
+  border-radius: 3px; padding: 1px 7px; font-size: 10px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.tc-callee__open:hover { background: rgba(137,87,229,0.18); }
 .tc-callee__caller {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
@@ -1342,6 +1354,12 @@ body:not(.dark) .tc-tile__header:hover { background: rgba(0,0,0,0.04); }
   background: rgba(0,0,0,0.2);
   border-radius: 4px;
   padding: 4px;
+  /* Bounded: the map lists every block of the card, and a deep card's
+   * rows filled the deck's whole editor pane — which has a fixed height
+   * and, until it scrolled, no way past them — so the editor beneath
+   * collapsed to nothing. */
+  max-height: 180px;
+  overflow-y: auto;
 }
 .tc-callee__row {
   display: flex; align-items: center; gap: 6px;
@@ -1391,6 +1409,10 @@ body:not(.dark) .tc-callee__pause { color: #6639ba; }
 body:not(.dark) .tc-callee__caller {
   color: #0550ae;
   background: rgba(0,0,0,0.05);
+}
+body:not(.dark) .tc-callee__open {
+  color: #6639ba;
+  border-color: rgba(102,57,186,0.45);
 }
 body:not(.dark) .tc-callee__kind {
   color: #24292f;

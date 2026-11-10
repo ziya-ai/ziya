@@ -7,7 +7,7 @@
  * how it last went.  Pure, so they are unit-tested without rendering.
  */
 import type {
-  ScheduleCadence, ScheduleRegistrationRow, SchedulerStatus,
+  ScheduleCadence, ScheduleCallRef, ScheduleRegistrationRow, SchedulerStatus,
 } from '../../services/scheduleApi';
 import { formatRelative } from './scheduleSummary';
 
@@ -174,6 +174,23 @@ export function lastOutcome(
 
 export function runCountText(row: ScheduleRegistrationRow): string {
   return plural(row.fires_so_far, 'run') + (row.skips_so_far ? `, ${row.skips_so_far} skipped` : '');
+}
+
+export interface CallLine {
+  text: string;
+  /** The card to open on click, when the target resolved to one. */
+  cardId: string | null;
+  /** The target names a card nobody can find. */
+  missing: boolean;
+}
+
+/** What a Call in the schedule's body runs, by name rather than by the id
+ *  the author may have typed. */
+export function describeCall(c: ScheduleCallRef): CallLine {
+  if (c.kind === 'file_task') return { text: `task “${c.target || '?'}” from tasks.yaml`, cardId: null, missing: false };
+  if (!c.target) return { text: 'a Call with no target', cardId: null, missing: true };
+  if (c.resolved && c.card_id) return { text: c.card_name || c.card_id, cardId: c.card_id, missing: false };
+  return { text: `“${c.target}” — no such card`, cardId: null, missing: true };
 }
 
 /** One short line saying which process runs the schedules. */
