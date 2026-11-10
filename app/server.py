@@ -427,6 +427,20 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     except Exception as e:
         logger.warning(f"Tracked-file notice failed (non-fatal): {e}")
 
+    # References this conversation depends on -- URLs, files, PDFs, other
+    # threads it pinned or that tools picked up (design/conversation-
+    # references.md).  Link-only, one line each; per-turn like the tracked
+    # files above, so it rides on the final user message.
+    try:
+        from app.utils.conversation_references import format_references_notice, turn_index
+        _refs_notice = format_references_notice(
+            conversation_id, None, turn_index(chat_history))
+        if _refs_notice:
+            _handoff_turn_part = "\n\n".join(
+                p for p in (_handoff_turn_part, _refs_notice) if p)
+    except Exception as e:
+        logger.warning(f"References notice failed (non-fatal): {e}")
+
     # SDO-183: Strip hidden characters from user input before it reaches the model.
     # This prevents Unicode tag smuggling attacks where invisible instructions
     # are embedded in user prompts.
@@ -2055,6 +2069,13 @@ async def stream_chunks(body):
         current_context=files
     )
     accumulated_content = ""
+    # References the tools of this turn touched (design/conversation-
+    # references.md): derived from tool_display chunks below, the way the ✦
+    # skill pickup is, and written to the chat record once after the reply.
+    from app.utils.conversation_references import (
+        pickup_from_tool_display, record_turn as record_reference_turn, turn_index,
+    )
+    _ref_pickups = []
     
     # Project root is now handled by ProjectContextMiddleware via X-Project-Root header.
     # Also set the ContextVar from the body param for backwards compatibility.
@@ -2264,6 +2285,10 @@ async def stream_chunks(body):
                         _cap = capability_used_event(chunk)
                         if _cap:
                             yield f"data: {json.dumps(_cap)}\n\n"
+                        # 📎 pickup: a URL / file / PDF / thread a tool read.
+                        _ref = pickup_from_tool_display(chunk, project_root)
+                        if _ref:
+                            _ref_pickups.append(_ref)
                     elif chunk.get('type') == 'tool_execution':  # Legacy support
                         logger.debug(f"🔍 TOOL_EXECUTION (legacy): {chunk.get('tool_name')} completed")
                     elif chunk.get('type') == 'stream_end':
@@ -2458,6 +2483,9 @@ async def stream_chunks(body):
                                 _cap = capability_used_event(retry_chunk)
                                 if _cap:
                                     yield f"data: {json.dumps(_cap)}\n\n"
+                                _ref = pickup_from_tool_display(retry_chunk, project_root)
+                                if _ref:
+                                    _ref_pickups.append(_ref)
                             elif retry_chunk.get('type') == 'throttling_error':
                                 yield f"data: {json.dumps(retry_chunk)}\n\n"
                             elif retry_chunk.get('type') in ('continuation_rewind', 'continuation_failed', 'tool_group_end'):
@@ -2487,6 +2515,22 @@ async def stream_chunks(body):
                     logger.info(accumulated_content)
                     logger.info("=" * 80)
                 
+                # 📎 one chat-record write for this turn's reference pickups
+                # and citations.  Off the loop: it rewrites the chat file.
+                # Before the done frame: the references_updated frame below is
+                # what makes the context-bar line re-fetch, and the client
+                # stops reading at done.
+                if conversation_id and (_ref_pickups or accumulated_content.strip()):
+                    try:
+                        _ref_counts = await asyncio.to_thread(
+                            record_reference_turn, conversation_id, project_root,
+                            _ref_pickups, accumulated_content,
+                            turn_index(chat_history))
+                        if _ref_counts and any(_ref_counts.values()):
+                            yield f"data: {json.dumps({'type': 'references_updated', 'conversation_id': conversation_id, **_ref_counts})}\n\n"
+                    except Exception as _ref_err:
+                        logger.debug(f"Reference recording failed (non-fatal): {_ref_err}")
+
                 yield f"data: {json.dumps({'done': True})}\n\n"
 
                 # Schedule background memory work AFTER yielding done so the
