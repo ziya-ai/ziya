@@ -34,7 +34,8 @@ import { blockquoteTheme } from '../utils/blockquoteTheme';
 import { repairNearMissTableSeparator } from '../utils/tableSeparatorRepair';
 import { DraggableTable } from './DraggableTable';
 import { FailedHunkList } from './FailedHunkList';
-import { FileDragChip, FileDragIcon, filePathFromHeader } from './FileDragChip';
+import { FileDragChip, FileDragIcon, FilePathLink, filePathFromHeader } from './FileDragChip';
+import { fileLinkPath } from '../utils/fileLinks';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
 // D-014: horizontal-overflow affordances for markdown sub-surfaces (long code
@@ -6175,6 +6176,14 @@ export const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableC
                     // ZiyaLinkNavigator (document-level click handler); mark
                     // them so they read as "opens a conversation", not a URL.
                     const isInAppLink = typeof linkToken.href === 'string' && linkToken.href.startsWith('ziya://');
+                    // A relative or file:// href names a file on disk: open,
+                    // reveal or drag it (FilePathLink).  Explicit links only;
+                    // codespans and block headers are deliberately not detected.
+                    const linkedFilePath = isInAppLink ? null : fileLinkPath(linkToken.href);
+                    if (linkedFilePath) {
+                        return <FilePathLink key={sk} path={linkedFilePath} title={linkToken.title ?? undefined}
+                        >{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</FilePathLink>;
+                    }
                     return <a key={sk} href={linkToken.href}
                         className={isInAppLink ? 'ziya-link' : undefined}
                         title={linkToken.title ?? (isInAppLink ? 'Open in Ziya' : undefined)}

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { message } from 'antd';
 import { attachFileDrag, fileBasename } from '../utils/fileDrag';
+import { fileUri, openProjectFile } from '../utils/fileLinks';
 
 interface FileDragChipProps {
     /** Project-relative path named by a file_read / file_write block. */
@@ -12,8 +13,8 @@ interface FileDragChipProps {
  * Wire `ref`'s element as a drag source for `path` via attachFileDrag.
  * Returns the fetch error, if any, so the element can say why it is inert.
  */
-function useFileDrag(path: string) {
-    const ref = useRef<HTMLSpanElement>(null);
+function useFileDrag<T extends HTMLElement = HTMLSpanElement>(path: string) {
+    const ref = useRef<T>(null);
     const [failed, setFailed] = useState<string | null>(null);
     useEffect(() => {
         const el = ref.current;
@@ -85,5 +86,73 @@ export function filePathFromHeader(header: string | undefined | null): string | 
     const m = /^file (?:read|write):\s+(.+?)\s*$/.exec(header || '');
     return m ? m[1] : null;
 }
+
+interface FilePathLinkProps {
+    /** Project-relative or absolute path the link's href named. */
+    path: string;
+    title?: string;
+    children?: React.ReactNode;
+}
+
+/**
+ * A markdown link in prose whose href names a file
+ * (`[report](.ziya/documents/report.md)`).  The anchor's href is the
+ * file:// URI, so Copy Link yields a real address; a click asks the server
+ * to open the file in its default app, Alt-click or the ⤴ glyph reveals it
+ * in Finder/Explorer, and dragging it out carries the file itself
+ * (attachFileDrag).  When the server is not on this machine the click
+ * copies the URI instead of opening.
+ */
+export const FilePathLink: React.FC<FilePathLinkProps> = ({ path, title, children }) => {
+    const { ref, failed } = useFileDrag<HTMLAnchorElement>(path);
+    const [busy, setBusy] = useState(false);
+    const name = fileBasename(path);
+    const href = fileUri(path, (window as any).__ZIYA_CURRENT_PROJECT_PATH__) ?? path;
+
+    const open = async (reveal: boolean): Promise<void> => {
+        if (busy) return;
+        setBusy(true);
+        try {
+            const r = await openProjectFile(path, reveal);
+            if (!r.opened) {
+                const uri = r.uri ?? href;
+                try { await navigator.clipboard?.writeText(uri); } catch { /* no clipboard here */ }
+                message.info({
+                    content: `${r.reason || 'Cannot open from here'}; path copied: ${r.path ?? path}`,
+                    key: `file-open-${path}`,
+                });
+            }
+        } catch (err) {
+            message.warning({
+                content: `Cannot open ${name}: ${err instanceof Error ? err.message : String(err)}`,
+                key: `file-open-${path}`,
+            });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const dragNote = failed ? `not draggable: ${failed}` : 'drag to copy the file out';
+    return (
+        <a
+            ref={ref}
+            href={href}
+            className="file-path-link"
+            data-file-path={path}
+            title={title ?? `Open ${name} · Alt-click to reveal in file browser · ${dragNote}`}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); void open(e.altKey); }}
+        >
+            {children}
+            <span
+                className="file-path-link-reveal"
+                role="button"
+                aria-label={`Reveal ${name} in file browser`}
+                title="Reveal in file browser"
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); void open(true); }}
+                style={{ marginLeft: 3, fontSize: '0.85em', opacity: 0.7, cursor: 'pointer' }}
+            >⤴</span>
+        </a>
+    );
+};
 
 export default FileDragChip;

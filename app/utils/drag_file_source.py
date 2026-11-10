@@ -13,8 +13,10 @@ this exposes nothing the model could not already read in that project.
 from __future__ import annotations
 
 import mimetypes
+import shutil
+import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 # Files larger than this are not dragged: the frontend base64s the whole
 # body into the drag payload and the macOS helper copies it again.
@@ -45,11 +47,13 @@ class DragFileError(Exception):
         self.message = message
 
 
-def resolve_drag_file(path: str, project_root: Optional[str]) -> Tuple[Path, str]:
+def resolve_drag_file(path: str, project_root: Optional[str],
+                      max_bytes: Optional[int] = MAX_DRAG_FILE_BYTES) -> Tuple[Path, str]:
     """``(absolute path, mime)`` for a readable project file, or DragFileError.
 
     404 for a missing/non-regular file, 403 for a path outside the readable
-    set, 413 for an oversized one, 400 for a blank request.
+    set, 413 for one over ``max_bytes`` (None: no cap, for opening a file
+    in place rather than copying it), 400 for a blank request.
     """
     from app.mcp.tools.fileio import _get_all_readable_prefixes, _resolve_and_validate
 
@@ -65,6 +69,31 @@ def resolve_drag_file(path: str, project_root: Optional[str]) -> Tuple[Path, str
         raise DragFileError(403, str(e))
     if not resolved.is_file():
         raise DragFileError(404, f"not a file: {rel}")
-    if resolved.stat().st_size > MAX_DRAG_FILE_BYTES:
+    if max_bytes is not None and resolved.stat().st_size > max_bytes:
         raise DragFileError(413, f"file too large to drag ({resolved.stat().st_size} bytes)")
     return resolved, mime_for(rel)
+
+
+# Hosts a browser on the server's own machine connects from.  An SSH tunnel
+# also arrives as loopback, so this is a necessary, not sufficient, test.
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"})
+
+
+def is_local_client(host: Optional[str]) -> bool:
+    """True when ``host`` (the request's client address) is this machine."""
+    return host is None or host in _LOCAL_HOSTS
+
+
+def open_argv(path: Path, reveal: bool, platform: str = sys.platform) -> Optional[List[str]]:
+    """The command that opens ``path`` in its default application, or with
+    ``reveal`` selects it in the file browser (Finder / Explorer; on Linux
+    the parent directory is opened, xdg-open has no select).  None when the
+    host has no opener, e.g. a headless Linux server without xdg-open."""
+    p = str(path)
+    if platform == "darwin":
+        return ["open", "-R", p] if reveal else ["open", p]
+    if platform.startswith("win"):
+        return ["explorer", f"/select,{p}"] if reveal else ["cmd", "/c", "start", "", p]
+    if shutil.which("xdg-open") is None:
+        return None
+    return ["xdg-open", str(path.parent) if reveal else p]

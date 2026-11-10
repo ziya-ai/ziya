@@ -14,11 +14,14 @@ blocking work that must not park the loop.  Guarded by
 tests/test_drag_helper_not_event_loop_blocking.py.
 """
 
-from fastapi import APIRouter, HTTPException, Query
+import subprocess
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from ..utils.drag_file_source import DragFileError, resolve_drag_file
+from ..utils.drag_file_source import (DragFileError, is_local_client, open_argv,
+                                      resolve_drag_file)
 from ..utils.drag_pasteboard_helper import get_supervisor, is_supported
 
 router = APIRouter(prefix="/api/v1/drag", tags=["drag"])
@@ -28,6 +31,13 @@ class ArmRequest(BaseModel):
     # window.location.origin of the page starting the drag.  The helper
     # rewrites only drags Chromium stamps with this origin.
     origin: str
+
+
+class OpenRequest(BaseModel):
+    # Project-relative (or readable absolute) path of the file to open.
+    path: str
+    # True: select the file in Finder/Explorer instead of opening it.
+    reveal: bool = False
 
 
 @router.get("/status")
@@ -67,3 +77,36 @@ def drag_file(path: str = Query(..., description="Project-relative file path")):
         str(resolved), media_type=mime, filename=resolved.name,
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/open")
+def open_file(body: OpenRequest, request: Request):
+    """Open a project file in its default application on the machine the
+    server runs on, or with ``reveal`` select it in the file browser.  The
+    target of a `[name](path)` link in the chat (frontend FilePathLink).
+
+    Confined exactly like ``file_read``; no size cap, nothing is copied.
+    Only acted on for a loopback client: a browser on another machine gets
+    ``supported: false`` plus the ``file://`` URI so it can copy the address
+    instead.  Plain ``def``: the spawn runs on the threadpool.
+    """
+    from ..context import get_project_root_or_none
+    try:
+        resolved, _ = resolve_drag_file(body.path, get_project_root_or_none(), max_bytes=None)
+    except DragFileError as e:
+        raise HTTPException(status_code=e.status, detail=e.message)
+    info = {"path": str(resolved), "uri": resolved.as_uri(), "reveal": body.reveal}
+    host = request.client.host if request.client else None
+    if not is_local_client(host):
+        return {"opened": False, "supported": False,
+                "reason": "the browser is not on the server's machine", **info}
+    argv = open_argv(resolved, body.reveal)
+    if argv is None:
+        return {"opened": False, "supported": False,
+                "reason": "no file opener (xdg-open) on this host", **info}
+    try:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"could not launch {argv[0]}: {e}")
+    return {"opened": True, "supported": True, **info}
