@@ -57,6 +57,11 @@ def _make_calibrator():
     cal.get_baseline_overhead.return_value = 0
     cal.MIN_CHARS_PER_TOKEN = TokenCalibrator.MIN_CHARS_PER_TOKEN
     cal.MAX_CHARS_PER_TOKEN = TokenCalibrator.MAX_CHARS_PER_TOKEN
+    # _record_calibration unpacks ``lo, hi = calibrator.plausible_band(...)``;
+    # a bare MagicMock there raises ValueError, which the method swallows and
+    # logs -- so record_actual_usage is silently never reached.
+    cal.plausible_band.return_value = (
+        TokenCalibrator.MIN_CHARS_PER_TOKEN, TokenCalibrator.MAX_CHARS_PER_TOKEN)
     return cal
 
 
