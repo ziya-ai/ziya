@@ -6080,6 +6080,10 @@ Please retry the tool call with valid JSON. Ensure:
     # \1\n\n\2 still inserts the desired blank line.
     _FENCE_GLUED_RE = re.compile(r'([^\n])(`{3,}[a-zA-Z][\w-]*)(?=\s|$)')
     _FENCE_SINGLE_NL_RE = re.compile(r'(?<!\n)\n(`{3,}[a-zA-Z][\w-]*)(?=\s|$)')
+    # A fence opener already at line start (<=3 spaces of indent), any info.
+    _FENCE_LINE_OPEN_RE = re.compile(r'^( {0,3})(`{3,}|~{3,})([^\n]*)$', re.M)
+    # The fence run at a known opener position, for sizing its closer.
+    _FENCE_RUN_RE = re.compile(r'( {0,3})(`{3,}|~{3,})')
 
     def _normalize_fence_spacing(self, text: str, code_block_tracker: dict, *,
                                  preceding: str = '') -> str:
@@ -6131,16 +6135,79 @@ Please retry the tool call with valid JSON. Ensure:
             head = before[nl + 1:] if nl >= 0 else prefix.rsplit('\n', 1)[-1] + before
             return head.strip() == ''
 
-        # Case 1: non-newline character directly before fence opening
-        normalized = self._FENCE_GLUED_RE.sub(
-            lambda m: (m.group(1) + '\n\n' + m.group(2))
-            if _outside_span(m, 2) and not _indented_line_start(m) else m.group(0),
-            text)
-        # Case 2: single newline before fence opening (promote to blank line)
-        normalized = self._FENCE_SINGLE_NL_RE.sub(
-            lambda m: ('\n\n' + m.group(1))
-            if _outside_span(m, 1) else m.group(0),
-            normalized)
+        def _glued(m: re.Match) -> bool:
+            # Case 1: non-newline character directly before fence opening.
+            return _outside_span(m, 2) and not _indented_line_start(m)
+
+        def _single_nl(m: re.Match) -> bool:
+            # Case 2: single newline before fence opening.  At offset 0 the
+            # (?<!\n) lookbehind cannot see the previous chunk; if that chunk
+            # ended in a newline the blank line is already complete.
+            if m.start() == 0 and preceding.endswith('\n'):
+                return False
+            return _outside_span(m, 1)
+
+        def _line_opener(pos: int) -> Optional[re.Match]:
+            for m in self._FENCE_LINE_OPEN_RE.finditer(text, pos):
+                if m.start() == 0 and preceding and not preceding.endswith('\n'):
+                    continue  # the line began in the previous chunk: mid-line
+                if m.group(2)[0] == '`' and '`' in m.group(3):
+                    continue  # backtick in info string: a code span, not a fence
+                return m
+            return None
+
+        # Walk the chunk in order.  The tracker only says the chunk STARTS
+        # outside a block; from the first opener on (already at line start,
+        # or made one here) everything up to its closing fence is block
+        # content and is copied verbatim.  Normalising the whole chunk split
+        # a mermaid label quoting "```diff" onto its own line whenever the
+        # mermaid opener and that label arrived in the same chunk, and the
+        # label sat past a blank line (so the inline-span guard, which is
+        # paragraph-scoped, could not see the opener).
+        out: List[str] = []
+        pos = 0
+        while pos < len(text):
+            cands = []
+            g = next((m for m in self._FENCE_GLUED_RE.finditer(text, pos) if _glued(m)), None)
+            if g:
+                cands.append((g.start(2), 0, 'glued', g))
+            s = next((m for m in self._FENCE_SINGLE_NL_RE.finditer(text, pos) if _single_nl(m)), None)
+            if s:
+                cands.append((s.start(1), 0, 'nl', s))
+            o = _line_opener(pos)
+            if o:
+                cands.append((o.start(2), 1, 'line', o))
+            if not cands:
+                out.append(text[pos:])
+                break
+            _, _, kind, m = min(cands, key=lambda c: (c[0], c[1]))
+            if kind == 'glued':
+                out.append(text[pos:m.start()] + m.group(1) + '\n\n')
+                fence_at = m.start(2)
+            elif kind == 'nl':
+                out.append(text[pos:m.start()] + '\n\n')
+                fence_at = m.start(1)
+            else:
+                out.append(text[pos:m.start()])
+                fence_at = m.start()
+            run_m = self._FENCE_RUN_RE.match(text, fence_at)
+            indent, run = run_m.group(1), run_m.group(2)
+            eol = text.find('\n', fence_at)
+            if eol < 0:
+                out.append(text[fence_at:])
+                break
+            # The closer sits at the opener's indent or less: a " ```" diff
+            # context line inside a column-0 diff block is content, as the
+            # tracker already reads it.
+            close_re = re.compile(
+                r'^ {0,%d}%s{%d,}[ \t]*$' % (len(indent), re.escape(run[0]), len(run)), re.M)
+            close = close_re.search(text, eol + 1)
+            if close is None:
+                out.append(text[fence_at:])
+                break
+            out.append(text[fence_at:close.end()])
+            pos = close.end()
+        normalized = ''.join(out)
 
         if normalized != text:
             logger.debug(f"🔍 FENCE_NORMALIZE: Inserted blank line before code fence")
