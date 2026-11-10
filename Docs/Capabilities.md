@@ -1417,7 +1417,30 @@ should stop and go fix something.
 Whether the remaining subagents are cancelled depends on the kind. An
 authentication fault is session-level: one means every sibling is already dead,
 so the fan-out is cut short immediately rather than burning the rest against a
-dependency known to be gone. Throttling and transient service errors are
+dependency known to be gone. "Cut short" is hard: a sibling already in flight
+gets five seconds to unwind and is then abandoned, so a provider retry ladder
+that swallows the cancellation cannot keep the run alive for hours. The same
+bound applies to a block's `time_budget_secs`.
+
+Fan-outs also check the credential *before* each lane starts, not only when a
+model call fails. The check is cheap and per endpoint: for Bedrock it is the
+active auth provider's own validity check (an enterprise plugin's notion of
+"valid" is the one consulted); for API-key endpoints (Anthropic, OpenAI, Google,
+z.ai, Meta) it is whether the key is set in the environment, since a remote
+probe per lane would be a request to the very service being protected; a local
+model needs no credential and is never checked. Verdicts are cached for a
+minute, invalidated the moment a lane observes an authentication fault, and a
+check that cannot run never blocks. A lane refused by the preflight raises the
+same `authentication_error` fault an observed failure would, so the hold, the
+breadth record and the resume point are identical, minus the model turns spent
+discovering it. The same check runs at launch, so a scheduled fire into a dead
+credential reads `held: credentials …` rather than `failed`.
+`ZIYA_SKIP_LAUNCH_PREFLIGHT=1` disables both.
+
+Once the credential is renewed, **Resume** on the held run re-runs only the
+iterations that did not finish (failed or cancelled); passed iterations are
+replayed from record. A held 127-lane audit with 36 lanes done resumes as a
+91-lane run, not a 127-lane one. Throttling and transient service errors are
 per-request and have already survived several retries with backoff, so a single
 one never aborts a healthy fan-out — the run holds, but the siblings that can
 still finish do. A proportion of the fan-out failing that way does gate it;

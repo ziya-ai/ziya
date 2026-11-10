@@ -380,6 +380,14 @@ class ExecutionContext:
         kind = getattr(exc, "infra_kind", "")
         if not kind:
             return
+        if kind == "authentication_error":
+            # The next lane's preflight must re-check rather than trust a
+            # verdict cached before this fault (app/utils/credential_preflight).
+            try:
+                from ..utils.credential_preflight import invalidate
+                invalidate()
+            except Exception:  # noqa: BLE001
+                pass
         # Labels, not keys — and rooted at the card that owns the run, so
         # the breadcrumb names every hop instead of starting mid-chain.
         # Falls back to the key stack only when no labels were captured at
@@ -2368,6 +2376,7 @@ async def _execute_repeat(
                 [_iter_label(i) for i in range(len(iterations))])
         iter_ctx_token = set_task_iteration_context(block.id, index, _fanout)
         try:
+            await _lane_preflight(block.id)
             artifact = await _execute_sequence(
                 block.body, iter_scope,
                 on_failure=(block.on_failure or "continue"),

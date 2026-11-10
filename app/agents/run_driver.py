@@ -76,34 +76,30 @@ async def _preflight(launch: RunLaunch) -> bool:
     difference between a nightly that reads "failed" and one that reads
     "held: credentials expired".
 
-    Bedrock-only, opt-out-able (ZIYA_SKIP_LAUNCH_PREFLIGHT=1: a stubbed
-    executor under test, a card doing only shell/file work, an offline
-    environment) and best-effort: a failure of the check ITSELF proceeds
-    to launch -- "cannot verify" is not "invalid".
+    The endpoint-specific check lives in ``app/utils/credential_preflight``
+    (an auth-provider check for bedrock, key presence for API-key
+    endpoints, nothing for local models).  Opt-out-able
+    (ZIYA_SKIP_LAUNCH_PREFLIGHT=1: a stubbed executor under test, a card
+    doing only shell/file work, an offline environment) and best-effort: a
+    failure of the check ITSELF proceeds to launch -- "cannot verify" is
+    not "invalid".  The same check gates each fan-out lane
+    (block_executor._lane_preflight), so a credential that dies mid-run
+    holds the run at the next lane instead of after N failed model calls.
     """
     run_id = launch.run_id
     try:
-        skip = os.environ.get(
-            "ZIYA_SKIP_LAUNCH_PREFLIGHT", "",
-        ).strip().lower() in ("1", "true", "yes")
-        if skip:
-            logger.debug("Launch preflight skipped (ZIYA_SKIP_LAUNCH_PREFLIGHT)")
-            return True
-        from .models import ModelManager
-        endpoint = (ModelManager.get_state() or {}).get("endpoint", "bedrock")
-        if endpoint != "bedrock":
-            return True
-        from ..utils.aws_utils import check_aws_credentials
-        # STS round trip (~10s cold) plus botocore client setup: never on
-        # the event loop.
-        ok, msg = await asyncio.to_thread(check_aws_credentials, is_server_startup=False)
+        from ..utils.credential_preflight import check_endpoint_async, current_endpoint
+        endpoint = current_endpoint()
+        # A launch is the one moment a stale cached verdict is not worth
+        # the saved round trip: force the check here, let the lanes cache.
+        ok, msg = await check_endpoint_async(endpoint, force=True)
         if ok:
             return True
         launch.run_storage.mark_held(
             run_id, reason="authentication_error",
             block_id=getattr(launch.root, "id", "") or "",
             error=(f"Launch preflight failed — the run did not start. "
-                   f"{msg or 'AWS credentials are not valid.'}"),
+                   f"{msg or f'Credentials for endpoint {endpoint!r} are not valid.'}"),
         )
         await _relay.safe_push(run_id, {
             "type": "run_completed", "run_id": run_id,
