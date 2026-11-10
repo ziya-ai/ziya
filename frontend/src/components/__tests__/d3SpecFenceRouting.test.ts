@@ -24,6 +24,7 @@ describe('d3TypeForFenceLang', () => {
         expect(d3TypeForFenceLang('force-directed')).toBe('force-directed');
         expect(d3TypeForFenceLang('forcedirected')).toBe('force-directed');
         expect(d3TypeForFenceLang('network')).toBe('network');
+        expect(d3TypeForFenceLang('orbit')).toBe('orbit');
     });
 
     it('declines everything else, including d3 itself and nullish input', () => {
@@ -68,9 +69,16 @@ describe('JSON-spec D3 fences cross every seam', () => {
         expect(registry).toMatch(/name: 'chord-renderer'/);
         expect(registry).toMatch(/name: 'force-directed'/);
         expect(registry).toMatch(/name: 'network-diagram'/);
+        expect(registry).toMatch(/name: 'orbit-renderer'/);
     });
 
     it('the model is taught the chord fence vocabulary', () => {
         expect(read('app/agents/prompts.py')).toMatch(/```chord fence/);
+    });
+
+    it('the model is taught the orbit fence and pointed at its skill', () => {
+        const prompts = read('app/agents/prompts.py');
+        expect(prompts).toContain('an orbit fence (language tag `orbit`)');
+        expect(prompts).toContain('`orbit_views` skill');
     });
 });
