@@ -71,8 +71,10 @@ _HTML_COMMENT_RE = re.compile(r"<!-{2,}(.*?)-{2,}>")
 # A marker token is a short ``key:value`` / ``key=value`` of identifier
 # characters (``...`` allowed as a placeholder value), optionally followed
 # by a comma. No bare words, no spaces, no URL characters: nothing that
-# can express an instruction.
-_MARKER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-]{1,24}[:=][A-Za-z0-9_.\-]{0,24},?$")
+# can express an instruction. One leading ``/`` on the key is allowed so the
+# closing half of a paired marker (``<!-- /comment:ID -->``, documented by
+# pippin_update_artifact) is recognised like the opening half.
+_MARKER_TOKEN_RE = re.compile(r"^/?[A-Za-z0-9_\-]{1,24}[:=][A-Za-z0-9_.\-]{0,24},?$")
 _MARKER_MAX_TOKENS = 3
 _MARKER_MAX_LEN = 48
 
