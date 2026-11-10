@@ -711,6 +711,69 @@ def locate_chat(chat_id: str):
         "folderId": getattr(chat, "groupId", None),
     }
 
+
+# ── Conversation references (design/conversation-references.md, slice 2) ──
+# Thin routes over app.utils.conversation_references; the chat record is
+# the store.  The project root is what that module keys the record on.
+
+def _project_root_for(project_id: str) -> str:
+    project = ProjectStorage(get_ziya_home()).get(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project.path
+
+
+class ReferencePin(BaseModel):
+    locator: str
+    title: Optional[str] = None
+
+
+@router.get("/api/v1/projects/{project_id}/chats/{chat_id}/references")
+def list_chat_references(project_id: str, chat_id: str):
+    """Every reference with ``useful`` / ``faded`` flags, pinned first, plus
+    the summary counts the context-bar line shows and the current turn."""
+    from ..utils.conversation_references import list_references
+    out = list_references(chat_id, _project_root_for(project_id))
+    if out is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return out
+
+
+@router.post("/api/v1/projects/{project_id}/chats/{chat_id}/references")
+def pin_chat_reference(project_id: str, chat_id: str, body: ReferencePin):
+    """Pin a URL, file, PDF or ``ziya://chat/…`` link to the conversation."""
+    from ..utils.conversation_references import pin_reference, infer_kind, KINDS
+    root = _project_root_for(project_id)
+    if infer_kind(body.locator) not in KINDS:
+        raise HTTPException(status_code=400, detail="Not a trackable reference "
+                            "(URL, file, PDF or ziya://chat link)")
+    ref = pin_reference(chat_id, root, body.locator, title=body.title)
+    if ref is None:
+        # Trackable kind but refused: scratch path, malformed link, or no chat.
+        if ChatStorage(get_project_dir(project_id)).get(chat_id) is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        raise HTTPException(status_code=400, detail="Reference cannot be pinned "
+                            "(scratch path or malformed link)")
+    return ref
+
+
+@router.post("/api/v1/projects/{project_id}/chats/{chat_id}/references/{ref_id}/pin")
+def promote_chat_reference(project_id: str, chat_id: str, ref_id: str):
+    """Promote a picked-up reference to pinned; its uses are kept."""
+    from ..utils.conversation_references import promote_reference
+    ref = promote_reference(chat_id, _project_root_for(project_id), ref_id)
+    if ref is None:
+        raise HTTPException(status_code=404, detail="Reference not found")
+    return ref
+
+
+@router.delete("/api/v1/projects/{project_id}/chats/{chat_id}/references/{ref_id}")
+def unpin_chat_reference(project_id: str, chat_id: str, ref_id: str):
+    from ..utils.conversation_references import unpin_reference
+    if not unpin_reference(chat_id, _project_root_for(project_id), ref_id):
+        raise HTTPException(status_code=404, detail="Reference not found")
+    return {"ok": True}
+
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}/context-debug")
 def get_chat_context_debug(project_id: str, chat_id: str):
     """Return recorded per-iteration input-token snapshots for a conversation.
