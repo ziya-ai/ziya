@@ -63,13 +63,24 @@ def test_install_uses_the_interpreter_running_ziya():
     assert installed is True
     assert diagnostic == ""
     run.assert_called_once_with(
-        [sys.executable, "-m", "pip", "install", "faster-whisper"],
+        [sys.executable, "-m", "pip", "install", "faster-whisper", "av<19"],
         capture_output=True,
         text=True,
         timeout=600,
         check=False,
     )
     invalidate.assert_called_once_with()
+
+
+def test_install_pins_pyav_below_the_release_that_dropped_metadata_errors():
+    """PyAV 19 removed ``av.open(metadata_errors=...)``, which released
+    faster-whisper still passes; an unpinned install produced
+    "open() got an unexpected keyword argument 'metadata_errors'" on the
+    first transcription (2026-11-09).  The pin must ride on the same pip
+    invocation as faster-whisper, or pip resolves ``av`` freely."""
+    pkgs = transcription_routes.TRANSCRIPTION_PIP_PACKAGES
+    assert "faster-whisper" in pkgs
+    assert any(p.replace(" ", "") == "av<19" for p in pkgs), pkgs
 
 
 def test_install_endpoint_skips_pip_when_dependency_is_already_present(client):

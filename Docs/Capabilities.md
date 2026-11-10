@@ -1144,7 +1144,11 @@ never submitted to a browser speech service or AI model provider.
 No separate installation command is required. On first use, clicking the
 microphone installs `faster-whisper` through the exact Python interpreter
 running Ziya, so virtual environments and pipx installations are handled
-correctly. Recording begins immediately after installation completes. The first
+correctly (the install pins PyAV below 19, whose `av.open` no longer accepts
+the `metadata_errors` argument faster-whisper passes). Recording begins
+immediately after installation completes. If an older install already fails
+with `open() got an unexpected keyword argument 'metadata_errors'`, run
+`pip install "av<19"` with Ziya's own interpreter. The first
 transcription also downloads the selected Whisper model into
 `~/.ziya/models/whisper/`; subsequent recordings reuse it. The default `base`
 model runs on CPU with `int8` computation.

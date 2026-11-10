@@ -82,6 +82,15 @@ _install_lock = threading.Lock()
 _transcription_lock = threading.Lock()
 
 
+# Packages installed on first microphone use.  PyAV 19 removed the
+# ``metadata_errors`` keyword from ``av.open``; released faster-whisper still
+# passes it (``faster_whisper/audio.py``), so an unpinned install resolved
+# ``av`` to 19.x and the first transcription failed with
+# "open() got an unexpected keyword argument 'metadata_errors'" (2026-11-09).
+# Keep PyAV below 19 until a faster-whisper release carries its own guard.
+TRANSCRIPTION_PIP_PACKAGES = ["faster-whisper", "av<19"]
+
+
 def _dependency_available() -> bool:
     """Return whether the optional faster-whisper package is installed."""
     return importlib.util.find_spec("faster_whisper") is not None
@@ -99,7 +108,7 @@ def _install_dependency() -> tuple[bool, str]:
             return True, ""
 
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "faster-whisper"],
+            [sys.executable, "-m", "pip", "install", *TRANSCRIPTION_PIP_PACKAGES],
             capture_output=True,
             text=True,
             timeout=600,
