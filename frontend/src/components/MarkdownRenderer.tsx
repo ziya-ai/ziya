@@ -1,6 +1,7 @@
 import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId, useLayoutEffect } from 'react';
 import { DOCUMENT_CAPTION_PREFIX, parseDocumentCaption } from '../utils/renderToolPart';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
+import { d3TypeForFenceLang } from '../utils/d3FenceLang';
 import { marked, Tokens } from 'marked';
 import { isLatexFenceLang, latexProfileForLang } from '../constants/latexProfiles';
 import { Alert, Button, message, notification, Tooltip, Collapse } from 'antd';
@@ -4693,7 +4694,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         if (isLatexFenceLang(lang)) {
             return 'circuitikz';
         }
-        if (lang === 'd3') return 'd3';
+        // chord / force-directed / network / orbit fences carry a JSON spec for
+        // a D3 plugin; without this they fell through to 'code' and showed raw
+        // JSON (d3SpecFenceRouting.test.ts).
+        if (lang === 'd3' || d3TypeForFenceLang(lang) !== null) return 'd3';
 
         if (lang === 'packet' || lang === 'packet-diagram' || lang === 'bytefield') {
             return 'packet';
@@ -5617,7 +5621,8 @@ export const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableC
                         d3Spec = parseD3Spec(tokenWithText.text);
                         if (d3Spec && !d3Spec.type) {
                             // Treat "chart" as an alias for "type" (some LLMs emit {"chart":"mermaid",...})
-                            d3Spec.type = d3Spec.chart || 'd3';
+                            // then the fence language (a chord fence may omit "type").
+                            d3Spec.type = d3Spec.chart || d3TypeForFenceLang(tokenWithText.lang) || 'd3';
                         }
                     } catch (_) {
                         // Parsing failed — pass the raw string for D3Renderer
