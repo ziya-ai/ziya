@@ -207,7 +207,7 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     # ZIYA_MEMORY_EVAL_MODEL.
     "memory_eval": {
         "bedrock": "us.anthropic.claude-opus-4-8",
-        "google": "gemini-3.1-pro",
+        "google": "gemini-3.1-pro-preview",
         "openai": "gpt-5.5",
         "anthropic": "claude-opus-4-8",
     },
@@ -1138,6 +1138,9 @@ MODEL_CONFIGS = {
             "available_regions": ["us-east-1", "us-west-2"],
             "preferred_region": "us-east-1",
             "family": "glm",
+            # The glm family carries wrapper_class OpenAIBedrock; override it
+            # so this profile-only model routes through Converse (see above).
+            "wrapper_class": None,
             "token_limit": 1000000,
             "max_input_tokens": 1000000,
             "context_window": 1000000,
@@ -2821,7 +2824,7 @@ _VALID_MODEL_CONFIG_KEYS = frozenset({
     "supports_extended_context", "supports_function_calling",
     "supports_max_input_tokens", "supports_multimodal", "supports_streaming",
     "supports_thinking", "supports_vision", "temperature",
-    "thinking_budget", "thinking_effort_default", "thinking_level",
+    "thinking_budget", "thinking_display_options", "thinking_effort_default", "thinking_level",
     "tier", "timeout_multiplier", "token_limit", "top_k", "top_p",
     "unsupported_parameters", "wrapper_class",
 })
