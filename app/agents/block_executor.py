@@ -50,7 +50,7 @@ from ..storage.task_runs import TaskRunStorage
 from ..utils.roster_keys import derive_item_key, roster_key_problems
 from ..utils.run_time import now_ms
 from . import task_templating
-from .task_executor import TaskExecutorError, execute_task_block
+from .task_executor import TaskExecutorError, TaskInfraError, execute_task_block
 from . import task_run_stream_relay as _relay
 from ..utils.self_improve import stage_counts, stage_evidence
 from .until_evaluator import (
@@ -578,6 +578,93 @@ def _concurrency_gate(limit: int, planned: int):
     if limit <= 0 or planned <= limit:
         return contextlib.nullcontext()
     return asyncio.Semaphore(limit)
+
+
+# How long a cancelled iteration or Parallel child gets to unwind before it
+# is abandoned.  Run 5f83000a (2026-11-05): the infra gate closed on two
+# instant credential failures and cancelled every queued lane, but the four
+# lanes in flight ran 3.3–3.6 h more because the provider's retry ladder
+# swallowed CancelledError.  A cancel the cancelled thing can ignore is not
+# a cancel.
+HARD_CANCEL_GRACE_SECS = 5.0
+
+
+async def _hard_cancellable(coro, label: str):
+    """Await ``coro`` so that cancelling the awaiting task ends promptly.
+
+    The work runs in its own task behind ``asyncio.shield``, so a cancel
+    of the caller raises here at once instead of waiting for the inner
+    task's cooperation.  The inner task is then cancelled and given
+    ``HARD_CANCEL_GRACE_SECS``; if it is still running after that it is
+    abandoned (logged, its eventual exception retrieved so asyncio does
+    not complain) and the CancelledError propagates regardless.
+    """
+    inner = asyncio.ensure_future(coro)
+    try:
+        return await asyncio.shield(inner)
+    except asyncio.CancelledError:
+        if not inner.done():
+            inner.cancel()
+            await asyncio.wait({inner}, timeout=HARD_CANCEL_GRACE_SECS)
+            if not inner.done():
+                logger.warning(
+                    f"⏸️ {label} ignored cancellation for "
+                    f"{HARD_CANCEL_GRACE_SECS:.0f}s; abandoned"
+                )
+                inner.add_done_callback(
+                    lambda f: (f.exception() if not f.cancelled() else None))
+        raise
+
+
+async def _watch_fanout(ctx: "ExecutionContext", pending: List["asyncio.Task"],
+                        label: str) -> None:
+    """Cancel in-flight fan-out tasks on user cancel or infra-gate close.
+
+    ``gather(return_exceptions=True)`` does not short-circuit, so without
+    this a fan-out's siblings all run to completion against the same dead
+    dependency.  Shared by the parallel Repeat and the Parallel block,
+    which until 2026-11 had no watcher at all.
+    """
+    while any(not t.done() for t in pending):
+        if ctx.cancel_requested():
+            for t in pending:
+                if not t.done():
+                    t.cancel()
+            return
+        if ctx.infra_gate_closed():
+            n = sum(1 for t in pending if not t.done())
+            if n:
+                logger.warning(
+                    f"⏸️ INFRA_GATE cancelling {n} in-flight sibling(s) in {label}"
+                )
+            for t in pending:
+                if not t.done():
+                    t.cancel()
+            return
+        await asyncio.sleep(0.25)
+
+
+async def _lane_preflight(block_id: str) -> None:
+    """Refuse to start a lane whose endpoint credential is already known
+    bad (app/utils/credential_preflight.py; cached, so a wide fan-out pays
+    one check per TTL, not one per lane).
+
+    Raises ``TaskInfraError(infra_kind="authentication_error")``, the same
+    fault a lane produces when its first model call fails, so the gate,
+    the hold and the resume position behave exactly as for an observed
+    failure -- minus the model turns spent discovering it.  Any failure of
+    the check itself lets the lane start.
+    """
+    try:
+        from ..utils.credential_preflight import check_endpoint_async
+        ok, msg = await check_endpoint_async()
+    except Exception as e:  # noqa: BLE001 -- "cannot verify" is not "invalid"
+        logger.debug(f"lane preflight skipped for {block_id}: {e}")
+        return
+    if not ok:
+        raise TaskInfraError(
+            f"Lane did not start: credentials are not valid. {msg}",
+            infra_kind="authentication_error", block_id=block_id or "")
 
 
 async def _emit(ctx: "ExecutionContext", event: Dict[str, Any]) -> None:
@@ -2099,12 +2186,30 @@ async def _execute_parallel(
 
     async def _gated(child: Block) -> Artifact:
         async with gate:
-            return await execute_block(child, ctx)
+            try:
+                await _lane_preflight(child.id or block.id)
+                return await _hard_cancellable(
+                    execute_block(child, ctx), f"parallel child {child.id}")
+            except BaseException as exc:
+                # The watcher can only react to a fault it can see, and
+                # gather() surfaces one only after every sibling returns.
+                ctx.record_infra_fault(exc)
+                raise
 
-    children = await asyncio.gather(
-        *[_gated(c) for c in block.body],
-        return_exceptions=True,
-    )
+    # Width for the proportional gate, saved/restored like the repeat path.
+    _saved_width = ctx.infra_fanout_width
+    ctx.infra_fanout_width = len(block.body)
+    ctx.infra_widest_fanout = max(ctx.infra_widest_fanout, len(block.body))
+    pending = [asyncio.create_task(_gated(c)) for c in block.body]
+    watcher = asyncio.create_task(_watch_fanout(ctx, pending, f"parallel {block.id}"))
+    try:
+        children = await asyncio.gather(*pending, return_exceptions=True)
+    finally:
+        watcher.cancel()
+        ctx.infra_fanout_width = _saved_width
+    if ctx.cancel_requested() and not any(
+            isinstance(r, BaseException) and getattr(r, "infra_kind", "") for r in children):
+        raise BlockExecutionCancelled()
     # Infra faults propagate rather than becoming a failed child: see the
     # matching guard in _execute_repeat.  A held run keeps its resume
     # position; a failed one does not, and the fault is not a verdict on
@@ -2498,12 +2603,15 @@ async def _execute_repeat(
 
         async def _run_one_gated(i: int) -> Artifact:
             async with _gate:
-                return await _run_one(
-                    i,
-                    item=iterations[i].get("item"),
-                    item_key=iterations[i].get("item_key"),
-                    previous=None,
-                    all_prior=None,
+                return await _hard_cancellable(
+                    _run_one(
+                        i,
+                        item=iterations[i].get("item"),
+                        item_key=iterations[i].get("item_key"),
+                        previous=None,
+                        all_prior=None,
+                    ),
+                    f"iteration {i} of {block.id}",
                 )
 
         pending = [
@@ -2514,35 +2622,9 @@ async def _execute_repeat(
         # checks between iterations; the parallel path has no natural
         # checkpoint, so without this a repeat_count=1000 parallel block
         # ignores cancellation until every task finishes.
-        async def _watch_cancel() -> None:
-            while any(not t.done() for t in pending):
-                if ctx.cancel_requested():
-                    for t in pending:
-                        if not t.done():
-                            t.cancel()
-                    return
-                # Infra gate.  This is the ONLY place cancelling a
-                # sibling can still save work: gather(return_exceptions=
-                # True) does not short-circuit — it waits for every task —
-                # so by the time it returns, all N siblings have already
-                # run to completion against the same dead dependency.
-                # Measured: a fast-failing task alongside three 0.6 s
-                # siblings returned at 0.60 s with every task .done(), so
-                # a post-gather cancel() loop is a no-op that merely reads
-                # as if it bounded the damage.
-                if ctx.infra_gate_closed():
-                    n = sum(1 for t in pending if not t.done())
-                    if n:
-                        logger.warning(
-                            f"⏸️ INFRA_GATE cancelling {n} in-flight "
-                            f"sibling(s) in block {block.id}"
-                        )
-                    for t in pending:
-                        if not t.done():
-                            t.cancel()
-                    return
-                await asyncio.sleep(0.25)
-        watcher = asyncio.create_task(_watch_cancel())
+        # The infra gate is the ONLY place cancelling a sibling can still
+        # save work: gather(return_exceptions=True) does not short-circuit.
+        watcher = asyncio.create_task(_watch_fanout(ctx, pending, f"block {block.id}"))
         try:
             results = await asyncio.gather(*pending, return_exceptions=True)
         finally:
