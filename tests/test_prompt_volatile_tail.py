@@ -125,10 +125,12 @@ class TestSystemBlockIsTurnStable:
         """Live counts go to the tail; guidance/handles stay in the prefix."""
         stable = "\n\n## Persistent Memory\nguidance\n- **Domain** — `d1`"
 
-        def sections_v1():
+        # The assembler now passes query_texts / conversation_id (policy C
+        # core selection); the fakes accept and ignore them.
+        def sections_v1(*a, **k):
             return stable, "\n*10 total memories across 1 domains.*"
 
-        def sections_v2():
+        def sections_v2(*a, **k):
             return stable, ("\n*11 total memories across 1 domains.*"
                             "\n*1 memory proposal(s) on probation — no review needed.*")
 

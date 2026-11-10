@@ -264,7 +264,14 @@ class PrecisionPromptSystem:
                     except ImportError:
                         get_memory_prompt_sections = None
                     if get_memory_prompt_sections is not None:
-                        stable_mem, volatile_mem = get_memory_prompt_sections()
+                        # The current question and recent human turns rank
+                        # the core facts for THIS turn (policy C); the block
+                        # they produce changes every turn and goes to the
+                        # tail below, so the system prefix stays cacheable.
+                        from app.memory.prompt import core_query_texts
+                        stable_mem, volatile_mem = get_memory_prompt_sections(
+                            query_texts=core_query_texts(question, chat_history),
+                            conversation_id=real_conversation_id)
                     else:
                         from app.memory import get_memory_prompt_section
                         stable_mem, volatile_mem = get_memory_prompt_section(), ""

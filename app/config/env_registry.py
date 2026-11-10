@@ -298,6 +298,11 @@ _VARS: List[EnvVar] = [
            "(90 aligns with the Amazon idle-conversation retention policy)."),
     EnvVar("ZIYA_MEMORY_INTERFERENCE_SIMILARITY", float, 0.85, EnvCategory.GROUNDING,
            "Min cosine similarity for two active memories to interfere."),
+    EnvVar("ZIYA_MEMORY_CORE_POLICY", str, "relevance", EnvCategory.GROUNDING,
+           "How the core memory tier injected each turn is chosen: 'relevance' "
+           "ranks active memories by embedding similarity to the current question "
+           "and recent human turns (replayed A/B: used@0.60 11-12% vs 1-2%); "
+           "'store_order' is the previous priority-layer, file-order fill."),
     EnvVar("ZIYA_MEMORY_USE_THRESHOLD", float, 0.55, EnvCategory.GROUNDING,
            "Min cosine between a loaded memory and any ~300-char response window "
            "to count the memory as 'used' (drives importance and proposal "
