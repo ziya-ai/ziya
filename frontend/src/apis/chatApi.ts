@@ -15,6 +15,7 @@ import { applyContinuationRewind } from './continuationProtocol';
 import { resolveModelPin, ResolvedModelPin } from '../utils/modelPins';
 import { reportStreamModel } from '../services/modelSyncService';
 import { markPickedUp, clearPickups } from '../utils/capabilityPickup';
+import { announceReferencesChanged } from './referencesApi';
 import { isModelMemoryError, renderModelMemoryErrorBanner } from '../utils/modelMemoryErrorBanner';
 import { isInstallationChangedError, renderInstallationChangedBanner } from '../utils/installationChangedBanner';
 import { appendGroupEnd, groupStartDisplay, memberHeader, opensGroup } from '../utils/toolGroupDisplay';
@@ -1784,6 +1785,14 @@ export const sendPayload = async (
                     if (typeof unwrappedData.key === 'string') {
                         markPickedUp(conversationId, unwrappedData.key);
                     }
+                    return;
+                }
+
+                // 📎 references (design/conversation-references.md): the
+                // server recorded this turn's pickups/citations on the chat
+                // record; the context-bar line re-fetches on this event.
+                if (unwrappedData.type === 'references_updated') {
+                    announceReferencesChanged(unwrappedData.conversation_id || conversationId);
                     return;
                 }
 
