@@ -29,6 +29,9 @@ def _enable_ast(tmp_path, monkeypatch):
     """Set env vars so start_ast_initialization proceeds."""
     monkeypatch.setenv("ZIYA_ENABLE_AST", "true")
     monkeypatch.setenv("ZIYA_USER_CODEBASE_DIR", str(tmp_path))
+    # Eager startup indexing only happens for an explicit --root; an
+    # implicit cwd root is indexed on first use instead.
+    monkeypatch.setenv("ZIYA_EXPLICIT_ROOT", "true")
 
 
 def _run_init_synchronously():
