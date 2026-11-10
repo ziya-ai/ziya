@@ -165,6 +165,30 @@ class TestPredecessorChain:
         assert chain == [{"id": "gone"}]
         assert "gone" in render_handoff_prelude(rec, chain, [])
 
+    def test_ancestor_in_a_sibling_project_is_found(self, storage, tmp_path):
+        # A global conversation handed off from another project's view: the
+        # source lives in that project's store, not the child's.
+        other = ChatStorage(tmp_path / "other_proj")
+        (tmp_path / "other_proj" / "chats").mkdir(parents=True, exist_ok=True)
+        _write(other, "far", title="far source",
+               messages=[{"id": "m0", "role": "human", "content": "x", "timestamp": 1}])
+        rec = _write(storage, "h", branchedFrom="far", lineageKind="handoff",
+                     handoff=_handoff_doc())
+        chain = predecessor_chain(storage, rec)
+        assert [p["id"] for p in chain] == ["far"]
+        assert chain[0].get("title") == "far source"
+        assert chain[0].get("messages")
+
+    def test_empty_local_shadow_yields_to_sibling_copy(self, storage, tmp_path):
+        other = ChatStorage(tmp_path / "other_proj")
+        (tmp_path / "other_proj" / "chats").mkdir(parents=True, exist_ok=True)
+        _write(other, "src2", title="real",
+               messages=[{"id": "m0", "role": "human", "content": "x", "timestamp": 1}])
+        _write(storage, "src2", title="shadow")  # same id, no messages
+        rec = _write(storage, "h2", branchedFrom="src2", lineageKind="handoff",
+                     handoff=_handoff_doc())
+        assert predecessor_chain(storage, rec)[0]["title"] == "real"
+
     def test_cycle_is_bounded(self, storage):
         _write(storage, "x", branchedFrom="y", lineageKind="handoff")
         rec = _write(storage, "y", branchedFrom="x", lineageKind="handoff",

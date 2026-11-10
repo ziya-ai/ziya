@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.utils.tool_history_rewrite import (
     FOLD_HANDLE_PREFIX, ToolBlock, _clean_label, _non_overlapping, _norm_tool,
@@ -117,8 +117,18 @@ def cap(text: str, max_chars: int) -> Tuple[str, bool]:
 
 def recall(record: Dict[str, Any], handle: str, mode: str = "full",
            grep: Optional[str] = None,
-           max_chars: int = DEFAULT_MAX_CHARS) -> Dict[str, Any]:
+           max_chars: int = DEFAULT_MAX_CHARS,
+           predecessors: Optional[Sequence[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Resolve ``handle`` in ``record`` and render it.
+
+    ``predecessors`` are earlier segments of the same track (a handoff
+    continuation's ``predecessor_chain``), searched in order after
+    ``record`` misses.  A handoff child's record does not contain its
+    predecessor's messages, so a ``tb-…`` handle quoted in the inherited
+    handoff document resolves only through this fallback; a hit there
+    carries ``source_conversation_id`` so the model knows the span is
+    from an earlier segment.  A fork needs no fallback: its transcript was
+    copied, so the content-addressed handle matches locally.
 
     An unknown handle is reported as ``found: False`` with a plain
     "not found in this conversation" message — never as an error, which
@@ -127,18 +137,29 @@ def recall(record: Dict[str, Any], handle: str, mode: str = "full",
     if mode not in MODES:
         return {"found": False, "error": True,
                 "message": f"mode must be one of {', '.join(MODES)}"}
+    source_id: Optional[str] = None
     t = find_tributary(record, handle)
     if t is None:
+        for pred in predecessors or ():
+            if not isinstance(pred, dict) or not pred.get("messages"):
+                continue
+            t = find_tributary(pred, handle)
+            if t is not None:
+                source_id = pred.get("id")
+                break
+    if t is None:
+        scope = ("this conversation or its handoff lineage" if predecessors
+                 else "this conversation")
         return {"found": False, "handle": handle,
-                "message": (f"Tributary {handle} not found in this conversation. "
+                "message": (f"Tributary {handle} not found in {scope}. "
                             f"Handles are scoped to the conversation they were "
-                            f"issued in; nothing about the earlier result is "
-                            f"implied.")}
+                            f"issued in and its handoff continuations; nothing "
+                            f"about the earlier result is implied.")}
     text = render_tributary(t, mode)
     if grep:
         text = grep_lines(text, grep)
     text, truncated = cap(text, max_chars)
-    return {
+    out = {
         "found": True,
         "handle": t.handle,
         "message_index": t.message_index,
@@ -149,6 +170,9 @@ def recall(record: Dict[str, Any], handle: str, mode: str = "full",
         "truncated": truncated,
         "text": text,
     }
+    if source_id is not None:
+        out["source_conversation_id"] = source_id
+    return out
 
 
 __all__ = ["Tributary", "MODES", "DEFAULT_MAX_CHARS", "iter_tributaries",

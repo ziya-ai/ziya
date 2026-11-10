@@ -238,6 +238,13 @@ def env(tmp_path, monkeypatch):
     other = "c_other_" + os.urandom(3).hex()
     other_quest = QUEST.replace("cfg.py", "other.py")
     write(other, {**_record(H(), A(other_quest), cid=other), "title": "theirs"})
+    # A handoff continuation of ``cid``: its own record holds none of the
+    # parent's messages, only the lineage fields and the inherited document.
+    child = "c_child_" + os.urandom(3).hex()
+    write(child, {**_record(H("continuing"), A("ok"), cid=child), "title": "child",
+                  "branchedFrom": cid, "lineageKind": "handoff",
+                  "lineageRootId": cid,
+                  "handoff": {"objective": "x", "references": _handle_of(QUEST)}})
 
     monkeypatch.setattr("app.utils.paths.get_ziya_home", lambda: ziya_home)
     from app.storage import chat_index
@@ -245,7 +252,22 @@ def env(tmp_path, monkeypatch):
     from app import context as _ctx
     t1 = _ctx._request_conversation_id.set(cid)
     t2 = _ctx._request_project_root.set(str(project_root.resolve()))
-    yield {"cid": cid, "other_handle": _handle_of(other_quest)}
+
+    def as_conversation(new_cid):
+        _ctx._request_conversation_id.set(new_cid)
+
+    def write_elsewhere(cid_, rec):
+        """Write a chat into a SIBLING project (a global conversation's home)."""
+        far = projects_dir / "p_far"
+        (far / "chats").mkdir(parents=True, exist_ok=True)
+        rec = {"groupId": None, "contextIds": [], "skillIds": [],
+               "additionalFiles": [], "additionalPrompt": None,
+               "createdAt": NOW_MS, "lastActiveAt": NOW_MS, "_version": NOW_MS, **rec}
+        (far / "chats" / f"{cid_}.json").write_text(json.dumps(rec))
+
+    yield {"cid": cid, "child": child, "other_handle": _handle_of(other_quest),
+           "as_conversation": as_conversation, "write": write,
+           "write_elsewhere": write_elsewhere}
     _ctx._request_project_root.reset(t2)
     _ctx._request_conversation_id.reset(t1)
 
@@ -260,6 +282,61 @@ class TestRecallTool:
         tool = _tool_cls()()
         out = run(tool.execute(handle=env["other_handle"]))
         assert out["found"] is False and "not found in this conversation" in out["message"]
+
+    def test_handoff_child_resolves_predecessor_handle(self, env):
+        """The case hit in practice: a continuation quoting a tb-… handle
+        from the inherited handoff document.  The child's record has none
+        of the parent's messages, so this only passes through the lineage
+        fallback; it fails with "not found" against the local-only lookup."""
+        env["as_conversation"](env["child"])
+        tool = _tool_cls()()
+        out = run(tool.execute(handle=_handle_of(QUEST), mode="commands"))
+        assert out["found"] is True, out.get("message")
+        assert out["text"].startswith("Shell: grep")
+        assert out["source_conversation_id"] == env["cid"]
+
+    def test_handoff_child_resolves_predecessor_in_another_project(self, env):
+        far_quest = QUEST.replace("cfg.py", "far.py")
+        env["write_elsewhere"]("c_far_src", {
+            **_record(H(), A(far_quest), cid="c_far_src"), "title": "far src"})
+        env["write"]("c_far_child", {
+            **_record(H("go on"), cid="c_far_child"), "title": "far child",
+            "branchedFrom": "c_far_src", "lineageKind": "handoff",
+            "handoff": {"document": "x"}})
+        env["as_conversation"]("c_far_child")
+        out = run(_tool_cls()().execute(handle=_handle_of(far_quest), mode="commands"))
+        assert out["found"] is True, out.get("message")
+        assert out["text"].startswith("Shell: grep")
+        assert out["source_conversation_id"] == "c_far_src"
+
+    def test_handoff_child_unrelated_handle_names_lineage_scope(self, env):
+        env["as_conversation"](env["child"])
+        tool = _tool_cls()()
+        out = run(tool.execute(handle=env["other_handle"]))
+        assert out["found"] is False
+        assert "handoff lineage" in out["message"]
+        assert "source_conversation_id" not in out
+
+
+class TestRecallPredecessors:
+    def test_local_hit_wins_and_has_no_source_id(self):
+        rec = _record(H(), A(QUEST), cid="c1")
+        pred = _record(H(), A(QUEST), cid="c0")
+        out = tr.recall(rec, _handle_of(QUEST), mode="commands", predecessors=[pred])
+        assert out["found"] and "source_conversation_id" not in out
+
+    def test_predecessor_hit_reports_source_and_skips_placeholders(self):
+        rec = _record(H(), A("nothing here"), cid="c1")
+        pred = _record(H(), A(QUEST), cid="c0")
+        out = tr.recall(rec, _handle_of(QUEST), mode="commands",
+                        predecessors=[{"id": "missing"}, pred])
+        assert out["found"] and out["source_conversation_id"] == "c0"
+        assert out["text"].startswith("Shell: grep")
+
+    def test_miss_without_predecessors_keeps_plain_message(self):
+        out = tr.recall(_record(H(), A("x")), "tb-0000000000")
+        assert out["found"] is False
+        assert "not found in this conversation." in out["message"]
 
     def test_registered_in_chat_history_category(self):
         _tool_cls()

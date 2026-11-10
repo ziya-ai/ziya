@@ -8,10 +8,13 @@ conversation's own record (same resolution as the handoff tools) and
 hands the span back through app.utils.tributary_recall, so it arrives in
 the inert ‹tool_result› form rather than the renderer's fence form.
 
-Scoped to the calling conversation: a handle issued elsewhere is reported
-as not found, never as an error the model could read as a verdict on the
-earlier work.  Read-only; results are past tool output, so the tool is not
-in the high-trust set.
+Scoped to the calling conversation and its handoff lineage: a handoff
+continuation's record does not contain its predecessor's messages, so a
+local miss falls back to ``predecessor_chain`` (newest first) and a hit
+there carries ``source_conversation_id``.  A handle issued elsewhere is
+reported as not found, never as an error the model could read as a verdict
+on the earlier work.  Read-only; results are past tool output, so the tool
+is not in the high-trust set.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from app.mcp.tools.base import BaseMCPTool
 from app.mcp.tools.context_management import _resolve_chat_for_request
+from app.utils.handoff_prelude import predecessor_chain
 from app.utils.tributary_recall import DEFAULT_MAX_CHARS, MODES, recall
 
 
@@ -49,8 +53,10 @@ class RecallTributaryTool(BaseMCPTool):
         "(the message may since have been muted; it still resolves).  mode="
         "'commands' gives just the calls made, 'results' just their bodies, "
         "'full' everything; grep= slices lines.  Handles are scoped to the "
-        "conversation they were issued in.  Conclusions you drew when the span "
-        "was in view stand; recall is for when you need the calls or results "
+        "conversation they were issued in and its handoff continuations: a "
+        "handle from a predecessor segment resolves too, with "
+        "source_conversation_id set.  Conclusions you drew when the span was "
+        "in view stand; recall is for when you need the calls or results "
         "again, not a re-check of them."
     )
     InputSchema = RecallTributaryInput
@@ -60,9 +66,15 @@ class RecallTributaryTool(BaseMCPTool):
         ctx = await asyncio.to_thread(_resolve_chat_for_request, kwargs)
         if not ctx.get("ok"):
             return {"found": False, "error": True, "message": ctx.get("error")}
+        record = ctx["chat_data"]
+        predecessors = None
+        if record.get("branchedFrom") and record.get("lineageKind") == "handoff":
+            predecessors = await asyncio.to_thread(
+                predecessor_chain, ctx.get("storage"), record)
         return recall(
-            ctx["chat_data"], handle=str(kwargs.get("handle", "")),
+            record, handle=str(kwargs.get("handle", "")),
             mode=str(kwargs.get("mode") or "full"),
             grep=kwargs.get("grep") or None,
             max_chars=int(kwargs.get("max_chars") or DEFAULT_MAX_CHARS),
+            predecessors=predecessors,
         )

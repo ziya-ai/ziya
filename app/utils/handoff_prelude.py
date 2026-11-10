@@ -239,14 +239,42 @@ def _read_record(storage, chat_id: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _read_predecessor(storage, chat_id: str) -> Optional[dict]:
+    """An ancestor's record, from this project or a sibling project.
+
+    A global conversation handed off from another project's view keeps its
+    predecessor in that project's store, so a local-only read misses it.
+    Resolution follows ``chat_home.resolve_chat_home`` (the same rules the
+    request-scoped tools use): a local copy with messages wins, an empty
+    local copy (a possible shadow) yields to the fullest sibling copy.
+    """
+    chats_dir = getattr(storage, "chats_dir", None)
+    if chats_dir is None:
+        return _read_record(storage, chat_id)
+    project_dir = chats_dir.parent
+    try:
+        from app.utils.chat_home import resolve_chat_home
+        home = resolve_chat_home(project_dir.name, project_dir, chat_id)
+    except Exception as e:
+        logger.debug(f"handoff prelude: cross-project lookup failed for "
+                     f"{chat_id[:8]}: {e}")
+        return _read_record(storage, chat_id)
+    if home is None:
+        return None
+    data = home[2]
+    return data if isinstance(data, dict) else None
+
+
 def predecessor_chain(storage, record: dict) -> List[dict]:
     """Walk ``branchedFrom`` back through the handoff chain, newest first.
 
     Only HANDOFF hops are followed: a fork or branch ancestor beyond the
     first handoff source is not a prior segment of this track, and its
     transcript was copied into the source anyway.  The immediate source is
-    always included whatever its own kind.  A missing ancestor record is
-    represented by an id-only placeholder so the model still gets the id.
+    always included whatever its own kind.  Each ancestor is read from this
+    project or, failing that, a sibling project (``_read_predecessor``).  A
+    missing ancestor record is represented by an id-only placeholder so the
+    model still gets the id.
     """
     chain: List[dict] = []
     seen = {record.get("id")}
@@ -257,7 +285,7 @@ def predecessor_chain(storage, record: dict) -> List[dict]:
         if parent_id in seen:
             break
         seen.add(parent_id)
-        parent = _read_record(storage, parent_id) if storage else None
+        parent = _read_predecessor(storage, parent_id) if storage else None
         if not parent:
             chain.append({"id": parent_id})
             break
