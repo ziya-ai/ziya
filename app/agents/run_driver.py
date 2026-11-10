@@ -117,6 +117,23 @@ async def _preflight(launch: RunLaunch) -> bool:
         return True
 
 
+def _fire_run_finished_hooks(launch: RunLaunch, status: str, extra: Dict[str, Any]) -> None:
+    """``run_finished`` lifecycle hooks (app/utils/lifecycle_hooks.py).
+    Fire-and-forget: the notification point for a run, never awaited."""
+    try:
+        from ..utils import lifecycle_hooks
+        card = launch.card
+        lifecycle_hooks.fire("run_finished", {
+            "run_id": launch.run_id,
+            "status": status,
+            "card": getattr(card, "name", None) or launch.label,
+            "card_id": getattr(card, "id", None),
+            "error": extra.get("error"),
+        }, project_root=launch.project_root)
+    except Exception as e:  # noqa: BLE001 -- a hook must not touch the run's outcome
+        logger.warning(f"run_finished hooks failed for {launch.run_id[:8]}: {e}")
+
+
 async def drive_run(launch: RunLaunch) -> None:
     """Execute ``launch.root`` for ``launch.run_id`` and record the outcome."""
     run_id = launch.run_id
@@ -147,6 +164,8 @@ async def drive_run(launch: RunLaunch) -> None:
             "at": time.time(),
             **extra,
         })
+        if status != "started":
+            _fire_run_finished_hooks(launch, status, extra)
 
     def _terminal(base: str) -> str:
         """Reclassify a terminal status against what completed.  Reads

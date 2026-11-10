@@ -212,11 +212,37 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     from app.utils.diff_utils.core.text_normalization import terminate_diff_text
     git_diff = terminate_diff_text(git_diff)
     with diff_file_lock(file_path):
-        return _apply_diff_pipeline_locked(
+        result = _apply_diff_pipeline_locked(
             git_diff, file_path, request_id=request_id,
             skip_already_applied_check=skip_already_applied_check,
             user_codebase_dir=user_codebase_dir,
         )
+    _fire_post_apply_hooks(result, file_path, user_codebase_dir)
+    return result
+
+
+def _fire_post_apply_hooks(result: Any, file_path: str, user_codebase_dir: Optional[str]) -> None:
+    """``post_apply`` lifecycle hooks (app/utils/lifecycle_hooks.py) once a
+    diff has changed the file.  Awaited hooks' feedback is attached to the
+    result as ``hook_feedback``; a hook failure never fails the apply."""
+    try:
+        if not (isinstance(result, dict) and result.get("changes_written")):
+            return
+        from app.utils import lifecycle_hooks
+        root = user_codebase_dir
+        if not root:
+            from app.context import get_project_root_or_none
+            root = get_project_root_or_none()
+        if not root:
+            return
+        abs_path = file_path if os.path.isabs(file_path) else os.path.join(root, file_path)
+        outcomes = lifecycle_hooks.fire(
+            "post_apply", {"file": abs_path, "source": "diff"}, project_root=root,
+        )
+        if outcomes:
+            result["hook_feedback"] = lifecycle_hooks.feedback_text(outcomes)
+    except Exception as e:  # noqa: BLE001 -- hooks are observers of the apply
+        logger.warning(f"post_apply hooks failed for {file_path}: {e}")
 
 def clean_duplicate_headers(diff_content: str) -> str:
     """

@@ -3,10 +3,10 @@
  * holds.  See app/agents/block_executor.py::_execute_until and
  * app/agents/until_evaluator.py.
  *
- * Mode 'expression' is shown but greyed out; it's reserved for a
- * future server-side expression evaluator and is recorded on the
- * block so cards saved now will run as 'model' until the
- * implementation lands.
+ * Mode 'expression' runs the condition as a shell command after each
+ * iteration (app/agents/until_gate.py): exit 0 stops the loop, anything
+ * else continues it and the command's output is fed to the next
+ * iteration as the rationale.
  */
 
 import React from 'react';
@@ -45,19 +45,17 @@ export const UntilBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, i
           title="How the loop's exit condition is evaluated"
         >
           <option value="model">model judges (yes/no)</option>
-          <option value="expression" disabled>
-            expression (coming soon)
-          </option>
+          <option value="expression">command exits 0</option>
         </select>
         <AutoGrowTextarea
           className="tc-text-input tc-text-input--multiline tc-flex-grow"
-          placeholder="condition (e.g. 'all tests pass')"
+          placeholder={mode === 'model' ? "condition (e.g. 'all tests pass')" : "shell command (e.g. pytest -q)"}
           value={block.until_condition ?? ''}
           onChange={e => update({ until_condition: e.target.value })}
           title={
             mode === 'model'
               ? "Plain English condition; an evaluator model decides yes/no after each iteration"
-              : "Expression mode is not yet implemented"
+              : "Shell command run after each iteration under the shell policy; exit status 0 means satisfied, its output is passed to the next iteration"
           }
           minRows={1}
         />

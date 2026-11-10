@@ -595,6 +595,13 @@ def _walk(
         # expects.
         if not block.until_max:
             warn("until block has no until_max - defaults to 5 iterations")
+        # Expression mode runs until_condition as a shell command; with
+        # nothing to run the loop would silently fall back to the
+        # goal-card exits, which is not what an author who chose the
+        # deterministic gate asked for.
+        if (block.until_mode or "").lower() == "expression" and not (block.until_condition or "").strip():
+            err("until block in expression mode needs a shell command in until_condition "
+                "(exit 0 = satisfied)")
 
     elif btype == "ask":
         _check_ask(block, err, enclosing)

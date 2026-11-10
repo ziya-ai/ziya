@@ -96,6 +96,47 @@ Search order — the **first** file found wins, and this one is last:
 2. `<project root>/mcp_config.json`
 3. `~/.ziya/mcp_config.json`
 
+## `<project>/.ziya/hooks.yaml`
+
+Shell commands the project runs at fixed points in a turn (lifecycle hooks). Three events:
+
+| event | fires | placeholders |
+|---|---|---|
+| `post_apply` | after the diff applier or the `file_write` tool lands a change on disk | `{file}`, `{file_rel}`, `{source}` (`diff` / `file_write`) |
+| `post_tool` | after any tool call returns | `{tool}`, `{ok}` |
+| `run_finished` | when a Task Card run reaches `done` / `partial` / `failed` / `cancelled` / `held` | `{run_id}`, `{status}`, `{card}`, `{error}` |
+| `pre_tool` | before a tool call runs, ahead of the consent gate; can veto it | `{tool}`; the arguments arrive in the stdin JSON (`tools:` filter applies) |
+| `session_start` | once per conversation in the project, as the first turn's system prompt is built | `{session}` |
+
+```yaml
+hooks:
+  post_apply:
+    - run: "ruff check {file}"
+      match: "*.py"          # fnmatch on the project-relative path
+      await: true            # exit status + output are appended to the tool result the model sees
+      timeout: 60            # seconds, default 60, max 900
+  post_tool:
+    - run: "echo {tool} >> .ziya/tool-audit.log"
+      tools: [run_shell_command, file_write]
+  run_finished:
+    - run: 'curl -s -X POST "$ZIYA_NOTIFY_URL" -H content-type:application/json -d @-'
+      status: [failed, held]
+```
+
+`pre_tool` and `session_start` are always awaited. A `pre_tool` hook that exits 0 lets the call proceed; exit 2 refuses it and the hook's output is the reason the model is given. Any other exit is a hook *error*: the call proceeds under the default `on_error: allow`, or is refused under `on_error: deny`; both are logged. Hooks cannot rewrite arguments. A `session_start` hook's stdout (up to 4,000 characters) is added to the model's Session Context as *Session notes*, marked as data rather than instructions, so `git status --short` or an on-call note reaches the model without being pasted; a failing hook adds nothing. It fires once per conversation (keyed on the conversation's start time), not once per turn.
+
+```yaml
+hooks:
+  pre_tool:
+    - run: 'test "$ZIYA_HOOK_TOOL" != run_shell_command || { echo "shell is off in this repo"; exit 2; }'
+  session_start:
+    - run: "git status --short | head -20"
+```
+
+Each hook gets the event as JSON on stdin and as `ZIYA_HOOK_*` environment variables; `{placeholders}` are shell-quoted before substitution. Hooks are fire-and-forget by default; `await: true` (honoured for `post_apply` and `post_tool`) runs the hook before the tool result is returned and appends `[hook <name>] … exited N` plus its output, which is how "lint after every edit and tell the model" works. `run_finished` is never awaited: it is the notification point for scheduled and unattended runs.
+
+A hook command is checked by the same shell policy as `run_shell_command` — allowlist, interpreters, signed escalations, session grants — so a `hooks.yaml` in a cloned repository has exactly the reach the model's shell tool has in that project. A refused command is logged, not run. The child environment is credential-stripped like every other subprocess (`ZIYA_MCP_ENV_PASSTHROUGH` forces named variables through). `ZIYA_HOOKS=0` disables hooks. Every run, refusal and config error is appended as a JSON line to `<project>/.ziya/hooks.log`.
+
 ## `~/.ziya/models.json`
 
 Restricts or extends the models available in the model picker.

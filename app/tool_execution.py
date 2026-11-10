@@ -241,6 +241,24 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         }
         return
 
+    # --- pre_tool lifecycle hooks (app/utils/lifecycle_hooks.py) ---
+    # A project's ``.ziya/hooks.yaml`` may veto a call (exit 2) before the
+    # consent gate asks a human about it.  The refusal text is what the
+    # model is told; a hook error never blocks unless ``on_error: deny``.
+    from app.utils.lifecycle_hooks import before_tool as _hooks_before_tool
+    _veto = await _hooks_before_tool(
+        ctx.actual_tool_name, ctx.args, project_root=ctx.project_root,
+    )
+    if _veto:
+        yield {
+            'type': '_tool_result',
+            'tool_id': ctx.tool_id,
+            'tool_name': ctx.tool_name,
+            'result': _veto,
+        }
+        yield {'type': 'tool_display', 'tool_name': ctx.tool_name, 'result': _veto}
+        return
+
     # --- Consent gate (design/consent-runtime.md step 3) ---
     # For a tool in ``ask`` mode with no standing grant, hold here until a
     # human answers via POST /api/consent/{request_id}.  The gate yields
@@ -589,6 +607,16 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         if isinstance(result_text, str):
             from app.utils.tool_result_sanitizer import sanitize_for_context
             result_text = sanitize_for_context(result_text, tool_name=ctx.actual_tool_name, args=ctx.args)
+
+        # Lifecycle hooks (app/utils/lifecycle_hooks.py): ``post_tool`` for
+        # every call and ``post_apply`` for a successful ``file_write``.
+        # Awaited hooks append their exit status and output to the text the
+        # model sees; a hook failure never fails the tool call.
+        from app.utils.lifecycle_hooks import after_tool as _hooks_after_tool
+        result_text = await _hooks_after_tool(
+            ctx.actual_tool_name, ctx.args, result, result_text,
+            project_root=ctx.project_root,
+        )
 
         yield {
             'type': '_tool_result',

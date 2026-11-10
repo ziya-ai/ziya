@@ -3291,6 +3291,36 @@ _UNTIL_STALL_LIMIT = 3
 UNTIL_CONDITION_UNMET = "until_condition_unmet"
 
 
+async def _evaluate_until_gate(command: str, block: Block, ctx: ExecutionContext):
+    """Run an expression-mode Until condition as a shell command.
+
+    Grants come from the Until block's OWN scope, routed through the same
+    signed-approval chokepoint a Task's scope passes before its shell
+    grants activate (``authorize_scope``); an unsigned escalation is
+    floored, so the gate runs with the base shell policy only.  Module
+    level so tests can stand in for it.
+    """
+    from .until_gate import evaluate_command_gate, gate_cwd
+    scope = block.scope or None
+    grants: List[str] = []
+    timeout = None
+    scope_cwd = None
+    if scope is not None:
+        from ..utils.scope_approvals import authorize_scope
+        scope = authorize_scope(block.id, scope)
+        grants = list(getattr(scope, "shell_commands", None) or [])
+        timeout = getattr(scope, "shell_timeout_secs", None)
+        scope_cwd = getattr(scope, "cwd", None)
+    root = ctx.project_root or os.getcwd()
+    return await evaluate_command_gate(
+        command,
+        project_root=root,
+        cwd=gate_cwd(root, scope_cwd),
+        shell_commands=grants,
+        timeout_secs=timeout,
+    )
+
+
 def _coerce_until_verdict(result: Any) -> UntilVerdict:
     """Accept what the evaluator (or a test stub standing in for it)
     returned: an UntilVerdict, a (satisfied, rationale) pair, or the bare
@@ -3565,18 +3595,24 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
             # (convergence) to terminate.  If neither fires, run to
             # until_max — the cap is the safety net, not the primary stop.
             continue
+        gate_refused = False
         if mode == "expression":
-            # Reserved for a future expression evaluator.  Until then,
-            # treat as never-satisfied so the loop runs to until_max.
-            decisions.append("until_mode='expression' not yet implemented; running to max")
-            continue
-        # mode == "model"
-        try:
-            verdict = _coerce_until_verdict(
-                await _evaluate_until_condition_with_model(condition, artifact))
-        except Exception as e:
-            logger.warning(f"until condition eval failed (continuing): {e}")
-            verdict = UntilVerdict(False, f"evaluator error: {e}")
+            # Deterministic gate: until_condition is a shell command and
+            # exit status 0 is the verdict (app/agents/until_gate.py).  Its
+            # trailing output is the rationale, so a failing test run is
+            # handed to the next iteration the same way an evaluator's
+            # reason is.
+            gate = await _evaluate_until_gate(condition, block, ctx)
+            verdict = UntilVerdict(bool(gate.satisfied), gate.rationale or "")
+            gate_refused = bool(gate.refused)
+        else:
+            # mode == "model"
+            try:
+                verdict = _coerce_until_verdict(
+                    await _evaluate_until_condition_with_model(condition, artifact))
+            except Exception as e:
+                logger.warning(f"until condition eval failed (continuing): {e}")
+                verdict = UntilVerdict(False, f"evaluator error: {e}")
         # The verdict is the one thing a reader of this run cannot
         # reconstruct from the body's files, so it is recorded three ways:
         # an event (live inspector + journal), a decision (the block's
@@ -3584,6 +3620,7 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         await _emit(ctx, {
             "type": "until_evaluated",
             "block_id": block.id, "index": i,
+            "mode": mode,
             "satisfied": verdict.satisfied,
             "rationale": verdict.rationale or None,
             "at": time.time(),
@@ -3596,6 +3633,16 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
             f"until condition not satisfied at iter {i}"
             + (f": {verdict.rationale}" if verdict.rationale else "")
         )
+        if gate_refused:
+            # The command cannot run under the shell policy (or could not
+            # start).  No iteration of the body changes that, so running
+            # to until_max would only spend model turns; stop with the
+            # condition recorded as unmet.
+            decisions.append(
+                f"gate command cannot run; stopped at iter {i} of max {n_max}"
+            )
+            last_rationale = verdict.rationale
+            break
         # ---------- Layer 3b: unreachable condition ----------------------
         # Run 7dfb90f6: iterations 2 and 3 re-emitted iteration 1's files
         # and the evaluator said no each time; the loop only ended at
@@ -3630,10 +3677,11 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     # fell out of the for and returned the body's clean ``failed=False``
     # -- so the run went ``done`` with 93 unverified defects and nothing
     # on the artifact saying the condition was unmet.  Only an explicit
-    # model-evaluated condition is judged here; the no-condition goal
-    # path keeps until_max as a safety net, per the docstring above.
+    # condition (model-evaluated or a command gate) is judged here; the
+    # no-condition goal path keeps until_max as a safety net, per the
+    # docstring above.
     condition_failed = bool(
-        condition and mode == "model" and not condition_satisfied
+        condition and not condition_satisfied
         and last_artifact is not None
     )
     if condition_failed:

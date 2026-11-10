@@ -558,9 +558,10 @@ class Block(BaseModel):
     # Until-only fields.  A separate block from Repeat-with-until
     # because the evaluation surface is different: Repeat's
     # `repeat_until` is a substring match against artifact.summary;
-    # Until uses a small LLM call (mode="model") or an expression
-    # evaluator (mode="expression", not yet implemented — UI greys
-    # this option out so the shape is reserved).
+    # Until uses a small LLM call (mode="model") or runs the condition
+    # as a shell command whose exit status 0 means satisfied
+    # (mode="expression"; app/agents/until_gate.py, adjudicated by the
+    # shell policy with this block's own scope grants).
     until_mode: Optional[Literal["model", "expression"]] = None
     until_condition: Optional[str] = None
     until_max: Optional[int] = None
