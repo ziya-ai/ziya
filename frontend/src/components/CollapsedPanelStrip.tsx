@@ -17,6 +17,8 @@ import { ModelConfigButton } from './ModelConfigButton';
 import { dispatchHandoffOpen } from '../utils/handoffOpen';
 import { useActiveChatOptional } from '../context/ActiveChatContext';
 import { TokenBreakdownBar, fmtK } from './TokenBreakdownBar';
+import { useConversationReferences } from '../hooks/useConversationReferences';
+import { useProjectOptional } from '../context/ProjectContext';
 
 /** Pills shown before the +N chip. */
 export const STRIP_SKILL_CAP = 2;
@@ -26,6 +28,8 @@ export const CollapsedPanelStrip: React.FC = () => {
     const { activeSkills, pickedUpSkills } = useActiveSkillRows();
     const activeChat = useActiveChatOptional();
     const conversationId = activeChat?.currentConversationId ?? null;
+    const project = useProjectOptional();
+    const refs = useConversationReferences(project?.currentProject?.id, conversationId);
 
     const pills = [
         ...activeSkills.map(r => ({ key: r.skill.id, name: r.skill.name, color: r.skill.color, pickedUp: false })),
@@ -60,6 +64,12 @@ export const CollapsedPanelStrip: React.FC = () => {
             {overflow.length > 0 && (
                 <Tooltip title={overflow.map(p => p.name).join(' · ')}>
                     <span className="ziya-strip-pill more" data-testid="strip-skill-overflow">+{overflow.length}</span>
+                </Tooltip>
+            )}
+            {refs.count > 0 && (
+                <Tooltip title={`${refs.summary.pinned} pinned · ${refs.summary.picked_up} picked up by tools`}>
+                    <span className="ziya-strip-pill more" data-testid="strip-references"
+                        title={`${refs.count} references`}>📎 {refs.count}</span>
                 </Tooltip>
             )}
             {tokens && (
