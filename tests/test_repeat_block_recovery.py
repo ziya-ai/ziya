@@ -156,7 +156,16 @@ async def _collect(agen, cap=400):
 
 def _install_blocking_exec(monkeypatch_target, block=True):
     """Patch execute_single_tool to yield a _tool_result — either the block
-    error (simulating _is_repetitive_call firing) or a normal success."""
+    error (simulating _is_repetitive_call firing) or a normal success.
+
+    Patched at TWO names: the executor dispatches through ``app.tool_batch``
+    (``run_tool_batch`` and the prestarter both call
+    ``tool_batch.execute_single_tool``), and ``tool_batch`` binds that name
+    at import (``from app.tool_execution import execute_single_tool``).
+    Patching only ``app.tool_execution`` worked in isolation, where this
+    test was the first to import ``tool_batch``, and silently ran the REAL
+    executor whenever an earlier test module had imported it -- the loop
+    then never saw a block and ran to the iteration cap."""
     result = _BLOCK_RESULT if block else "(tool completed successfully with no output)"
 
     async def _fake_exec(ctx):
@@ -189,7 +198,8 @@ class TestRepeatBlockRecoveryE2E:
 
         with patch.dict(os.environ, {"ZIYA_MAX_TOOL_ITERATIONS": "40"}), \
              patch("app.mcp.manager.get_mcp_manager", return_value=mgr), \
-             patch("app.tool_execution.execute_single_tool", _install_blocking_exec(None)):
+             patch("app.tool_execution.execute_single_tool", _install_blocking_exec(None)), \
+             patch("app.tool_batch.execute_single_tool", _install_blocking_exec(None)):
             events = await _collect(
                 ex.stream_with_tools(
                     messages=[{"role": "user", "content": "find the changelog"}],
@@ -238,7 +248,8 @@ class TestRepeatBlockRecoveryE2E:
 
         with patch.dict(os.environ, {"ZIYA_MAX_TOOL_ITERATIONS": "40"}), \
              patch("app.mcp.manager.get_mcp_manager", return_value=mgr), \
-             patch("app.tool_execution.execute_single_tool", _install_blocking_exec(None)):
+             patch("app.tool_execution.execute_single_tool", _install_blocking_exec(None)), \
+             patch("app.tool_batch.execute_single_tool", _install_blocking_exec(None)):
             await _collect(
                 ex.stream_with_tools(
                     messages=[{"role": "user", "content": "x"}],
