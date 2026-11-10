@@ -22,6 +22,8 @@ import { useProject } from '../context/ProjectContext';
 import { useChatContext } from '../context/ChatContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { messageLocator, ownerProjectId, rewindMessages, deleteMessage } from '../api/conversationSyncApi';
+import { MessageReferencesIcon } from './MessageReferencesIcon';
+import { turnOfMessage } from '../utils/references';
 
 import { useTaskBindings } from '../hooks/useTaskBindings';
 // The ONE definition of "this run is over".  Imported rather than
@@ -465,6 +467,19 @@ const MessageActions = memo<MessageActionsProps>(({
                         style={{ padding: '0 8px', minWidth: '32px', height: '32px' }}
                         onClick={() => toggleMessageMute(currentConversationId, actualIndex)} />
                 </Tooltip>
+            )}
+            {/* 📎 what this turn read / cited / picked up (design/
+                conversation-references.md).  Fetched on hover only; the
+                project and turn are read from the refs at that moment. */}
+            {!showRetry && message.role === 'assistant' && (
+                <MessageReferencesIcon locate={() => {
+                    const conv = convListRef.current.conversations.find(c => c.id === currentConversationId);
+                    return {
+                        projectId: ownerProjectId(conv),
+                        conversationId: currentConversationId,
+                        turn: turnOfMessage(activeChatRef.current.currentMessages, actualIndex),
+                    };
+                }} />
             )}
             {/* Delete button — only visible when the message is muted */}
             {!showRetry && message.role !== 'system' && message.muted && !isCurrentlyStreaming && (
