@@ -86,6 +86,36 @@ class ZiyaASTEnhancer:
         'env', 'env-runtime', 'env-tests', 'build-tools', 'brazil-output',
     })
 
+    def _hydrate_from_cache(self, cached_files: dict) -> int:
+        """Serve the last persisted index immediately, before any re-index.
+
+        Populates ast_cache, the per-file query engines and the project
+        engine straight from the disk cache: no tree walk, no gitignore
+        matching, ~11 s CPU for a 3,500-file project versus minutes for a
+        full pass.  Tool queries work from this point on; the re-index that
+        follows only improves on it (changed files re-parsed, deleted files
+        pruned, the project AST rebuilt).  Returns the number of files
+        hydrated.
+        """
+        if self.ast_cache or not cached_files:
+            return 0
+        project_ast = UnifiedAST()
+        n = 0
+        for file_path, entry in cached_files.items():
+            try:
+                unified_ast = UnifiedAST.from_dict(entry["ast"])
+            except Exception as e:  # noqa: BLE001 — one bad entry must not block the rest
+                logger.debug(f"AST: cache entry for {file_path} unusable: {e}")
+                continue
+            self.ast_cache[file_path] = unified_ast
+            self.query_engines[file_path] = ASTQueryEngine(unified_ast)
+            project_ast.merge(unified_ast)
+            n += 1
+        self.project_ast = project_ast
+        self.query_engines['project'] = ASTQueryEngine(project_ast)
+        logger.info(f"AST: serving {n} files from the disk cache while re-indexing")
+        return n
+
     def _process_directory(self, codebase_dir: str, should_ignore_fn, max_depth: int, progress_callback=None) -> None:
         """
         Process all files in the directory and build ASTs.
@@ -103,7 +133,12 @@ class ZiyaASTEnhancer:
         from .disk_cache import load_cache, save_cache, is_fresh
         abs_codebase = os.path.abspath(codebase_dir)
         cached_files = load_cache(abs_codebase)
+        self._hydrate_from_cache(cached_files)
         cache_hits = 0
+        # Files parsed fresh this pass.  With none, and the same file set as
+        # the cache on disk, the cache is already current and re-gzipping it
+        # (~16 s for a 46 MB cache) is skipped.
+        reparsed = 0
         cache_entries: dict = {}  # will be saved at end
 
         files_processed = 0
@@ -118,11 +153,13 @@ class ZiyaASTEnhancer:
         walk_deadline = start_time + _ast_timeout
         _FILE_CAP = int(os.environ.get("ZIYA_AST_FILE_CAP", "50000"))
         capped = False
+        walk_truncated = False
 
         # Single walk: collect eligible file paths with cap and deadline
         for root, dirs, files in os.walk(codebase_dir, followlinks=False):
             if time.time() > walk_deadline:
                 logger.warning(f"AST: directory walk hit {_ast_timeout:.0f}s deadline, indexing files found so far")
+                walk_truncated = True
                 break
 
             rel_path = os.path.relpath(root, codebase_dir)
@@ -165,29 +202,40 @@ class ZiyaASTEnhancer:
             try:
                 cached = cached_files.get(file_path)
                 if cached and is_fresh(cached, file_path):
-                    unified_ast = UnifiedAST.from_dict(cached["ast"])
                     cache_hits += 1
+                    # Already materialised by _hydrate_from_cache; a second
+                    # from_dict for every unchanged file was ~4 s.
+                    unified_ast = self.ast_cache.get(file_path)
+                    if unified_ast is None:
+                        unified_ast = UnifiedAST.from_dict(cached["ast"])
+                    # is_fresh just confirmed mtime/size; the entry is reused
+                    # as-is rather than rebuilt through to_dict().
+                    cache_entries[file_path] = cached
                 else:
                     with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                         file_content = f.read()
                     parser = parser_class()
                     native_ast = parser.parse(file_path, file_content)
                     unified_ast = parser.to_unified_ast(native_ast, file_path)
+                    reparsed += 1
+                    try:
+                        st = os.stat(file_path)
+                        cache_entries[file_path] = {
+                            "mtime": st.st_mtime,
+                            "size": st.st_size,
+                            "ast": unified_ast.to_dict(),
+                        }
+                    except OSError:
+                        pass
 
                 self.ast_cache[file_path] = unified_ast
 
-                try:
-                    st = os.stat(file_path)
-                    cache_entries[file_path] = {
-                        "mtime": st.st_mtime,
-                        "size": st.st_size,
-                        "ast": unified_ast.to_dict(),
-                    }
-                except OSError:
-                    pass
-
-                self.query_engines[file_path] = ASTQueryEngine(unified_ast)
-                self.project_ast.merge(unified_ast)
+                engine = self.query_engines.get(file_path)
+                if engine is None or engine.ast is not unified_ast:
+                    self.query_engines[file_path] = ASTQueryEngine(unified_ast)
+                # Not merged into project_ast here: merge() keeps the FIRST
+                # node per id, so a re-parsed file would lose to the stale
+                # hydrated copy.  The project AST is rebuilt below instead.
 
                 files_processed += 1
                 if files_processed % 10 == 0 or files_processed == files_total:
@@ -199,9 +247,23 @@ class ZiyaASTEnhancer:
             except Exception as e:
                 logger.debug(f"AST: skipped {rel_file_path}: {e}")
         
-        # Create project-wide query engine
-        if self.project_ast:
-            self.query_engines['project'] = ASTQueryEngine(self.project_ast)
+        # Drop files that no longer exist (or are now ignored).  Only when
+        # the walk saw the whole tree: a capped or deadline-cut walk cannot
+        # tell "gone" from "not reached", so hydrated entries then stay.
+        if not capped and not walk_truncated:
+            seen = set(eligible_files)
+            for stale in [fp for fp in self.ast_cache if fp not in seen]:
+                self.ast_cache.pop(stale, None)
+                self.query_engines.pop(stale, None)
+
+        # Rebuild the project-wide AST from the final per-file set and swap
+        # it in whole, so readers see either the hydrated or the fresh
+        # project view, never a half-merged one.
+        project_ast = UnifiedAST()
+        for unified_ast in self.ast_cache.values():
+            project_ast.merge(unified_ast)
+        self.project_ast = project_ast
+        self.query_engines['project'] = ASTQueryEngine(project_ast)
         
         elapsed = time.time() - start_time
         logger.info(
@@ -209,8 +271,12 @@ class ZiyaASTEnhancer:
             f"({cache_hits} from cache)"
         )
 
-        # Persist cache to disk for next startup
-        save_cache(abs_codebase, cache_entries)
+        # Persist cache to disk for next startup — unless it is already
+        # current (nothing re-parsed, no files added or removed).
+        if reparsed == 0 and set(cache_entries) == set(cached_files):
+            logger.info("AST cache unchanged, skipping save")
+        else:
+            save_cache(abs_codebase, cache_entries)
 
     def process_codebase(self, codebase_dir: str, ignored_patterns: Optional[List[str]] = None, max_depth: int = 15) -> Dict[str, Any]:
         """

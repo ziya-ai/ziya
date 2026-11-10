@@ -21,6 +21,13 @@ _enhancer_lock = threading.Lock()
 # Track which projects are currently being indexed (prevent double-start)
 _indexing_in_progress: Set[str] = set()
 _initialized_projects: Set[str] = set()
+# Indexing is pure-Python CPU work.  Every concurrently indexing project is
+# another thread contending for the GIL with the event loop; three at once
+# after a restart (one per open tab) left the UI unresponsive for minutes.
+# Projects therefore index one at a time; a waiting project still appears
+# in _indexing_in_progress so the middleware does not start it twice.
+_index_gate = threading.Lock()
+
 
 # Local copy of AST indexing status to avoid circular import
 _ast_indexing_status = {
@@ -138,8 +145,9 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
         with _enhancer_lock:
             _enhancers[abs_path] = enhancer
         
-        # Process the codebase
-        result = enhancer.process_codebase(codebase_path, exclude_patterns or [], max_depth)
+        # Process the codebase, one project at a time (see _index_gate).
+        with _index_gate:
+            result = enhancer.process_codebase(codebase_path, exclude_patterns or [], max_depth)
 
         # Evict oldest enhancer instances if over the cap
         with _enhancer_lock:
@@ -222,11 +230,17 @@ def get_resolution_estimates() -> Dict[str, Dict[str, Any]]:
     return enhancer.calculate_resolution_estimates()
 
 
-def change_ast_resolution(new_resolution: str) -> None:
+def change_ast_resolution(new_resolution: str, project_root: Optional[str] = None) -> None:
     """
     Change the AST resolution and re-index the codebase.
+
+    *project_root* names the project to re-index.  Callers that run this
+    off the request (the route starts a thread) must pass it: a bare
+    thread has no contextvars, so the request-scoped root is unreachable
+    from here and the fallback is the server's launch directory.
     """
-    enhancer = get_current_enhancer()
+    root = os.path.abspath(project_root) if project_root else _get_project_root()
+    enhancer = get_enhancer_for_project(root)
     
     if not enhancer:
         logger.error("AST enhancer not initialized")
@@ -274,7 +288,7 @@ def change_ast_resolution(new_resolution: str) -> None:
         enhancer.project_ast = enhancer.UnifiedAST() if hasattr(enhancer, 'UnifiedAST') else None
         
         # Re-process the codebase with new resolution
-        codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        codebase_dir = root
         max_depth = ziya_env("ZIYA_MAX_DEPTH")
         
         logger.info(f"Re-indexing codebase with resolution: {new_resolution}")

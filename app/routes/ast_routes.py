@@ -125,10 +125,17 @@ def change_resolution(request: ResolutionChangeRequest) -> Dict[str, Any]:
         # Reset indexing status to show progress
         reset_ast_indexing_status()
         
+        # Resolve the project root here, in the request context.  The
+        # thread below has no contextvars, so a lookup inside it falls
+        # back to the server's launch directory and re-indexes (or fails
+        # to find the enhancer for) the wrong project.
+        from app.utils.ast_parser.integration import _get_project_root
+        project_root = _get_project_root()
+
         # Start re-indexing in background thread
         def reindex_background():
             try:
-                change_ast_resolution(request.resolution)
+                change_ast_resolution(request.resolution, project_root=project_root)
             except Exception as e:
                 logger.error(f"Background AST re-indexing failed: {e}")
         

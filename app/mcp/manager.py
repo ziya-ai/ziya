@@ -2331,10 +2331,20 @@ class MCPManager:
                 return client
             else:
                 logger.error(f"❌ Failed to start workspace-scoped client: {server_name} @ {workspace_path}")
-                return None
         except (OSError, RuntimeError, asyncio.TimeoutError) as e:
             logger.error(f"❌ Error creating workspace-scoped client: {e}")
-            return None
+        # The client is about to be dropped, but its subprocess may already be
+        # running: connect() terminates the child when the handshake answers
+        # badly, not when _send_request raises (a TimeoutError lands here).
+        # Nothing holds a reference to that process afterwards, so the reaper
+        # never sees it and it outlives every conversation (observed: a
+        # shell_server.py idle for 2.5 days under a running server).
+        # disconnect() is a no-op when no process was started.
+        try:
+            await client.disconnect()
+        except (OSError, RuntimeError, asyncio.TimeoutError) as e:
+            logger.debug(f"Cleanup of failed workspace-scoped client raised: {e}")
+        return None
     
     async def _call_tool_with_timeout(
         self,
@@ -2702,20 +2712,44 @@ class MCPManager:
                 return result
         elif target_server_name and self._is_workspace_scoped(target_server_name):
             # Workspace-scoped server, but no workspace path resolved: the call
-            # falls through to the global client, whose subprocess cwd is the
-            # server's LAUNCH directory rather than the active project. That is
-            # silent today -- a shell command simply runs somewhere else, and
-            # nothing says so. It stayed invisible for an entire session until
-            # a `pwd` happened to contradict the project selected in the tab.
+            # would fall through to the global client, whose subprocess cwd is
+            # the server's LAUNCH directory rather than the active project, and
+            # whose write policy resolves relative safe paths against that
+            # directory too.
             #
-            # Warn rather than raise: CLI/delegate flows legitimately reach
-            # here (ZIYA_MODE != 'server' resolves the path from the env
-            # above), so this is a diagnostic, not a gate.
+            # In server mode every caller states its root (X-Project-Root via
+            # the middleware, Task Cards and delegates via project_root=), so a
+            # missing one is a routing fault, and running the command anyway
+            # only hides it: a `pwd` in the launch directory was the first
+            # visible symptom of a prompt built from the wrong root. Refuse,
+            # and say where the command would have run, so the caller can see
+            # which instance it reached. CLI flows (ZIYA_MODE != 'server')
+            # have one process and one project, so the global client is the
+            # right one there; keep the diagnostic only.
+            launch_dir = os.getcwd()
+            if os.environ.get('ZIYA_MODE', 'server') == 'server':
+                logger.error(
+                    f"Refusing {internal_tool_name} for workspace-scoped server "
+                    f"'{target_server_name}': no project root for this request "
+                    f"(conversation={conversation_id}); the global client runs in "
+                    f"{launch_dir}."
+                )
+                return {
+                    "error": True,
+                    "message": (
+                        f"Tool call refused: no project root is attached to this "
+                        f"request, so '{internal_tool_name}' would run in the "
+                        f"server's launch directory ({launch_dir}), not the "
+                        f"project. Retry the call; if this repeats, the request "
+                        f"is missing its X-Project-Root / project_root."
+                    ),
+                    "code": -32602,
+                }
             logger.warning(
                 f"⚠️ No workspace path for workspace-scoped server "
                 f"'{target_server_name}' — falling back to the global client, "
-                f"which runs in the server's launch directory, not the active "
-                f"project. Tool={internal_tool_name}, conversation={conversation_id}"
+                f"which runs in the server's launch directory ({launch_dir}), not "
+                f"the active project. Tool={internal_tool_name}, conversation={conversation_id}"
             )
         
         # For non-workspace-scoped servers, inject workspace_path into
