@@ -683,7 +683,7 @@ const ATOMIC_FENCE_LANGS = new Set([
     'railroad', 'railroad-diagram', 'syntax-diagram',
     'wavedrom', 'wavejson', 'timing', 'timing-diagram',
     'flamegraph', 'flame-graph', 'collapsed-stacks',
-    'joint', 'jointjs', 'diagram', 'd2', 'chord',
+    'joint', 'jointjs', 'diagram', 'd2', 'chord', 'chord-directed', 'orbit',
     'force-directed', 'forcedirected', 'network', 'd3',
     'html-mockup', 'ui-mockup', 'mockup',
     ...LATEX_FENCE_LANGS.filter(l => l !== 'latex'),
