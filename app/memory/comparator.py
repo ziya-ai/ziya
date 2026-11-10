@@ -17,31 +17,56 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.utils.logging_utils import logger
 
 
+# Same-claim prompt.  The previous prompt ("if the new memory is a more
+# complete version ... choose UPDATE"; "[contested] ... same topic, prefer
+# UPDATE") merged by TOPIC: in four chronological replays of the real chat
+# corpus (2026-11-08/09, scripts/run_memory_lifecycle_simulation.py), 31 of
+# 46 of its UPDATEs replaced one atomic fact with a different fact about the
+# same component, and the old text was lost.  This prompt merges only the
+# SAME CLAIM: 0 destructive UPDATEs in 750 judged decisions across two A/B
+# runs, at the cost of more same-claim refinements left as near-duplicate
+# ADDs (recoverable; interference aging exists for those).  Arm history and
+# scorecards: .ziya/memory-update-audit-plan.md; the arm file is
+# scripts/comparator_prompts/arm_b_same_claim.txt.
 COMPARE_PROMPT = """\
 You are a memory deduplication system. Compare a NEW memory candidate \
 against EXISTING memories and decide what action to take.
 
+Each memory is one atomic claim. Two memories are the SAME CLAIM only if \
+they assert the same thing about the same specific fact: the same value, \
+the same mechanism, the same rule. Being about the same system, component, \
+bug, feature, or topic is NOT the same claim.
+
 Actions:
-- ADD: The new memory is genuinely new information not covered by any existing memory.
-- UPDATE <id>: The new memory supersedes, corrects, or consolidates an existing memory. \
-  The existing memory should be replaced with the new content. Return the ID of the memory to replace.
-- NOOP: The new memory is a duplicate or subset of an existing memory. Discard it.
+- NOOP: NEW restates an existing memory's claim in different words and adds \
+  nothing. Discard NEW.
+- UPDATE <id>: NEW makes the SAME CLAIM as one existing memory and either \
+  corrects it (the old value or mechanism was wrong) or states it more \
+  precisely while preserving everything the old one said. The old memory is \
+  replaced, so this is only right when nothing a reader needed from the old \
+  text is lost. Return the ID of that one memory.
+- ADD: Everything else. Keep NEW alongside the existing memories.
 
 Rules:
-- If the new memory CONTRADICTS an existing memory, choose UPDATE (newer info wins).
-- If the new memory is a more complete version of an existing memory, choose UPDATE.
-- If the new memory adds detail to a different aspect of the same topic, choose ADD (both are valuable).
-- If the new memory says essentially the same thing in different words, choose NOOP.
-- When choosing UPDATE, pick the single most relevant existing memory to replace.
-- An existing memory marked [recently retrieved] was just consulted by the user. \
-If the new memory partially overlaps with a [recently retrieved] one and adds a \
-correction, refinement, or contradiction, prefer UPDATE over both ADD and NOOP -- \
-recent retrieval indicates the user is actively engaged with that fact. Pure \
-rephrasings of [recently retrieved] memories should still be NOOP.
-- An existing memory marked [contested] is suspected to be stale.  If the new \
-memory addresses the same topic, prefer UPDATE -- this is the candidate's \
-chance to supersede outdated information.  Genuinely new orthogonal information \
-remains ADD.
+- Same topic, different claim -> ADD. A mechanism description, a bug symptom, \
+  a root cause, a design decision, a proposal, and a constraint about one \
+  component are DIFFERENT claims; never replace one with another.
+- A memory with a different layer label (shown in parentheses) is never the \
+  same claim -> ADD.
+- A "more complete" or "more general" NEW that drops specifics the old memory \
+  stated (endpoint names, parameters, values, file names, steps) is NOT an \
+  UPDATE -> ADD.
+- A NEW proposal or future-tense plan never replaces a description of how \
+  something currently works -> ADD.
+- If NEW CONTRADICTS an existing memory's value for the same specific fact, \
+  choose UPDATE (newer info wins). If it contradicts a different fact about \
+  the same topic, choose ADD.
+- An existing memory marked [recently retrieved] was just consulted by the \
+  user; a correction to its SAME CLAIM is UPDATE. Pure rephrasings remain NOOP.
+- An existing memory marked [contested] is suspected stale; a NEW statement of \
+  its SAME CLAIM is UPDATE. Other claims about the topic remain ADD.
+- When unsure whether two claims are the same, choose ADD. A near-duplicate is \
+  recoverable; an overwritten fact is not.
 
 Respond with ONLY a JSON object: {"action": "ADD"} or {"action": "UPDATE", "target_id": "<id>"} \
 or {"action": "NOOP"}. No explanation."""

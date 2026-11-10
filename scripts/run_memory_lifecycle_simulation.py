@@ -24,6 +24,10 @@ Splits:
                          by similarity, take 1 chat per cluster as seed
                          and the rest as later (tests "does extraction
                          recognize related-topic conversations?")
+  --split chronological  Oldest N chats seed, next M run against them
+                         (replays the store's real history, so comparator
+                         UPDATEs fire in the order they did in live use;
+                         pair with the sandbox's updates.jsonl)
 
 Usage:
     python scripts/run_memory_lifecycle_simulation.py --seed-count 10 --later-count 10
@@ -68,6 +72,11 @@ def _bootstrap_plugins():
         _eprint(f"plugin init failed (continuing): {e}")
 
 
+# Comparator prompt for the A/B arm (--comparator-prompt); None = shipped prompt.
+_COMPARATOR_PROMPT_OVERRIDE: Optional[str] = None
+# Extraction prompt for the A/B arm (--extraction-prompt); None = shipped prompt.
+_EXTRACTION_PROMPT_OVERRIDE: Optional[str] = None
+
 # Per-chat trace; reset before each chat extraction.
 _CHAT_TRACE: Dict[str, Any] = {}
 
@@ -104,6 +113,17 @@ def _wrap_extract_memories(real_fn):
             "existing_count": len(existing or []),
             "candidates_returned": len(result) if isinstance(result, list) else 0,
             "candidate_layers": [c.get("layer") for c in (result or [])],
+            # Full candidates so an extraction-prompt A/B can be judged from
+            # the trace alone (scripts/judge_decision_layer.py): layer labels
+            # without text cannot say whether a "decision" states a reason.
+            "candidates": [
+                {"content": c.get("content", ""), "layer": c.get("layer"),
+                 "tags": c.get("tags"), "confidence": c.get("confidence"),
+                 "atomicity": c.get("atomicity"),
+                 "self_containment": c.get("self_containment"),
+                 "durability": c.get("durability")}
+                for c in (result or []) if isinstance(c, dict)
+            ],
         })
         return result
     return wrapped
@@ -112,11 +132,20 @@ def _wrap_extract_memories(real_fn):
 def _wrap_compare_memory(real_fn):
     async def wrapped(candidate, similar):
         decision = await real_fn(candidate, similar)
+        # Full texts are kept (not the 120-char preview) so a blind judge can
+        # score every decision offline from the trace alone: an UPDATE as
+        # old-vs-new, an ADD-with-similar as "was this really new?".  The
+        # existing entries' text is pre-decision, i.e. exactly the OLD text an
+        # UPDATE overwrites.
         _CHAT_TRACE["comparator_decisions"].append({
             "candidate_layer": candidate.get("layer"),
-            "candidate_content": candidate.get("content", "")[:120],
+            "candidate_content": candidate.get("content", ""),
             "similar_count": len(similar),
             "similar_ids": [s.get("id") for s in similar[:3]],
+            "similar": [{"id": s.get("id"), "layer": s.get("layer"),
+                         "content": s.get("content", ""),
+                         "similarity": s.get("_similarity")}
+                        for s in similar[:3]],
             "action": (decision.get("action") if isinstance(decision, dict)
                        else str(decision)),
             "target_id": (decision.get("target_id")
@@ -188,6 +217,14 @@ def _sandbox_current_activity_count() -> int:
     return _sandbox_counter_val["n"]
 
 
+def _sandbox_cursor_path(memory_store, conversation_id: str) -> Path:
+    """Sandbox-local replacement for extraction_cursor._path."""
+    safe = "".join(c for c in conversation_id if c.isalnum() or c in "-_")[:80]
+    d = Path(memory_store._dir) / "extraction_cursors"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{safe or 'unknown'}.json"
+
+
 async def _extract_one(chat, proposals_store, memory_store, cache,
                         record_dedup: bool = False) -> Dict[str, Any]:
     """Run extraction on one chat against the given sandbox stores."""
@@ -221,6 +258,20 @@ async def _extract_one(chat, proposals_store, memory_store, cache,
               side_effect=_sandbox_next_activity_count),
         patch("app.memory.lifecycle.current_activity_count",
               side_effect=_sandbox_current_activity_count),
+        # extraction_cursor._path resolves get_ziya_home() unconditionally,
+        # so without this the sim reads the LIVE cursors (every real chat is
+        # already mined → 0 candidates, observed 2026-11-08) and writes new
+        # ones there.  Redirect to the sandbox so each run starts cold.
+        patch("app.memory.extraction_cursor._path",
+              side_effect=lambda cid: _sandbox_cursor_path(memory_store, cid)),
+        # memory_clock._path falls back to the LIVE domain_clocks.json.  The
+        # extractor ticks it once per conversation (deduped for 3 days) and
+        # the lifecycle ages proposals against it, so an unsandboxed run both
+        # pollutes the live clock and, on a replay of chats seen within 3
+        # days, never advances it: age 0, no promotion, no archival (A/B
+        # arms of 2026-11-09 saw 0 promotions vs 273 the run before).
+        patch("app.utils.memory_clock._default_path",
+              new=Path(memory_store._dir) / "domain_clocks.json"),
         patch("app.mcp.builtin_tools.is_builtin_category_enabled",
               return_value=True),
         patch("app.memory.extractor.extract_memories",
@@ -228,6 +279,15 @@ async def _extract_one(chat, proposals_store, memory_store, cache,
         patch("app.memory.comparator.compare_memory",
               side_effect=_wrap_compare_memory(real_compare)),
     ]
+    if _COMPARATOR_PROMPT_OVERRIDE is not None:
+        # A/B arm: compare_memory reads the module constant at call time,
+        # so patching it swaps the prompt with no change under app/.
+        patches.append(patch("app.memory.comparator.COMPARE_PROMPT",
+                             new=_COMPARATOR_PROMPT_OVERRIDE))
+    if _EXTRACTION_PROMPT_OVERRIDE is not None:
+        # extract_memories reads the module constant at call time too.
+        patches.append(patch("app.memory.extractor.EXTRACTION_SYSTEM_PROMPT",
+                             new=_EXTRACTION_PROMPT_OVERRIDE))
     if record_dedup:
         patches.append(patch("app.memory.extractor.deduplicate",
                              side_effect=_wrap_deduplicate(real_dedup)))
@@ -326,6 +386,31 @@ def _split_random(chats, seed_count: int, later_count: int, rng_seed: int):
         later_count = len(pool) - seed_count
         _eprint(f"Adjusted to seed={seed_count} later={later_count}")
     return pool[:seed_count], pool[seed_count:seed_count + later_count]
+
+
+def _split_chronological(chats, seed_count: int, later_count: int):
+    """Oldest ``seed_count`` chats seed the sandbox; the next ``later_count``
+    in time order run against it.  Replays the store's real history, so the
+    comparator's UPDATE decisions fire in the order they did (or would have)
+    in live use.  Chats with no timestamp (``created_at == 0``) are dropped:
+    placing them anywhere would be a guess.
+    """
+    dated = [c for c in chats if getattr(c, "created_at", 0) > 0]
+    if len(dated) < len(chats):
+        _eprint(f"Dropped {len(chats) - len(dated)} undated chats")
+    dated.sort(key=lambda c: (c.created_at, c.chat_id))
+    if seed_count + later_count > len(dated):
+        seed_count = max(1, len(dated) // 2)
+        later_count = len(dated) - seed_count
+        _eprint(f"Adjusted to seed={seed_count} later={later_count}")
+    seed = dated[:seed_count]
+    later = dated[seed_count:seed_count + later_count]
+    if seed and later:
+        _eprint(f"Seed span {time.strftime('%Y-%m-%d', time.gmtime(seed[0].created_at / 1000))}"
+                f" → {time.strftime('%Y-%m-%d', time.gmtime(seed[-1].created_at / 1000))}; "
+                f"later span {time.strftime('%Y-%m-%d', time.gmtime(later[0].created_at / 1000))}"
+                f" → {time.strftime('%Y-%m-%d', time.gmtime(later[-1].created_at / 1000))}")
+    return seed, later
 
 
 def _first_user_text(chat, max_chars: int = 600) -> str:
@@ -480,6 +565,8 @@ def _render_summary(seed_traces, later_traces,
     a("# Memory Lifecycle Simulation Summary")
     a("")
     a(f"- Split mode: **{args.split}**")
+    a(f"- Comparator prompt: **{args.comparator_prompt or 'shipped (arm A)'}**")
+    a(f"- Extraction prompt: **{getattr(args, 'extraction_prompt', None) or 'shipped (arm A)'}**")
     a(f"- Seed chats: {seed_agg['total']} "
       f"({seed_agg['completed']} completed, {seed_agg['skipped']} skipped)")
     a(f"- Later chats: {later_agg['total']} "
@@ -634,6 +721,9 @@ async def run_sim(args: argparse.Namespace) -> int:
     if args.split == "clustered":
         seed_chats, later_chats = _split_clustered(
             chats, args.seed_count, args.later_count)
+    elif args.split == "chronological":
+        seed_chats, later_chats = _split_chronological(
+            chats, args.seed_count, args.later_count)
     else:
         seed_chats, later_chats = _split_random(
             chats, args.seed_count, args.later_count, args.seed)
@@ -740,10 +830,21 @@ def main() -> int:
                    help="How many conversations to use for seeding (Phase 1)")
     p.add_argument("--later-count", type=int, default=10,
                    help="How many conversations to run against seeded sandbox (Phase 2)")
-    p.add_argument("--split", choices=["random", "clustered"], default="random",
+    p.add_argument("--split", choices=["random", "clustered", "chronological"],
+                   default="random",
                    help="How to partition the corpus. 'random' for "
                         "framework validation, 'clustered' for topical "
-                        "overlap (uses embeddings — needs Bedrock provider).")
+                        "overlap (uses embeddings — needs Bedrock provider), "
+                        "'chronological' to replay the store's real history "
+                        "(oldest chats seed, the next ones run against them).")
+    p.add_argument("--comparator-prompt", default=None, metavar="FILE",
+                   help="A/B arm: replace app.memory.comparator.COMPARE_PROMPT "
+                        "with this file's text for the whole run (see "
+                        "scripts/comparator_prompts/).  Recorded in summary.")
+    p.add_argument("--extraction-prompt", default=None, metavar="FILE",
+                   help="A/B arm: replace app.memory.extractor.EXTRACTION_SYSTEM_PROMPT "
+                        "with this file's text for the whole run (see "
+                        "scripts/extraction_prompts/).  Recorded in summary.")
     p.add_argument("--min-turns", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", default=None)
@@ -755,6 +856,16 @@ def main() -> int:
                         "report the fraction hitting a seeded active memory. "
                         "Prints a final JSON line and writes utility.json.")
     args = p.parse_args()
+    if args.comparator_prompt:
+        global _COMPARATOR_PROMPT_OVERRIDE
+        _COMPARATOR_PROMPT_OVERRIDE = Path(args.comparator_prompt).read_text()
+        _eprint(f"Comparator prompt arm: {args.comparator_prompt} "
+                f"({len(_COMPARATOR_PROMPT_OVERRIDE)} chars)")
+    if args.extraction_prompt:
+        global _EXTRACTION_PROMPT_OVERRIDE
+        _EXTRACTION_PROMPT_OVERRIDE = Path(args.extraction_prompt).read_text()
+        _eprint(f"Extraction prompt arm: {args.extraction_prompt} "
+                f"({len(_EXTRACTION_PROMPT_OVERRIDE)} chars)")
     return asyncio.run(run_sim(args))
 
 
