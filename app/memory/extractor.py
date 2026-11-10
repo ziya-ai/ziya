@@ -23,6 +23,49 @@ from app.utils.logging_utils import logger
 from app.config.env_registry import ziya_env
 
 
+# ── UPDATE event log ──────────────────────────────────────────────────────────
+# One JSONL line per comparator UPDATE, written beside the store that changed
+# (so the lifecycle simulation's sandbox store gets its own file, never the
+# live one).  Ids, hashes and counters only: this file is not encrypted, and
+# memory text lives in memories.json.  The superseded text is retained there
+# as an archived row (see the UPDATE branch below).
+UPDATE_LOG_FILENAME = "updates.jsonl"
+
+
+def _log_update_event(store, target_mem, superseded, candidate,
+                      similar, conversation_id) -> None:
+    """Append one record describing an UPDATE; never raises."""
+    import hashlib
+    try:
+        mem_dir = getattr(store, "_dir", None)
+        if mem_dir is None:
+            from app.utils.paths import get_memory_dir
+            mem_dir = get_memory_dir()
+        top = similar[0] if similar else {}
+        if not isinstance(top, dict):
+            top = {}
+        rec = {
+            "ts": int(time.time() * 1000),
+            "conversation_id": conversation_id,
+            "memory_id": target_mem.id,
+            "superseded_id": superseded.id,
+            "old_hash": hashlib.sha256(superseded.content.encode()).hexdigest()[:16],
+            "new_hash": hashlib.sha256(target_mem.content.encode()).hexdigest()[:16],
+            "old_layer": superseded.layer,
+            "candidate_layer": candidate.get("layer"),
+            "old_corroborations": superseded.corroborations,
+            "old_retrieval_used": superseded.retrieval_used_count,
+            "old_retrieval_loaded": superseded.retrieval_loaded_count,
+            "old_importance": superseded.importance,
+            "similar_count": len(similar),
+            "top_similarity": top.get("_similarity"),
+        }
+        with open(os.path.join(str(mem_dir), UPDATE_LOG_FILENAME), "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception as exc:
+        logger.debug(f"UPDATE log write skipped: {exc}")
+
+
 # Categories that are auto-saved without user approval when confidence is "high".
 # "high" means the user explicitly stated the fact (not inferred by the model).
 # All other combinations go through the proposal flow for user review.
@@ -1979,6 +2022,16 @@ async def run_post_conversation_extraction(
                     if target_id:
                         target_mem = store.get(target_id)
                         if target_mem:
+                            # Keep the superseded text: archive a copy under a
+                            # fresh id.  The live id stays on the new content so
+                            # mind-map refs, corroborated_by and feedback counters
+                            # need no re-keying; archived rows are excluded by
+                            # search(), the core tier and the organizer, which
+                            # all filter on active/contested.
+                            superseded = Memory(**target_mem.model_dump(exclude={"id"}))
+                            superseded.status = "archived"
+                            superseded.relations = {"superseded_by": [target_mem.id]}
+                            target_mem.relations.setdefault("supersedes", []).append(superseded.id)
                             target_mem.content = content
                             target_mem.tags = list(set(target_mem.tags + tags))
                             target_mem.last_accessed = time.strftime("%Y-%m-%d")
@@ -1989,9 +2042,15 @@ async def run_post_conversation_extraction(
                             # Preserve importance — don't reset a memory the user has
                             # repeatedly retrieved just because the content was updated
                             # (importance only goes up, never down on UPDATE)
-                            # save() re-embeds because the content changed; a
-                            # separate embed_and_cache here was a second call.
+                            # save() re-embeds the live row because its content
+                            # changed.  The archived copy's content is unchanged,
+                            # so save_many (best-effort embedding, cache hit at
+                            # most) is enough.  Live row first: a crash between
+                            # the two writes leaves the live store correct.
                             await asyncio.to_thread(store.save, target_mem)
+                            await asyncio.to_thread(store.save_many, [superseded])
+                            _log_update_event(store, target_mem, superseded,
+                                              candidate, similar, conversation_id)
                             saved += 1
                             logger.info(f"🧠 UPDATE: Replaced {target_id} with: {content[:60]}")
                             continue
