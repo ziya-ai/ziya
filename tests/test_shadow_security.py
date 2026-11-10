@@ -262,8 +262,12 @@ def test_multiline_input_read_yields_separate_lines_not_a_concatenation():
     second = s.on_enter(masked=False)
     cmds = [r["text"] for r in sink.records if r["t"] == "cmd"]
     assert "echo oneecho two" not in cmds
-    assert cmds[0] == "echo one"
-    assert first is not None
+    assert cmds == ["echo one", "echo two"]
+    # No prompt has been learned yet (nothing was echoed), so the segmenter is
+    # in raw mode and deliberately hands out no cmd_seq -- nothing could ever
+    # finish it (see test_shadow_raw_mode).  The seam under test is that the
+    # two lines were journaled separately, which the sink assertion covers.
+    assert first is None and second is None
 
 
 def test_pasted_password_after_sudo_in_one_read_is_not_journaled(home):
