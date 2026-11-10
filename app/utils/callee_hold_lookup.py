@@ -98,6 +98,8 @@ def find_callee_holds(
 
       run_id, run_status      the CALLER's run and its state
       caller_card_id          who owns that run
+      source_conversation_id  conversation the caller's run is anchored in
+                              (None for a launch made without one)
       call_block_id           the Call block inside the caller
       callee_root             the callee's block tree as recorded
       held_at_block_id        the held block, or None
@@ -141,6 +143,8 @@ def find_callee_holds(
                 "run_id": getattr(run, "id", ""),
                 "run_status": status,
                 "caller_card_id": getattr(run, "card_id", ""),
+                "source_conversation_id": getattr(
+                    run, "source_conversation_id", None),
                 "call_block_id": call_block_id,
                 "callee_target": snap.get("target"),
                 "callee_root": callee_root,

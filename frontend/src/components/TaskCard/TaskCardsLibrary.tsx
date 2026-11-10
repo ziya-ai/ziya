@@ -20,11 +20,11 @@ import { useProject } from '../../context/ProjectContext';
 import { useChatContext } from '../../context/ChatContext';
 import { shouldSeedTitleFromTaskCard } from '../../utils/conversationTitle';
 import type { TaskCard, Block, TaskScope } from '../../types/task_card';
-import type { TaskRun } from '../../types/task_run';
+import type { CalleeContext, TaskRun } from '../../types/task_run';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { TASK_CARD_SAVED_EVENT } from '../../hooks/useTaskBindings';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
-import { cancelTaskRun, listTaskRuns } from '../../services/taskRunApi';
+import { cancelTaskRun, getTaskRun, listTaskRuns } from '../../services/taskRunApi';
 import { createBinding } from '../../services/taskBindingApi';
 import { TaskCardEditor } from './TaskCardEditor';
 import { LessonsPanel } from './LessonsPanel';
@@ -852,6 +852,35 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     onClose();
   }, [loadConversation, onClose]);
 
+  /**
+   * Navigate to the CALLER's run from a callee's hold panel.  The
+   * context carries the conversation id directly; an older server that
+   * does not send it is covered by the run index (every run of the
+   * project is already loaded there) and, failing that, one fetch.
+   */
+  const handleOpenCalleeRun = useCallback(async (ctx: CalleeContext) => {
+    let convId: string | null | undefined = ctx.source_conversation_id;
+    if (!convId) {
+      for (const runs of runIndex.values()) {
+        const hit = runs.find(r => r.id === ctx.run_id);
+        if (hit) { convId = hit.source_conversation_id; break; }
+      }
+    }
+    if (!convId) {
+      try {
+        convId = (await getTaskRun(projectId, ctx.run_id)).source_conversation_id;
+      } catch {
+        // Falls through to the warning below.
+      }
+    }
+    if (!convId) {
+      message.warning('This run has no conversation to open (launched without one)');
+      return;
+    }
+    loadConversation(convId);
+    onClose();
+  }, [runIndex, projectId, loadConversation, onClose]);
+
   /** The selected card's runs, newest first.  Empty until fetched. */
   const draftRuns = useMemo(
     () => (draft ? runIndex.get(draft.id) ?? [] : []), [draft, runIndex]);
@@ -1231,8 +1260,12 @@ export const TaskCardsLibrary: React.FC<Props> = ({
             transition: resizing ? 'none' : 'background 0.15s',
           }}
         />
-        {/* Right: editor */}
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8, overflow: 'hidden' }}>
+        {/* Right: editor.  overflow auto, not hidden: the status panels
+            above the editor have content-driven heights, and when they
+            outgrew the pane the editor (flex: 1, min-height 0) collapsed
+            to nothing with no way to scroll to it.  The editor now keeps
+            a floor and the pane scrolls past what does not fit. */}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8, overflow: 'auto' }}>
           {draft ? (
             <>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1297,6 +1330,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                 projectId={projectId}
                 cardId={selectedId}
                 root={draft?.root}
+                onOpenRun={handleOpenCalleeRun}
               />
               {/* The card's learning history.  Sits with CalleeHoldPanel
                   above the editor for the same reason: it is a fact about
@@ -1314,7 +1348,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                   void reload();
                 }}
               />
-              <div style={{ flex: 1, overflow: 'auto', border: '1px solid rgba(128,128,128,0.2)', borderRadius: 4, padding: 8 }}>
+              <div style={{ flex: 1, minHeight: 160, overflow: 'auto', border: '1px solid rgba(128,128,128,0.2)', borderRadius: 4, padding: 8 }}>
                 <TaskCardEditor
                   card={draft}
                   onChange={setDraft}

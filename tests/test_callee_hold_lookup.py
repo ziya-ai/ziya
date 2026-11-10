@@ -264,3 +264,16 @@ class TestBreadthPassThrough:
         assert hit["held_faults"]["fleet_wide"] is True
         assert hit["held_reason"] == "authentication_error"
         assert hit["held_gate_reason"] == "session-level fault"
+
+    def test_source_conversation_reaches_the_caller(self):
+        # The deck's callee panel navigates to the run's tile with this;
+        # without it the panel can report a hold but offer no route to
+        # the Resume control.
+        run = _cl0_run()
+        run.source_conversation_id = "conv-42"
+        hit = find_callee_holds([run], "card-CL1")[0]
+        assert hit["source_conversation_id"] == "conv-42"
+
+    def test_source_conversation_is_none_for_an_unbound_run(self):
+        hit = find_callee_holds([_cl0_run()], "card-CL1")[0]
+        assert hit["source_conversation_id"] is None
