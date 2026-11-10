@@ -107,12 +107,15 @@ def is_ast_enabled() -> bool:
 def initialize_ast_if_enabled():
     """Initialize AST capabilities if enabled via environment variable."""
     global _ast_indexing_status
-    # In browser mode, don't eagerly index the server's startup directory.
-    # The ProjectContextMiddleware will trigger indexing for the correct
-    # project root when the first request with X-Project-Root arrives.
-    # In CLI mode, ZIYA_USER_CODEBASE_DIR is set correctly before this runs.
-    if not ziya_env("ZIYA_USER_CODEBASE_DIR"):
-        logger.info("AST: Deferring indexing until first project request (no ZIYA_USER_CODEBASE_DIR set)")
+    # The launch directory is only a project when the user said so with
+    # --root/--directory (ZIYA_EXPLICIT_ROOT).  Otherwise it is wherever the
+    # shell happened to be -- usually $HOME or a workspace parent -- and the
+    # real project comes from the browser's remembered selection; it is
+    # indexed on first use (ensure_ast_indexed from the chat-turn path).
+    # Checking ZIYA_USER_CODEBASE_DIR here was dead: setup_environment
+    # always assigns it (cwd when no --root), so cwd was indexed every start.
+    if os.environ.get("ZIYA_EXPLICIT_ROOT") != "true":
+        logger.info("AST: Deferring indexing until a project is used (no explicit --root)")
         _ast_indexing_status.update({'enabled': True})
         return
     
