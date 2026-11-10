@@ -146,9 +146,15 @@ def find_similar_memories(
                         and mid.startswith("m_")
                     ][:top_n]
                     if above_threshold:
-                        active_ids = {mid for mid, _ in above_threshold}
-                        matched = [m for m in existing
-                                   if m.get("id") in active_ids]
+                        score_by_id = dict(above_threshold)
+                        # Shallow copies carrying the cosine under
+                        # ``_similarity`` so the UPDATE log can record how
+                        # close the match was.  Keyword-fallback hits have no
+                        # comparable scale and carry no such key.
+                        matched = [{**m, "_similarity": round(score_by_id[m["id"]], 4)}
+                                   for m in existing
+                                   if m.get("id") in score_by_id]
+                        matched.sort(key=lambda m: m["_similarity"], reverse=True)
                         if matched:
                             return matched
                     # No active-memory hits cleared the threshold — fall

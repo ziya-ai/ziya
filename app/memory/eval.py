@@ -45,6 +45,11 @@ class ChatRecord:
     title: str
     messages: List[Dict[str, Any]]
     file_size: int
+    # Unix ms of the conversation's start: the earlier of the chat's
+    # ``createdAt`` and its first message's ``timestamp`` (a fork copies both
+    # from its source, so forks sort with the discussion they continue).
+    # 0 when neither is present.  Lets replays order chats chronologically.
+    created_at: int = 0
 
 
 @dataclass
@@ -164,12 +169,16 @@ def iter_random_conversations(
             continue
         project_id = path.parent.parent.name
         chat_id = path.stem
+        first = msgs[0] if isinstance(msgs[0], dict) else {}
+        stamps = [s for s in (data.get("createdAt"), first.get("timestamp"))
+                  if isinstance(s, (int, float)) and s > 0]
         decoded.append(ChatRecord(
             project_id=project_id,
             chat_id=chat_id,
             title=data.get("title", "") or "",
             messages=msgs,
             file_size=path.stat().st_size,
+            created_at=int(min(stamps)) if stamps else 0,
         ))
 
     rng = random.Random(seed)
