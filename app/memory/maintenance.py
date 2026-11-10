@@ -93,12 +93,12 @@ def run_post_save_maintenance(memory_id: str) -> Dict[str, any]:
         links = discover_cross_links(store, target_node_id)
         results["cross_linked"] = links
 
-    # 4. Auto-link: find semantically similar memories and create relations
-    try:
-        linked = _auto_link_by_embedding(store, memory)
-        results["linked"] = linked
-    except Exception as e:
-        logger.debug(f"Auto-link failed (non-fatal): {e}")
+    # 4. Auto-link by embedding -- disabled 2026-11-09.  It stamped
+    # "elaborates"/"supports" on every save at cosine >= 0.75 (75k of the
+    # 112k live edges) into Memory.relations, a field no reader consumes; a
+    # blind judge rated "supports" edges 16% precise.  See the Phase 2 note
+    # in organizer.reorganize.  _auto_link_by_embedding stays callable.
+    results["linked"] = []
 
     # 5. Enrich: propagate tags to related memories
     try:

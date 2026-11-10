@@ -780,12 +780,15 @@ async def reorganize(store=None) -> Dict[str, Any]:
         logger.error(f"Consolidation failed: {e}")
         results["consolidate"] = {"status": "error", "error": str(e)}
 
-    # Phase 2: Extract relations
-    try:
-        results["relations"] = await extract_all_relations(store)
-    except Exception as e:
-        logger.error(f"Relation extraction failed: {e}")
-        results["relations"] = {"status": "error", "error": str(e)}
+    # Phase 2: relation extraction -- disabled 2026-11-09.  No retrieval,
+    # injection or REM path has ever read Memory.relations (REM's staleness
+    # gate uses token overlap; its only read is an idempotency check), and a
+    # blind judge rated the writer's output at 2.5% precision for
+    # "contradicts" and 16% for "supports" (n=200 each; see
+    # .ziya/memory-update-audit-plan.md).  The pass cost one LLM call per 20
+    # memories per node every reorganize for a field nothing consumed.
+    # extract_all_relations is kept callable for re-judging a stricter writer.
+    results["relations"] = {"status": "disabled", "relations_found": 0}
 
     # Phase 3: REM — synthesis + staleness on mature nodes
     try:
