@@ -31,6 +31,7 @@ import {
   chatListItemCount,
   isChatListFooterRow,
   chatListHasMoreBelow,
+  chatListFooterBox,
 } from '../utils/chatListLayout';
 import type { DelegateMeta, TaskPlan, DelegateStatus } from '../types/delegate';
 import { CONVERSATION_FLAG_LABELS, CONVERSATION_FLAG_COLORS, getFlagColorDef } from '../utils/conversationFlags';
@@ -2201,10 +2202,12 @@ const MUIChatHistory = () => {
                     clientY: lastMousePos.y,
                     target,
                 } as unknown as MouseEvent);
+            };
+            treeEl?.addEventListener('scroll', handleScroll, { passive: true });
+
+      return () => {
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
-               
-
                 treeEl?.removeEventListener('scroll', handleScroll);
         // Backstop: a drop-position line drawn by a stale handler between
         // endCustomDrag's final sweep and this teardown has no other owner,
@@ -4383,14 +4386,17 @@ const MUIChatHistory = () => {
                 // Footer row. Checked before indexing flatNodes — this index is
                 // past the end of that array.
                 if (isChatListFooterRow(index, flatNodes.length)) {
+                  const box = chatListFooterBox(flatNodes.length, rowHeight, treeContainerHeight);
                   return (
-                    <div style={{
+                    <div data-testid="chat-list-footer" style={{
                       ...rowStyle,
+                      top: box.top,
+                      height: box.height,
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'flex-end',
+                      justifyContent: 'center',
                       gap: 8,
-                      paddingRight: 8,
+                      boxSizing: 'border-box',
                     }}>
                       <Button variant="outlined" startIcon={<DownloadIcon />} onClick={handleExportConversations} size="small">Export</Button>
                       <Button variant="outlined" startIcon={<UploadIcon />} onClick={handleImportConversations} size="small">Import</Button>
