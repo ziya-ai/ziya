@@ -8,10 +8,12 @@
  * strings hold in any time zone.  27 Oct 2026 is a Tuesday.
  */
 import {
-  formatWhen, humanizeCadence, humanizeCron, lastOutcome, lockLine, nextLine,
+  describeCall, formatWhen, humanizeCadence, humanizeCron, lastOutcome, lockLine, nextLine,
   ordinal, runCountText,
 } from '../scheduleDisplay';
-import type { ScheduleRegistrationRow, SchedulerStatus } from '../../../services/scheduleApi';
+import type {
+  ScheduleCallRef, ScheduleRegistrationRow, SchedulerStatus,
+} from '../../../services/scheduleApi';
 
 const H = 3_600_000;
 const NOW = new Date(2026, 9, 27, 16, 0).getTime();
@@ -23,7 +25,7 @@ const row = (over: Partial<ScheduleRegistrationRow> = {}): ScheduleRegistrationR
   source_block_id: 's1', cadence: { schedule_mode: 'cron', schedule_cron: '0 6 * * 1' },
   summary: 'cron 0 6 * * 1', next_fire_at: MON_6, last_fire_at: null,
   fires_so_far: 0, skips_so_far: 0, deferred_since: null, exhausted: false, problem: null,
-  last_run: null, ...over,
+  last_run: null, calls: [], ...over,
 });
 
 describe('humanizeCron', () => {
@@ -136,6 +138,27 @@ describe('runCountText', () => {
     expect(runCountText(row({ fires_so_far: 1 }))).toBe('1 run');
     expect(runCountText(row({ fires_so_far: 8 }))).toBe('8 runs');
     expect(runCountText(row({ fires_so_far: 8, skips_so_far: 2 }))).toBe('8 runs, 2 skipped');
+  });
+});
+
+describe('describeCall', () => {
+  const ref = (over: Partial<ScheduleCallRef> = {}): ScheduleCallRef => ({
+    block_id: 'b1', block_name: '', target: 'x', kind: 'card',
+    card_id: null, card_name: null, resolved: false, ...over,
+  });
+  it('shows the resolved card by name even when the author typed its id', () => {
+    expect(describeCall(ref({ target: '3f9a1c04-77c2-4d1e-9b2a-0e5f6a7b8c9d',
+      card_id: '3f9a1c04-77c2-4d1e-9b2a-0e5f6a7b8c9d', card_name: 'Weekly audit', resolved: true })))
+      .toEqual({ text: 'Weekly audit', cardId: '3f9a1c04-77c2-4d1e-9b2a-0e5f6a7b8c9d', missing: false });
+  });
+  it('a target no card matches is said so, with no link', () => {
+    expect(describeCall(ref({ target: 'nope' })))
+      .toEqual({ text: '“nope” — no such card', cardId: null, missing: true });
+    expect(describeCall(ref({ target: '' })).missing).toBe(true);
+  });
+  it('a file task is named, not checked', () => {
+    expect(describeCall(ref({ kind: 'file_task', target: 'lint', resolved: null })))
+      .toEqual({ text: 'task “lint” from tasks.yaml', cardId: null, missing: false });
   });
 });
 

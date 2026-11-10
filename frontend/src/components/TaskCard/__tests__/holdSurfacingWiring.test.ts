@@ -148,3 +148,47 @@ describe('the callee derivation refuses to blame the wrong card', () => {
     expect(fn).toMatch(/return deriveHoldChain\(/);
   });
 });
+
+describe('the callee panel is a route to the run, not a dead end', () => {
+  it('offers an Open run control on BOTH branches', () => {
+    const src = panel();
+    expect(src).toMatch(/onOpenRun\?: \(ctx: CalleeContext\) => void/);
+    expect(src).toMatch(/tc-callee__open/);
+    // A merely-running study needs the route to its tile as much as a
+    // held one does.
+    const okBranch = src.slice(src.indexOf('tc-callee--ok'), src.indexOf('tc-callee__head'));
+    expect(okBranch).toMatch(/\{openButton\}/);
+    const heldBranch = src.slice(src.indexOf('tc-callee__head'));
+    expect(heldBranch).toMatch(/\{openButton\}/);
+  });
+
+  it('is wired from the deck to the conversation the run is anchored in', () => {
+    const lib = library();
+    expect(lib).toMatch(/onOpenRun=\{handleOpenCalleeRun\}/);
+    expect(lib).toMatch(/ctx\.source_conversation_id/);
+    // Fallback for a server that predates the field.
+    expect(lib).toMatch(/getTaskRun\(projectId, ctx\.run_id\)/);
+  });
+
+  it('the backend sends the conversation id the route needs', () => {
+    const py = fs.readFileSync(
+      path.join(DIR, '..', '..', '..', '..', 'app', 'utils', 'callee_hold_lookup.py'), 'utf8');
+    expect(py).toMatch(/"source_conversation_id": getattr\(\s*run, "source_conversation_id", None\)/);
+  });
+});
+
+describe('the deck pane stays usable under a deep held card', () => {
+  it('bounds the callee row map so it cannot swallow the editor', () => {
+    // One row per block of the card, unbounded, filled the fixed-height
+    // pane and the editor (flex: 1, min-height 0) collapsed to nothing.
+    expect(css()).toMatch(/\.tc-callee__map\s*\{[^}]*max-height:\s*\d+px;[^}]*overflow-y:\s*auto/);
+  });
+
+  it('keeps a floor under the editor and lets the pane scroll past it', () => {
+    const lib = library();
+    const editorBox = lib.slice(lib.indexOf('<TaskCardEditor') - 200, lib.indexOf('<TaskCardEditor'));
+    expect(editorBox).toMatch(/flex: 1, minHeight: 160, overflow: 'auto'/);
+    expect(lib).toMatch(/flexDirection: 'column', gap: 8, overflow: 'auto' \}\}/);
+    expect(lib).not.toMatch(/flexDirection: 'column', gap: 8, overflow: 'hidden' \}\}/);
+  });
+});

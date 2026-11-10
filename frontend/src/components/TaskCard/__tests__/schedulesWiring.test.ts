@@ -107,6 +107,16 @@ describe('SchedulesPanel', () => {
     expect(s()).not.toMatch(/croniter/);
   });
 
+  it('names what the body calls on both row kinds and opens the called card', () => {
+    expect(s()).toMatch(/describeCall\(c\)/);
+    expect(s()).toMatch(/data-testid="schedule-calls"/);
+    expect(s()).toMatch(/callsEl\(r\.calls\)/);
+    expect(s()).toMatch(/callsEl\(u\.calls\)/);
+    expect(s()).toMatch(/onClick=\{\(\) => onOpenCard\(d\.cardId!\)\}/);
+    // The server resolves; the panel must not re-derive names from the raw target.
+    expect(read('services/scheduleApi.ts')).toMatch(/calls: ScheduleCallRef\[\];/);
+  });
+
   it('unregistering asks first', () => {
     expect(s()).toMatch(/Modal\.confirm\(/);
   });
