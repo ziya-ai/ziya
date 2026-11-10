@@ -191,9 +191,23 @@ def _make_fake_calibrator():
     return cal
 
 
+def _make_fake_mcp_manager():
+    """Manager stand-in whose anti-loop guards return real booleans.
+
+    tool_execution.py runs ``_exceeds_turn_ceiling`` / ``_is_repetitive_call``
+    on the builtin-tool path too; a bare MagicMock there is truthy, so every
+    tool call was refused with "reached the per-turn tool-call ceiling".
+    """
+    mgr = MagicMock()
+    mgr._exceeds_turn_ceiling.return_value = False
+    mgr._is_repetitive_call.return_value = False
+    mgr._turn_limit.return_value = 1000
+    return mgr
+
+
 _COMMON_PATCHES = {
     # MCP manager + tool loading
-    "app.mcp.manager.get_mcp_manager": MagicMock,
+    "app.mcp.manager.get_mcp_manager": lambda: _make_fake_mcp_manager(),
     "app.mcp.enhanced_tools.create_secure_mcp_tools": lambda: [],
     # Signing & verification
     "app.mcp.signing.verify_tool_result": lambda result, *a, **kw: (True, None),
