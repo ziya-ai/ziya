@@ -148,26 +148,43 @@ critic discounts (Continue removed from all contender counts; Cognition counted 
 errors moved to non-goals). Prevalence = live tools at score ≥3 out of 26 counting units.
 Effort classes are the study's corrected values and are **lower bounds**.
 
-| gap | prevalence | best | effort (corrected) | notes |
-|---|---:|---:|---|---|
-| lifecycle-hooks <!-- cap: lifecycle-hooks --> | 11 | 5 | MEDIUM | pre/post-tool and session hooks; extension points exist, no architectural conflict |
-| git-worktree-parallel-isolation <!-- cap: git-worktree-parallel-isolation --> | 12 | 4 | MEDIUM→**LARGE** | provisioning is the easy 20%; `merge_back` (conflict policy, partial-merge failure) is the capability and was unpriced |
-| github-repo-sync-export <!-- cap: github-repo-sync-export --> | 12 | 4 | SMALL | push/PR round-trip from the harness; git-mcp-server exists to build on |
-| lint-test-fix-repair-loop <!-- cap: lint-test-fix-repair-loop --> | 12 | 4 | SMALL–MEDIUM | Ziya corrected to maturity 2: the deterministic exit gate is unimplemented (`block_executor.py:2706`) and there is no zero-authoring auto-fire after edits |
-| browser-automation / computer-use <!-- cap: browser-automation-computer-use --> | 10 | 5 | MEDIUM→**LARGE** | one-shot screenshot plumbing exists; persistent agent-driven sessions are what vendors treated as multi-quarter |
-| auto-context-compaction (input-side) <!-- cap: auto-context-compaction --> | 7 | 4 | MEDIUM | the continuation ladder handles output overflow only; input compaction is explicitly not built |
-| sandboxed-execution-runtime <!-- cap: sandboxed-execution-runtime --> | — | — | MEDIUM→**ARCHITECTURAL** | kernel confinement per task_scope changes the trust model; the allowlist engine is the compensating control for its absence — the study's most decision-relevant correction |
-| llm-observability-tracing <!-- cap: llm-observability-tracing --> | 8 | 4 | MEDIUM | request/trace inspection for debugging agent runs |
-| multi-model-comparison-arena <!-- cap: multi-model-comparison-arena --> | 3 | 5 | MEDIUM | big-AGI Beam-style fan-out compare; low prevalence, high fit |
-| fast-apply-merge-model <!-- cap: fast-apply-merge-model --> | **1 live** | 5 | MEDIUM | single live contender (Cursor), vendor-benchmark evidence; watch item, not a build item |
-| image-generation <!-- cap: image-generation --> | 8 | 5 | SMALL | modality tension with the streaming-text core |
-| internationalization-i18n <!-- cap: internationalization-i18n --> | 8 | 5 | (non-goal) | real prevalence; accepted cost |
+> **Status note (2026-11-05).** The table below is the study's snapshot of 2026-09-10. The
+> *status* column records what has landed in Ziya since, from the changelog and code, **not**
+> from a re-run of the study: competitor scores are unchanged, Ziya's ledger cells have not
+> been re-scored, and a closed row here is a claim about Ziya's code, not a re-measured gap.
+> Rows marked *closed* or *partly closed* must be re-scored (Stage A of CL4, Ziya-only) before
+> the next re-audit, or the diff will attribute 1,000 commits of movement to nothing.
+
+| gap | prevalence | best | effort (corrected) | notes | status 2026-11 |
+|---|---:|---:|---|---|---|
+| lifecycle-hooks <!-- cap: lifecycle-hooks --> | 11 | 5 | MEDIUM | pre/post-tool and session hooks; extension points exist, no architectural conflict | **partly closed**: `.ziya/hooks.yaml` with `post_apply` / `post_tool` / `run_finished`, policy-gated, awaited hooks feed back into the tool result; no pre-tool veto, no session-start |
+| git-worktree-parallel-isolation <!-- cap: git-worktree-parallel-isolation --> | 12 | 4 | MEDIUM→**LARGE** | provisioning is the easy 20%; `merge_back` (conflict policy, partial-merge failure) is the capability and was unpriced | open |
+| github-repo-sync-export <!-- cap: github-repo-sync-export --> | 12 | 4 | SMALL | push/PR round-trip from the harness; git-mcp-server exists to build on | partly: the `git` tool pushes, fetches by URL, cherry-picks; no PR operation yet |
+| lint-test-fix-repair-loop <!-- cap: lint-test-fix-repair-loop --> | 12 | 4 | SMALL–MEDIUM | Ziya corrected to maturity 2: the deterministic exit gate is unimplemented (`block_executor.py:2706`) and there is no zero-authoring auto-fire after edits | **closed**: `until_mode="expression"` runs the condition as a command (exit 0 = done, output fed to the next iteration); auto-fire after edits is a `post_apply` hook with `await: true` |
+| browser-automation / computer-use <!-- cap: browser-automation-computer-use --> | 10 | 5 | MEDIUM→**LARGE** | one-shot screenshot plumbing exists; persistent agent-driven sessions are what vendors treated as multi-quarter | open |
+| auto-context-compaction (input-side) <!-- cap: auto-context-compaction --> | 7 | 4 | MEDIUM | the continuation ladder handles output overflow only; input compaction is explicitly not built | **partly closed**: the tributary fold (on by default) replays tool-heavy turns as their final text once two further human turns exist, reclaiming ~65% of replayed history; prose-only turns are not summarized |
+| sandboxed-execution-runtime <!-- cap: sandboxed-execution-runtime --> | — | — | MEDIUM→**ARCHITECTURAL** | kernel confinement per task_scope changes the trust model; the allowlist engine is the compensating control for its absence — the study's most decision-relevant correction | open |
+| llm-observability-tracing <!-- cap: llm-observability-tracing --> | 8 | 4 | MEDIUM | request/trace inspection for debugging agent runs | open (cost accounting per conversation and per run landed; no trace export) |
+| multi-model-comparison-arena <!-- cap: multi-model-comparison-arena --> | 3 | 5 | MEDIUM | big-AGI Beam-style fan-out compare; low prevalence, high fit | open |
+| fast-apply-merge-model <!-- cap: fast-apply-merge-model --> | **1 live** | 5 | MEDIUM | single live contender (Cursor), vendor-benchmark evidence; watch item, not a build item | watch |
+| image-generation <!-- cap: image-generation --> | 8 | 5 | SMALL | modality tension with the streaming-text core | open |
+| internationalization-i18n <!-- cap: internationalization-i18n --> | 8 | 5 | (non-goal) | real prevalence; accepted cost | non-goal |
+
+Also closed since the study, outside this table: scheduled task-card runs end to end (API,
+UI, CLI; the `schedule_timezone` defect Critic B discounted is fixed), `ziya shadow` terminal
+sessions (observe, wait, control leases, headless spawn), local-runtime detection for oMLX,
+Ollama and LM Studio, and native Windows support.
 
 At dimension level the 17 depth-phase BEHIND verdicts sharpen the same picture: Ziya's CLI is
 a second-class citizen next to claude-code/codex-cli/amp (headless subcommands, one-shot/stdin
 piping, model switching, goal-autonomous mode, git-aware review), and document-ingestion
 breadth (Ziya mean 2.49 vs field 2.81) trails the self-hosted chat UIs (docx, pptx,
-pdf-rag-index, web-search-tool).
+pdf-rag-index, web-search-tool). Two of the four CLI verdicts (`cli-headless-subcommands`,
+`cli-oneshot-ask-and-stdin-pipe`) turned on the missing machine-parseable output mode; as of
+2026-11 `ziya ask|review|explain|task` take `--output-format json|stream-json` with the
+answer, tool calls, token usage and cost, and `ziya task` prompts take `$ARGUMENTS` / `$1`.
+Model switching across endpoints, the companion-process `/goal`, and PR-posting review are
+still as described.
 
 ## 5. Contested capabilities, quantified
 

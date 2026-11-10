@@ -332,6 +332,116 @@ def plan_reintegration(
 
 
 # --------------------------------------------------------------------------
+# worklist: which Ziya-side records a refresh must re-audit
+# --------------------------------------------------------------------------
+
+def _git_lines(args: List[str], repo_root: str) -> List[str]:
+    out = subprocess.run(["git", *args], cwd=repo_root, capture_output=True,
+                         text=True, check=False)
+    if out.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {out.stderr.strip()}")
+    return [l for l in out.stdout.splitlines() if l.strip()]
+
+
+def _touches(paths: List[str], changed: List[str]) -> List[str]:
+    """Changed files a record's evidence covers: an exact path, or a file
+    under a cited directory."""
+    hits: List[str] = []
+    for p in paths:
+        p = p.rstrip("/")
+        for c in changed:
+            if c == p or c.startswith(p + "/"):
+                hits.append(c)
+    return sorted(set(hits))
+
+
+def build_worklist(
+    prior_dir: str, since: str, seed: Optional[List[str]] = None,
+    repo_root: str = ".", head: str = "HEAD",
+) -> Dict[str, Any]:
+    """Decide, mechanically, which prior Stage A records a Ziya-side refresh
+    re-audits (``fresh``) and which it copies forward (``carry``).
+
+    Fresh when any cited evidence path (or a file under a cited directory)
+    changed between the last commit before ``since`` and ``head``, or when
+    the capability is on ``seed`` -- the caller's list of capabilities known
+    to have moved under a name the evidence paths do not catch.  Everything
+    else carries.
+
+    This was a model task in the first two refresh runs and was wrong both
+    times in different ways: run 5f83000a selected 127 of 128 because the
+    agent treated every changed file as evidence, and the continuation
+    dropped two real items because the agent asserted file state it had not
+    checked (2026-11-05).  A worklist is a set operation over git and the
+    record files; nothing in it needs judgement.
+    """
+    base = _git_lines(["rev-list", "-1", f"--before={since}", head], repo_root)
+    if not base:
+        raise RuntimeError(f"no commit before {since!r}")
+    base_sha = base[0][:8]
+    head_sha = (head_commit(repo_root) or head)[:8]
+    changed = _git_lines(["diff", "--name-only", f"{base_sha}..{head}"], repo_root)
+    changed += _git_lines(["ls-files", "--others", "--exclude-standard"], repo_root)
+    changed = sorted(set(changed))
+    seed_set = set(seed or [])
+    fresh: List[Dict[str, Any]] = []
+    carry: List[str] = []
+    for name in sorted(os.listdir(prior_dir)):
+        if not name.endswith("-stageA.json"):
+            continue
+        cid = name[: -len("-stageA.json")]
+        try:
+            rec = _read_json(os.path.join(prior_dir, name))
+        except Exception as exc:  # noqa: BLE001 -- an unreadable prior record is fresh
+            fresh.append({"cid": cid, "reason": "prior_unreadable", "changed_paths": [],
+                          "detail": str(exc)})
+            continue
+        hits = _touches(_evidence_paths(rec), changed)
+        in_seed = cid in seed_set
+        if hits and in_seed:
+            fresh.append({"cid": cid, "reason": "both", "changed_paths": hits})
+        elif hits:
+            fresh.append({"cid": cid, "reason": "evidence_changed", "changed_paths": hits})
+        elif in_seed:
+            fresh.append({"cid": cid, "reason": "seed", "changed_paths": []})
+        else:
+            carry.append(cid)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated": date.today().isoformat(),
+        "base_commit": base_sha,
+        "head_commit": head_sha,
+        "since": since,
+        "changed_file_count": len(changed),
+        "fresh": fresh,
+        "carried": carry,
+    }
+
+
+def write_worklist(
+    worklist: Dict[str, Any], prior_dir: str, run_dir: str, run_label: str,
+) -> int:
+    """Write ``00-worklist.json`` and copy every carried pair into
+    ``run_dir`` with ``carried_forward`` / ``carried_from`` set, every other
+    field untouched.  Returns the number of files copied."""
+    os.makedirs(run_dir, exist_ok=True)
+    copied = 0
+    for cid in worklist["carried"]:
+        for suffix in ("-stageA.json", "-disposition.json"):
+            src = os.path.join(prior_dir, f"{cid}{suffix}")
+            if not os.path.exists(src):
+                continue
+            rec = _read_json(src)
+            if isinstance(rec, dict):
+                rec["carried_forward"] = True
+                rec["carried_from"] = run_label
+            _atomic_write(os.path.join(run_dir, f"{cid}{suffix}"), rec)
+            copied += 1
+    _atomic_write(os.path.join(run_dir, "00-worklist.json"), worklist)
+    return copied
+
+
+# --------------------------------------------------------------------------
 # validate: the gate the first run did not have
 # --------------------------------------------------------------------------
 
@@ -628,13 +738,47 @@ def apply_dispositions(
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("command",
-                    choices=["plan", "validate", "apply-dispositions"])
+                    choices=["plan", "worklist", "validate", "apply-dispositions"])
     ap.add_argument("run_dir", nargs="?", default=None)
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--prior", default=None,
                     help="prior run dir for carry-forward (default: 40-reintegration)")
+    ap.add_argument("--since", default=None,
+                    help="worklist: re-audit records whose evidence changed since this "
+                         "date (YYYY-MM-DD); the prior run's date by default")
+    ap.add_argument("--seed", default=None,
+                    help="worklist: comma-separated capability ids known to have moved")
     ap.add_argument("--write", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.command == "worklist":
+        if not args.run_dir or not args.prior:
+            print("worklist needs RUN_DIR and --prior PRIOR_RUN_DIR", file=sys.stderr)
+            return 2
+        prior_label = os.path.basename(os.path.normpath(args.prior))
+        since = args.since
+        if since is None:
+            # r1-20260901 -> 2026-09-01
+            digits = prior_label.rsplit("-", 1)[-1]
+            if len(digits) == 8 and digits.isdigit():
+                since = f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+        if not since:
+            print("worklist: pass --since YYYY-MM-DD (prior dir name carries no date)",
+                  file=sys.stderr)
+            return 2
+        seed = [s.strip() for s in (args.seed or "").split(",") if s.strip()]
+        wl = build_worklist(args.prior, since, seed)
+        reasons = Counter(f["reason"] for f in wl["fresh"])
+        print(f"base {wl['base_commit']} -> head {wl['head_commit']}; "
+              f"{wl['changed_file_count']} changed files")
+        print(f"fresh   : {len(wl['fresh'])}  {dict(reasons)}")
+        print(f"carried : {len(wl['carried'])}")
+        for f in wl["fresh"]:
+            print(f"  {f['cid']}  ({f['reason']}; {len(f['changed_paths'])} path(s))")
+        if args.write:
+            n = write_worklist(wl, args.prior, args.run_dir, prior_label)
+            print(f"wrote {args.run_dir}/00-worklist.json and copied {n} carried file(s)")
+        return 0
 
     if args.command == "plan":
         plan = plan_reintegration(args.root, args.prior)

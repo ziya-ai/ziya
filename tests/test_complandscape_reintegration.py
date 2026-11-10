@@ -326,15 +326,32 @@ class TestAgainstTheRealCorpus:
             "the first-run reintegration corpus is known to contain prose in "
             "vocabulary fields and dispositions without corrected_score; a "
             "validator that accepts it is not checking")
-        assert res["stats"]["stage_a_files"] == 112
+        # The original 112 records; the r1-20260901 run appended more on
+        # 2026-09-01, so the exact count is a floor, not a pin.
+        assert res["stats"]["stage_a_files"] >= 112
 
     def test_the_real_corpus_verdict_counts_are_read_correctly(self):
-        """Positive control: the reader works, so the errors above are real."""
+        """Positive control: the reader works, so the errors above are real.
+
+        Compared against a count taken straight from the files, not a
+        frozen number: the corpus is appended to by later runs (112 -> 128
+        on 2026-09-01), and a pinned 17 FOUND stayed red for two months
+        while asserting nothing about the reader.
+        """
         if not os.path.isdir(REAL_PRIOR):
             pytest.skip("first-run corpus not present")
         res = reint.validate_run(REAL_PRIOR, REAL_ROOT)
-        assert res["stats"]["verdicts"].get("FOUND") == 17
-        assert res["stats"]["pairs"] == 112
+        import glob
+        stage_a = glob.glob(os.path.join(REAL_PRIOR, "*-stageA.json"))
+        found = 0
+        for p in stage_a:
+            with open(p, encoding="utf-8") as fh:
+                found += json.load(fh).get("verdict") == "FOUND"
+        assert res["stats"]["stage_a_files"] == len(stage_a) >= 112
+        assert res["stats"]["verdicts"].get("FOUND") == found > 0
+        # First-run records carry no dates: the staleness-by-date gap the
+        # protocol's as_of requirement exists to close.
+        assert res["stats"]["pairs"] <= res["stats"]["stage_a_files"]
 
 
 # --------------------------------------------------------------------------

@@ -133,8 +133,12 @@ class _CapturingStorage:
         self.planned: dict = {}
         self.block_status: List[tuple] = []
 
-    def write_iteration_artifact(self, run_id, block_id, index, artifact):
-        self.artifacts.append((block_id, index))
+    def write_iteration_artifact(self, run_id, block_id, index, artifact,
+                                 pass_key=None, attempt=1):
+        # Same signature as TaskRunStorage.write_iteration_artifact.  The
+        # extra fields are recorded, not dropped, so an assertion can reach
+        # them; a stub that absorbed them would hide the seam again.
+        self.artifacts.append((block_id, index, pass_key, attempt))
 
     def append_iteration_summary(self, run_id, block_id, summary):
         self.summaries.append(summary)

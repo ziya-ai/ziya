@@ -625,3 +625,41 @@ the project store are encrypted and unreadable without `ZIYA_ENCRYPTION_KEY`,
 and Call-by-name resolution silently skips them. CL3 resolved uniquely here,
 but a Call target living in an encrypted card would be reported "not found"
 rather than "unreadable" — worth a better error if it ever bites.
+
+## Addendum (2026-11-09): the Ziya-side refresh, and what its worklist taught
+
+Run `r2-20261105` re-scored Ziya's own Stage A/B records against the ~1,000
+commits since `r1-20260901`, competitor cells untouched, and was applied on
+2026-11-09: 128 pairs validated, 12 verdicts moved (6 PARTIAL→FOUND, 2
+ABSENT→PARTIAL, 4 FOUND→PARTIAL), 10 Ziya cells changed score. The four
+downgrades are the honest part — r1 had stretched partial mechanisms to
+FOUND, exactly what Critic A flagged.
+
+It took three launches. The first held on expired credentials after 37 pairs
+and exposed three harness defects fixed the same week (hard time budgets,
+hard infra-gate cancel, per-lane credential preflight; see CHANGELOG). The
+other two launches were needed because **Stage 0, the worklist, was a model
+task, and it was wrong both times in different ways**: the first selected
+127 of 128 records as fresh; the continuation dropped two real items by
+asserting file state it had not checked.
+
+The worklist is now a script step: `complandscape_reintegration.py worklist
+RUN_DIR --prior PRIOR [--since DATE] [--seed ids]`. A record is fresh when a
+cited evidence path (or a file under a cited directory) changed since the
+prior run's date, or the capability is on the caller's seed list; everything
+else is copied forward with `carried_forward`/`carried_from` set and every
+other field byte-identical. Nothing in that decision needs judgement, so
+nothing in it should be delegated to a model.
+
+Running the mechanical version against r1 selects **126 of 128** — so the
+first agent's 127 was not an agent error. With 3,172 changed files, almost
+every cited evidence path really did change; the over-selection is in the
+rule, not in who applied it. Whether a refresh should narrow to the seed
+list, require more than one touched path, or weight paths by how much of the
+record they support is an open design choice. The tool records the reason
+and the touched paths per record so that choice can be made from data; it
+does not pick a threshold.
+
+One record (`interactive-executable-artifacts`) carries no `as_of` because
+its r1 source carried none; the validator warns, correctly, and nothing can
+honestly backfill a date that was never recorded.
