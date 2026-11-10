@@ -674,8 +674,53 @@ _HEREDOC_OPENER_RE = re.compile(
 )
 
 
+def _next_heredoc_opener(command: str, pos: int = 0) -> Optional['re.Match']:
+    """First heredoc opener at or after *pos* that the shell would honour.
+
+    ``_HEREDOC_OPENER_RE.search`` alone matched ``<<`` anywhere, including
+    inside a quoted argument: ``python3 -c "...' <<<'..."`` was read as a
+    heredoc whose "opener line" ran to a newline that is itself inside the
+    quotes.  Scan with quote state instead, and skip ``#`` comments so an
+    apostrophe in a comment cannot open a phantom quote.  *pos* must be an
+    unquoted position (start of command, or just past a terminator line).
+    """
+    in_sq = in_dq = False
+    i, n = pos, len(command)
+    while i < n:
+        ch = command[i]
+        if in_sq:
+            if ch == "'":
+                in_sq = False
+            i += 1
+            continue
+        if ch == '\\':
+            i += 2
+            continue
+        if ch == '"':
+            in_dq = not in_dq
+        elif in_dq:
+            pass
+        elif ch == "'":
+            in_sq = True
+        elif ch == '#' and (i == pos or command[i - 1] in ' \t\n;&|('):
+            nl = command.find('\n', i)
+            if nl < 0:
+                return None
+            i = nl
+            continue
+        elif ch == '<' and command.startswith('<<', i):
+            m = _HEREDOC_OPENER_RE.match(command, i)
+            if m:
+                return m
+            while i < n and command[i] == '<':
+                i += 1
+            continue
+        i += 1
+    return None
+
+
 def _has_heredoc(command: str) -> bool:
-    return bool(_HEREDOC_OPENER_RE.search(command))
+    return _next_heredoc_opener(command) is not None
 
 
 def _heredoc_spans(command: str) -> List[Tuple[int, int, str, bool]]:
@@ -698,7 +743,7 @@ def _heredoc_spans(command: str) -> List[Tuple[int, int, str, bool]]:
     spans: List[Tuple[int, int, str, bool]] = []
     pos = 0
     while True:
-        m = _HEREDOC_OPENER_RE.search(command, pos)
+        m = _next_heredoc_opener(command, pos)
         if not m:
             return spans
         dash, sq, dq, bare = m.groups()

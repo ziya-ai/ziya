@@ -2036,8 +2036,16 @@ class ShellServer:
         # bodies, then validate each remaining command line against the
         # allowlist. Compound constructs (if/while/...) are excluded — they
         # keep their dedicated _validate_compound_body path below.
-        if _has_heredoc(command) and not self._is_compound_command(command):
-            stripped = _strip_heredoc_bodies(command)
+        #
+        # Only take this branch when stripping/splitting makes progress.  If
+        # the result is the command itself (an opener-like ``<<<`` with no
+        # terminator, followed by a quoted multi-line argument), recursing
+        # would re-validate the identical string until RecursionError; the
+        # generic path below validates it correctly instead.
+        _hd_progress = [l.strip() for l in _lines if l.strip()] != [command]
+        if (_has_heredoc(command) and _hd_progress
+                and not self._is_compound_command(command)):
+            stripped = _strip_shell_comments(_strip_heredoc_bodies(command))
             # Split quote-aware: a newline inside a quoted argument is data,
             # not a separator. A raw split() here shredded multi-line
             # quoted arguments that legitimately follow a heredoc
