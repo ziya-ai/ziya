@@ -2751,7 +2751,9 @@ class StreamingToolExecutor:
         """
         _fb_key = feedback_key or conversation_id
         if _fb_key:
-            from app.server import pending_feedback_lists, pending_feedback_refcounts
+            from app.server import (
+                pending_feedback_lists, pending_feedback_refcounts, last_generator_exit,
+            )
             pending_feedback_refcounts[_fb_key] = (
                 pending_feedback_refcounts.get(_fb_key, 0) + 1)
         _monitor: List[Optional[asyncio.Task]] = [None]
@@ -2785,6 +2787,10 @@ class StreamingToolExecutor:
             if _fb_key:
                 pending_feedback_refcounts[_fb_key] -= 1
                 if pending_feedback_refcounts[_fb_key] <= 0:
+                    # Boundary for discard_stale_feedback: queue items
+                    # stamped before this instant were aimed at this (now
+                    # finished) turn; later ones belong to the next.
+                    last_generator_exit[_fb_key] = time.monotonic()
                     _lst = pending_feedback_lists.get(_fb_key)
                     if _lst is not None and not _lst:
                         pending_feedback_lists.pop(_fb_key, None)

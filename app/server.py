@@ -114,6 +114,13 @@ pending_feedback_lists: dict[str, list] = {}
 # generator exits — see StreamingToolExecutor.stream_with_tools.
 pending_feedback_refcounts: dict[str, int] = {}
 
+# time.monotonic() at which the LAST generator bound to each feedback key
+# exited (refcount reached 0).  Feedback enqueued before this instant was
+# aimed at a turn that is over; feedback enqueued after it belongs to the
+# next turn.  Recorded by StreamingToolExecutor.stream_with_tools, read by
+# discard_stale_feedback at the start of a new turn.
+last_generator_exit: dict[str, float] = {}
+
 
 def get_feedback_queue(conversation_id: str) -> asyncio.Queue:
     """Get or create the shared feedback queue for a conversation."""
@@ -127,6 +134,10 @@ def get_feedback_queue(conversation_id: str) -> asyncio.Queue:
 
 def _enqueue_feedback(conversation_id: str, item: dict) -> None:
     """Put an item on the shared queue, dropping oldest if full."""
+    # Stamped so discard_stale_feedback can tell feedback aimed at a dead
+    # turn from feedback typed after it ended.  setdefault: a caller that
+    # already carries a stamp keeps its original instant.
+    item.setdefault('_enqueued_at', time.monotonic())
     q = get_feedback_queue(conversation_id)
     if q.full():
         try:
@@ -134,6 +145,59 @@ def _enqueue_feedback(conversation_id: str, item: dict) -> None:
         except asyncio.QueueEmpty:
             pass
     q.put_nowait(item)
+
+
+def discard_stale_feedback(conversation_id: str) -> int:
+    """Drop feedback left over from an EARLIER turn of ``conversation_id``.
+
+    Both feedback stores outlive a turn on purpose: the WebSocket cleanup
+    keeps a non-empty ``feedback_queues`` entry so feedback sent just before
+    a page reload reaches the still-running executor, and
+    ``stream_with_tools`` keeps a non-empty ``pending_feedback_lists`` entry
+    so the diff-validation retry generator can deliver what the primary
+    generator captured.  Neither was ever cleared at a NEW turn, so feedback
+    stranded by a turn that died (which the frontend already resubmitted as
+    its own turn, and which the user may since have edited away) was
+    injected into whatever turn came next.
+
+    Called at the start of a chat request.  A no-op while a generator is
+    bound to the conversation (``pending_feedback_refcounts`` > 0): that is
+    the reload-mid-turn case the stores exist for.  Otherwise:
+
+      * the staged list is dropped whole -- items only get there through a
+        running generator's monitor, so with none bound every entry was
+        captured by a turn that has ended;
+      * the queue keeps items whose ``_enqueued_at`` is after the last
+        generator exit (typed between clicking Send and the server binding
+        the new turn) and drops the rest.  With no exit recorded for this
+        key (first turn in this process) nothing in the queue is stale.
+
+    Returns the number of items dropped.
+    """
+    if not conversation_id or pending_feedback_refcounts.get(conversation_id, 0) > 0:
+        return 0
+    dropped = 0
+    stale = pending_feedback_lists.pop(conversation_id, None)
+    if stale:
+        dropped += len(stale)
+    q = feedback_queues.get(conversation_id)
+    exit_at = last_generator_exit.get(conversation_id)
+    if q is None or exit_at is None:
+        return dropped
+    keep = []
+    while not q.empty():
+        try:
+            item = q.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        stamp = item.get('_enqueued_at') if isinstance(item, dict) else None
+        if stamp is not None and stamp > exit_at:
+            keep.append(item)
+        else:
+            dropped += 1
+    for item in keep:
+        q.put_nowait(item)
+    return dropped
 
 # Global security stats tracker
 _security_stats = {
@@ -1947,6 +2011,14 @@ async def stream_chunks(body):
     
     files = body.get("config", {}).get("files", [])
     conversation_id = body.get("conversation_id")
+    # A new turn starts with a clean feedback slate.  Feedback a dead turn
+    # left behind was already recovered by the frontend as its own message
+    # (FeedbackRecoveryWatcher); re-injecting it here delivered it twice, and
+    # after an edit-and-resubmit delivered text the user had truncated away.
+    if conversation_id:
+        _stale_fb = discard_stale_feedback(conversation_id)
+        if _stale_fb:
+            logger.info(f"🔄 FEEDBACK: discarded {_stale_fb} stale item(s) from a previous turn of {conversation_id}")
     project_root = body.get("config", {}).get("project_root") or body.get("project_root")
     system_prompt_addition = body.get("config", {}).get("systemPromptAddition", "")
     model_overrides = body.get("config", {}).get("modelOverrides", {})
