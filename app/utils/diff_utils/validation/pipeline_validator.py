@@ -15,6 +15,51 @@ from ..parsing.diff_parser import extract_target_file_from_diff
 from ..pipeline.pipeline_manager import apply_diff_pipeline
 
 
+def missing_target_feedback(file_path: str, project_root: str) -> str:
+    """Feedback for a patch whose target is not under the project root.
+
+    Names the root that was checked, and when the same relative path DOES
+    resolve under the server's launch directory (ZIYA_USER_CODEBASE_DIR, or
+    the process cwd -- where the shell tool runs, so where a model that
+    looked the file up with `ls` anchored its path), says so: either the
+    project-relative path for that file, or that the file is outside the
+    project and cannot be patched from here. Without this the model has no
+    way to tell a typo from a wrong root and re-emits the same diff.
+    """
+    lines = [
+        f"❌ Target file does not exist: {file_path}",
+        f"Paths in a diff are relative to the project root, {project_root}.",
+    ]
+    real_root = os.path.realpath(project_root)
+    for other in (os.environ.get("ZIYA_USER_CODEBASE_DIR"), os.getcwd()):
+        if not other or os.path.realpath(other) == real_root:
+            continue
+        candidate = os.path.join(other, file_path)
+        if not os.path.exists(candidate):
+            continue
+        real_candidate = os.path.realpath(candidate)
+        if real_candidate.startswith(real_root + os.sep):
+            rel = os.path.relpath(real_candidate, real_root)
+            lines.append(
+                f"That path resolves under {other} (the shell's working directory), "
+                f"not the project root. Inside the project the same file is {rel}; "
+                f"re-emit the diff with that path."
+            )
+        else:
+            lines.append(
+                f"That path resolves under {other} (the shell's working directory), "
+                f"which is outside the project root, so no diff can be applied to it "
+                f"from here. Do not re-emit the same diff; tell the user the file is "
+                f"outside the project."
+            )
+        return "\n".join(lines)
+    lines.append(
+        "Verify the file path or mark as new file creation with:\n"
+        "new file mode 100644\n--- /dev/null"
+    )
+    return "\n".join(lines)
+
+
 def validate_diff_with_full_pipeline(
     diff_content: str,
     file_path: Optional[str] = None
@@ -80,33 +125,13 @@ def validate_diff_with_full_pipeline(
         return result
     
     full_path = os.path.join(codebase_dir, file_path)
-    
-    # If file not found at primary codebase_dir, check the current project path
-    # This handles the case where ZIYA_USER_CODEBASE_DIR is the server launch dir
-    # but the diff targets files in a different project
-    if not os.path.exists(full_path):
-        try:
-            from ...storage.projects import ProjectStorage
-            from ...utils.paths import get_ziya_home
-            # Try to find file by checking all known project paths
-        except ImportError:
-            pass
-
-    # Second fallback: walk up from cwd looking for the file, useful when
-    # ZIYA_USER_CODEBASE_DIR is set to a subdirectory but the diff path is
-    # relative to a parent directory (or vice versa).
-    if not os.path.exists(full_path):
-        from app.context import get_project_root
-        cwd_candidate = os.path.join(get_project_root(), file_path)
-        if os.path.exists(cwd_candidate):
-            full_path = cwd_candidate
 
     # Check if this is a new file creation
     is_new_file = "new file mode" in diff_content or "--- /dev/null" in diff_content
     
     # If not a new file, check that target exists
     if not is_new_file and not os.path.exists(full_path):
-        result["model_feedback"] = f"❌ Target file does not exist: {file_path}\nVerify the file path or mark as new file creation with:\nnew file mode 100644\n--- /dev/null"
+        result["model_feedback"] = missing_target_feedback(file_path, codebase_dir)
         return result
     
     # Create a temporary directory for validation

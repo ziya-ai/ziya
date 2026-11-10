@@ -213,14 +213,23 @@ class DiffValidationHook:
         """Read file content to add to model context."""
         if not file_path:
             return None
-        codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        # The SAME root the validator checked (request-scoped project root,
+        # then ZIYA_USER_CODEBASE_DIR). Reading from the env var alone found a
+        # file the validator had just declared missing when the diff's path
+        # was relative to the server's launch directory rather than the
+        # project (shell commands run in the launch dir, so a model that
+        # looked a file up with `ls` writes paths relative to it). Injecting
+        # that content as "current content for correction" told the model its
+        # path was fine, and it re-emitted the rejected diff verbatim.
+        from app.context import get_project_root
+        codebase_dir = get_project_root()
         if not codebase_dir:
             return None
         
         full_path = os.path.join(codebase_dir, file_path)
         
         if not os.path.exists(full_path):
-            logger.warning(f"Cannot read file for context: {file_path} does not exist")
+            logger.warning(f"Cannot read file for context: {file_path} does not exist under {codebase_dir}")
             return None
         
         try:
