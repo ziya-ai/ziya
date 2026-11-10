@@ -210,7 +210,8 @@ def test_contributor_tiers_are_never_routable_implicitly():
 
 @pytest.mark.parametrize("endpoint, expected", [
     ("openai", "gpt-6.1-sol"), ("anthropic", "claude-sonnet-5-5"),
-    ("zai", "glm-5.3"), ("meta", "muse-spark-1.3"), ("bedrock", "opus4.8"),
+    # bedrock: Opus 5.5 became the default again in 58f8c13f (2026-10-31).
+    ("zai", "glm-5.3"), ("meta", "muse-spark-1.3"), ("bedrock", "opus5.5"),
 ])
 def test_endpoint_defaults(endpoint, expected):
     assert DEFAULT_MODELS[endpoint] == expected
@@ -250,6 +251,12 @@ def test_service_models_are_real_model_ids():
         assert served(ep, mid), ("DEFAULT_SERVICE_MODELS", ep, mid)
     for cat, by_ep in SERVICE_MODEL_OVERRIDES.items():
         for ep, mid in by_ep.items():
+            if ep == "google":
+                # Out of scope here (module docstring).  Google overrides
+                # name config KEYS, not raw ids -- "gemini-3.1-pro" is the
+                # key whose model_id is gemini-3.1-pro-preview -- and
+                # test_gemini_catalog_2026_10 pins that contract.
+                continue
             if ep == "bedrock":
                 # Bedrock service ids are historically written without the
                 # us. prefix in some rows; accept either form.
