@@ -62,9 +62,44 @@ describe('drag-settling guard', () => {
     });
 });
 
+/**
+ * Observed 2026-11-04: after one drag-and-drop, every click anywhere fired
+ * "Conversation moved from <folder> to root" again.  07c56b2a deleted the
+ * closing of handleScroll, its addEventListener and the `return () => {`
+ * line, so the teardown statements ended up inside handleScroll (never
+ * registered) and the effect returned nothing.  Each effect run while
+ * dragging leaked a document mouseup listener whose closure still read
+ * isDragging: true, and every later click re-ran endCustomDrag with the
+ * old dragged id and no drop target, which is a move to root.
+ */
+describe('drag listener lifecycle', () => {
+    const effect = between('// Global mouse tracking for custom drag', '// Escape key cancels active drag');
+
+    it('the effect returns a cleanup that detaches the document listeners', () => {
+        const ret = effect.indexOf('return () => {');
+        expect(ret).toBeGreaterThan(-1);
+        const cleanup = effect.slice(ret);
+        expect(cleanup).toContain("document.removeEventListener('mouseup', handleMouseUp)");
+        expect(cleanup).toContain("document.removeEventListener('mousemove', handleMouseMove)");
+        expect(cleanup).toContain("treeEl?.removeEventListener('scroll', handleScroll)");
+    });
+
+    it('the listeners are attached in the same effect (positive control)', () => {
+        expect(effect).toContain("document.addEventListener('mouseup', handleMouseUp)");
+        expect(effect).toMatch(/treeEl\?\.addEventListener\('scroll', handleScroll/);
+    });
+
+    it('handleScroll does not contain the teardown', () => {
+        const body = between('const handleScroll = () => {', 'treeEl?.addEventListener(');
+        expect(body).not.toContain('removeEventListener');
+    });
+});
+
 describe('effect teardown backstop', () => {
     it('removes stray insertion lines when the drag listeners are detached', () => {
-        const teardown = between("document.removeEventListener('mouseup', handleMouseUp);", '};');
+        const effect = between('// Global mouse tracking for custom drag', '// Escape key cancels active drag');
+        const teardown = effect.slice(effect.indexOf('return () => {'));
+        expect(effect.indexOf('return () => {')).toBeGreaterThan(-1);
         expect(teardown).toMatch(/querySelectorAll(<HTMLElement>)?\('\.drop-insertion-line'\)\s*\.forEach\(\w+ => \w+\.remove\(\)\)/);
     });
 
