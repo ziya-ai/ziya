@@ -2062,6 +2062,12 @@ async def stream_chunks(body):
         from app.context import set_project_root
         set_project_root(project_root)
         logger.info(f"🔄 PROJECT: Request-scoped project root = {project_root}")
+    # A chat turn means this project is in use: index it (in the
+    # background, once) if it has not been.  Other projects that merely
+    # have a tab open are not indexed -- see ProjectContextMiddleware.
+    if project_root and os.path.isdir(project_root):
+        from app.middleware.project_context import ensure_ast_indexed
+        ensure_ast_indexed(project_root)
 
     # Restore 0.3.0 direct streaming behavior
     use_direct_streaming = True
