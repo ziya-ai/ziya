@@ -46,7 +46,11 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
             # Basic validation: must be an existing directory
             if os.path.isdir(project_root):
                 set_project_root(project_root)
-                self._ensure_ast_indexed(project_root)
+                # Indexing is NOT started here.  Every open tab sends its
+                # own X-Project-Root on reconnect, so kicking off per request
+                # indexed every project with a tab after each restart (three
+                # CPU-bound threads sharing the GIL with the event loop).
+                # A project indexes when it is used: see ensure_ast_indexed.
             else:
                 logger.warning(
                     f"X-Project-Root header contains non-existent path: "
@@ -57,100 +61,106 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _ensure_ast_indexed(project_root: str) -> None:
-        """Trigger background AST indexing for a project if not already done."""
-        try:
-            from app.utils.context_enhancer import _ast_indexing_status, _broadcast_ast_complete
-            from app.utils.ast_parser.integration import (
-                _initialized_projects, _indexing_in_progress,
-                initialize_ast_capabilities,
-            )
-            from app.utils.directory_util import get_ignored_patterns
+        """Kept for callers that reach the kickoff through the class."""
+        ensure_ast_indexed(project_root)
 
-            abs_root = os.path.abspath(project_root)
-            # Claim the project synchronously, before starting any thread.
-            # Concurrent requests otherwise all pass this check and each spawn
-            # a worker; the losers then race into initialize_ast_capabilities(),
-            # return files_processed=0, and clobber _ast_indexing_status with a
-            # spurious "Indexing returned no files" error while the real index
-            # is still running.
-            with _ast_kickoff_lock:
-                if (
-                    abs_root in _initialized_projects
-                    or abs_root in _indexing_in_progress
-                    or abs_root in _ast_kickoff_claimed
-                ):
-                    return
-                failed = _ast_failed_at.get(abs_root)
-                if failed is not None and time.monotonic() - failed < _AST_RETRY_COOLDOWN_S:
-                    return
-                _ast_kickoff_claimed.add(abs_root)
 
-            # Update the global status dict that /api/ast/status reads.
-            # Without this, the status stays stuck on the error from a
-            # previous project (e.g. home-dir rejection at startup).
-            _ast_indexing_status.update({
-                'is_indexing': True,
-                'enabled': True,
-                'completion_percentage': 0,
-                'is_complete': False,
-                'indexed_files': 0,
-                'total_files': 0,
-                'error': None,
-            })
+def ensure_ast_indexed(project_root: str) -> None:
+    """Trigger background AST indexing for a project if not already done.
 
-            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+    Called from the chat-turn path and the AST tools -- the places that
+    mean a project is actually being worked in -- not from every request
+    that merely names a project.
+    """
+    try:
+        from app.utils.context_enhancer import _ast_indexing_status, _broadcast_ast_complete
+        from app.utils.ast_parser.integration import (
+            _initialized_projects, _indexing_in_progress,
+            initialize_ast_capabilities,
+        )
+        from app.utils.directory_util import get_ignored_patterns
 
-            def _index_and_update_status():
-                # Build ignore patterns inside the worker thread: this walks
-                # the entire project tree looking for .gitignore files (up to
-                # ZIYA_GITIGNORE_TIMEOUT seconds). Calling it in dispatch()
-                # blocked the event loop — freezing every request — on the
-                # first request after a project switch.
-                try:
-                    patterns = get_ignored_patterns(abs_root)
-                    result = initialize_ast_capabilities(abs_root, patterns, max_depth)
-                    files = result.get("files_processed", 0)
-                    if result.get("initialized") and files > 0:
-                        _ast_failed_at.pop(abs_root, None)
-                        _ast_indexing_status.update({
-                            'is_indexing': False,
-                            'completion_percentage': 100,
-                            'is_complete': True,
-                            'indexed_files': files,
-                            'total_files': files,
-                            'error': None,
-                        })
-                        _broadcast_ast_complete(files)
-                    else:
-                        _ast_indexing_status.update({
-                            'is_indexing': False,
-                            'is_complete': False,
-                            'error': result.get("error", "Indexing returned no files"),
-                        })
-                except Exception as exc:
-                    _ast_failed_at[abs_root] = time.monotonic()
-                    logger.warning(
-                        f"AST indexing failed for {abs_root}: {exc}; "
-                        f"will not retry for {_AST_RETRY_COOLDOWN_S}s"
-                    )
+        abs_root = os.path.abspath(project_root)
+        # Claim the project synchronously, before starting any thread.
+        # Concurrent requests otherwise all pass this check and each spawn
+        # a worker; the losers then race into initialize_ast_capabilities(),
+        # return files_processed=0, and clobber _ast_indexing_status with a
+        # spurious "Indexing returned no files" error while the real index
+        # is still running.
+        with _ast_kickoff_lock:
+            if (
+                abs_root in _initialized_projects
+                or abs_root in _indexing_in_progress
+                or abs_root in _ast_kickoff_claimed
+            ):
+                return
+            failed = _ast_failed_at.get(abs_root)
+            if failed is not None and time.monotonic() - failed < _AST_RETRY_COOLDOWN_S:
+                return
+            _ast_kickoff_claimed.add(abs_root)
+
+        # Update the global status dict that /api/ast/status reads.
+        # Without this, the status stays stuck on the error from a
+        # previous project (e.g. home-dir rejection at startup).
+        _ast_indexing_status.update({
+            'is_indexing': True,
+            'enabled': True,
+            'completion_percentage': 0,
+            'is_complete': False,
+            'indexed_files': 0,
+            'total_files': 0,
+            'error': None,
+        })
+
+        max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+
+        def _index_and_update_status():
+            # Build ignore patterns inside the worker thread: this walks
+            # the entire project tree looking for .gitignore files (up to
+            # ZIYA_GITIGNORE_TIMEOUT seconds). Calling it on the event loop
+            # froze every request on the first request after a switch.
+            try:
+                patterns = get_ignored_patterns(abs_root)
+                result = initialize_ast_capabilities(abs_root, patterns, max_depth)
+                files = result.get("files_processed", 0)
+                if result.get("initialized") and files > 0:
+                    _ast_failed_at.pop(abs_root, None)
+                    _ast_indexing_status.update({
+                        'is_indexing': False,
+                        'completion_percentage': 100,
+                        'is_complete': True,
+                        'indexed_files': files,
+                        'total_files': files,
+                        'error': None,
+                    })
+                    _broadcast_ast_complete(files)
+                else:
                     _ast_indexing_status.update({
                         'is_indexing': False,
                         'is_complete': False,
-                        'error': str(exc),
+                        'error': result.get("error", "Indexing returned no files"),
                     })
-                finally:
-                    # Release the claim unless the project actually indexed, so a
-                    # failed or crashed run can be retried by a later request.
-                    # Successful runs stay claimed via _initialized_projects.
-                    if abs_root not in _initialized_projects:
-                        with _ast_kickoff_lock:
-                            _ast_kickoff_claimed.discard(abs_root)
+            except Exception as exc:
+                _ast_failed_at[abs_root] = time.monotonic()
+                logger.warning(
+                    f"AST indexing failed for {abs_root}: {exc}; "
+                    f"will not retry for {_AST_RETRY_COOLDOWN_S}s"
+                )
+                _ast_indexing_status.update({
+                    'is_indexing': False,
+                    'is_complete': False,
+                    'error': str(exc),
+                })
+            finally:
+                # Release the claim unless the project actually indexed, so a
+                # failed or crashed run can be retried by a later request.
+                # Successful runs stay claimed via _initialized_projects.
+                if abs_root not in _initialized_projects:
+                    with _ast_kickoff_lock:
+                        _ast_kickoff_claimed.discard(abs_root)
 
-            t = threading.Thread(
-                target=_index_and_update_status,
-                daemon=True,
-            )
-            t.start()
-            logger.info(f"AST background indexing started for project: {abs_root}")
-        except Exception as e:
-            logger.debug(f"Could not trigger AST indexing for {project_root}: {e}")
+        t = threading.Thread(target=_index_and_update_status, daemon=True)
+        t.start()
+        logger.info(f"AST background indexing started for project: {abs_root}")
+    except Exception as e:
+        logger.debug(f"Could not trigger AST indexing for {project_root}: {e}")

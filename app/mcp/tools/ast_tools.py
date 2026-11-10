@@ -20,9 +20,21 @@ from app.utils.logging_utils import logger
 # ---------------------------------------------------------------------------
 
 def _get_enhancer():
-    """Return the AST enhancer for the current project, or None if not yet indexed."""
-    from app.utils.ast_parser.integration import get_current_enhancer
-    return get_current_enhancer()
+    """Return the AST enhancer for the current project, or None if not yet indexed.
+
+    Projects are indexed on use, not on every request that names them; a
+    tool call is use, so a miss starts the (background) index for this
+    project and the caller's "not indexed yet" reply becomes true on retry.
+    """
+    from app.utils.ast_parser.integration import get_current_enhancer, _get_project_root
+    enhancer = get_current_enhancer()
+    if enhancer is None:
+        try:
+            from app.middleware.project_context import ensure_ast_indexed
+            ensure_ast_indexed(_get_project_root())
+        except Exception as e:  # noqa: BLE001 — a kickoff failure is not a tool failure
+            logger.debug(f"AST kickoff from tool call skipped: {e}")
+    return enhancer
 
 
 def _get_query_engine(file_path: Optional[str] = None):
@@ -92,9 +104,14 @@ def _not_ready_message() -> Dict[str, Any]:
 
 
 def _rel(path: str) -> str:
-    """Best-effort relative path for display."""
+    """Best-effort path relative to the project root for display.
+
+    Not ``os.path.relpath(path)``: that uses the server process's cwd, which
+    is the launch directory, not the project the index was built from.
+    """
     try:
-        return os.path.relpath(path)
+        from app.utils.ast_parser.integration import _get_project_root
+        return os.path.relpath(path, _get_project_root())
     except ValueError:
         return path
 
