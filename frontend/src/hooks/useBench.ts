@@ -9,12 +9,15 @@ import {
     setBenchEnvironment, setBenchTool,
     BenchView, BenchViewItem, BenchItemDetail, ToolDetail, FindResponse, InstallResult, ReauthorizeResult,
 } from '../apis/benchApi';
+import * as skillApi from '../api/skillApi';
+import type { Skill, SkillCreate, SkillUpdate } from '../types/skill';
 import type { Layer, PlacementState } from '../utils/activation';
 import { useLens, viewAtLens, LensView } from '../context/LensContext';
 import {
     runBenchMigration, clearLegacySkillIds, markBenchLive, isBenchLive, MigratableSkill,
 } from '../utils/benchMigration';
 import { useCapabilityPickups } from '../utils/capabilityPickup';
+import { announceSkillsChanged } from '../utils/skillsChanged';
 
 const migrationStarted = new Set<string>();
 
@@ -177,6 +180,34 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
         return r;
     }, [projectId, conversationId, lens, announce]);
 
+    // Skill editing (slice 6 "edit mode").  Writes go to the skills REST API
+    // by Skill.id -- the card-back detail names it; the bench itself is keyed
+    // by name -- then the stale card-back is dropped, the view re-fetched,
+    // sibling instances told, and ProjectContext told its skill LIST changed
+    // (the chip bar resolves bench items to skills by name from that list).
+    const afterSkillWrite = useCallback(async (key?: string) => {
+        if (key) detailCache.current.delete(key);
+        await refresh();
+        announce();
+        if (projectId) announceSkillsChanged(projectId);
+    }, [refresh, announce, projectId]);
+    const createSkill = useCallback(async (data: SkillCreate): Promise<Skill> => {
+        if (!projectId) throw new Error('no project');
+        const s = await skillApi.createSkill(projectId, data);
+        await afterSkillWrite();
+        return s;
+    }, [projectId, afterSkillWrite]);
+    const updateSkill = useCallback(async (skillId: string, key: string, data: SkillUpdate): Promise<void> => {
+        if (!projectId) throw new Error('no project');
+        await skillApi.updateSkill(projectId, skillId, data);
+        await afterSkillWrite(key);
+    }, [projectId, afterSkillWrite]);
+    const deleteSkill = useCallback(async (skillId: string, key: string): Promise<void> => {
+        if (!projectId) throw new Error('no project');
+        await skillApi.deleteSkill(projectId, skillId);
+        await afterSkillWrite(key);
+    }, [projectId, afterSkillWrite]);
+
     // Transient token deltas: what changed in the last view update, per key
     // and for the on-hand total.  Read by the gauge / card / drawer to flash a
     // "−1,872t" chip; cleared after FLASH_MS.  Client-only.
@@ -233,6 +264,9 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
         flash,
         find,
         install,
+        createSkill,
+        updateSkill,
+        deleteSkill,
         refresh,
         isPickedUp: (key: string) => pickups.has(key),
     };

@@ -301,6 +301,11 @@ def item_detail(project_id: str, key: str) -> Dict[str, Any]:
             "prompt": full.prompt or "",
             "path": full.skillPath,
             "source": "builtin" if full.isBuiltIn else (full.source or "custom"),
+            # The drawer's edit mode writes through the skills REST API, which
+            # is keyed by Skill.id; the bench is keyed by name.  Only custom
+            # skills are writable: SkillStorage refuses built-in and file-backed.
+            "skill_id": full.id,
+            "editable": (not full.isBuiltIn) and (full.source or "custom") == "custom",
             "tokens": full.tokenCount or 0,
             "keywords": list(full.keywords or []),
             "provenance_record": prov,
