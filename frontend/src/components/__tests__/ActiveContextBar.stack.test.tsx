@@ -149,7 +149,11 @@ describe('collapsed', () => {
         writeSkillBarPrefs('P', { collapsed: true, expanded: false });
         const { rerender } = render(<ActiveContextBar />);
         expect(screen.queryByTestId('skill-dot-pickup')).toBeNull();
-        expect(screen.getByTestId('skill-line')).toHaveTextContent(/^16 on hand$/);
+        // The line also carries the "+N" dot-cap overflow and the ▸ arrow;
+        // what matters here is the count with no pickup suffix yet.
+        const line = screen.getByTestId('skill-line');
+        expect(line).toHaveTextContent('16 on hand');
+        expect(line).not.toHaveTextContent('✦');
         mockBench.pickedUpItems = [{ ...always('Packet Diagrams'), effective: 'ondemand' }];
         rerender(<ActiveContextBar />);
         expect(screen.getByTestId('skill-dot-pickup')).toBeInTheDocument();
