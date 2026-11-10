@@ -575,8 +575,24 @@ export function diffBodyHash(body: string): string {
 
 const DIFF_REJECTED_MARKER_RE = /<!--\s*ZIYA_DIFF_REJECTED\s+hash=([0-9a-f]{8})(?:\s+file=(\S*))?\s*-->/g;
 
+/**
+ * Reversible encoding of the marker's file= attribute. An HTML comment may
+ * not contain `--`, and `\S*` ends the attribute at whitespace, so the path
+ * is percent-encoded and `-` (which encodeURIComponent leaves alone) is
+ * encoded too. The earlier version rewrote every `-`, `>` and space to `_`,
+ * which kept the comment valid but made `KuiperEAR-switch-mgr` read back as
+ * `KuiperEAR_switch_mgr`, so the attribute could never be matched to a path.
+ */
+export function encodeRejectedMarkerFile(filePath: string): string {
+    return encodeURIComponent(filePath).replace(/-/g, '%2D');
+}
+
+export function decodeRejectedMarkerFile(value: string): string {
+    try { return decodeURIComponent(value); } catch { return value; }
+}
+
 export function diffRejectedMarker(hash: string, filePath?: string): string {
-    const file = (filePath || '').replace(/[\s>-]/g, '_');
+    const file = filePath ? encodeRejectedMarkerFile(filePath) : '';
     return `<!-- ZIYA_DIFF_REJECTED hash=${hash}${file ? ` file=${file}` : ''} -->`;
 }
 

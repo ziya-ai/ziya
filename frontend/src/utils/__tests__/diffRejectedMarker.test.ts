@@ -13,6 +13,7 @@ import {
     findSupersededDiffIndices,
     buildDiffRejectionNotice,
     isDiffRejectedMarkerBlock,
+    rejectedDiffMarkers,
 } from '../diffUtils';
 
 const GOLDEN_BODY =
@@ -35,6 +36,18 @@ describe('rejection marker round trip', () => {
         const marker = diffRejectedMarker('deadbeef', 'a/b c.py');
         expect(marker.startsWith('<!--')).toBe(true);
         expect(extractRejectedDiffHashes(`text\n\n${marker}\n\nmore`)).toEqual(new Set(['deadbeef']));
+    });
+    it('round-trips the file path, including hyphens, spaces and comment terminators', () => {
+        // Observed in chat f48b3ae9: `KuiperEAR-switch-mgr` came back as
+        // `KuiperEAR_switch_mgr`, so the attribute could not name the file.
+        for (const path of ['workspace/KuiperEAR-switch-mgr/src/hal/hal.cpp', 'a/b c.py', 'x-->y/z.ts', 'weird--name.md']) {
+            const marker = diffRejectedMarker('deadbeef', path);
+            // Still a well-formed single comment: no `--` inside, no whitespace in the attribute.
+            expect(marker.slice(4, -3)).not.toMatch(/--/);
+            const [m] = rejectedDiffMarkers(`before\n${marker}\nafter`);
+            expect(m).toMatchObject({ hash: 'deadbeef', file: path });
+        }
+        expect(rejectedDiffMarkers(diffRejectedMarker('00000001'))[0].file).toBeUndefined();
     });
     it('collects every marker in a message', () => {
         const text = `${diffRejectedMarker('00000001')}\nx\n${diffRejectedMarker('00000002', 'f.py')}`;
