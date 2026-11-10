@@ -35,7 +35,7 @@ interface Props {
 
 const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
   const { isDarkMode } = useTheme();
-  const { loadConversation, currentConversationId, isStreaming, addMessageToConversation } = useActiveChat();
+  const { loadConversation, currentConversationId, streamingConversations, addMessageToConversation } = useActiveChat();
   const { conversations, setConversations } = useConversationList();
   const requestDraft = useHandoffDraftRequest();
   const [state, setState] = useState<HandoffState | null>(null);
@@ -88,6 +88,12 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
 
   const dirty = useMemo(() => (state?.draft?.document ?? '') !== doc, [state, doc]);
   const hasDraft = !!state?.draft?.document || doc.trim().length > 0;
+  // Gate on THIS conversation streaming, not on `isStreaming`: that flag is
+  // `streamingConversations.size > 0` (ChatContext), i.e. any conversation
+  // in the tab.  A background turn elsewhere kept "Ask the model" disabled
+  // with "Wait for the current response to finish" while the current
+  // response had been finished for hours.
+  const isStreaming = !!conversationId && streamingConversations.has(conversationId);
   const canRequestDraft = !!conversationId && conversationId === currentConversationId && !isStreaming;
 
   // Background, non-persisted turn on the conversation's full context.  The
