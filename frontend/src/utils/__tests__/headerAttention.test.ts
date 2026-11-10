@@ -152,18 +152,18 @@ describe('wiring: App.tsx mounts the indicator on the Bench and Task Cards butto
         const merged = 'mergeAttention\\(headerAttention\\.shell,\\s*headerAttention\\.mcp\\)';
         expect(src).toMatch(new RegExp(`attentionTooltip\\('Bench[^']*',\\s*${merged}\\)`));
         expect(src).toMatch(new RegExp(
-            `<Button icon=\\{<ToolOutlined />\\}[\\s\\S]{0,240}?style=\\{attentionButtonStyle\\(${merged}\\.level\\)\\}`, 's'));
+            `<Button\\b[^>]*?\\sicon=\\{<ToolOutlined />\\}[\\s\\S]{0,240}?style=\\{attentionButtonStyle\\(${merged}\\.level\\)\\}`, 's'));
     });
 
     it('Task Cards button is styled and titled from headerAttention.taskCards', () => {
         expect(src).toMatch(/attentionTooltip\('Task Cards',\s*headerAttention\.taskCards\)/);
         expect(src).toMatch(
-            /<Button icon=\{<AppstoreOutlined \/>\}[\s\S]{0,160}?style=\{attentionButtonStyle\(headerAttention\.taskCards\.level\)\}/s);
+            /<Button\b[^>]*?\sicon=\{<AppstoreOutlined \/>\}[\s\S]{0,160}?style=\{attentionButtonStyle\(headerAttention\.taskCards\.level\)\}/s);
     });
 
     it('the Shell Configuration, MCP Servers and MCP Registry toolbar buttons are gone', () => {
         for (const gone of ['CodeOutlined', 'ApiOutlined', 'CloudServerOutlined']) {
-            expect({ gone, present: new RegExp(`<Button icon=\\{<${gone} />`).test(src) }).toEqual({ gone, present: false });
+            expect({ gone, present: new RegExp(`<Button\\b[^>]*?\\sicon=\\{<${gone} />`).test(src) }).toEqual({ gone, present: false });
         }
         // ...but their panels are still mounted, reached from the Bench.
         expect(src).toMatch(/openMcpServers:/);
