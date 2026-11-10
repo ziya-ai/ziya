@@ -613,18 +613,38 @@ export function isDiffRejectedMarkerBlock(text: string): boolean {
     return rest === '' && text.trim() !== '';
 }
 
+/** Every rejection marker in the message with its file (decoded) and character offset. */
+export function rejectedDiffMarkers(markdown: string): { hash: string; file?: string; offset: number }[] {
+    const out: { hash: string; file?: string; offset: number }[] = [];
+    for (const m of markdown.matchAll(DIFF_REJECTED_MARKER_RE)) {
+        out.push({ hash: m[1], file: m[2] ? decodeRejectedMarkerFile(m[2]) : undefined, offset: m.index ?? 0 });
+    }
+    return out;
+}
+
 /**
  * Indices (into diffTexts) of diff fences the server declared rejected.
  * diffTexts must be the RAW token bodies, before header synthesis or
  * continuation chaining rewrite them -- the server hashed what the model
  * emitted, not the renderer's repaired form.
+ *
+ * A marker is a verdict on a fence the server had already seen when it paused
+ * the stream, so it applies only to fences that PRECEDE it. When the failure
+ * was path resolution rather than content, the model's correction can be the
+ * same body re-emitted verbatim after the notice; matching by hash alone
+ * would disable that correction too. diffOffsets gives each fence's
+ * character offset in messageText; when omitted every hash match counts.
  */
-export function findRejectedDiffIndices(messageText: string, diffTexts: string[]): Set<number> {
-    const rejected = extractRejectedDiffHashes(messageText);
+export function findRejectedDiffIndices(
+    messageText: string, diffTexts: string[], diffOffsets?: number[]
+): Set<number> {
+    const markers = rejectedDiffMarkers(messageText);
     const out = new Set<number>();
-    if (rejected.size === 0) return out;
+    if (markers.length === 0) return out;
     diffTexts.forEach((text, i) => {
-        if (rejected.has(diffBodyHash(text))) out.add(i);
+        const hash = diffBodyHash(text);
+        const offset = diffOffsets?.[i];
+        if (markers.some(m => m.hash === hash && (offset === undefined || m.offset > offset))) out.add(i);
     });
     return out;
 }

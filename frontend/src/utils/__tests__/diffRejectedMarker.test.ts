@@ -83,6 +83,25 @@ describe('findRejectedDiffIndices', () => {
         const marker = diffRejectedMarker(diffBodyHash(ORIGINAL + '\n'));
         expect(findRejectedDiffIndices(marker, [ORIGINAL.trimEnd()])).toEqual(new Set([0]));
     });
+    it('does not disable a correction re-emitted verbatim after the marker', () => {
+        // Observed in chat f48b3ae9 (2026-11-09): four diffs were rejected for
+        // path resolution ("target file does not exist"), and the correction
+        // re-emitted the same bodies. The marker is a verdict on the fence
+        // before it; the identical fence after it is the correction and is
+        // the last diff for that file in the message.
+        const marker = diffRejectedMarker(diffBodyHash(ORIGINAL), 't.py');
+        const first = `first try\n\n\`\`\`diff\n${ORIGINAL}\n\`\`\`\n\n`;
+        const message = first + `${marker}\n\n> patch did not apply\n\n` +
+            `\`\`\`diff\n${ORIGINAL}\n\`\`\`\n`;
+        const offsets = [first.indexOf('```diff'), message.lastIndexOf('```diff')];
+        // Positive control: hash-only matching (no offsets) flags both copies,
+        // which is exactly the defect.
+        expect(findRejectedDiffIndices(message, [ORIGINAL, ORIGINAL])).toEqual(new Set([0, 1]));
+        expect(findRejectedDiffIndices(message, [ORIGINAL, ORIGINAL], offsets)).toEqual(new Set([0]));
+        // A second rejection AFTER the correction still disables it.
+        const twice = message + `\n${marker}\n`;
+        expect(findRejectedDiffIndices(twice, [ORIGINAL, ORIGINAL], offsets)).toEqual(new Set([0, 1]));
+    });
 });
 
 describe('buildDiffRejectionNotice', () => {

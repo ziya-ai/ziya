@@ -5024,9 +5024,17 @@ export const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableC
         }
         // Hash the RAW bodies, before chaining/header synthesis rewrite them:
         // the server hashed what the model emitted. The rejection markers are
-        // HTML-comment tokens elsewhere in the same message.
-        const messageRaw = tokens.map(t => (t as TokenWithText).raw || '').join('\n');
-        findRejectedDiffIndices(messageRaw, diffTokenTexts).forEach(k => {
+        // HTML-comment tokens elsewhere in the same message. Each diff's offset
+        // in the joined text lets the matcher honour order: a marker only
+        // rejects fences that came before it, so a correction re-emitted
+        // verbatim after the notice stays applicable.
+        const tokenRaws = tokens.map(t => (t as TokenWithText).raw || '');
+        const messageRaw = tokenRaws.join('\n');
+        const tokenOffsets: number[] = [];
+        let rawPos = 0;
+        for (const r of tokenRaws) { tokenOffsets.push(rawPos); rawPos += r.length + 1; }
+        const diffOffsets = diffTokenIdx.map(i => tokenOffsets[i]);
+        findRejectedDiffIndices(messageRaw, diffTokenTexts, diffOffsets).forEach(k => {
             rejectedDiffIndices.add(diffTokenIdx[k]);
         });
         const chained = chainHeaderlessContinuationDiffs(diffTokenTexts);
