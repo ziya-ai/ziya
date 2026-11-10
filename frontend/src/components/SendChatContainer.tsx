@@ -7,7 +7,7 @@ import { useScrollContext } from '../context/ScrollContext';
 import { useProject } from '../context/ProjectContext';
 import { useFolderContext } from '../context/FolderContext';
 import { useSendPayload } from '../hooks/useSendPayload';
-import { Button, message, Tooltip } from 'antd';
+import { Button, Dropdown, message, Tooltip } from 'antd';
 import { AudioOutlined, SendOutlined, PictureOutlined, PaperClipOutlined } from '@ant-design/icons';
 import { ImageAttachment, DocumentAttachment } from '../utils/types';
 import { DocumentChip } from './FileChip';
@@ -16,6 +16,9 @@ import WriteGrantsChip from './WriteGrantsChip';
 import { useTheme } from '../context/ThemeContext';
 import StopStreamButton from './StopStreamButton';
 import BeadTree from './BeadTree';
+import { AddReferenceModal } from './AddReferenceModal';
+import { addReference } from '../hooks/useConversationReferences';
+import { bareReferenceFromPaste } from '../utils/references';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 import { detectIncompleteResponse } from '../utils/responseUtils';
 import { parseSlashCommand, dispatchCommand } from '../services/commandApi';
@@ -59,6 +62,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const [attachedDocuments, setAttachedDocuments] = useState<DocumentAttachment[]>([]);
   const [supportsVision, setSupportsVision] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  // Paperclip → "Add reference" (design/conversation-references.md §Surface 3).
+  const [addReferenceOpen, setAddReferenceOpen] = useState(false);
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
   const [currentToolId, setCurrentToolId] = useState<string | null>(null);
   const [feedbackStatus, setFeedbackStatus] = useState<'idle' | 'pending' | 'queued' | 'delivered' | 'resubmitting'>('idle');
@@ -1631,6 +1636,15 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
                   // exotic spaces (NBSP, thin space, ideographic): -> space
                   .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
                 e.preventDefault();
+                // A bare URL or ziya://chat link pasted on its own is going
+                // to the model anyway; recording it as a reference costs
+                // nothing and needs no menu (design/conversation-references.md
+                // §Surface 3).  Silent: the 📎 line in the sidebar updates.
+                const bareRef = bareReferenceFromPaste(plain);
+                if (bareRef && currentProject?.id && currentConversationId) {
+                  addReference(currentProject.id, currentConversationId, bareRef)
+                    .catch(err => console.debug('reference from paste not recorded', err));
+                }
                 // Direct DOM insertion via Range API. execCommand('insertText')
                 // fires O(n) input events for large text, each triggering a
                 // full DOM serialization + React re-render. This inserts the
@@ -1708,23 +1722,50 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
                 />
               </div>
             )}
-            {/* Attach file button (images need vision; documents always work) */}
+            {/* Paperclip: a two-item menu.  "Attach" inlines a file's contents
+                into this message (images need vision; documents always work);
+                "Add reference" records a URL / file / thread link that stays
+                with the conversation, link-only (design/conversation-
+                references.md §Surface 3). */}
             {!isCurrentlyStreaming && (
-              <Tooltip title={supportsVision ? "Attach image or document" : "Attach document"}>
-                <span style={{ display: 'inline-flex' }}>
-                  <Button
-                    icon={supportsVision ? <PictureOutlined /> : <PaperClipOutlined />}
-                    onClick={() => fileInputRef.current?.click()}
-                    aria-label={supportsVision ? "Attach image or document" : "Attach document"}
-                    disabled={attachedImages.length >= 5}
-                    style={{
-                      backgroundColor: 'transparent',
-                      borderColor: isDarkMode ? '#424242' : '#d9d9d9'
-                    }}
-                  />
-                </span>
-              </Tooltip>
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: [
+                    {
+                      key: 'attach',
+                      icon: supportsVision ? <PictureOutlined /> : <PaperClipOutlined />,
+                      label: supportsVision ? 'Attach image or document' : 'Attach document',
+                      extra: 'contents go into this message',
+                      disabled: attachedImages.length >= 5,
+                    },
+                    {
+                      key: 'reference',
+                      icon: <span aria-hidden>📎</span>,
+                      label: 'Add reference',
+                      extra: 'URL, file, ziya:// link; stays with the conversation',
+                      disabled: !currentConversationId || !currentProject,
+                    },
+                  ],
+                  onClick: ({ key }) => {
+                    if (key === 'attach') fileInputRef.current?.click();
+                    else if (key === 'reference') setAddReferenceOpen(true);
+                  },
+                }}
+              >
+                <Button
+                  icon={supportsVision ? <PictureOutlined /> : <PaperClipOutlined />}
+                  aria-label="Attach or add reference"
+                  data-testid="composer-attach-menu"
+                  style={{
+                    backgroundColor: 'transparent',
+                    borderColor: isDarkMode ? '#424242' : '#d9d9d9'
+                  }}
+                />
+              </Dropdown>
             )}
+            <AddReferenceModal open={addReferenceOpen} onClose={() => setAddReferenceOpen(false)}
+              projectId={currentProject?.id} conversationId={currentConversationId} />
 
             {!isCurrentlyStreaming && (
               <Tooltip
