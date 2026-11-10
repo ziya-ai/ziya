@@ -53,9 +53,10 @@ def _row(project_id: str, card_id: str) -> Dict[str, Any]:
     if reg is None:
         raise HTTPException(status_code=404, detail="Card is not registered")
     pdir = get_project_dir(project_id)
+    cards = TaskCardStorage(pdir)
     return registry.registration_row(
-        project_id, reg, TaskCardStorage(pdir).get(card_id),
-        _read_state(project_id).get(card_id) or {}, TaskRunStorage(pdir),
+        project_id, reg, cards.get(card_id),
+        _read_state(project_id).get(card_id) or {}, TaskRunStorage(pdir), cards,
     )
 
 

@@ -231,6 +231,49 @@ def body_root_for(card: TaskCard, source: Optional[Block]) -> Block:
     return _resolve_body_root(source)
 
 
+def _iter_calls(block: Optional[Block]):
+    if block is None:
+        return
+    if block.block_type == "call":
+        yield block
+    for child in block.body or []:
+        yield from _iter_calls(child)
+
+
+def describe_calls(card_storage: Any, card: TaskCard,
+                   source: Optional[Block]) -> List[Dict[str, Any]]:
+    """The Call blocks a fire of ``card`` would run, each with its target
+    resolved the way the executor resolves it at run time
+    (task_call._resolve_card: exact card id, then a case-insensitive name
+    match over deck cards).  A schedule whose body is a Call showed nothing
+    about what it calls, and a target typed as a card id was unreadable;
+    the schedules list names the callee from this and links to it.
+    Resolution is advisory: ``resolved`` is False for a card target no
+    card matches and None for a file task, which only the run can check.
+    """
+    out: List[Dict[str, Any]] = []
+    deck: Optional[List[TaskCard]] = None
+    for b in _iter_calls(body_root_for(card, source)):
+        target = (b.call_target or "").strip()
+        kind = b.call_target_kind or "card"
+        entry: Dict[str, Any] = {
+            "block_id": b.id, "block_name": b.name, "target": target, "kind": kind,
+            "card_id": None, "card_name": None,
+            "resolved": (None if kind == "file_task" else False),
+        }
+        if kind == "card" and target:
+            found = card_storage.get(target)
+            if found is None:
+                if deck is None:
+                    deck = list(card_storage.list())
+                wanted = target.lower()
+                found = next((c for c in deck if (c.name or "").lower() == wanted), None)
+            if found is not None:
+                entry.update(card_id=found.id, card_name=found.name, resolved=True)
+        out.append(entry)
+    return out
+
+
 def _reset_next_fire(project_id: str, reg: ScheduleRegistration, now_ms: int) -> None:
     """Re-project next_fire_at from now under the registration's cadence and
     drop any queued deferral, so a cadence edit is honoured at once."""
@@ -398,7 +441,8 @@ def lock_status() -> Dict[str, Any]:
 
 def registration_row(project_id: str, reg: ScheduleRegistration,
                      card: Optional[TaskCard], state_rec: Dict[str, Any],
-                     run_storage: Any = None) -> Dict[str, Any]:
+                     run_storage: Any = None,
+                     card_storage: Any = None) -> Dict[str, Any]:
     from .task_scheduler import cadence_problem
     fires = int(state_rec.get("fires_so_far", 0))
     exhausted = reg.schedule_max_runs is not None and fires >= int(reg.schedule_max_runs)
@@ -427,6 +471,8 @@ def registration_row(project_id: str, reg: ScheduleRegistration,
         "exhausted": exhausted,
         "problem": problem,
         "last_run": None,
+        "calls": (describe_calls(card_storage, card, find_source_block(card))
+                  if card is not None and card_storage is not None else []),
     }
     if run_storage is not None and state_rec.get("run_ids"):
         try:
@@ -450,7 +496,7 @@ def list_schedules(project_id: str) -> Dict[str, Any]:
     rows: List[Dict[str, Any]] = []
     for cid, reg in regs.items():
         rows.append(registration_row(project_id, reg, card_storage.get(cid),
-                                     state.get(cid) or {}, run_storage))
+                                     state.get(cid) or {}, run_storage, card_storage))
     rows.sort(key=lambda r: (not r["enabled"], r["next_fire_at"] or float("inf")))
     # Cards whose author asked for a cadence that nobody has registered.
     unregistered: List[Dict[str, Any]] = []
@@ -465,5 +511,6 @@ def list_schedules(project_id: str) -> Dict[str, Any]:
             "card_draft": bool(getattr(card, "draft", False)),
             "source_block_id": source.id,
             "requested": cadence_from_block(source),
+            "calls": describe_calls(card_storage, card, source),
         })
     return {"registrations": rows, "unregistered": unregistered, "scheduler": lock_status()}

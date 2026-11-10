@@ -23,12 +23,12 @@ import {
   ExclamationCircleFilled,
 } from '@ant-design/icons';
 import {
-  scheduleApi, type ScheduleCadence, type ScheduleListing,
+  scheduleApi, type ScheduleCadence, type ScheduleCallRef, type ScheduleListing,
   type ScheduleRegistrationRow, type UnregisteredScheduleRequest,
 } from '../../services/scheduleApi';
 import { cadenceError, normalizeCadence } from './scheduleCadence';
 import {
-  humanizeCadence, lastOutcome, lockLine, nextLine, runCountText,
+  describeCall, humanizeCadence, lastOutcome, lockLine, nextLine, runCountText,
   type LineTone, type OutcomeKind,
 } from './scheduleDisplay';
 
@@ -225,6 +225,30 @@ export const SchedulesPanel: React.FC<Props> = ({ projectId, active, onOpenCard 
     </div>
   );
 
+  // What the body calls, by name.  A schedule wrapping a Call block used
+  // to show nothing about the card it runs, and a target typed as a card
+  // id was an opaque GUID; the server resolves it (ScheduleCallRef) and
+  // the name opens that card.
+  const callsEl = (calls: ScheduleCallRef[] | undefined) => {
+    if (!calls?.length) return null;
+    return (
+      <div style={{ ...sub, ...clamp }} data-testid="schedule-calls">
+        <span style={dim}>Calls </span>
+        {calls.map((c, i) => {
+          const d = describeCall(c);
+          return (
+            <React.Fragment key={c.block_id}>
+              {i > 0 && <span style={dim}>, </span>}
+              {d.cardId && onOpenCard
+                ? <a onClick={() => onOpenCard(d.cardId!)} title={`Open card ${d.cardId}`}>{d.text}</a>
+                : <span style={d.missing ? { color: TONE_COLOR.error } : undefined}>{d.text}</span>}
+            </React.Fragment>
+          );
+        })}
+      </div>
+    );
+  };
+
   const renderRegistration = (r: ScheduleRegistrationRow) => {
     const next = nextLine(r, now);
     const out = lastOutcome(r, now);
@@ -238,6 +262,7 @@ export const SchedulesPanel: React.FC<Props> = ({ projectId, active, onOpenCard 
         </Tooltip>
         <div style={{ flex: 1, minWidth: 0 }}>
           {nameEl(r.card_id, r.card_name, r.card_draft, r.card_missing)}
+          {callsEl(r.calls)}
           <div style={{ ...sub, ...clamp }}>
             <span style={dim}>{humanizeCadence(r.cadence)} · </span>
             <span style={{ ...(next.tone === 'normal' || next.tone === 'muted' ? dim : {}), color: TONE_COLOR[next.tone] }}
@@ -286,6 +311,7 @@ export const SchedulesPanel: React.FC<Props> = ({ projectId, active, onOpenCard 
     <div key={u.card_id} style={{ ...rowStyle, borderStyle: 'dashed' }} data-testid="schedule-request">
       <div style={{ flex: 1, minWidth: 0 }}>
         {nameEl(u.card_id, u.card_name, u.card_draft)}
+        {callsEl(u.calls)}
         <div style={{ ...sub, ...dim }}>Asks for: {humanizeCadence(normalizeCadence(u.requested))}</div>
       </div>
       <Button size="small" type="primary" loading={busy === u.card_id} style={{ flexShrink: 0 }}

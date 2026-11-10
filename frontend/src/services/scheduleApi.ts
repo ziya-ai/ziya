@@ -24,6 +24,22 @@ export interface ScheduleCadence {
   schedule_concurrency?: ScheduleConcurrency | null;
 }
 
+/** One Call block in the body a schedule fires, resolved server-side the
+ *  way the executor resolves it (schedule_registry.describe_calls).  The
+ *  author may have typed a card id or a name; `card_name` is what to show. */
+export interface ScheduleCallRef {
+  block_id: string;
+  block_name: string;
+  /** The call_target as written. */
+  target: string;
+  kind: 'card' | 'file_task';
+  card_id: string | null;
+  card_name: string | null;
+  /** True when a card matched, false when none did, null for a file task
+   *  (only the run can check tasks.yaml). */
+  resolved: boolean | null;
+}
+
 /** Mirrors schedule_registry.registration_row. */
 export interface ScheduleRegistrationRow {
   card_id: string;
@@ -48,6 +64,7 @@ export interface ScheduleRegistrationRow {
    *  not a problem. */
   problem: string | null;
   last_run: ScheduleLastRun | null;
+  calls: ScheduleCallRef[];
 }
 
 /** A card whose Schedule block asks for a cadence nobody has registered. */
@@ -57,6 +74,7 @@ export interface UnregisteredScheduleRequest {
   card_draft: boolean;
   source_block_id: string;
   requested: ScheduleCadence;
+  calls: ScheduleCallRef[];
 }
 
 /** Mirrors schedule_registry.lock_status: who holds ~/.ziya/scheduler.lock. */

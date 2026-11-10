@@ -115,6 +115,44 @@ def test_registration_for_missing_card_is_skipped(home, project):
 
 # -- register / update / unregister --------------------------------------------
 
+def test_list_names_the_cards_a_schedule_calls(home, project):
+    """A schedule whose body is a Call block showed nothing about what it
+    calls, and a target typed as a card id was an opaque GUID.  The list
+    resolves each Call the way the executor will (id, then name) so the
+    panel can name and link the callee; a miss is reported, not hidden."""
+    callee = _card(project, Block(block_type="task", id="t", name="t", instructions="x"),
+                   name="Weekly audit")
+    body = [
+        Block(block_type="call", id="c-id", name="by id", call_target=callee.id),
+        Block(block_type="call", id="c-name", name="by name", call_target="weekly AUDIT"),
+        Block(block_type="call", id="c-bad", name="bad", call_target="nope"),
+        Block(block_type="call", id="c-file", name="file", call_target="lint",
+              call_target_kind="file_task"),
+    ]
+    sched = Block(block_type="schedule", id="s1", name="nightly", schedule_mode="interval",
+                  schedule_interval_value=1, schedule_interval_unit="hours", body=body)
+    card = _card(project, sched, name="Nightly")
+
+    (req,) = [u for u in reg.list_schedules(project.id)["unregistered"] if u["card_id"] == card.id]
+    assert [c["block_id"] for c in req["calls"]] == ["c-id", "c-name", "c-bad", "c-file"]
+
+    reg.register(project.id, card)
+    (row,) = reg.list_schedules(project.id)["registrations"]
+    calls = {c["block_id"]: c for c in row["calls"]}
+    assert calls["c-id"]["target"] == callee.id
+    assert (calls["c-id"]["card_id"], calls["c-id"]["card_name"], calls["c-id"]["resolved"]) \
+        == (callee.id, "Weekly audit", True)
+    assert (calls["c-name"]["card_id"], calls["c-name"]["resolved"]) == (callee.id, True)
+    assert (calls["c-bad"]["card_id"], calls["c-bad"]["resolved"]) == (None, False)
+    assert (calls["c-file"]["kind"], calls["c-file"]["resolved"]) == ("file_task", None)
+
+    # A plain task body has no calls, and a row still carries the key.
+    plain = _card(project, _sched_block("s2"), name="Plain")
+    reg.register(project.id, plain)
+    by_id = {r["card_id"]: r for r in reg.list_schedules(project.id)["registrations"]}
+    assert by_id[plain.id]["calls"] == []
+
+
 def test_register_twice_is_refused(home, project):
     card = _card(project, _sched_block())
     reg.register(project.id, card)
