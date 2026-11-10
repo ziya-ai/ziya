@@ -79,7 +79,7 @@ SERVICE_TIERS: Tuple[str, ...] = ("standard", "priority", "flex", "batch")
 # Revision of the BUILT-IN table below.  Bump when a price changes.  The
 # effective catalog version reported on every priced line combines this
 # with a content hash of the user overlay (see PricingCatalog.version).
-CATALOG_REVISION = "2026-10-01"
+CATALOG_REVISION = "2026-10-13"
 
 PRICING_FILENAME = "pricing.json"
 
@@ -213,7 +213,19 @@ _CLAUDE_CARDS = [
     # from the official batch table (50%: $1 / $5) and corroborated by its
     # listed 5m cache write ($2.50 = 1.25 x $2.00); the base cells did not
     # render on the page the day this was read.
-    (["*claude-sonnet-5*"], _anthropic_card(2.0, 10.0, 0.20, 2.50, 4.0)),
+    # Sonnet 5.5 has its own card: cache read is 0.05x (pricing page, read
+    # 2026-10-09).  Globs kept disjoint as for Opus.
+    (["*claude-sonnet-5-5*"],
+     _anthropic_card(2.0, 10.0, 0.10, 2.50, 4.0, "cache read 0.05x on Sonnet 5.5")),
+    (["*claude-sonnet-5", "*claude-sonnet-5-20*", "*claude-sonnet-5-v*"],
+     _anthropic_card(2.0, 10.0, 0.20, 2.50, 4.0)),
+    # Haiku 5.5 (platform.claude.com pricing, read 2026-10-09): every rate
+    # is 5x above 100k prompt tokens per request; cache tokens count.
+    (["*claude-haiku-5-5*"],
+     dict(_anthropic_card(0.10, 0.50, 0.01, 0.125, 0.20),
+          long_context={"above_input_tokens": 100_000,
+                        "unit_prices": {"input": 0.50, "output": 2.50, "cache_read": 0.05,
+                                        "cache_write_5m": 0.625, "cache_write_1h": 1.0}})),
     (["*claude-sonnet-4-6*"], _anthropic_card(3.0, 15.0, 0.30, 3.75, 6.0)),
     (["*claude-sonnet-4-5*", "*claude-sonnet-4-2025*", "*claude-3-7-sonnet*", "*claude-3-5-sonnet*"],
      dict(_anthropic_card(3.0, 15.0, 0.30, 3.75, 6.0),
@@ -245,6 +257,26 @@ def _simple(inp, out, cache_read=None, tiers=None, note="", **extra) -> Dict[str
 
 
 _OPENAI_TIERS = {"standard": 1.0, "priority": 2.0, "flex": 0.5, "batch": 0.5}
+
+
+def _openai_card(inp, out, cache_read, note="") -> Dict[str, Any]:
+    """OpenAI 5.4+ cards (platform.openai.com/docs/pricing, read
+    2026-10-01): 5m cache write is 1.25x input; prompts over 272k tokens
+    (uncached + cached together) bill input and cache at 2x, output at
+    1.5x.  The step-up is verified on the gpt-6 line and assumed uniform
+    across the 5.4+ cards."""
+    return {
+        "unit_prices": {"input": inp, "output": out, "cache_read": cache_read,
+                        "cache_write_5m": inp * 1.25},
+        "tier_factors": _OPENAI_TIERS,
+        "long_context": {"above_input_tokens": 272_000,
+                         "unit_prices": {"input": inp * 2, "output": out * 1.5,
+                                         "cache_read": cache_read * 2,
+                                         "cache_write_5m": inp * 2.5}},
+        "note": note,
+    }
+
+
 # Gemini: Batch and Flex are half of standard, Priority is 1.8x, on every
 # 2.5 and 3.x text model (ai.google.dev/gemini-api/docs/pricing, read
 # 2026-10-01).  One known gap: Google does not halve the cache-read rate on
@@ -281,6 +313,21 @@ BUILTIN_CATALOG: List[Dict[str, Any]] = (
         (["*qwen.qwen3-coder-480b*"], _simple(0.22, 1.80)),
     ])
     + _expand("openai", [
+        # Exact names (plus dated snapshots) so "gpt-5.5" does not price
+        # "gpt-5.5-pro" and "gpt-6-sol" does not price "gpt-6.1-sol".
+        (["gpt-6-astra", "gpt-6-astra-2*"], _openai_card(10.0, 50.0, 1.0)),
+        (["gpt-6.1-sol", "gpt-6.1-sol-2*"], _openai_card(2.0, 10.0, 0.10)),
+        (["gpt-6-sol", "gpt-6-sol-2*"], _openai_card(2.0, 10.0, 0.20)),
+        (["gpt-6-luna", "gpt-6-luna-2*"], _openai_card(0.10, 0.50, 0.01)),
+        (["gpt-5.6-sol", "gpt-5.6-sol-2*"], _openai_card(4.0, 20.0, 0.40)),
+        (["gpt-5.6-terra", "gpt-5.6-terra-2*"], _openai_card(2.0, 12.0, 0.20)),
+        (["gpt-5.6-luna", "gpt-5.6-luna-2*"], _openai_card(0.20, 1.20, 0.02)),
+        (["gpt-5.5", "gpt-5.5-2*"], _openai_card(5.0, 30.0, 0.50)),
+        (["gpt-5.4", "gpt-5.4-2*"], _openai_card(2.50, 15.0, 0.25)),
+        (["gpt-5.4-mini*"], _openai_card(0.75, 4.50, 0.075)),
+        # The pro cards publish no cached-input rate: a documented partial.
+        (["gpt-5.5-pro*", "gpt-5.4-pro*"],
+         _simple(30.0, 180.0, None, _OPENAI_TIERS, note="no cached-input rate published")),
         (["gpt-5", "gpt-5-2*"], _simple(1.25, 10.0, 0.125, _OPENAI_TIERS)),
         (["gpt-5-mini*"], _simple(0.25, 2.0, 0.025, _OPENAI_TIERS)),
         (["gpt-5-nano*"], _simple(0.05, 0.40, 0.005, _OPENAI_TIERS)),
@@ -339,9 +386,25 @@ BUILTIN_CATALOG: List[Dict[str, Any]] = (
             note="introductory pricing from the 2026-09-30 announcement; endpoint id provisional")),
     ])
     + _expand("zai", [
+        # docs.z.ai/guides/overview/pricing, read 2026-10-01.  Exact names:
+        # 5.3 must not price its -flash / -flashx siblings.
+        (["glm-5.3", "glm-5.2"], _simple(1.40, 4.40, 0.26)),
+        (["glm-5.3-flash"], _simple(0.15, 0.50, 0.03)),
+        (["glm-5.3-flashx"], _simple(0.37, 1.25, 0.075)),
+        (["glm-5"], _simple(1.0, 3.20, 0.20)),
+        (["glm-4.7"], _simple(0.60, 2.20, 0.11)),
+        (["glm-4.7-flash"], _simple(0.0, 0.0, 0.0)),
         (["glm-4.6*", "glm-4.5", "glm-4.5-2*"], _simple(0.60, 2.20, 0.11)),
         (["glm-4.5-air*"], _simple(0.20, 1.10, 0.03)),
         (["glm-4.5-flash*"], _simple(0.0, 0.0, 0.0)),
+    ])
+    + _expand("meta", [
+        # dev.meta.ai/docs/pricing-rate-limits, read 2026-10-01.  Exact
+        # names so standard vs contributor never depends on list order and
+        # non-text products (muse-image-*) stay unpriced.
+        (["muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1"], _simple(1.25, 4.25, 0.15)),
+        (["muse-spark-1.3-contributor", "muse-spark-1.2-contributor"],
+         _simple(0.10, 0.20, 0.002, note="contributor tier shares data for training")),
     ])
     # Local inference: a real price of zero.
     + [{"provider": "local", "model_pattern": "*",
