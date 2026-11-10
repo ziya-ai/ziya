@@ -2062,6 +2062,14 @@ class CLI:
     
     async def _stream_handler(self, stream_generator, stream: bool) -> str:
         """Handle streaming with cancellation support."""
+        # --output-format json|stream-json: chunks go to the structured sink
+        # (app/utils/cli_structured_output.py) instead of the terminal
+        # renderer, so stdout carries only JSON.
+        sink = getattr(self, '_structured_sink', None)
+        if sink is not None:
+            text = await sink.consume(stream_generator, rewind=self._handle_rewind_marker)
+            self._partial_response = text
+            return text
         full_response = ""
         md_renderer = None
         if stream:
@@ -4431,6 +4439,35 @@ def cmd_chat(args):
         print(f"\n\033[90mSession saved\033[0m")
 
 
+def _add_output_format(parser):
+    from app.utils.cli_structured_output import add_output_format_argument
+    add_output_format_argument(parser)
+
+
+def _run_oneshot(cli: 'CLI', question: str, args) -> None:
+    """Run one question to completion for ask / review / explain / task.
+
+    With ``--output-format`` the transcript is replaced by JSON on stdout
+    (one document, or one event per line) carrying the answer, tool calls,
+    token usage and cost; the exit code says whether an answer was produced.
+    Without it the rendered transcript is printed as before.
+    """
+    from app.utils.cli_structured_output import StructuredSink
+    sink = StructuredSink.from_args(args)
+    if sink is None:
+        asyncio.run(_run_with_mcp(cli.ask(question, stream=not args.no_stream)))
+        return
+    cli._structured_sink = sink
+    error = None
+    try:
+        response = asyncio.run(_run_with_mcp(cli.ask(question, stream=True)))
+    except Exception as e:  # noqa: BLE001 -- the result document reports it
+        response, error = None, str(e)
+    rc = sink.finish(response, conversation_id=getattr(cli, 'conversation_id', None),
+                     model=os.environ.get("ZIYA_MODEL"), error=error)
+    sys.exit(rc)
+
+
 def cmd_ask(args):
     """Handle: ziya ask "question" [FILES...]"""
     cli = _create_cli_session(args)
@@ -4447,13 +4484,14 @@ def cmd_ask(args):
         print("Error: No question provided", file=sys.stderr)
         sys.exit(1)
     
-    asyncio.run(_run_with_mcp(cli.ask(question, stream=not args.no_stream)))
+    _run_oneshot(cli, question, args)
 
 
 def cmd_review(args):
     """Handle: ziya review [FILES...] [--staged]"""
     cli = _create_cli_session(args)
-    print_chat_startup_info(args)
+    if not getattr(args, 'output_format', None):
+        print_chat_startup_info(args)
     
     root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     
@@ -4481,7 +4519,7 @@ def cmd_review(args):
     else:
         question = prompt
     
-    asyncio.run(_run_with_mcp(cli.ask(question, stream=not args.no_stream)))
+    _run_oneshot(cli, question, args)
 
 
 def cmd_explain(args):
@@ -4496,7 +4534,7 @@ def cmd_explain(args):
     else:
         question = prompt
     
-    asyncio.run(_run_with_mcp(cli.ask(question, stream=not args.no_stream)))
+    _run_oneshot(cli, question, args)
 
 
 def _task_escalation_badge(signed) -> str:
@@ -4637,6 +4675,17 @@ def cmd_task(args):
         cmd_task(args)
         return
 
+    # Everything after the task name is a REMAINDER.  Options a user is
+    # used to typing after the name (``ziya task sweep --strict``) are
+    # peeled back onto ``args``; the rest are the prompt's $ARGUMENTS.  An
+    # explicit ``--`` ends peeling, so a task can still receive a literal
+    # ``--strict`` (app/utils/task_arguments.py).
+    from app.utils.task_arguments import peel_task_options
+    _opts, task_args = peel_task_options(getattr(args, 'task_args', None))
+    for _dest, _val in _opts.items():
+        setattr(args, _dest, _val)
+    args.task_args = task_args
+
     if task_name not in tasks:
         # No file task claims the name: fall through to the deck so a card
         # can supersede a tasks.yaml task under the same spelling (the
@@ -4656,6 +4705,15 @@ def cmd_task(args):
                   f"\033[36mziya task --list-cards\033[0m for deck cards.",
                   file=sys.stderr)
             sys.exit(1)
+        if task_args:
+            # A card has no prompt for $ARGUMENTS to land in; say so rather
+            # than drop them silently.
+            print(
+                f"\033[33m⚠ {task_name!r} is a deck card, not a file task: "
+                f"{len(task_args)} argument(s) ignored ({' '.join(task_args)}). "
+                f"Cards take parameter overrides from their launch, not from $ARGUMENTS.\033[0m",
+                file=sys.stderr,
+            )
         # Same execution path as --card.  Escalation is gated inside
         # execute_task_block against the signed ledger, so a card approved
         # from the deck tile is already authorized here.
@@ -4738,7 +4796,12 @@ def cmd_task(args):
         # Unattended batch work: no human is waiting at a prompt, so use the
         # full ZIYA_MAX_TOOL_ITERATIONS budget rather than the interactive one.
         cli._interactive = False
-        asyncio.run(_run_with_mcp(cli.ask(task_def["prompt"], stream=not args.no_stream)))
+        # ``ziya task <name> a b c``: $ARGUMENTS / $1 / $2 in the prompt
+        # (app/utils/task_arguments.py); arguments with no placeholder to
+        # land in are appended rather than dropped.
+        from app.utils.task_arguments import render_task_arguments
+        prompt = render_task_arguments(task_def["prompt"], task_args)
+        _run_oneshot(cli, prompt, args)
     finally:
         reset_task_shell_commands(_sc_token)
         reset_task_writable_paths(_wp_token)
@@ -5072,24 +5135,30 @@ Examples:
     ask_parser = subparsers.add_parser('ask', parents=[common_parent], help='Ask a question')
     ask_parser.add_argument('question', nargs='?', help='Question to ask')
     ask_parser.add_argument('files', nargs='*', help='Files for context')
+    _add_output_format(ask_parser)
     ask_parser.set_defaults(func=cmd_ask)
     review_parser = subparsers.add_parser('review', parents=[common_parent], help='Review code')
     review_parser.add_argument('files', nargs='*', help='Files to review')
     review_parser.add_argument('--staged', '-s', action='store_true', help='Review staged git changes')
     review_parser.add_argument('--diff', '-d', action='store_true', help='Review unstaged git changes')
     review_parser.add_argument('--prompt', '-p', help='Custom review prompt')
+    _add_output_format(review_parser)
     review_parser.set_defaults(func=cmd_review)
     
     # explain
     explain_parser = subparsers.add_parser('explain', parents=[common_parent], help='Explain code')
     explain_parser.add_argument('files', nargs='*', help='Files to explain')
     explain_parser.add_argument('--prompt', '-p', help='Custom prompt')
+    _add_output_format(explain_parser)
     explain_parser.set_defaults(func=cmd_explain)
     
     # task
     task_parser = subparsers.add_parser('task', parents=[common_parent],
                                         help='Run a named task prompt')
     task_parser.add_argument('task_name', nargs='?', help='Task to run')
+    task_parser.add_argument('task_args', nargs=argparse.REMAINDER,
+                             help='Arguments for the task prompt ($ARGUMENTS, $1, $2 …); '
+                                  'put options before the task name')
     task_parser.add_argument('--list', '-l', action='store_true',
                              dest='list_tasks', help='List available tasks')
     task_parser.add_argument('--card', metavar='ID',
@@ -5101,6 +5170,7 @@ Examples:
                                   'servers are missing (default: warn and run without them)')
     task_parser.add_argument('--show', metavar='TASK',
                              help='Show the prompt for a task')
+    _add_output_format(task_parser)
     task_parser.set_defaults(func=cmd_task)
 
     # schedule: the registry that puts task cards on the in-process

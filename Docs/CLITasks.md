@@ -300,12 +300,38 @@ cannot crowd out signal — and caps nothing else: every significant item gets
 a line, however many that is. It also specifies each channel's voice:
 labelled titles for `#ziya-dev`, lowercase prose for `#ziya-interest`.
 
+### Arguments
+
+Anything after the task name is handed to the prompt:
+
+```bash
+ziya task review-file src/app.py "focus on error handling"
+```
+
+| placeholder | renders as |
+|---|---|
+| `$ARGUMENTS` / `${ARGUMENTS}` | every argument, space-joined |
+| `$1`, `$2`, … / `${1}` | one positional argument |
+| `$ARGUMENTS[0]`, … | the same, zero-based |
+
+A placeholder with no argument behind it renders empty; `$HOME` and `$5.00` are left alone. A prompt with no placeholders gets the arguments appended as a final `Arguments: …` line so they are never dropped. `ziya task`'s own options (`--strict`, `--no-stream`, `--output-format`) are recognised on either side of the task name; any other `--flag` after the name belongs to the task. Write `--` to end option recognition, so `ziya task t -- --strict` passes a literal `--strict` to the prompt. Arguments given to a *deck card* (which has no prompt) are reported on stderr and ignored.
+
+### Machine-readable output
+
+`ziya ask`, `ziya review`, `ziya explain` and `ziya task <file task>` take `--output-format json|stream-json`. `json` prints one document when the turn ends; `stream-json` prints one JSON object per line as it runs (`text`, `tool_start`, `tool_result`, then `result`). The `result` carries the answer, every tool call with its arguments and a result preview, the model, the conversation id, wall time, and `usage` — tokens per dimension plus list and effective cost in USD from the usage ledger (`null` when the model is unpriced). Only JSON goes to stdout; the exit code is 0 when an answer was produced and 1 otherwise.
+
+```bash
+ziya ask --output-format json "what does scripts/release.sh do" | jq -r .text
+ziya task --output-format stream-json nightly-audit | jq -c 'select(.type=="tool_start")'
+```
+
 ## CLI Reference
 
 ```
-ziya task <name>          Run the named task
+ziya task <name> [args…]  Run the named task ($ARGUMENTS / $1 … in its prompt)
 ziya task --list          List all available tasks
 ziya task --show <name>   Print the task's prompt without running it
+ziya task --output-format json|stream-json <name>   Machine-readable result
 
 ziya-approve --list              Audit every escalating task (signed/unsigned)
 sudo ziya-approve --cli-task <name> [--root <dir>]   Approve a CLI task's escalation
