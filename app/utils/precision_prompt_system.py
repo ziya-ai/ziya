@@ -353,6 +353,18 @@ class PrecisionPromptSystem:
                     "repeat, quote, or echo them in your responses."
                 )
 
+            # Bead tool calls are internal and absent from replayed history;
+            # append a store-sourced record to each assistant turn that
+            # created beads, so the model is not left to infer from a missing
+            # call that its "parked" never happened.  Keyed by the caller's
+            # real id, never the fabricated precision_ one.
+            if chat_history:
+                try:
+                    from app.utils.bead_history_record import annotate_bead_history
+                    chat_history = annotate_bead_history(chat_history, real_conversation_id)
+                except Exception as e:  # noqa: BLE001 -- never fail a turn on this
+                    logger.debug("Bead history record unavailable: %s", e)
+
             # Add chat history before the question
             if chat_history:
                 from app.utils.session_context_prompt import format_prompt_timestamp

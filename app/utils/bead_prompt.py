@@ -31,8 +31,11 @@ without having actually made that tool call, you are misrepresenting an \
 action you did not take. Either make the `bead_create` call or do not use \
 the word. The same binding applies to saying a thread is "tracked".
 - Bead tool calls are NOT replayed in your conversation history, so a call \
-you made in an earlier turn will not appear there. To check whether an \
-earlier "parked" was carried out, read the "Pending Beads" list appended to \
+you made in an earlier turn will not appear there. Instead, an earlier reply \
+in which you created beads ends with a ‹bead_record›…‹/bead_record› line \
+that the bead store appends, listing what was saved; treat it as the record \
+of those calls, and never write one yourself. To check whether an \
+earlier "parked" was carried out, read that record, the "Pending Beads" list appended to \
 the latest user message, or call `bead_status`. Never conclude from the \
 absence of a visible call that a bead was not saved: do not re-create a bead \
 that is already listed, and do not tell the user an earlier save failed \

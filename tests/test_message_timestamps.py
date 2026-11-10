@@ -79,11 +79,20 @@ def test_current_time_does_not_change_cache_controlled_system_prompt():
     # Shadow sessions attached to this machine also ride on the user
     # message; pin them empty so the test does not depend on whether a
     # `ziya shadow` terminal happens to be open.
+    # The memory overview and the bead summary are per-turn volatile pieces
+    # appended to the END of the user message (tests/test_prompt_volatile_tail.py
+    # covers them).  Read live, they made this exact-content assertion depend
+    # on the machine's ~/.ziya memory store; pin both empty.
     with mock.patch(
         "app.utils.session_context_prompt.build_session_context_section",
         side_effect=[first_block, second_block],
     ), mock.patch(
         "app.shadow.context.attached_sessions_tag", return_value="",
+    ), mock.patch(
+        "app.memory.prompt.get_memory_prompt_sections", return_value=("", ""),
+        create=True,
+    ), mock.patch(
+        "app.utils.bead_prompt.get_bead_status_summary", return_value="",
     ):
         first = _build([])
         second = _build([])
