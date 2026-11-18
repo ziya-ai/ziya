@@ -171,3 +171,24 @@ export function probeOtherTabs(
   post('streaming-probe', { conversationId });
   return new Promise(resolve => setTimeout(resolve, waitMs));
 }
+
+/**
+ * Window event ChatContext raises when a tab this one was mirroring went
+ * away mid-turn ('streaming-orphaned').  ChatTurnReattachWatcher listens
+ * and takes the turn over if the server is still running it.
+ */
+export const CHAT_TURN_ORPHANED_EVENT = 'chatTurnOrphaned';
+
+// Delay before a mirror tries to take over an orphaned turn.  The jitter
+// spreads several mirrors out so the first to claim it (its
+// 'streaming-state' reaches the others) is the only one that reattaches.
+export const ORPHAN_RECLAIM_DELAY_MS = 300;
+export const ORPHAN_RECLAIM_JITTER_MS = 1500;
+
+/** Streams this tab drives itself, as opposed to mirroring another tab's. */
+export function ownedStreamIds(
+  streaming: ReadonlySet<string>,
+  remote: ReadonlySet<string>,
+): string[] {
+  return Array.from(streaming).filter(id => !remote.has(id));
+}

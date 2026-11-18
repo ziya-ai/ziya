@@ -23,6 +23,9 @@ import { useConversationList } from '../context/ConversationListContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { projectSync } from '../utils/projectSync';
 import {
+  CHAT_TURN_ORPHANED_EVENT,
+  ORPHAN_RECLAIM_DELAY_MS,
+  ORPHAN_RECLAIM_JITTER_MS,
   backgroundReattachCandidates,
   decideReattach,
   fetchChatTurnStatus,
@@ -31,7 +34,10 @@ import {
 } from '../utils/chatTurnReattach';
 
 export const ChatTurnReattachWatcher: React.FC = () => {
-  const { currentConversationId, currentMessages, streamingConversations } = useActiveChat();
+  const {
+    currentConversationId, currentMessages, streamingConversations,
+    addStreamingConversation, removeStreamingConversation,
+  } = useActiveChat();
   const { hasLoadedConversations, conversations } = useConversationList();
   const { send } = useSendPayload();
 
@@ -45,6 +51,14 @@ export const ChatTurnReattachWatcher: React.FC = () => {
   conversationsRef.current = conversations;
   const currentIdRef = useRef(currentConversationId);
   currentIdRef.current = currentConversationId;
+  // A reattached turn is live in this tab exactly as a sent one is, so it
+  // carries the same streaming mark: Stop button, probe replies, relay to
+  // other tabs, and the 'streaming-ended' that releases their mirrors
+  // (removeStreamingConversation posts nothing for an id never marked).
+  // Via a ref: removeStreamingConversation changes identity on every
+  // conversation switch and must not re-run the effects below.
+  const markRef = useRef({ add: addStreamingConversation, remove: removeStreamingConversation });
+  markRef.current = { add: addStreamingConversation, remove: removeStreamingConversation };
 
   // Turn ids this tab has already reattached to.  A turn id is minted per
   // server-side turn, so this is exact: the same conversation can be
@@ -59,6 +73,9 @@ export const ChatTurnReattachWatcher: React.FC = () => {
     if (inFlightRef.current.has(conversationId)) return;
     inFlightRef.current.add(conversationId);
     let stale = false;
+    // Only a mark THIS path set is released on failure.  The conversation
+    // may carry another tab's mirror mark, which is not ours to remove.
+    let marked = false;
 
     (async () => {
       try {
@@ -80,6 +97,8 @@ export const ChatTurnReattachWatcher: React.FC = () => {
         }
         reattachedRef.current.add(decision.turnId);
         console.log(`📡 REATTACH: resuming turn ${decision.turnId.slice(0, 8)} for ${conversationId.slice(0, 8)}`);
+        markRef.current.add(conversationId);
+        marked = true;
         await send({
           conversationId,
           question: decision.question,
@@ -89,6 +108,7 @@ export const ChatTurnReattachWatcher: React.FC = () => {
         });
       } catch (e) {
         console.warn('📡 REATTACH: failed', e);
+        if (marked) markRef.current.remove(conversationId);
       } finally {
         inFlightRef.current.delete(conversationId);
       }
@@ -129,6 +149,7 @@ export const ChatTurnReattachWatcher: React.FC = () => {
         reattachedRef.current.add(decision.turnId);
         inFlightRef.current.add(id);
         console.log(`📡 REATTACH: sweep resuming turn ${decision.turnId.slice(0, 8)} for ${id.slice(0, 8)}`);
+        markRef.current.add(id);
         // Not awaited: each background stream runs concurrently.
         send({
           conversationId: id,
@@ -138,11 +159,77 @@ export const ChatTurnReattachWatcher: React.FC = () => {
           includeReasoning: true,
           isStreamingToCurrentConversation: false,
         })
-          .catch(e => console.warn('📡 REATTACH: sweep failed', e))
+          .catch(e => {
+            console.warn('📡 REATTACH: sweep failed', e);
+            markRef.current.remove(id);
+          })
           .finally(() => inFlightRef.current.delete(id));
       }
     })().catch(e => console.warn('📡 REATTACH: sweep failed', e));
   }, [hasLoadedConversations, send]);
+
+  // A tab this one was mirroring went away mid-turn.  ChatContext has
+  // already released the mirror mark; take the turn over if the server is
+  // still running it, whether or not the conversation is on screen.
+  // Without this the turn ran on with no viewer and its answer reached
+  // history only when some tab next opened the conversation.
+  useEffect(() => {
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+
+    const reclaim = async (id: string) => {
+      // Another mirror claimed it during the delay, or the owner reloaded
+      // and reattached: its 'streaming-state' has marked it here again.
+      if (streamingRef.current.has(id) || inFlightRef.current.has(id)) return;
+      inFlightRef.current.add(id);
+      let marked = false;
+      try {
+        const status = await fetchChatTurnStatus(id);
+        // Only a turn still running.  A finished one is left to the
+        // per-conversation path, which runs when it is next opened.
+        if (!status || !status.active) return;
+        if (streamingRef.current.has(id)) return;
+        const viewed = id === currentIdRef.current;
+        const messages = viewed
+          ? messagesRef.current
+          : (conversationsRef.current.find(c => c.id === id)?.messages ?? []);
+        const decision = decideReattach(status, messages, false, reattachedRef.current);
+        if (!decision.reattach) {
+          console.log(`📡 REATTACH: orphan skip ${id.slice(0, 8)} — ${decision.reason}`);
+          return;
+        }
+        reattachedRef.current.add(decision.turnId);
+        console.log(`📡 REATTACH: taking over orphaned turn ${decision.turnId.slice(0, 8)} for ${id.slice(0, 8)}`);
+        markRef.current.add(id);
+        marked = true;
+        await send({
+          conversationId: id,
+          question: decision.question,
+          messages: messages.filter(m => !m.muted),
+          reattach: true,
+          includeReasoning: true,
+          isStreamingToCurrentConversation: viewed,
+        });
+      } catch (e) {
+        console.warn('📡 REATTACH: orphan takeover failed', e);
+        if (marked) markRef.current.remove(id);
+      } finally {
+        inFlightRef.current.delete(id);
+      }
+    };
+
+    const onOrphaned = (e: Event) => {
+      const id = (e as CustomEvent<{ conversationId?: string }>).detail?.conversationId;
+      if (!id) return;
+      const t = setTimeout(() => { timers.delete(t); void reclaim(id); },
+        ORPHAN_RECLAIM_DELAY_MS + Math.random() * ORPHAN_RECLAIM_JITTER_MS);
+      timers.add(t);
+    };
+    window.addEventListener(CHAT_TURN_ORPHANED_EVENT, onOrphaned);
+    return () => {
+      window.removeEventListener(CHAT_TURN_ORPHANED_EVENT, onOrphaned);
+      timers.forEach(t => clearTimeout(t));
+    };
+  }, [send]);
 
   return null;
 };

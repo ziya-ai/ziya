@@ -28,6 +28,7 @@ import { useProject, readLastProjectId } from './ProjectContext';
 import { projectSync } from '../utils/projectSync';
 import { isInstanceHalted, onInstanceHalt } from '../utils/instanceIdentity';
 import { selectDirtyConversations, flushPendingDirtyOnPagehide } from '../utils/pagehideFlush';
+import { CHAT_TURN_ORPHANED_EVENT, ownedStreamIds } from '../utils/chatTurnReattach';
 import { getTabState, setTabState } from '../utils/tabState';
 import * as syncApi from '../api/conversationSyncApi';
 import { useServerStatus } from './ServerStatusContext';
@@ -2699,6 +2700,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 fallbackProjectId: currentProjectIdRef.current,
                 toServerChat: syncApi.conversationToServerChat,
             });
+            // Tabs mirroring a stream this tab owns learn it is over only
+            // from this tab.  The turn itself keeps running on the server,
+            // so say "orphaned", not "ended": a mirror releases its mark and
+            // may take the turn over.
+            for (const id of ownedStreamIds(streamingConversationsRef.current, remoteStreamingIdsRef.current)) {
+                projectSync.post('streaming-orphaned', { conversationId: id });
+            }
         };
         window.addEventListener('pagehide', onPageHide);
         return () => window.removeEventListener('pagehide', onPageHide);
@@ -4414,9 +4422,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         };
 
+        // A turn this tab drives is not reclassified as a mirror because
+        // another tab also claims it (two tabs reattaching at once after a
+        // session restore).  Recorded as remote, this tab would stop
+        // answering probes and the other tab's streaming-ended would drop
+        // its mark mid-turn.
+        const ownsStream = (id: string) =>
+            streamingConversationsRef.current.has(id) && !remoteStreamingIdsRef.current.has(id);
+
         const handleStreamingChunk = (msg: any) => {
             const { conversationId, content, reasoning } = msg;
             if (!content && !reasoning) return;
+            if (ownsStream(conversationId)) return;
 
             // Ensure this conversation is marked as streaming in case we missed
             // the initial streaming-state event (e.g., tab opened mid-stream).
@@ -4456,6 +4473,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         const handleStreamingState = (msg: any) => {
             const { conversationId, state } = msg;
+            if (ownsStream(conversationId)) return;
             updateProcessingState(conversationId, state);
             if (state !== 'idle') {
                 remoteStreamingIdsRef.current.add(conversationId);
@@ -4519,6 +4537,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         projectSync.on('streaming-state', handleStreamingState);
         projectSync.on('streaming-ended', handleStreamingEnded);
         projectSync.on('streaming-probe', handleStreamingProbe);
+        projectSync.on('streaming-orphaned', handleStreamingOrphaned);
 
         // A conversation_organize tool changed folders or chat metadata on
         // the server mid-turn (chatApi.ts raises this from tool_display).
@@ -4572,6 +4591,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             projectSync.off('streaming-state', handleStreamingState);
             projectSync.off('streaming-ended', handleStreamingEnded);
             projectSync.off('streaming-probe', handleStreamingProbe);
+            projectSync.off('streaming-orphaned', handleStreamingOrphaned);
             window.removeEventListener('conversationOrganizedFromBackend', handleOrganizedFromBackend);
         };
     }, [currentProject?.id, isInitialized, mergeConversations, updateProcessingState, removeStreamingConversation]);

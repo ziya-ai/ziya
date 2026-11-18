@@ -26,6 +26,10 @@ export type SyncMessageType =
   | 'streaming-chunk'
   | 'streaming-state'
   | 'streaming-ended'
+  // The owning tab is going away (pagehide) while the turn may still be
+  // running on the server.  Distinct from 'streaming-ended' so a mirror can
+  // tell "finished" from "nobody is driving it".
+  | 'streaming-orphaned'
   // "Is any tab streaming this conversation?"  A tab that owns the turn
   // replies by re-posting 'streaming-state'.  Used by ChatTurnReattachWatcher
   // to avoid reattaching to a turn this browser is already mirroring.
