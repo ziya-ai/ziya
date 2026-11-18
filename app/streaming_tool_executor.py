@@ -1535,13 +1535,19 @@ class StreamingToolExecutor:
         temp_override = getattr(self, 'temperature_override', None)
         max_tokens_override = getattr(self, 'max_tokens_override', None)
 
-        # Resolve max_output_tokens: skill override > env var > model config > default
+        # Resolve max_output_tokens: skill override > env var > model config > default.
+        # The source is kept on the instance so the loop can log it and the
+        # oversized-output error can say what set the limit; a process-wide
+        # env cap otherwise looks identical to the model's own limit.
         if max_tokens_override:
             effective_max_tokens = max_tokens_override
+            self._max_tokens_source = 'skill'
         elif ziya_env("ZIYA_MAX_OUTPUT_TOKENS") is not None:
             effective_max_tokens = ziya_env("ZIYA_MAX_OUTPUT_TOKENS")
+            self._max_tokens_source = 'env'
         else:
             effective_max_tokens = (self.model_config.get('max_output_tokens', 16384) if self.model_config else 16384)
+            self._max_tokens_source = 'model_config'
         # ZIYA_MAX_OUTPUT_TOKENS is process-global and sized for the
         # top-level conversation's model.  A task block whose scope routes
         # to a different model (model_tier "small" -> Haiku 4.5, cap 64000)
@@ -1557,6 +1563,9 @@ class StreamingToolExecutor:
                             f"{self.model_id if hasattr(self, 'model_id') else 'model'} "
                             f"cap {model_cap}; clamping")
                 effective_max_tokens = int(model_cap)
+                # Clamped: the binding limit is now the model's own, and
+                # advising the user to raise the setting would not help.
+                self._max_tokens_source = 'model_config'
         except (TypeError, ValueError):
             pass
 
@@ -1570,6 +1579,27 @@ class StreamingToolExecutor:
             model_config=self.model_config or {},
             iteration=iteration,
         )
+
+    @staticmethod
+    def _max_tokens_source_hint(source) -> str:
+        """The advice sentence for an output-cap error, by limit source."""
+        if source == 'env':
+            return ('The limit comes from ZIYA_MAX_OUTPUT_TOKENS, which saving Model '
+                    'Settings sets for the whole server: raise max output tokens in '
+                    'Model Settings (or unset ZIYA_MAX_OUTPUT_TOKENS), or ask for the '
+                    'work in smaller pieces.')
+        if source == 'skill':
+            return ("The limit comes from an active skill's maxOutputTokens override: "
+                    'raise it or deactivate the skill, or ask for the work in smaller '
+                    'pieces.')
+        if source == 'throttle':
+            return ('The limit was lowered automatically after throttling, for the '
+                    'rest of this turn: retry the turn, or ask for the work in '
+                    'smaller pieces.')
+        if source == 'model_config':
+            return ("That is the model's configured limit, so ask for the work in "
+                    'smaller pieces.')
+        return 'Ask for the work in smaller pieces.'
 
     async def _load_and_prepare_tools(self, extra_tools=None, tool_allowlist=None,
                                       messages=None, project_root=None, conversation_id=None,
@@ -3535,6 +3565,22 @@ class StreamingToolExecutor:
             # Apply throttle-driven token reduction if active
             if throttle_state.get('max_output_tokens_override'):
                 provider_config.max_output_tokens = throttle_state['max_output_tokens_override']
+                self._max_tokens_source = 'throttle'
+
+            # Which setting chose this request's output limit: logged on the
+            # first iteration and again whenever source or value changes.
+            _mt_key = (getattr(self, '_max_tokens_source', 'unknown'),
+                       provider_config.max_output_tokens)
+            if iteration == 0 or _mt_key != getattr(self, '_last_max_tokens_log', None):
+                self._last_max_tokens_log = _mt_key
+                logger.info(
+                    "🎚️ MAX_TOKENS_SOURCE iteration=%s source=%s value=%s "
+                    "model_config_max=%s env=%s throttle_override=%s",
+                    iteration, _mt_key[0], _mt_key[1],
+                    (self.model_config or {}).get('max_output_tokens'),
+                    os.environ.get('ZIYA_MAX_OUTPUT_TOKENS'),
+                    throttle_state.get('max_output_tokens_override'),
+                )
 
             logger.debug(f"🔍 REQUEST_DEBUG: Iteration {iteration}, provider={self.provider.provider_name}")
             logger.debug(f"   Messages: {len(conversation)}, max_tokens: {provider_config.max_output_tokens}")
@@ -5830,10 +5876,9 @@ Please retry the tool call with valid JSON. Ensure:
                                 f'The model reached its output limit '
                                 f'({provider_config.max_output_tokens} tokens) twice in a '
                                 f'row without delivering any text or a complete tool '
-                                f'call, so this turn was stopped. If the limit is set '
-                                f'low, raise max output tokens in Model Settings (or '
-                                f'unset ZIYA_MAX_OUTPUT_TOKENS); otherwise ask for the '
-                                f'work in smaller pieces.'
+                                f'call, so this turn was stopped. '
+                                + self._max_tokens_source_hint(
+                                    getattr(self, '_max_tokens_source', None))
                             )}
                         if _reason == 'max_iterations':
                             logger.debug(f"🔍 MAX_ITERATIONS: Reached maximum iterations ({iteration}), ending stream")
