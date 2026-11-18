@@ -67,6 +67,7 @@ from app.utils.conversation_exporter import export_conversation_for_paste
 from app.api import projects, contexts, skills, chats, tokens, task_cards, task_runs, task_bindings, jobs as jobs_api
 from app.api import drag_helper as drag_helper_api
 from app.api import bench as bench_api
+from app.api import agents as agents_api
 from app.api import delegates as delegates_api
 from app.api import memory as memory_api
 from app.api import beads as beads_api
@@ -803,6 +804,14 @@ async def lifespan(app: FastAPI):
 
     # Periodic cleanup of stale delegate plans and prompt cache
     asyncio.create_task(_periodic_memory_cleanup())
+
+    # Header update chip (app/utils/update_watch.py): notices a newer
+    # installed version and restarts into it when nothing is running.
+    # Only for a server started by app.main.start_server, which performs
+    # the restart; a test client or embedded app has nothing to exec.
+    from app.utils import update_watch as _update_watch
+    if _update_watch.server_attached():
+        asyncio.create_task(_update_watch.run_forever())
 
     # Optional extras after an upgrade (app/utils/extras_registry.py): adopt
     # extras found installed as opted in, and re-install any opted-in extra
@@ -1835,6 +1844,7 @@ app.include_router(projects.router)
 app.include_router(contexts.router)
 app.include_router(skills.router)
 app.include_router(bench_api.router)
+app.include_router(agents_api.router)
 app.include_router(chats.router)
 app.include_router(tokens.router)
 app.include_router(delegates_api.router)
@@ -1867,6 +1877,10 @@ app.include_router(diagram_router)
 # Dataset rows for ziya://dataset/<id> chart data (design/dataset-store.md)
 from app.routes.dataset_routes import router as dataset_router
 app.include_router(dataset_router)
+
+# Header update chip: newer installed version, restart into it
+from app.routes.update_routes import router as update_router
+app.include_router(update_router)
 
 # Model configuration routes
 from app.routes.model_routes import router as model_router

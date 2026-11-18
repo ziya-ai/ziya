@@ -692,6 +692,51 @@ class InfoProvider(ABC):
         pass
 
 
+@dataclass
+class UpdateInfo:
+    """A newer installed version of Ziya this server can restart into.
+
+    The restart is ``os.execve(exec_path, argv, env)`` with ``argv[0]``
+    included in ``argv`` and ``env`` merged over the current environment.
+    ``ready`` is False while the new version still needs work before it can
+    start quickly (its venv not built yet); the watcher calls
+    ``UpdateProvider.prepare`` first.
+    """
+    installed_version: str
+    running_version: str
+    exec_path: str
+    argv: List[str]
+    env: Dict[str, str] = field(default_factory=dict)
+    ready: bool = True
+    notes_url: Optional[str] = None
+
+
+class UpdateProvider(ABC):
+    """
+    Reports a newer installed version of Ziya and how to restart into it.
+
+    Polled by app/utils/update_watch.py every few seconds to a minute, so
+    ``check`` must be cheap: local file reads, no network.  Return None when
+    nothing newer is installed or this provider does not match how Ziya was
+    installed; the next provider, and finally the built-in check of this
+    environment's installed distribution, is tried.  An exception skips
+    this provider for that poll.
+
+    ``prepare`` runs off the event loop and may take minutes.
+    """
+
+    provider_id: str = "base"
+    priority: int = 0
+
+    @abstractmethod
+    def check(self) -> Optional[UpdateInfo]:
+        pass
+
+    def prepare(self, info: UpdateInfo) -> bool:
+        """Make ``info`` ready to restart into.  True on success."""
+        return True
+
+
 class RemoteAuthError(RuntimeError):
     """A remote-MCP authentication handler could not establish a session.
 

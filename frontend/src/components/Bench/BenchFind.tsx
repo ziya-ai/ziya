@@ -20,18 +20,28 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { FindColumn, FindHit, FindHome, FindResponse } from '../../hooks/useBench';
 import { isFindResults, MCP_FIND_COLUMN } from '../../hooks/useBench';
 import type { Layer, PlacementState } from '../../utils/activation';
+import {
+    REGISTRY_OFF_EVENT, readRegistriesOff, sameRegistrySet, writeRegistriesOff,
+} from '../../utils/registrySelection';
 import { useBenchActions } from './BenchActions';
 import { KindMark, columnKind, kindColor } from './KindMark';
 import { rejectionText } from './laneDnd';
 
 export interface BenchFindModel {
-    find: (q: string, n?: number) => Promise<FindResponse>;
+    find: (q: string, n?: number, registriesOff?: string[]) => Promise<FindResponse>;
     /** Absent = read-only (no install buttons). */
     install?: (source: string, id: string, state: PlacementState | null) => Promise<unknown>;
+    /** Install an MCP server from its registry.  Absent = MCP hits only link
+     *  to the registry panel. */
+    installServer?: (serviceId: string, providerId?: string | null) => Promise<{ server_name?: string; warnings?: string[] }>;
     lens: Layer;
 }
 
-export interface BenchFindProps { model: BenchFindModel; }
+export interface BenchFindProps {
+    model: BenchFindModel;
+    /** Open already searching for this (e.g. a server a package is missing). */
+    initialQuery?: string;
+}
 
 export const DEBOUNCE_MS = 300;
 const N = 8;
@@ -47,17 +57,34 @@ const linkBtn: React.CSSProperties = { border: 'none', background: 'none', color
                                        textDecoration: 'underline', padding: 0, fontSize: 11 };
 const shortVersion = (v?: string | null) => (v ? (v.length > 12 ? v.slice(0, 8) : v) : '—');
 
-export const BenchFind: React.FC<BenchFindProps> = ({ model }) => {
-    const { find, install, lens } = model;
+export const BenchFind: React.FC<BenchFindProps> = ({ model, initialQuery = '' }) => {
+    const { find, install, installServer, lens } = model;
     const { openRegistry } = useBenchActions();
-    const [q, setQ] = useState('');
+    const [q, setQ] = useState(initialQuery);
     const [tick, setTick] = useState(0);          // bumped after an install to re-ask the same query
     const [result, setResult] = useState<FindResponse | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
+    // Id of the MCP server being installed; an install can take a while.
+    const [busy, setBusy] = useState<string | null>(null);
     const seq = useRef(0);
     const lastQ = useRef('');
+    // MCP registries switched off: one setting shared with the registry panel.
+    const [off, setOff] = useState<string[]>(readRegistriesOff);
+    useEffect(() => {
+        const onChanged = () => setOff(prev => {
+            const next = readRegistriesOff();
+            return sameRegistrySet(prev, next) ? prev : next;
+        });
+        window.addEventListener(REGISTRY_OFF_EVENT, onChanged);
+        return () => window.removeEventListener(REGISTRY_OFF_EVENT, onChanged);
+    }, []);
+    const toggleRegistry = (id: string) => {
+        const next = off.includes(id) ? off.filter(x => x !== id) : [...off, id];
+        writeRegistriesOff(next);
+        setOff(next);
+    };
 
     // The home panels load at once and a re-ask is immediate; a typed query
     // waits for the keys to settle.  A late answer to an earlier ask is dropped.
@@ -67,13 +94,13 @@ export const BenchFind: React.FC<BenchFindProps> = ({ model }) => {
         lastQ.current = q;
         const t = setTimeout(() => {
             setLoading(true);
-            find(q, N).then(
+            (off.length ? find(q, N, off) : find(q, N)).then(
                 r => { if (seq.current === mine) { setResult(r); setError(null); } },
                 e => { if (seq.current === mine) setError(String((e as Error)?.message ?? e)); },
             ).finally(() => { if (seq.current === mine) setLoading(false); });
         }, delay);
         return () => clearTimeout(t);
-    }, [find, q, tick]);
+    }, [find, q, tick, off]);
 
     const doInstall = async (h: { source: string; id: string; name: string }, state: PlacementState | null) => {
         if (!install) return;
@@ -89,12 +116,32 @@ export const BenchFind: React.FC<BenchFindProps> = ({ model }) => {
         }
     };
 
+    const doInstallServer = async (h: FindHit) => {
+        if (!installServer || busy) return;
+        setNotice(null);
+        setBusy(h.id);
+        try {
+            // A server listed in several registries is installed from the first.
+            const r = await installServer(h.id, h.provider ? h.provider.split(',')[0].trim() : null);
+            const warnings = r?.warnings ?? [];
+            setNotice(`${r?.server_name || h.name} installed${warnings.length ? `, with warnings: ${warnings.join('; ')}` : ''}`);
+            setTick(t => t + 1);
+        } catch (e) {
+            setNotice(`Could not install ${h.name}: ${String((e as Error)?.message ?? e)}`);
+        } finally {
+            setBusy(null);
+        }
+    };
+
     const hitRow = (h: FindHit, kind: string) => (
         <div key={`${h.source}:${h.id}`} data-testid={`hit-${h.source}:${h.id}`}
              style={{ padding: '5px 8px', borderTop: border, display: 'flex', flexDirection: 'column', gap: 2, fontSize: 11 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <KindMark kind={columnKind(kind)} />
                 <b style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.name}</b>
+                {h.provider && (
+                    <span data-testid={`hit-provider-${h.id}`} title="Registry this server is listed in" style={{ ...muted, fontSize: 10 }}>{h.provider}</span>
+                )}
                 {h.support_level && (
                     <span data-testid="hit-support" style={{ fontSize: 9, padding: '0 5px', borderRadius: 8, border, opacity: 0.8 }}>{h.support_level}</span>
                 )}
@@ -105,6 +152,13 @@ export const BenchFind: React.FC<BenchFindProps> = ({ model }) => {
                     {h.description}
                 </div>
             )}
+            {h.tags && h.tags.length > 0 && (
+                <div data-testid={`hit-tags-${h.id}`} style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {h.tags.map(t => (
+                        <span key={t} style={{ fontSize: 9, padding: '0 5px', borderRadius: 8, border, opacity: 0.7 }}>{t}</span>
+                    ))}
+                </div>
+            )}
             {h.matched && h.matched.length > 0 && (
                 <div style={{ fontSize: 10 }}><span style={muted}>{kind === 'mcp' ? 'tools' : 'skills'}: </span>{h.matched.join(', ')}</div>
             )}
@@ -113,7 +167,14 @@ export const BenchFind: React.FC<BenchFindProps> = ({ model }) => {
             )}
             <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
                 {kind === 'mcp'
-                    ? (openRegistry && <button type="button" onClick={openRegistry} style={linkBtn}>open registry ▸</button>)
+                    ? (installServer
+                        ? !h.installed && (
+                            <button type="button" aria-label={`Install ${h.name}`} data-testid={`hit-install-${h.id}`}
+                                    disabled={busy !== null} onClick={() => void doInstallServer(h)}
+                                    style={{ ...smallBtn, opacity: busy !== null && busy !== h.id ? 0.5 : 1 }}>
+                                {busy === h.id ? 'installing…' : 'install'}
+                            </button>)
+                        : openRegistry && <button type="button" onClick={openRegistry} style={linkBtn}>open registry ▸</button>)
                     : install && !h.installed && (
                         <>
                             <button type="button" aria-label={`Install ${h.name} on hand`} onClick={() => void doInstall(h, 'always')} style={smallBtn}>→ on hand</button>
@@ -188,6 +249,22 @@ export const BenchFind: React.FC<BenchFindProps> = ({ model }) => {
                             <span style={{ ...muted, fontSize: 10 }}>{ck === 'mcp' ? 'servers' : `skills · ${c.kind}`}</span>
                             {c.total !== null && <span style={{ ...muted, marginLeft: 'auto', fontSize: 10 }}>{c.total} match{c.total === 1 ? '' : 'es'}</span>}
                         </div>
+                        {c.registries && c.registries.length > 0 && (
+                            <div data-testid="find-registries" role="group" aria-label="Registries searched"
+                                 style={{ padding: '0 8px 6px', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                {c.registries.map(r => (
+                                    <button key={r.id} type="button" role="checkbox" aria-checked={r.selected}
+                                            data-testid={`find-registry-${r.id}`} onClick={() => toggleRegistry(r.id)}
+                                            title={r.selected ? `Searching ${r.name}; click to leave it out` : `${r.name} is left out; click to search it`}
+                                            style={{ fontSize: 10, padding: '1px 7px', borderRadius: 10, cursor: 'pointer',
+                                                     background: r.selected ? 'rgba(20,184,166,0.15)' : 'none',
+                                                     color: r.selected ? '#0d9488' : 'inherit', opacity: r.selected ? 1 : 0.55,
+                                                     border: r.selected ? '1px solid #0d9488' : border }}>
+                                        {r.selected ? '✓ ' : ''}{r.name}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                         {c.error && <div role="alert" style={{ padding: 8, fontSize: 11, color: '#d46b08' }}>unavailable: {c.error}</div>}
                         {!c.error && c.hits.length === 0 && <div style={{ ...muted, padding: 8, fontSize: 11 }}>no match</div>}
                         {c.hits.map(h => hitRow(h, c.kind))}
@@ -215,7 +292,7 @@ export const BenchFind: React.FC<BenchFindProps> = ({ model }) => {
             </div>
             <div style={{ ...muted, fontSize: 10 }}>a query goes to every source; installs land in {LANDS_IN[lens]}</div>
             {error && <div role="alert" style={{ fontSize: 11, color: '#d46b08' }}>Could not search: {error}</div>}
-            {notice && <div role="status" style={{ fontSize: 11 }}>{notice}</div>}
+            {notice && <div role="status" style={{ fontSize: 11, whiteSpace: 'pre-wrap' }}>{notice}</div>}
             {result && (isFindResults(result) ? columns(result.per_source) : home(result))}
         </div>
     );

@@ -54,16 +54,24 @@ def merge_bench_prompt(
       * bench authoritative -> server prompt text wins; the catalog is
         filtered to the bench's ondemand set, so a skill placed ``off`` is
         offered nowhere.
+
+    An active agent's block (design/agent-overlay.md) is placed in front of
+    whichever text is chosen: it does not depend on the bench being adopted.
     """
     if bench is None:
         return client_addition, client_overrides, client_tool_ids, None
+    agent = getattr(bench, "agent_addition", "") or ""
+
+    def _with_agent(text: str) -> str:
+        return "\n\n".join(p for p in (agent, text) if p)
+
     overrides = client_overrides if client_overrides else dict(bench.model_overrides)
     tool_ids = client_tool_ids if client_tool_ids else list(bench.preferred_tool_ids)
     if not bench.authoritative:
-        return client_addition, overrides, tool_ids, None
+        return _with_agent(client_addition), overrides, tool_ids, None
     if client_addition and client_addition.strip() != bench.system_prompt_addition.strip():
         logger.debug("bench_prompt: client systemPromptAddition superseded by bench")
-    return bench.system_prompt_addition, overrides, tool_ids, set(bench.catalog_names)
+    return _with_agent(bench.system_prompt_addition), overrides, tool_ids, set(bench.catalog_names)
 
 
 def mcp_placements_for_root(project_root: Optional[str], conversation_id: Optional[str]) -> Dict[str, str]:
@@ -104,14 +112,48 @@ def mcp_filter_for_root(project_root: Optional[str], conversation_id: Optional[s
     Shelved servers are withheld; within-reach servers are withheld except
     for what the conversation has LOADED (the chat record's ``loadedMcp``
     plus this process's sticky copy) or what the task scope names.  An empty
-    filter when unknown, so a bench error never strips tools.
+    filter when unknown, so a bench error never strips tools.  Servers the
+    conversation's active agent names (design/agent-overlay.md) count as
+    loaded for the turn; one the user shelved stays shelved.
     """
     from app.utils.mcp_ondemand import McpFilter, loaded_map, mcp_filter
     placements = mcp_placements_for_root(project_root, conversation_id)
     if not placements:
         return McpFilter()
-    loaded = loaded_map(project_id_for_root(project_root), conversation_id)
-    return mcp_filter(placements, loaded, servers_named_by_scope(tools, tool_allowlist))
+    pid = project_id_for_root(project_root)
+    loaded = loaded_map(pid, conversation_id)
+    named = set(servers_named_by_scope(tools, tool_allowlist))
+    try:
+        from app.services.agent_enforcement import agent_servers
+        named |= agent_servers(pid, conversation_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bench_prompt: agent servers unavailable: %s", e)
+    return mcp_filter(placements, loaded, named)
+
+
+def agent_tool_scope_for_root(project_root: Optional[str], conversation_id: Optional[str]):
+    """``(agent, scope, server configs)`` when an agent is on in this
+    conversation, else None.  Fails open, like the bench filter."""
+    pid = project_id_for_root(project_root)
+    if not pid:
+        return None
+    try:
+        from app.services.agent_enforcement import turn_tools
+        return turn_tools(pid, conversation_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bench_prompt: agent tool list unavailable, tools unfiltered: %s", e)
+        return None
+
+
+def apply_agent_tool_scope(tools: List[Any], turn) -> Tuple[List[Any], int]:
+    """Drop tools of MCP servers the active agent's tool list does not name.
+    Built-in tools are kept.  Returns the new list and how many were dropped."""
+    if turn is None or turn[1] is None:
+        return list(tools), 0
+    from app.services.agent_enforcement import keep_tool
+    _agent, scope, configs = turn
+    kept = [t for t in tools if keep_tool(scope, _tool_server(t), getattr(t, "name", ""), configs)]
+    return kept, len(tools) - len(kept)
 
 
 def withheld_mcp_for_root(project_root: Optional[str], conversation_id: Optional[str], *,

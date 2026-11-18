@@ -20,6 +20,9 @@ import type { Layer, PlacementState } from '../../utils/activation';
 import { CapabilityCard } from './CapabilityCard';
 import { DRAG_MIME, DropIntent, LANES, dropIntent, rejectionText } from './laneDnd';
 import { foldLane, foldSummary, sumTokens } from './laneFold';
+import type { FoldedLane } from './laneFold';
+import { GROUP_DRAG_MIME, PackageLane } from './PackageLane';
+import type { GroupBy } from './packageTree';
 
 export interface BenchBoardModel {
     items: BenchItemView[];
@@ -36,6 +39,10 @@ export interface BenchBoardProps {
     /** The card whose detail the panel's drawer shows; null = none. */
     selectedKey?: string | null;
     onSelect?: (key: string | null) => void;
+    /** 'package' files each lane's cards under where they came from. */
+    groupBy?: GroupBy;
+    /** Shown on package rows: what each package needs that is not installed here. */
+    missingByRoot?: Record<string, number>;
 }
 
 const CARD_ESTIMATE_PX = 52;
@@ -68,9 +75,13 @@ const foldRowStyle: React.CSSProperties = {
 
 const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : `${n}t`);
 
-export const BenchBoard: React.FC<BenchBoardProps> = ({ bench, selectedKey = null, onSelect }) => {
+export const BenchBoard: React.FC<BenchBoardProps> = ({ bench, selectedKey = null, onSelect, groupBy = 'none', missingByRoot }) => {
     const [notice, setNotice] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+    const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+    const [pendingGroup, setPendingGroup] = useState<
+        { keys: string[]; lane: PlacementState; label: string; count: number } | null>(null);
+    const grouped = groupBy === 'package';
     const placeable = bench.items.filter(i => i.tier !== 'environment');
     const laneRefs = {
         always: useRef<HTMLElement>(null),
@@ -95,25 +106,71 @@ export const BenchBoard: React.FC<BenchBoardProps> = ({ bench, selectedKey = nul
         }
     };
 
+    /** A package row moved as one: every item under it that can take the lane. */
+    const moveGroup = async (keys: string[], lane: PlacementState, label: string, confirmed = false) => {
+        const moves = keys
+            .map(k => placeable.find(i => i.key === k))
+            .filter((i): i is BenchItemView => !!i)
+            .map(item => ({ item, intent: dropIntent(item, lane) }))
+            .filter(m => m.intent.kind === 'place');
+        if (moves.length === 0) return;
+        // On hand is sent with every turn; a whole package there is asked about first.
+        if (lane === 'always' && moves.length > 1 && !confirmed) {
+            setPendingGroup({ keys, lane, label, count: moves.length });
+            return;
+        }
+        setPendingGroup(null);
+        for (const m of moves) await apply(m.item, m.intent);
+    };
+
     const onDrop = (lane: PlacementState) => (e: React.DragEvent) => {
         e.preventDefault();
+        const group = e.dataTransfer.getData(GROUP_DRAG_MIME);
+        if (group) {
+            try {
+                const g = JSON.parse(group) as { keys: string[]; label: string };
+                void moveGroup(g.keys, lane, g.label);
+            } catch { /* not ours */ }
+            return;
+        }
         const key = e.dataTransfer.getData(DRAG_MIME) || e.dataTransfer.getData('text/plain');
         const item = placeable.find(i => i.key === key);
         if (item) void apply(item, dropIntent(item, lane));
     };
+
+    const card = (item: BenchItemView, reactKey: string = item.key) => (
+        <CapabilityCard key={reactKey} item={item} onIntent={intent => void apply(item, intent)}
+                        selected={item.key === selectedKey} onSelect={onSelect}
+                        pickedUp={bench.isPickedUp?.(item.key) ?? false}
+                        delta={bench.flash?.byKey[item.key]} />
+    );
 
     return (
         <div data-testid="bench-board" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
             {notice && (
                 <div role="status" style={{ fontSize: 12, marginBottom: 8, color: '#d46b08' }}>{notice}</div>
             )}
+            {pendingGroup && (
+                <div role="alertdialog" data-testid="group-confirm"
+                     style={{ fontSize: 12, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span>Put all {pendingGroup.count} items from <b>{pendingGroup.label}</b> on hand?
+                        {' '}They are sent with every turn.</span>
+                    <button type="button" data-testid="group-confirm-yes"
+                            onClick={() => void moveGroup(pendingGroup.keys, pendingGroup.lane, pendingGroup.label, true)}>
+                        Move {pendingGroup.count}</button>
+                    <button type="button" data-testid="group-confirm-no" onClick={() => setPendingGroup(null)}>Cancel</button>
+                </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, flex: 1, minHeight: 0 }}>
                 {LANES.map(lane => {
                     const cards = placeable.filter(i => i.atLens.state === lane.state);
                     const ghosts = placeable.filter(i =>
                         !i.atLens.ghost && i.atLens.inherited === lane.state && i.atLens.state !== lane.state);
-                    const open = !!expanded[lane.state];
-                    const { shown, spaceFolded, builtinFolded } = foldLane(cards, capacities[lane.state], open, lane.state);
+                    // Grouped lanes fold by package row instead of by height, and scroll.
+                    const open = !grouped && !!expanded[lane.state];
+                    const { shown, spaceFolded, builtinFolded }: FoldedLane = grouped
+                        ? { shown: [], spaceFolded: [], builtinFolded: [] }
+                        : foldLane(cards, capacities[lane.state], open, lane.state);
                     const expand = () => setExpanded(e => ({ ...e, [lane.state]: true }));
                     const anyFold = spaceFolded.length + builtinFolded.length > 0;
                     return (
@@ -128,7 +185,7 @@ export const BenchBoard: React.FC<BenchBoardProps> = ({ bench, selectedKey = nul
                                 minHeight: 120, padding: 8, borderRadius: 8,
                                 border: '1px solid var(--mockup-border, rgba(127,127,127,0.25))',
                                 display: 'flex', flexDirection: 'column', gap: 6,
-                                overflowY: open ? 'auto' : 'hidden',
+                                overflowY: open || grouped ? 'auto' : 'hidden',
                             }}
                         >
                             <header style={{ fontSize: 12 }}>
@@ -139,12 +196,13 @@ export const BenchBoard: React.FC<BenchBoardProps> = ({ bench, selectedKey = nul
                                     {lane.hint}
                                 </div>
                             </header>
-                            {shown.map(item => (
-                                <CapabilityCard key={item.key} item={item} onIntent={intent => void apply(item, intent)}
-                                                selected={item.key === selectedKey} onSelect={onSelect}
-                                                pickedUp={bench.isPickedUp?.(item.key) ?? false}
-                                                delta={bench.flash?.byKey[item.key]} />
-                            ))}
+                            {grouped && (
+                                <PackageLane lane={lane} cards={cards} open={openGroups}
+                                             onToggle={id => setOpenGroups(o => ({ ...o, [id]: !o[id] }))}
+                                             renderCard={card} missingByRoot={missingByRoot}
+                                             onMove={(keys, to, label) => void moveGroup(keys, to, label)} />
+                            )}
+                            {shown.map(item => card(item))}
                             {spaceFolded.length > 0 && (
                                 <button type="button" data-testid={`fold-${lane.state}`} onClick={expand}
                                         title={spaceFolded.map(i => i.name).join('\n')} style={foldRowStyle}>

@@ -6,12 +6,16 @@ import React from 'react';
 import { useServerStatus } from '../context/ServerStatusContext';
 import { useTheme } from '../context/ThemeContext';
 import { DisconnectOutlined } from '@ant-design/icons';
+import { restartLooksPlanned, useUpdateState } from '../utils/updateStatus';
 
 export const ServerStatusBanner: React.FC = () => {
   const { isServerReachable } = useServerStatus();
   const { isDarkMode } = useTheme();
+  // A restart into a newer version (UpdateChip) shows its own card; this
+  // banner is for outages nobody asked for.
+  useUpdateState();
 
-  if (isServerReachable) return null;
+  if (isServerReachable || restartLooksPlanned()) return null;
 
   return (
     <div

@@ -357,10 +357,12 @@ def get_chat_history_tools() -> List[Type[BaseMCPTool]]:
 
 
 def get_conversation_organize_tools() -> List[Type[BaseMCPTool]]:
-    """Sidebar organisation: folders, move/rename/fork (metadata writes only)."""
+    """Sidebar organisation: folders, move/rename/fork (metadata writes only),
+    plus chat_post (appends one message to another conversation)."""
     try:
         from app.mcp.tools.conversation_organize_tools import ORGANIZE_TOOLS
-        return list(ORGANIZE_TOOLS)
+        from app.mcp.tools.chat_post_tool import ChatPostTool
+        return list(ORGANIZE_TOOLS) + [ChatPostTool]
     except ImportError as e:
         logger.warning(f"Could not import conversation organize tools: {e}")
         return []

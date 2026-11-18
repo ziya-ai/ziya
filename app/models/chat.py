@@ -47,6 +47,10 @@ class Chat(BaseModel):
     # mcp-on-demand.md): ``server -> [tool, ...] | "*"``, insertion order
     # = load order.  Written by load_server_tools; a fork copies it.
     loadedMcp: Optional[Dict[str, Any]] = None
+    # The agent running in this conversation (design/agent-overlay.md), by
+    # name; None = no agent.  Written only by agent_overlay.set_active.
+    # Everything the agent contributes is derived from this at turn time.
+    activeAgent: Optional[str] = None
     additionalFiles: List[str] = []
     additionalPrompt: Optional[str] = None
     messages: List[Message] = []
@@ -121,6 +125,7 @@ class ChatUpdate(BaseModel):
     skillIds: Optional[List[str]] = None
     placements: Optional[Dict[str, Optional[str]]] = None
     loadedMcp: Optional[Dict[str, Any]] = None
+    activeAgent: Optional[str] = None
     additionalFiles: Optional[List[str]] = None
     additionalPrompt: Optional[str] = None
     messages: Optional[List[Message]] = None

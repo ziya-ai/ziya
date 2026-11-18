@@ -29,6 +29,8 @@ export interface ItemSpec {
     kind: CapabilityKind;
     tier?: Tier;
     discoverable?: boolean;
+    /** A declared default replacing the kind rule; a stored placement still wins. */
+    default_state?: PlacementState | null;
 }
 
 export interface ResolvedItem {
@@ -74,6 +76,9 @@ export function parseKey(key: unknown): [CapabilityKind, string] | null {
 
 export function defaultPlacement(item: ItemSpec): PlacementState {
     if (item.tier === 'environment') return 'always';
+    if (item.default_state && (PLACEMENT_STATES as readonly string[]).includes(item.default_state)) {
+        return item.default_state;
+    }
     if (item.kind === 'mcp') return 'always';
     return item.discoverable ? 'ondemand' : 'off';
 }

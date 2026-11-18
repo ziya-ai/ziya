@@ -7,6 +7,7 @@ import { useScrollContext } from '../context/ScrollContext';
 import { useProject } from '../context/ProjectContext';
 import { useFolderContext } from '../context/FolderContext';
 import { useSendPayload } from '../hooks/useSendPayload';
+import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
 import { Button, Dropdown, message, Tooltip } from 'antd';
 import { AudioOutlined, SendOutlined, PictureOutlined, PaperClipOutlined } from '@ant-design/icons';
 import { ImageAttachment, DocumentAttachment } from '../utils/types';
@@ -22,6 +23,8 @@ import { bareReferenceFromPaste } from '../utils/references';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 import { detectIncompleteResponse } from '../utils/responseUtils';
 import { parseSlashCommand, dispatchCommand } from '../services/commandApi';
+import { parseAgentCommand, dispatchAgentCommand } from '../utils/agentCommand';
+import { AgentBar } from './AgentBar';
 import { useServerStatus } from '../context/ServerStatusContext';
 import { v4 as uuidv4 } from 'uuid';
 import { COMPOSER_INJECT_EVENT, ComposerInjectDetail, dispatchComposerInject } from '../utils/composerInject';
@@ -131,6 +134,22 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const { setUserHasScrolled } = useScrollContext();
   const { checkedKeys } = useFolderContext();
   const { activeSkillPrompts, currentProject } = useProject();
+  // Agent overlay (design/agent-overlay.md): the chip shows when the
+  // conversation's own pin wins over the agent's model, and turning an
+  // agent on or off leaves a local, muted seam in the transcript.
+  const { pin: activeModelPin } = useResolvedModelPin();
+  const noteAgentChange = useCallback(
+    (kind: 'started' | 'ended', name: string, conversationId: string | null) => {
+      if (!conversationId) return;
+      addMessageToConversation({
+        id: uuidv4(),
+        role: 'system' as const,
+        muted: true,
+        content: kind === 'started' ? `Agent ${name} turned on.` : `Agent ${name} turned off.`,
+        _timestamp: Date.now(),
+        agentNotice: { kind, name },
+      }, conversationId, false);
+    }, [addMessageToConversation]);
   const { isServerReachable } = useServerStatus();
   const { isDarkMode } = useTheme();
   const { send } = useSendPayload();
@@ -1281,6 +1300,18 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     if (!text.trim() && attachedDocuments.length === 0) return;
     if (isSubmitting) return;
 
+    // "/agent <name>" turns a packaged agent on for this conversation and
+    // "/agent off" turns it off (design/agent-overlay.md).  AgentBar, below,
+    // carries it out; nothing is sent to the model.
+    const agentCmd = parseAgentCommand(text);
+    if (agentCmd) {
+      if (editorRef.current) editorRef.current.innerHTML = '';
+      setInputValue('');
+      composeAnchorRef.current = null;
+      dispatchAgentCommand(currentConversationId, agentCmd);
+      return;
+    }
+
     // Check for slash commands before sending as chat
     const slashCmd = parseSlashCommand(text);
     if (slashCmd) {
@@ -1576,6 +1607,10 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
             ))}
           </div>
         )}
+        {/* The agent running in this chat, if any (design/agent-overlay.md) */}
+        <AgentBar projectId={currentProject?.id} conversationId={currentConversationId}
+                  pinnedModel={activeModelPin?.scope === 'conversation' ? activeModelPin.model : null}
+                  onChange={noteAgentChange} />
         {/* Standing consent grants (design/scope-consent.md D4): what this chat may write without asking */}
         <WriteGrantsChip conversationId={currentConversationId} />
         {/* Document attachment chips */}

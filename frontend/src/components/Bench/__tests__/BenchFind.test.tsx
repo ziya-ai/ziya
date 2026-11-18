@@ -12,6 +12,7 @@ import { BenchActionsProvider } from '../BenchActions';
 import { BenchFind, DEBOUNCE_MS } from '../BenchFind';
 import { BenchPanel } from '../BenchPanel';
 import type { FindHit, FindHome, FindResults } from '../../../hooks/useBench';
+import { REGISTRY_OFF_KEY } from '../../../utils/registrySelection';
 import { mk } from '../benchTestUtils';
 
 const hit = (source: string, id: string, over: Partial<FindHit> = {}): FindHit =>
@@ -29,13 +30,16 @@ const RESULTS: FindResults = { q: 'jira', per_source: [
       hits: [hit('aim', 'SetA', { support_level: 'Recommended', matched: ['jira-search', 'jira-write'], installed: true }),
              hit('aim', 'SetB', { missing_requires: ['mcp:jira-mcp'] })] },
     { source: 'mcp-registry', name: 'MCP registry', kind: 'mcp', total: 3,
-      hits: [hit('mcp-registry', 'svc-1', { name: 'jira-mcp', matched: ['search_issues'] })] },
+      registries: [{ id: 'amazon-internal', name: 'Amazon', selected: true },
+                   { id: 'awesome-lists', name: 'Awesome lists', selected: false }],
+      hits: [hit('mcp-registry', 'svc-1', { name: 'jira-mcp', matched: ['search_issues'], provider: 'amazon-internal',
+                                              tags: ['issues', 'tracker'] })] },
     { source: 'dead', name: 'Dead', kind: 'git', total: null, hits: [], error: 'down' },
 ] };
 
-function setup(over: { install?: jest.Mock; actions?: { openRegistry?: () => void } } = {}) {
+function setup(over: { install?: jest.Mock; installServer?: jest.Mock; actions?: { openRegistry?: () => void } } = {}) {
     const find = jest.fn(async (q: string) => (q ? RESULTS : HOME));
-    const ui = <BenchFind model={{ find, install: over.install, lens: 'project' }} />;
+    const ui = <BenchFind model={{ find, install: over.install, installServer: over.installServer, lens: 'project' }} />;
     render(over.actions ? <BenchActionsProvider actions={over.actions}>{ui}</BenchActionsProvider> : ui);
     return { find };
 }
@@ -45,7 +49,7 @@ const type = async (q: string) => {
 };
 
 let fetchSpy: jest.Mock;
-beforeEach(() => { fetchSpy = jest.fn(); (global as any).fetch = fetchSpy; });
+beforeEach(() => { fetchSpy = jest.fn(); (global as any).fetch = fetchSpy; localStorage.clear(); });
 
 describe('home: only what this bench implies', () => {
     it('renders needs / updates / pairs-with from find("") with zero network', async () => {
@@ -125,6 +129,8 @@ describe('query: per-source columns', () => {
         await type('jira');
         const mcp = screen.getByTestId('find-col-mcp-registry');
         expect(within(mcp).queryByRole('button', { name: /Install/ })).toBeNull();
+        expect(within(mcp).getByTestId('hit-provider-svc-1')).toHaveTextContent('amazon-internal');
+        expect(screen.queryByTestId('hit-provider-SetA')).toBeNull();     // skill hits name no registry
         fireEvent.click(within(mcp).getByTestId('find-open-registry'));
         expect(openRegistry).toHaveBeenCalledTimes(1);
     });
@@ -133,6 +139,72 @@ describe('query: per-source columns', () => {
         await screen.findByTestId('find-home');
         await type('jira');
         expect(screen.queryByTestId('find-open-registry')).toBeNull();
+    });
+});
+
+describe('MCP registries: shown on hits, selectable, shared with the registry panel', () => {
+    it('a hit shows its tags, and the column shows every registry with its state', async () => {
+        setup();
+        await screen.findByTestId('find-home');
+        await type('jira');
+        expect(screen.getByTestId('hit-tags-svc-1')).toHaveTextContent('issues');
+        expect(screen.getByTestId('hit-tags-svc-1')).toHaveTextContent('tracker');
+        expect(screen.queryByTestId('hit-tags-SetA')).toBeNull();
+        expect(screen.getByTestId('find-registry-amazon-internal')).toHaveAttribute('aria-checked', 'true');
+        expect(screen.getByTestId('find-registry-awesome-lists')).toHaveAttribute('aria-checked', 'false');
+        expect(within(screen.getByTestId('find-col-aim')).queryByTestId('find-registries')).toBeNull();
+    });
+    it('switching a registry off asks again without it and remembers the choice', async () => {
+        const { find } = setup();
+        await screen.findByTestId('find-home');
+        await type('jira');
+        expect(find).toHaveBeenLastCalledWith('jira', 8);                 // nothing off yet
+        fireEvent.click(screen.getByTestId('find-registry-amazon-internal'));
+        await waitFor(() => expect(find).toHaveBeenLastCalledWith('jira', 8, ['amazon-internal']));
+        expect(JSON.parse(localStorage.getItem(REGISTRY_OFF_KEY)!)).toEqual(['amazon-internal']);
+        fireEvent.click(screen.getByTestId('find-registry-amazon-internal'));
+        await waitFor(() => expect(find).toHaveBeenLastCalledWith('jira', 8));
+        expect(localStorage.getItem(REGISTRY_OFF_KEY)).toBeNull();
+    });
+    it('a choice made in the registry panel is used by the first query', async () => {
+        localStorage.setItem(REGISTRY_OFF_KEY, JSON.stringify(['awesome-lists']));
+        const { find } = setup();
+        await screen.findByTestId('find-home');
+        await type('jira');
+        expect(find).toHaveBeenLastCalledWith('jira', 8, ['awesome-lists']);
+    });
+});
+
+describe('MCP hits install directly', () => {
+    it('the button calls installServer(id, registry), reports it and asks again', async () => {
+        const installServer = jest.fn(async () => ({ server_name: 'jira_mcp', warnings: [] }));
+        const openRegistry = jest.fn();
+        const { find } = setup({ installServer, actions: { openRegistry } });
+        await screen.findByTestId('find-home');
+        await type('jira');
+        const asked = find.mock.calls.length;
+        const mcp = screen.getByTestId('find-col-mcp-registry');
+        expect(within(mcp).queryByText('open registry ▸')).toBeNull();      // the button replaces the per-row link
+        await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Install jira-mcp' })); });
+        expect(installServer).toHaveBeenCalledWith('svc-1', 'amazon-internal');
+        expect(screen.getByRole('status')).toHaveTextContent('jira_mcp installed');
+        await waitFor(() => expect(find.mock.calls.length).toBeGreaterThan(asked));
+        expect(fetchSpy).not.toHaveBeenCalled();
+    });
+    it('a failed install shows the installer\'s message', async () => {
+        const installServer = jest.fn(async () => { throw new Error('access denied on version set'); });
+        setup({ installServer });
+        await screen.findByTestId('find-home');
+        await type('jira');
+        await act(async () => { fireEvent.click(screen.getByTestId('hit-install-svc-1')); });
+        expect(screen.getByRole('status')).toHaveTextContent('Could not install jira-mcp: access denied on version set');
+    });
+    it('without installServer the row keeps the registry link and offers no install', async () => {
+        setup({ actions: { openRegistry: jest.fn() } });
+        await screen.findByTestId('find-home');
+        await type('jira');
+        expect(screen.queryByTestId('hit-install-svc-1')).toBeNull();
+        expect(within(screen.getByTestId('find-col-mcp-registry')).getByText('open registry ▸')).toBeInTheDocument();
     });
 });
 

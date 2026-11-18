@@ -12,6 +12,9 @@ export interface BenchViewItem {
     tier: Tier;
     name: string;
     provenance: string;
+    /** Where it came from, outermost first (package, then component).
+     *  Several paths when more than one package ships it; empty when none. */
+    groups?: string[][];
     tokens: number;
     health: Record<string, unknown>;
     placements: Record<Layer, PlacementState | null>;
@@ -33,6 +36,9 @@ export interface PlacementMeta { via: PlacementVia | string; at: number; }
 export interface BenchView {
     items: BenchViewItem[];
     dropped: Array<{ key: string; layer: string; reason: string }>;
+    /** What installed packages need that is not configured here; ``installable``
+     *  means a registry can supply it. */
+    missing?: Array<{ kind: string; name: string; groups: string[][]; installable: boolean }>;
     lenses: Layer[];
     deltas: Record<Layer, number>;
     weight: { always: number; ondemand: number; environment: number };
@@ -160,10 +166,15 @@ export interface FindHit {
     support_level?: string | null;
     /** Skills in a package hit (AIM) or tools in an MCP server hit that matched. */
     matched?: string[];
+    /** MCP server hits: the registry's tags for the server. */
+    tags?: string[];
     installed: boolean; missing_requires?: string[];
     provider?: string | null;
 }
-export interface FindColumn { source: string; name: string; kind: string; total: number | null; hits: FindHit[]; error?: string; }
+export interface FindRegistry { id: string; name: string; selected: boolean; }
+export interface FindColumn { source: string; name: string; kind: string; total: number | null; hits: FindHit[]; error?: string;
+    /** MCP column only: every registry, and whether this search asked it. */
+    registries?: FindRegistry[]; }
 export interface FindHome {
     needs: Array<{ key: string; name: string; missing: string[] }>;
     updates: Array<{ key: string; name: string; source: string; id: string;
@@ -176,8 +187,10 @@ export const isFindResults = (r: FindResponse): r is FindResults => 'per_source'
 /** The MCP registry's column id; its hits link to the registry panel rather than installing here. */
 export const MCP_FIND_COLUMN = 'mcp-registry';
 
-export async function fetchBenchFind(projectId: string, q: string, n = 8): Promise<FindResponse> {
-    const r = await fetch(base(projectId) + `/browse?q=${encodeURIComponent(q)}&n=${n}`);
+export async function fetchBenchFind(projectId: string, q: string, n = 8, registriesOff?: string[]): Promise<FindResponse> {
+    const off = registriesOff && registriesOff.length
+        ? `&registries_off=${encodeURIComponent(registriesOff.join(','))}` : '';
+    const r = await fetch(base(projectId) + `/browse?q=${encodeURIComponent(q)}&n=${n}${off}`);
     if (!r.ok) throw new Error(`bench browse failed: ${r.status}`);
     return r.json();
 }
@@ -204,4 +217,25 @@ export async function installBenchSkill(
     }
     if (!r.ok) throw new Error(`bench install failed: ${r.status}`);
     return r.json();
+}
+
+export interface ServerInstallResult {
+    status: string; server_name?: string; service_id?: string;
+    warnings?: string[]; connected?: boolean | null;
+}
+
+/** Install an MCP server from its registry: the registry panel's installer. */
+export async function installBenchServer(serviceId: string, providerId?: string | null): Promise<ServerInstallResult> {
+    const r = await fetch('/api/mcp/registry/services/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service_id: serviceId, provider_id: providerId ?? null }),
+    });
+    const body = await r.json().catch(() => null);
+    if (!r.ok) {
+        // A failure carries the installer's own diagnosis in detail.message.
+        const d = body?.detail;
+        throw new Error(typeof d === 'string' ? d : d?.message || `install failed: HTTP ${r.status}`);
+    }
+    return body;
 }

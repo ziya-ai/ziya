@@ -7,6 +7,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import ServiceCard from './ServiceCard';
 import { useConfig } from '../context/ConfigContext';
 import { summarizeServiceDescription } from '../utils/mcpDescriptionSummary';
+import { readRegistriesOff, writeRegistriesOff } from '../utils/registrySelection';
 import type { McpRegistryPreset } from '../types/config';
 import {
     SearchOutlined,
@@ -201,6 +202,15 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
         setActiveTab('browse');
     };
 
+    // The registry selection is one setting shared with the Bench Find view:
+    // whatever is deselected here is remembered and left out there too.
+    useEffect(() => {
+        if (providers.length === 0) return;      // not loaded yet: nothing to record
+        const known = new Set(providers.map(p => p.id));
+        const unknownOff = readRegistriesOff().filter(id => !known.has(id));
+        writeRegistriesOff([...unknownOff, ...providers.map(p => p.id).filter(id => !selectedProviders.includes(id))]);
+    }, [providers, selectedProviders]);
+
     useEffect(() => {
         if (visible) {
             loadProviders();
@@ -232,8 +242,10 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                 };
 
                 setProviders([builtinProvider, ...data.providers]);
-                // Select all providers by default
-                setSelectedProviders([builtinProvider, ...data.providers].map((p: RegistryProvider) => p.id));
+                // Every provider is selected unless it was switched off before
+                // (here or in the Bench Find view).
+                const off = new Set(readRegistriesOff());
+                setSelectedProviders([builtinProvider, ...data.providers].map((p: RegistryProvider) => p.id).filter(id => !off.has(id)));
                 console.log('Loaded providers:', data.providers);
             }
         } catch (error) {

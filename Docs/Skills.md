@@ -35,6 +35,94 @@ Click the skill card to expand it and use the segmented control to change the ac
 - 🔵 Blue dot = on-demand
 - ⚪ Gray dot = off
 
+### Grouping by package (Bench)
+
+When skills or MCP servers were installed as part of a package, the Bench
+shows a **flat / by package** switch next to the lens. *By package* files each
+lane's cards under the package they came from, with the package's components
+nested inside; rows start collapsed and show how many skills and servers they
+hold. Built-in skills go under **Ziya** and everything else under **Not from a
+package**. The switch does not appear when nothing came from a package.
+
+- An item that several packages ship appears under each of them, marked
+  "also in N other packages". It is still one item: moving it in one place
+  moves it everywhere.
+- Drag a package row to another lane, or use its **move…** menu, to move
+  everything in it. Putting a whole package **On hand** asks first, because
+  those items are then sent with every turn.
+
+A package manager may also set MCP servers to sit **Within reach** by default
+instead of On hand. The Bench says so once per server, with **Keep all on
+hand** to pin them back for every project. Anything you have placed yourself
+is left where you put it.
+
+When a package needs an MCP server that is not configured here, the Bench
+lists it under the board ("*Package* needs 2 servers not installed here"),
+and the package's row shows the count in *by package* view. **find ▸** opens
+the Find view searching for that server; install it from the registry there.
+A server marked "set up by the package" is one the package's own agents
+define, so there is nothing to install from the Bench.
+
+In the Find view, the MCP column searches server ids, names, descriptions
+and tags across the whole of every registry, and lists name matches first.
+Each result shows its tags and the registry it is listed in, and **install**
+adds the server from that registry; a failure shows the installer's own
+message. The chips at
+the top of the column switch registries on and off; the choice is remembered
+in this browser and is the same one the registry panel's *Registries* filter
+uses.
+
+### Packaged agents
+
+A package can also ship agents: a prompt with its own context files and
+skills. An agent runs in one conversation at a time and can be turned on or
+off at any point; the change applies from the next reply.
+
+- `/agent` in the composer lists the installed agents by package.
+- `/agent <name>` turns one on for the open conversation. If it needs MCP
+  servers that are not installed here, they are named first and you can
+  start anyway.
+- `/agent off`, or the × on the chip, turns it off. Your skills, model and
+  transcript are as they were.
+- The Bench lists installed agents under the board (**Agents**). **inspect**
+  shows how one was imported; **use in this chat** turns it on for the open
+  conversation.
+
+While an agent is on, a chip with its name and the model in use sits in the
+composer. Click it to see how the agent was imported: each part of its
+definition, and what Ziya does with it. A thin line in the transcript marks
+where the agent started and where it ended.
+
+An agent runs on top of Ziya and does not replace it. The model takes the
+agent's role and follows its instructions for the work the agent covers, and
+keeps everything Ziya gives it: its tools, diagrams, memory and write policy.
+The procedures the agent names ([Agent SOPs](#agent-sops)) are loaded in full
+for every reply while it is on. When the agent expects an MCP server that
+is not installed here, the model is told which one, so it reports the steps it
+had to skip and does not guess at what that server would have returned.
+
+The agent's model is used when Ziya has a model of exactly that name. A model
+you pinned to the conversation yourself wins, and the chip then reads "(your
+pin)"; folder and project pins do not. With no matching model the
+conversation's model is unchanged.
+
+While an agent is on, its own rules apply to that conversation:
+
+- The starting point is Ziya's own shell and write policy. The agent keeps
+  everything that policy permits.
+- A shell command or file read its rules deny is refused. This cannot be
+  approved from inside the agent; turn the agent off to run it.
+- Its allow lists add to the policy and take nothing away. It may run the
+  scripts inside its own package that its definition allows, and
+  `file_write` may write to the directories its definition lists, in that
+  conversation only.
+- Every tool of an MCP server the agent names can be called.
+- MCP servers its tool list does not name are withheld. Built-in tools stay.
+- A start-up command it defines runs when you turn it on, and the output is
+  added to its context. The import view shows the command beforehand.
+
+Dispatching specialist agents is not available yet.
+
 ## Creating Skills
 
 1. In the Skills section, click **New skill**.
@@ -203,6 +291,37 @@ second install. `-a ziya` additionally links it into `~/.ziya/skills/`.
 
 Detection keys on the `~/.ziya` directory (or `$ZIYA_HOME`), which exists
 after Ziya has been started once.
+
+## Agent SOPs
+
+An [Agent SOP](https://github.com/strands-agents/agent-sop) is one markdown
+file, `<name>.sop.md`, that writes a procedure as an Overview, Parameters and
+numbered Steps whose constraints use MUST / SHOULD / MAY. Ziya reads these
+files as they are; there is nothing to convert or install. It looks in, in
+this order (the first file found for a name is used):
+
+```
+ZIYA_SOP_PATHS        directories separated by ":", like the --sop-paths
+                      option of strands-agents-sops; ~ and project-relative
+                      paths are accepted
+.ziya/sops/           in the project
+~/.ziya/sops/         (or $ZIYA_HOME/sops) — every project
+```
+
+plus any directories an installed plugin contributes. Files may sit in
+grouping folders up to three levels below a root. The name is the file name
+without `.sop.md`.
+
+A SOP is listed with your skills and starts out not loaded. Place it on the Bench like a skill: *always* puts the whole file in
+every reply, *on demand* lets the model load it when the request calls for it.
+A packaged agent that names a SOP gets it loaded while the agent is on,
+whatever its placement.
+
+Limits: if a skill and a SOP have the same name, the skill is the one listed;
+an agent that names the SOP still gets the SOP. Parameters are not prompted
+for separately: the model reads the Parameters section and asks, as the SOP
+tells it to. Scripts a package keeps beside its SOPs are not given any extra
+read or run permission.
 
 ## Skill Dimensions
 

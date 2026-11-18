@@ -5,9 +5,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-    fetchBench, fetchBenchDetail, fetchBenchFind, installBenchSkill, placeBench, reauthorizeBenchServer,
+    fetchBench, fetchBenchDetail, fetchBenchFind, installBenchServer, installBenchSkill, placeBench, reauthorizeBenchServer,
     setBenchEnvironment, setBenchTool,
-    BenchView, BenchViewItem, BenchItemDetail, ToolDetail, FindResponse, InstallResult, ReauthorizeResult,
+    BenchView, BenchViewItem, BenchItemDetail, ToolDetail, FindResponse, InstallResult, ReauthorizeResult, ServerInstallResult,
 } from '../apis/benchApi';
 import * as skillApi from '../api/skillApi';
 import type { Skill, SkillCreate, SkillUpdate } from '../types/skill';
@@ -184,9 +184,9 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
     // files at the lens's layer -- the conversation layer has no files, so it
     // installs to the project -- and places there; the returned view replaces
     // ours like any other write.
-    const find = useCallback((q: string, n = 8): Promise<FindResponse> => {
+    const find = useCallback((q: string, n = 8, registriesOff?: string[]): Promise<FindResponse> => {
         if (!projectId) return Promise.reject(new Error('no project'));
-        return fetchBenchFind(projectId, q, n);
+        return fetchBenchFind(projectId, q, n, registriesOff);
     }, [projectId]);
     const install = useCallback(async (source: string, id: string, state: PlacementState | null): Promise<InstallResult> => {
         if (!projectId) throw new Error('no project');
@@ -196,6 +196,16 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
         announce();
         return r;
     }, [projectId, conversationId, lens, announce]);
+    // An MCP server found in a registry: the registry panel's installer.  The
+    // new server reaches every bench instance (this one included) and the
+    // header through mcpStatusChanged.
+    const installServer = useCallback(async (serviceId: string, providerId?: string | null): Promise<ServerInstallResult> => {
+        const r = await installBenchServer(serviceId, providerId);
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new Event(MCP_STATUS_CHANGED_EVENT));
+        }
+        return r;
+    }, []);
 
     // Skill editing (slice 6 "edit mode").  Writes go to the skills REST API
     // by Skill.id -- the card-back detail names it; the bench itself is keyed
@@ -268,6 +278,7 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
         alwaysItems,
         pickedUpItems,
         dropped: view?.dropped ?? [],
+        missing: view?.missing ?? [],
         weight: view?.weight ?? { always: 0, ondemand: 0, environment: 0 },
         deltas: view?.deltas ?? { conversation: 0, project: 0, user: 0 },
         lenses: view?.lenses ?? (['project', 'user'] as Layer[]),
@@ -281,6 +292,7 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
         flash,
         find,
         install,
+        installServer,
         createSkill,
         updateSkill,
         deleteSkill,

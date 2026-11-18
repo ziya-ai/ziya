@@ -25,7 +25,10 @@
  * surfaces (the model display in FolderTree, etc.) can re-render.
  */
 
-export type ModelPinScope = 'conversation' | 'folder' | 'project';
+// 'agent' is not a pin the user sets: it is the model of the packaged agent
+// running in the conversation (design/agent-overlay.md).  It sits below the
+// conversation's own pin and above the folder and project pins.
+export type ModelPinScope = 'conversation' | 'folder' | 'project' | 'agent';
 
 export interface ResolvedModelPin {
   model: string;
@@ -46,6 +49,7 @@ export const MODEL_PIN_CHANGED_EVENT = 'modelPinChanged';
 const conversationPins = new Map<string, string>();
 const folderPins = new Map<string, string>();
 const projectPins = new Map<string, string>();
+const agentModels = new Map<string, string>();
 
 function notify(): void {
   // Guard for non-browser (test) environments without a window.
@@ -96,6 +100,23 @@ export function getProjectModelPin(projectId: string | null | undefined): string
   return projectPins.get(projectId) ?? null;
 }
 
+/** The model of the agent running in a conversation; null when none.
+ *  Written by useAgent() from what the server reports. */
+export function setAgentModel(
+  conversationId: string | null | undefined, model: string | null,
+): void {
+  if (!conversationId) return;
+  if ((agentModels.get(conversationId) ?? null) === (model || null)) return;
+  if (model) agentModels.set(conversationId, model);
+  else agentModels.delete(conversationId);
+  notify();
+}
+
+export function getAgentModel(conversationId: string | null | undefined): string | null {
+  if (!conversationId) return null;
+  return agentModels.get(conversationId) ?? null;
+}
+
 export interface ResolveModelPinArgs {
   conversationId?: string | null;
   folderId?: string | null;
@@ -121,6 +142,10 @@ export function resolveModelPin(
   for (const { scope, tab, saved } of levels) {
     if (tab) return { model: tab, scope, persistent: false };
     if (saved) return { model: saved, scope, persistent: true };
+    if (scope === 'conversation') {
+      const agent = getAgentModel(conversationId);
+      if (agent) return { model: agent, scope: 'agent', persistent: false };
+    }
   }
   return null;
 }
@@ -148,5 +173,6 @@ export function clearAllModelPins(): void {
   conversationPins.clear();
   folderPins.clear();
   projectPins.clear();
+  agentModels.clear();
   notify();
 }

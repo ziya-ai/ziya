@@ -235,8 +235,10 @@ def test_find_search_fans_out_per_source_and_never_lists_a_registry(env, monkeyp
     svc_ = SimpleNamespace(service_id="svc-1", service_name="jira-mcp", service_description="Jira",
                            support_level=SimpleNamespace(value="Supported"), provider_metadata={"provider_id": "amazon"})
     hit = SimpleNamespace(service=svc_, matching_tools=[SimpleNamespace(tool_name="search_issues")])
+    svc2 = SimpleNamespace(service_id="svc-2", service_name="other-mcp", service_description="Other",
+                           support_level=SimpleNamespace(value="Supported"), provider_metadata={"provider_id": "amazon"})
     class RM:
-        async def search_services_by_tools(self, query, provider_filter=None): return [hit, hit]
+        async def search_services_by_tools(self, query, provider_filter=None): return [hit, SimpleNamespace(service=svc2, matching_tools=[])]
     monkeypatch.setattr(rm, "get_registry_manager", lambda: RM())
 
     assert bench_find.home(PID)["pairs_with"] == []              # beta needs slack; the registry is not listed

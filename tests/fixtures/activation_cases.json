@@ -57,6 +57,25 @@
       }
     },
     {
+      "name": "a declared default_state replaces the kind default, and a pin still wins",
+      "items": [
+        {"key": "mcp:reg", "kind": "mcp", "default_state": "ondemand"},
+        {"key": "mcp:plain", "kind": "mcp"},
+        {"key": "mcp:pinned", "kind": "mcp", "default_state": "ondemand"},
+        {"key": "mcp:env", "kind": "mcp", "tier": "environment", "default_state": "off"}
+      ],
+      "layers": {"user": {"mcp:pinned": "always"}},
+      "expect": {
+        "items": {
+          "mcp:reg": {"effective": "ondemand", "origin": "default", "default": "ondemand"},
+          "mcp:plain": {"effective": "always", "origin": "default", "default": "always"},
+          "mcp:pinned": {"effective": "always", "origin": "user", "default": "ondemand"},
+          "mcp:env": {"effective": "always", "origin": "environment", "default": "always"}
+        },
+        "always": ["mcp:plain", "mcp:pinned", "mcp:env"], "catalog": ["mcp:reg"], "dropped": []
+      }
+    },
+    {
       "name": "unknown key is dropped and reported, not resolved",
       "items": [{"key": "skill:a", "kind": "skill", "discoverable": true}],
       "layers": {"conversation": {"skill:a": "always", "skill:ghost": "always"}},

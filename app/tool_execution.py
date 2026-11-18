@@ -259,6 +259,25 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         yield {'type': 'tool_display', 'tool_name': ctx.tool_name, 'result': _veto}
         return
 
+    # --- Agent rules (design/agent-overlay.md) ---
+    # A packaged agent on in this conversation may deny shell commands and
+    # file reads and limit file writes.  Checked before the consent gate: a
+    # denied call is refused, never offered for approval.
+    from app.services.agent_enforcement import call_refusal as _agent_call_refusal
+    _agent_veto = await asyncio.to_thread(
+        _agent_call_refusal, ctx.project_root, ctx.conversation_id,
+        ctx.actual_tool_name, ctx.args,
+    )
+    if _agent_veto:
+        yield {
+            'type': '_tool_result',
+            'tool_id': ctx.tool_id,
+            'tool_name': ctx.tool_name,
+            'result': _agent_veto,
+        }
+        yield {'type': 'tool_display', 'tool_name': ctx.tool_name, 'result': _agent_veto}
+        return
+
     # --- Consent gate (design/consent-runtime.md step 3) ---
     # For a tool in ``ask`` mode with no standing grant, hold here until a
     # human answers via POST /api/consent/{request_id}.  The gate yields
@@ -385,6 +404,18 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             _tst = get_task_shell_timeout()
         except Exception:
             _twp, _trp, _tsc, _tst = None, None, None, None
+        # Agent overlay (design/agent-overlay.md): a packaged agent on in
+        # this conversation may run the scripts inside its own package that
+        # its definition allows.  Same grant envelope a Task Card uses, for
+        # this shell call only; the agent's deny rules were checked above.
+        if ctx.actual_tool_name in ("run_shell_command", "mcp_run_shell_command"):
+            try:
+                from app.services.agent_enforcement import shell_grants as _agent_shell_grants
+                _agent_grants = _agent_shell_grants(ctx.project_root, ctx.conversation_id)
+            except Exception:
+                _agent_grants = []
+            if _agent_grants:
+                _tsc = list(_tsc or []) + _agent_grants
         task_scope_payload: Optional[Dict[str, Any]] = None
         if _twp or _trp or _tsc or _tst:
             task_scope_payload = {
@@ -476,6 +507,19 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                 # thread the tool starts copy it, and reset() ends it.
                 from app.utils import write_grants as _write_grants
                 _wg_token = _write_grants.activate(_write_grant)
+                # Agent overlay (design/agent-overlay.md): the places a
+                # packaged agent's definition lists for writing are added to
+                # the write policy for this file_write call only.
+                _agent_wp_token = None
+                if ctx.actual_tool_name in ("file_write", "mcp_file_write"):
+                    try:
+                        from app.services.agent_enforcement import write_grants as _agent_write_grants
+                        _agent_wp = _agent_write_grants(ctx.project_root, ctx.conversation_id)
+                        if _agent_wp:
+                            from app.context import set_task_writable_paths
+                            _agent_wp_token = set_task_writable_paths(list(_twp or []) + _agent_wp)
+                    except Exception:
+                        _agent_wp_token = None
                 try:
                     result = await _await_tool_result(
                         builtin_tool.tool_instance.execute(**ctx.args),
@@ -483,6 +527,9 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                     )
                 finally:
                     _write_grants.reset(_wg_token)
+                    if _agent_wp_token is not None:
+                        from app.context import reset_task_writable_paths
+                        reset_task_writable_paths(_agent_wp_token)
                 # Tell the model its argument was replaced, so it does not
                 # assume its own text landed.
                 if _arg_edits and isinstance(result, dict) and not result.get("error"):

@@ -19,6 +19,7 @@ for per-layer metadata without a migration.
 """
 from __future__ import annotations
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -41,9 +42,25 @@ class BenchItem:
     provenance: str            # builtin | project | user | custom | registry
     tokens: int = 0
     health: Dict[str, Any] = field(default_factory=dict)
+    # Where it came from, for the "by package" view: a list of paths,
+    # outermost first.  More than one when several packages ship it.
+    groups: List[List[str]] = field(default_factory=list)
 
 
 # -- item assembly ---------------------------------------------------------
+
+def _capability_meta(kind: str, name: str, path: Optional[str] = None,
+                     config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Plugin-supplied grouping and default for one capability
+    (app.plugins.capability_metadata).  Never raises: the MCP half runs on
+    the request path."""
+    try:
+        from app.plugins import capability_metadata
+        return capability_metadata(kind, name, path=path, config=config)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("bench: capability metadata unavailable: %s", e)
+        return {"groups": [], "default": None}
+
 
 def _skill_storage(project_id: str):
     """One seam for the skill records; tests substitute a tmp-dir storage.
@@ -69,6 +86,8 @@ def _skill_items(project_id: str) -> List[BenchItem]:
             name=s.name,
             provenance="builtin" if s.isBuiltIn else (s.source or "custom"),
             tokens=s.tokenCount or 0,
+            groups=_capability_meta(
+                "skill", s.name, path=getattr(s, "skillPath", None))["groups"],
         ))
     return out
 
@@ -158,6 +177,7 @@ def _mcp_items() -> List[BenchItem]:
                     "withheld_tokens": withheld,
                     "quarantined": name in quarantined,
                     "gate": dict(QUARANTINE_GATE) if name in quarantined else None},
+            groups=_capability_meta("mcp", name, config=cfg)["groups"],
         ))
     return out
 
@@ -165,8 +185,11 @@ def _mcp_items() -> List[BenchItem]:
 def _mcp_spec(name: str, cfg: Dict[str, Any]) -> ItemSpec:
     """One tier rule for the hub view and the per-request tool filter."""
     builtin = bool(cfg.get("builtin", False))
+    # A plugin may declare a default (e.g. registry installs sit within
+    # reach); environment-tier servers are never placed, so it is not asked.
+    default = None if builtin else _capability_meta("mcp", name, config=cfg)["default"]
     return ItemSpec(key=make_key("mcp", name), kind="mcp",
-                    tier="environment" if builtin else "placeable")
+                    tier="environment" if builtin else "placeable", default_state=default)
 
 
 def _mcp_specs() -> List[ItemSpec]:
@@ -273,6 +296,51 @@ SKILLS_CATEGORY = "skills"
 
 def collect_items(project_id: str) -> List[BenchItem]:
     return _skill_items(project_id) + _mcp_items() + _builtin_items()
+
+
+def _norm_name(name: Any) -> str:
+    """``kuiper-confluence-mcp`` and ``kuiperconfluencemcp`` compare equal."""
+    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+
+def missing_capabilities() -> List[Dict[str, Any]]:
+    """MCP servers an installed package needs that are not configured here.
+
+    ``[{"kind": "mcp", "name", "groups": [[package, ...]], "installable"}]``,
+    one row per server however many packages want it.  A configured server
+    matches on its name or its ``service_id``.  Returns nothing when the
+    server list cannot be read: "everything is missing" would be a false
+    alarm.
+    """
+    try:
+        from app.plugins import capability_requirements
+        wanted = capability_requirements()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("bench: capability requirements unavailable: %s", e)
+        return []
+    if not wanted:
+        return []
+    try:
+        from app.mcp.manager import get_mcp_manager
+        configs = get_mcp_manager().server_configs or {}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("bench: MCP manager unavailable: %s", e)
+        return []
+    have = set()
+    for name, cfg in configs.items():
+        have.add(_norm_name(name))
+        if isinstance(cfg, dict) and cfg.get("service_id"):
+            have.add(_norm_name(cfg["service_id"]))
+    rows: Dict[str, Dict[str, Any]] = {}
+    for w in wanted:
+        ident = _norm_name(w["name"])
+        if w["kind"] != "mcp" or ident in have:
+            continue
+        row = rows.setdefault(ident, {"kind": "mcp", "name": w["name"], "groups": [], "installable": False})
+        if w["group"] and w["group"] not in row["groups"]:
+            row["groups"].append(w["group"])
+        row["installable"] = row["installable"] or w["installable"]
+    return list(rows.values())
 
 
 class ItemNotFound(LookupError):
@@ -481,6 +549,11 @@ class PromptInputs:
     # placements means "not adopted yet", not "everything off", and the
     # client-assembled prompt must keep working.  See bench_prompt.merge.
     authoritative: bool
+    # Agent overlay (design/agent-overlay.md): the active agent's prompt,
+    # context files and skills.  Kept apart from ``system_prompt_addition``
+    # so it reaches the turn whether or not the bench is authoritative.
+    agent_addition: str = ""
+    active_agent: Optional[str] = None
 
 
 _OVERRIDE_FIELDS = ("temperature", "maxOutputTokens", "thinkingMode")
@@ -529,6 +602,31 @@ def prompt_inputs(project_id: str, conversation_id: Optional[str],
         if extra:
             blocks.append(extra)
 
+    # Agent overlay: nothing is stored for it beyond the chat record's
+    # ``activeAgent``, so turning the agent off removes all of this.
+    agent_addition, active_agent = "", None
+    try:
+        from app.services.agent_overlay import overlay_for
+        overlay = overlay_for(project_id, conversation_id)
+    except Exception as e:  # noqa: BLE001 -- an overlay must never fail a turn
+        logger.warning("bench: agent overlay unavailable: %s", e)
+        overlay = None
+    if overlay is not None:
+        parts = [overlay.prompt_block]
+        # Skills the agent brings that are not already on hand here.
+        wanted = [n for n in overlay.skill_names if n not in always_names]
+        for s in storage.list():
+            if s.name not in wanted:
+                continue
+            wanted.remove(s.name)
+            full = storage.get(s.id) or s
+            if full.prompt:
+                from app.utils.skill_resources import skill_activation_body
+                parts.append(
+                    f"[Active Skill: {full.name}]\n{skill_activation_body(full)}")
+        agent_addition = "\n\n".join(parts)
+        active_agent = overlay.name
+
     return PromptInputs(
         always_names=always_names,
         catalog_names=catalog,
@@ -536,6 +634,8 @@ def prompt_inputs(project_id: str, conversation_id: Optional[str],
         model_overrides=overrides,
         preferred_tool_ids=tool_ids,
         authoritative=authoritative,
+        agent_addition=agent_addition,
+        active_agent=active_agent,
     )
 
 

@@ -8,7 +8,9 @@ import React, { useEffect, useState } from 'react';
 import { Modal } from 'antd';
 import { LensProvider } from '../../context/LensContext';
 import { useBench } from '../../hooks/useBench';
+import { useAgent } from '../../hooks/useAgent';
 import type { Attention } from '../../utils/headerAttention';
+import { dispatchAgentCommand } from '../../utils/agentCommand';
 import { BenchActions, BenchActionsProvider } from './BenchActions';
 import { BenchPalette } from './BenchPalette';
 import { BenchPanel } from './BenchPanel';
@@ -27,10 +29,11 @@ interface Props {
     actions?: BenchActions;
 }
 
-type BodyProps = Omit<Props, 'visible' | 'onClose' | 'actions'>;
+type BodyProps = Omit<Props, 'visible' | 'actions'>;
 
-const Body: React.FC<BodyProps> = ({ projectId, conversationId, shellAttention, onOpenShellConfig, mcpAttention }) => {
+const Body: React.FC<BodyProps> = ({ projectId, conversationId, shellAttention, onOpenShellConfig, mcpAttention, onClose }) => {
     const bench = useBench({ projectId, conversationId });
+    const agent = useAgent(projectId, conversationId);
     const { ready, lenses, lens, setLens } = bench;
     const [paletteOpen, setPaletteOpen] = useState(false);
     // The server offers no conversation lens when the chat has no record.
@@ -47,7 +50,15 @@ const Body: React.FC<BodyProps> = ({ projectId, conversationId, shellAttention, 
     return (
         <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
             <BenchPanel bench={bench} shellAttention={shellAttention} onOpenShellConfig={onOpenShellConfig} mcpAttention={mcpAttention}
-                        onOpenPalette={() => setPaletteOpen(true)} />
+                        onOpenPalette={() => setPaletteOpen(true)}
+                        agents={{
+                            agents: agent.agents, active: agent.active, importOf: agent.importOf,
+                            // The conversation lens is offered only for a chat the server has a record of.
+                            canUse: !!conversationId && lenses.includes('conversation'),
+                            // The composer's AgentBar carries it out (missing-server
+                            // check, chip, seam), so close and let it show.
+                            onUse: name => { dispatchAgentCommand(conversationId, { kind: 'on', name }); onClose(); },
+                        }} />
             {ready && <BenchPalette bench={bench} open={paletteOpen} onClose={() => setPaletteOpen(false)} />}
         </div>
     );
@@ -71,7 +82,7 @@ const BenchModal: React.FC<Props> = ({ visible, onClose, projectId, conversation
            styles={{ body: { height: 'calc(100vh - 140px)', display: 'flex', flexDirection: 'column', minHeight: 0 } }}>
         <LensProvider initial={conversationId ? 'conversation' : 'project'}>
             <BenchActionsProvider actions={actions}>
-                <Body projectId={projectId} conversationId={conversationId ?? null}
+                <Body projectId={projectId} conversationId={conversationId ?? null} onClose={onClose}
                       shellAttention={shellAttention} onOpenShellConfig={onOpenShellConfig} mcpAttention={mcpAttention} />
             </BenchActionsProvider>
         </LensProvider>

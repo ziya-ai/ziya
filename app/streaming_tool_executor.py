@@ -1653,6 +1653,18 @@ class StreamingToolExecutor:
                 f"not-yet-loaded server(s) {sorted(_mcp_filter.withheld | set(_mcp_filter.partial))}"
             )
 
+        # Agent overlay (design/agent-overlay.md): a packaged agent on in
+        # this conversation limits MCP servers to the ones its tool list
+        # names.  Built-in tools stay.  After the bench filter (a shelved
+        # server stays shelved) and before the task allowlist.
+        from app.utils.bench_prompt import agent_tool_scope_for_root, apply_agent_tool_scope
+        _agent_turn = agent_tool_scope_for_root(project_root, conversation_id)
+        if _agent_turn is not None:
+            all_tools, _n_agent = apply_agent_tool_scope(all_tools, _agent_turn)
+            if _n_agent:
+                logger.info(
+                    f"🧰 AGENT: {_agent_turn[0]} limits tools; withheld {_n_agent} from servers it does not name")
+
         # Headless denial.  After project modes and before the allowlist, so
         # a scope that names a denied tool cannot restore it.  Re-derived HERE
         # from the post-project-modes list when ``unattended`` is set, not

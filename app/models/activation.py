@@ -60,6 +60,11 @@ class ItemSpec(BaseModel):
     # model can load them via get_skill_details); ``user_selectable`` ones
     # default to ``off``.  Ignored for MCP, which defaults to ``always``.
     discoverable: bool = False
+    # A default the caller declares for this item, replacing the kind rule
+    # above (e.g. a registry-installed MCP server that should sit within
+    # reach).  Still only a default: any stored placement wins.  Ignored for
+    # environment-tier items.
+    default_state: Optional[PlacementState] = None
 
 
 class ResolvedItem(BaseModel):

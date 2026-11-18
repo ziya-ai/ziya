@@ -412,6 +412,94 @@ Enhancement priority (later overrides earlier for the same tool):
 3. **User overrides** — `~/.ziya/tool_enhancements.json`
 
 ---
+
+### CapabilityMetadataProvider
+
+Tells the Bench where a skill or MCP server came from, and optionally where it
+sits by default. Use it when a package manager installs capabilities in
+bundles and users should be able to see, and move, a bundle as one thing.
+
+    class MyCapabilityMetadataProvider:
+        provider_id = "my-org"
+
+        def describe(self, kind, name, path=None, config=None) -> dict:
+            """kind is "skill" or "mcp"; path is a skill's directory when
+            known; config is an MCP server's mcp_config.json entry."""
+            if kind == "mcp" and (config or {}).get("registry_provider") == "my-registry":
+                return {"groups": [["Platform Tools"]], "default": "ondemand"}
+            if kind == "skill" and name in ("deploy", "rollback"):
+                return {"groups": [["Platform Tools", "Release Skills"]], "default": None}
+            return {"groups": [], "default": None}
+
+Registration in `register()`:
+
+    from app.plugins import register_capability_metadata_provider
+    register_capability_metadata_provider(MyCapabilityMetadataProvider())
+
+- `groups` is a list of paths, outermost first. Give several paths when more
+  than one bundle ships the same item; the Bench files it under each.
+- `default` is `"always"`, `"ondemand"`, `"off"` or `None` (keep the built-in
+  rule: MCP servers on hand, discoverable skills within reach). It is only a
+  default. A placement the user stored at any layer wins, and it applies to
+  existing installs as soon as the provider is registered.
+- Groups from several providers are merged; the first provider to name a
+  default wins. A provider that raises is skipped.
+- `describe` is called for every MCP server on each turn, so keep it cheap
+  (cache whatever it reads from disk).
+- A provider may also implement `requirements()`, returning what each bundle
+  needs: `[{"kind": "mcp", "name": "jira-mcp", "group": ["Platform Tools"],
+  "installable": True}]`. The Bench subtracts the servers already configured
+  (matched on name or `service_id`, ignoring punctuation) and lists the rest
+  under the bundle as "not installed here". Set `installable` when a registry
+  can supply the server; those rows get a find action.
+
+---
+
+### AgentDefinitionProvider
+
+Supplies packaged agent definitions: a prompt, context files, skills, MCP
+servers, a tool list, permission rules and subagents. An agent runs as an
+overlay on one conversation and is turned off by clearing one field on the
+chat record (see `design/agent-overlay.md`).
+
+    class MyAgentDefinitionProvider:
+        provider_id = "my-org"
+
+        def definitions(self) -> list:
+            return [{"name": "release-helper", "package": "Platform Tools",
+                     "prompt": "You help cut releases.",
+                     "context_files": ["/abs/path/runbook.md"],
+                     "skills": ["deploy"], "servers": ["jira-mcp"]}]
+
+Register with `register_agent_definition_provider(...)`. Fields are those of
+`app.models.agent_definition.AgentDefinition`; resolve any template tokens of
+your own format before returning. `GET /api/v1/projects/{id}/agents` lists
+them, `GET .../agents/import?name=` shows how one was imported, and
+`PUT .../agents/active` turns one on or off for a conversation. While an
+agent is on, `rules.shell_deny` and `rules.read_deny` (globs) refuse matching
+shell commands and file reads, `tools` entries of the form `@server` or
+`@server/tool` limit
+MCP servers to those named, and each `startup` command runs once when the
+agent is turned on. Set `install_root` to the package's directory: a
+`shell_allow` rule whose script is under it is granted to the conversation
+for `run_shell_command`. The baseline is Ziya's own policy: deny lists
+subtract from it and allow lists add to it, so an allow list never refuses
+anything the policy permits. `rules.write_allow` entries that are absolute
+(`/dir/**` or a file path) are added for `file_write`; ones that would cover
+the home directory are not. `mcp_allow` is not enforced: every tool of a
+named server can be called.
+`sops` names [Agent SOPs](Skills.md#agent-sops) (`<name>.sop.md`) to load in
+full while the agent is on; when several roots hold the name, the copy under
+`install_root` is used. A provider whose packages ship SOPs registers their
+directories with `register_sop_root_provider(...)` (an object whose `roots()`
+returns directories), which also lists those SOPs with the user's skills.
+`subagents` cannot be dispatched yet. `model` is matched to a model on the
+running endpoint by exact alias or model id
+(`claude-opus-5.5` matches `opus5.5`); with no match the conversation's own
+model is used.
+
+---
+
 ### InfoProvider
 
 Adds a section to `ziya --info` for diagnostics that only exist in one deployment (an internal registry endpoint, a company CLI on PATH). The core prints every registered section after the feature flags; a provider that raises is shown as a one-line `Error` row and the rest of `--info` still prints.

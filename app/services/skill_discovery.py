@@ -567,6 +567,18 @@ def discover_all_skills(
                 )
         result.append(winner)
 
+    # Agent SOPs (``*.sop.md``; app/utils/agent_sops.py).  Their roots are
+    # already resolved first-found-wins.  Every consumer of this list is
+    # keyed by name, so a SOP sharing a listed name is left out; an agent
+    # that names it still finds it (agent_sops.read_sop).
+    try:
+        from ..utils.agent_sops import sop_skills
+        taken = {s.name for s in result}
+        result.extend(s for s in sop_skills(workspace_path, token_service, load_body=load_body)
+                      if s.name not in taken)
+    except Exception as e:  # noqa: BLE001 -- SOPs must never break skill discovery
+        logger.debug("SOP discovery failed: %s", e)
+
     if new_shadows:
         logger.info(
             "%d skill name(s) found in multiple roots; using the preferred "

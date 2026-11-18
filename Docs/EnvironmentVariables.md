@@ -23,6 +23,7 @@ All Ziya configuration environment variables use the `ZIYA_` prefix. This docume
 | `ZIYA_INCLUDE_DIRS` | str | `""` | `--include` | Comma-separated external paths to include in the file tree |
 | `ZIYA_INCLUDE_ONLY_DIRS` | str | `""` | `--include-only` | Comma-separated paths; only these directories are shown |
 | `ZIYA_ADDITIONAL_EXCLUDE_DIRS` | str | `""` | `--exclude` | Comma-separated directories to exclude from scanning |
+| `ZIYA_SOP_PATHS` | str | `""` | — | Directories of [Agent SOP](Skills.md#agent-sops) files (`*.sop.md`), separated by the path separator (`:`; `;` on Windows), in the form of `strands-agents-sops --sop-paths`. Read before `.ziya/sops` and `~/.ziya/sops`; the first directory holding a name wins. `~` is expanded and a relative path is taken from the project root |
 
 ## Model / Endpoint
 ## Network (corporate proxies)

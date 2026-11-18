@@ -20,6 +20,9 @@ _config_providers = []
 _registry_providers = []
 _skill_source_providers = []
 _user_skill_root_providers = []
+_capability_metadata_providers = []
+_agent_definition_providers = []
+_sop_root_providers = []
 _service_model_providers = []
 _formatter_providers = []
 _shell_config_providers = []
@@ -32,6 +35,7 @@ _export_providers = []
 _extraction_pattern_providers = []
 _rate_plan_providers = []
 _info_providers = []
+_update_providers = []
 # auth_type -> RemoteAuthProvider; a remote MCP server's "auth": {"type": X}
 # selects the handler that authenticates its HTTP transport.
 _remote_auth_providers = {}
@@ -78,6 +82,19 @@ def register_user_skill_root_provider(provider):
     Path/str (treated as non-ziya) or ``(path, is_ziya)`` entries."""
     _user_skill_root_providers.append(provider)
     logger.debug(f"Registered user skill root provider: {getattr(provider, 'provider_id', 'unknown')}")
+
+def register_capability_metadata_provider(provider):
+    """Register a provider that says where a capability came from.
+
+    The Bench asks it, per skill or MCP server, for the groups to file the
+    card under (a list of paths, outermost first: ``[["Package", "Component"]]``)
+    and optionally a default placement.  A provider exposes
+    ``describe(kind, name, path=None, config=None)`` returning
+    ``{"groups": [...], "default": "always"|"ondemand"|"off"|None}``.  The MCP
+    half is consulted on the request path, so ``describe`` must be cheap."""
+    _capability_metadata_providers.append(provider)
+    logger.debug(f"Registered capability metadata provider: {getattr(provider, 'provider_id', 'unknown')}")
+
 
 def register_shell_config_provider(provider):
     """
@@ -207,6 +224,19 @@ def get_info_sections(args) -> List:
         if section is not None:
             sections.append(section)
     return sections
+
+def register_update_provider(provider):
+    """Register a provider that reports a newer installed version and how to
+    restart into it (the header update chip).  See UpdateProvider in
+    app/plugins/interfaces.py; app/utils/update_watch.py polls them.
+    """
+    _update_providers.append(provider)
+    _update_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
+    logger.debug(f"Registered update provider: {getattr(provider, 'provider_id', 'unknown')}")
+
+def get_update_providers() -> List:
+    """Registered update providers, highest priority first."""
+    return list(_update_providers)
 
 def get_all_config_providers() -> List:
     """Get all registered config providers (regardless of should_apply)."""
@@ -470,6 +500,103 @@ def get_skill_source_providers() -> List:
 def get_user_skill_root_providers() -> List:
     """Providers of extra user-global skill roots registered by plugins."""
     return _user_skill_root_providers.copy()
+
+def get_capability_metadata_providers() -> List:
+    """Providers of capability grouping / default placement."""
+    return _capability_metadata_providers.copy()
+
+
+def capability_metadata(kind: str, name: str, path: Optional[str] = None,
+                        config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Merged ``{"groups": [[...], ...], "default": state|None}`` for one capability.
+
+    Groups are unioned across providers in registration order; the first
+    provider to name a valid default wins.  A failing provider is skipped:
+    grouping is display metadata and must never break the Bench or a turn.
+    """
+    groups: List[List[str]] = []
+    default: Optional[str] = None
+    for provider in _capability_metadata_providers:
+        try:
+            described = provider.describe(kind, name, path=path, config=config) or {}
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Capability metadata provider failed for {kind}:{name}: {e}")
+            continue
+        for group in described.get("groups") or []:
+            segments = [str(s) for s in (group or []) if s]
+            if segments and segments not in groups:
+                groups.append(segments)
+        if default is None and described.get("default") in ("always", "ondemand", "off"):
+            default = described["default"]
+    return {"groups": groups, "default": default}
+
+
+def capability_requirements() -> List[Dict[str, Any]]:
+    """What installed packages need, from capability metadata providers that
+    implement the optional ``requirements()``.
+
+    Each row is ``{"kind": "mcp", "name": str, "group": [package, ...],
+    "installable": bool}``; ``installable`` says a registry can supply it.
+    The Bench subtracts what is already configured and shows the rest as
+    "not installed here".  A failing provider is skipped.
+    """
+    out: List[Dict[str, Any]] = []
+    for provider in _capability_metadata_providers:
+        fn = getattr(provider, "requirements", None)
+        if fn is None:
+            continue
+        try:
+            rows = fn() or []
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Capability requirements provider failed: {e}")
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("name"):
+                continue
+            out.append({"kind": str(row.get("kind") or "mcp"), "name": str(row["name"]),
+                        "group": [str(s) for s in (row.get("group") or []) if s],
+                        "installable": bool(row.get("installable", False))})
+    return out
+
+
+def register_agent_definition_provider(provider):
+    """Register a provider of packaged agent definitions
+    (design/agent-overlay.md).  A provider exposes ``definitions()`` returning
+    a list of dicts in the shape of app.models.agent_definition.AgentDefinition."""
+    _agent_definition_providers.append(provider)
+    logger.debug(f"Registered agent definition provider: {getattr(provider, 'provider_id', 'unknown')}")
+
+
+def get_agent_definition_providers() -> List:
+    return _agent_definition_providers.copy()
+
+
+def register_sop_root_provider(provider):
+    """Register a provider of directories holding Agent SOPs (``*.sop.md``,
+    app/utils/agent_sops.py).  A provider exposes ``roots()`` returning
+    Path/str entries.  Its roots are read after the user's own."""
+    _sop_root_providers.append(provider)
+    logger.debug(f"Registered SOP root provider: {getattr(provider, 'provider_id', 'unknown')}")
+
+
+def get_sop_root_providers() -> List:
+    return _sop_root_providers.copy()
+
+
+def agent_definition_rows() -> List[Dict[str, Any]]:
+    """Raw definition dicts from every provider, in registration order.
+    A failing provider is skipped; validation is the caller's
+    (app.services.agent_overlay)."""
+    out: List[Dict[str, Any]] = []
+    for provider in _agent_definition_providers:
+        try:
+            rows = provider.definitions() or []
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Agent definition provider failed: {e}")
+            continue
+        out.extend(r for r in rows if isinstance(r, dict))
+    return out
+
 
 def get_formatter_providers() -> List:
     """Get all registered formatter providers."""

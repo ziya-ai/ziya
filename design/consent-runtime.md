@@ -184,6 +184,22 @@ optional; tools without one get `preflight: null` and the panel shows args.
      record left `active` by another boot id reads as interrupted. Still
      open: the server does not write the answer into the chat record
      itself; it reaches chat history only when a browser reattaches.
+   - Same-browser mirror and ownership (2026-11-14). The tab driving a turn
+     ("owner": in `streamingConversations` and not in
+     `remoteStreamingIdsRef`) relays the full accumulated content to
+     sibling tabs as `streaming-chunk` through `utils/streamRelay.ts`
+     (leading + trailing throttle, 300 ms), offered from
+     `flushStreamedContent` so tool blocks relay as well as prose; a probe
+     reply carries the content as well as `streaming-state`. A reattach
+     marks the conversation as streaming like a fresh send, so the
+     reattached tab is an owner: it shows Stop, answers probes, relays, and
+     posts the `streaming-ended` that releases mirrors. An owner posts
+     `streaming-orphaned` on `pagehide`; a mirror releases its mark and,
+     after 0.3–1.8 s of jitter, takes over a turn the server still reports
+     active (`CHAT_TURN_ORPHANED_EVENT` -> `ChatTurnReattachWatcher`). An
+     owner ignores another tab's `streaming-state` / `streaming-chunk` for
+     the same conversation, so two simultaneous owners cannot demote each
+     other. Not covered: an owner tab that crashes posts nothing.
    - Explicit `git <sub>` shell grants and the CLI `/shell git` path are
      unaffected; nothing here touches permissions.
 2. `ConsentLedger` extracted from task-run storage; `_execute_ask` adapted;

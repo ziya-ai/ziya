@@ -69,6 +69,32 @@ export type Message = {
         kind: 'drafted' | 'updated' | 'handed_off' | 'forked';
         targetId?: string;
     };
+    // Local-only seam: a packaged agent was turned on or off here
+    // (design/agent-overlay.md).  Authored with role 'system' AND muted:
+    // true, like handoffNotice, so no send path includes it.
+    agentNotice?: { kind: 'started' | 'ended'; name: string };
+    // Server-authored: the conversation was moved to another project, or its
+    // global flag flipped, here (app/utils/project_change_note.py).  NOT
+    // muted: `content` tells the model the working directory changed.  The
+    // transcript renders this field and never shows `content`.
+    projectChange?: {
+        kind: 'moved' | 'global_on' | 'global_off';
+        from: ProjectChangeRef;
+        to: ProjectChangeRef;
+    };
+    // Server-authored, role 'peer': a message another conversation posted
+    // here (app/utils/chat_post.py).  `content` carries a provenance header
+    // for the model; the transcript renders this field.  Not muted by
+    // default; the user can mute it like any message.
+    peerPost?: {
+        fromChatId: string;
+        fromTitle: string;
+        fromProjectId?: string | null;
+        fromMessageIndex?: number | null;
+        link: string;
+        mode: 'context' | 'submit';
+        text: string;
+    };
     _timestamp?: number;
     _version?: number;
     isComplete?: boolean;

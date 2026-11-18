@@ -84,7 +84,7 @@ def _view_model(project_id: str, items: List[bench_service.BenchItem], result, c
         m = meta[r.key]
         d = r.model_dump()
         d.update(name=m.name, provenance=m.provenance, tokens=m.tokens, health=m.health,
-                 last_used=last_used.get(r.key))
+                 last_used=last_used.get(r.key), groups=m.groups)
         # What this conversation has loaded of a within-reach server
         # (design/mcp-on-demand.md): ``"*"`` or a tool list; null otherwise.
         if r.kind == "mcp" and r.effective == "ondemand":
@@ -115,6 +115,7 @@ def _view_model(project_id: str, items: List[bench_service.BenchItem], result, c
     return {
         "items": out_items,
         "dropped": [d.model_dump() for d in result.dropped],
+        "missing": bench_service.missing_capabilities(),
         "lenses": lenses,
         "deltas": deltas,
         "weight": weight,
@@ -243,15 +244,20 @@ def delete_source(project_id: str, source_id: str) -> Dict[str, Any]:
 
 @router.get("/browse")
 async def get_browse(project_id: str, q: str = Query(""), source: Optional[str] = Query(None),
-                     n: int = Query(8, ge=1, le=50)) -> Dict[str, Any]:
+                     n: int = Query(8, ge=1, le=50),
+                     registries_off: Optional[str] = Query(None)) -> Dict[str, Any]:
     """Find view (slice 8b).  Empty ``q``: the bench-derived panels (needs /
     updates / pairs with).  With ``q``: one column per source, top-``n`` hits
     and the source's total.  Never enumerates a catalog (services/bench_find).
+    ``registries_off`` is a comma-separated list of MCP registry ids the user
+    switched off; they are not asked.
     """
     from app.services import bench_find
     if not q.strip():
         return bench_find.home(project_id)
-    return await bench_find.search(project_id, q.strip(), n, source)
+    off = ([r.strip() for r in registries_off.split(",") if r.strip()]
+           if isinstance(registries_off, str) else None)
+    return await bench_find.search(project_id, q.strip(), n, source, off or None)
 
 
 @router.post("/install")

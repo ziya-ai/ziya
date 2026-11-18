@@ -619,7 +619,23 @@ def start_server(args):
             if _dual:
                 logger.warning(_dual)
                 print(f"\n⚠️  {_dual}\n", flush=True)
-            uvicorn.run(app, host=bind_host, port=args.port)
+            # A uvicorn.Server driven directly, so the update chip
+            # (app/utils/update_watch.py) can stop it gracefully and then
+            # replace this process with the newer version.  That exec has
+            # to happen here, once the server has returned: on the main
+            # thread, after lifespan shutdown, with the listening socket closed.
+            from app.utils import update_watch
+            server = uvicorn.Server(uvicorn.Config(app, host=bind_host, port=args.port))
+            update_watch.set_server(server)
+            try:
+                server.run()
+            except KeyboardInterrupt:
+                # Ctrl-C: uvicorn shuts down gracefully, then re-raises the
+                # signal.  Exit quietly, and never restart on the way out.
+                return
+            if not server.started:
+                sys.exit(3)  # startup failed (uvicorn's STARTUP_FAILURE code)
+            update_watch.exec_if_pending()
             
         except ValueError as e:
             # Use a class variable to track if we've already displayed an error

@@ -42,6 +42,23 @@ def _get_safe_write_paths() -> list:
     return get_write_policy_manager().policy.get("safe_write_paths", [])
 
 
+def _get_task_writable_prefixes() -> list:
+    """Absolute paths the active task scope (or a packaged agent on in the
+    conversation) grants for writing.  ``file_write`` refuses any path
+    outside the project root before the write policy is consulted, so a
+    grant for a directory outside it has to be recognised here as well."""
+    from app.context import get_task_writable_paths
+    out: list = []
+    for entry in get_task_writable_paths() or []:
+        try:
+            raw = os.path.expanduser((entry.get("path") or "").strip())
+        except AttributeError:
+            continue
+        if raw and os.path.isabs(raw):
+            out.append(raw)
+    return out
+
+
 def _resolve_and_validate(relative_path: str, workspace_path: str, allowed_absolute_prefixes: list = None) -> Path:
     """
     Resolve *relative_path* against *workspace_path* and ensure the result
@@ -572,7 +589,9 @@ class FileWriteTool(BaseMCPTool):
         occurrence: Optional[int] = kwargs.get("occurrence")
 
         try:
-            resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
+            resolved = _resolve_and_validate(
+                path_str, project_root,
+                allowed_absolute_prefixes=_get_safe_write_paths() + _get_task_writable_prefixes())
         except ValueError as e:
             # Append the diff-fallback hint so the agent's next
             # turn has an actionable next step rather than treating

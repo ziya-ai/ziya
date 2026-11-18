@@ -393,11 +393,13 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                             // the effective pin lives at; the style says
                             // whether it's tab-only (dashed, ephemeral) or
                             // saved (solid, persists across tabs/restarts).
-                            const scopeLabel = { conversation: 'conv', folder: 'folder', project: 'proj' }[activePin.scope];
+                            const scopeLabel = { conversation: 'conv', folder: 'folder', project: 'proj', agent: 'agent' }[activePin.scope];
                             const persisted = activePin.persistent;
                             const icon = persisted ? '📍' : '📌';
                             const layer = persisted ? 'saved' : 'tab';
-                            const title = persisted
+                            const title = activePin.scope === 'agent'
+                                ? `Set by the agent running in this conversation (server default: ${modelDisplayName || modelId})`
+                                : persisted
                                 ? `Pinned to this ${activePin.scope} — saved, persists across tabs & restarts (server default: ${modelDisplayName || modelId})`
                                 : `Pinned to this ${activePin.scope} — this tab only (server default: ${modelDisplayName || modelId})`;
                             return (

@@ -610,7 +610,8 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
           activePin?.model
           ?? (typeof currentModelId === 'object' ? JSON.stringify(currentModelId) : currentModelId)
         }
-        initialScope={activePin?.scope ?? 'server'}
+        // An agent's model is not a pin the user can edit here.
+        initialScope={activePin && activePin.scope !== 'agent' ? activePin.scope : 'server'}
         initialPersistent={activePin?.persistent ?? false}
         folderAvailable={!!activeFolderId}
         displayModelId={displayModelId}

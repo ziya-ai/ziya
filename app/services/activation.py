@@ -11,7 +11,8 @@ this module and its jest mirror (``frontend/src/utils/activation.ts``).
 Rules, all from the design note:
   * layers are first-set-wins: conversation -> project -> user -> default;
   * defaults: discoverable skill => ondemand, user-selectable => off,
-    MCP => always;
+    MCP => always; an item's declared ``default_state`` replaces the rule
+    for its kind;
   * environment-tier items are never placed — always ``always``, origin
     ``environment`` — and any stored entry for them is reported dropped;
   * a stored key that is not installed here is dropped and reported, so the
@@ -36,6 +37,8 @@ Layers = Mapping[str, Mapping[str, Optional[str]]]
 def default_placement(item: ItemSpec) -> str:
     if item.tier == "environment":
         return "always"
+    if item.default_state in PLACEMENT_STATES:
+        return item.default_state
     if item.kind == "mcp":
         return "always"
     return "ondemand" if item.discoverable else "off"
