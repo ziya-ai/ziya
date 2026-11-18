@@ -311,3 +311,72 @@ def compact_prior_image_results(
         )
         compacted += 1
     return compacted
+
+
+# ---------------------------------------------------------------------------
+# Signed reasoning after a compacted image
+# ---------------------------------------------------------------------------
+#
+# A signed thinking block is bound to the message prefix it was produced
+# under.  Phase 2 rewrites a tool_result that an assistant turn AFTER it has
+# already reasoned over, so that turn's echoed thinking no longer matches
+# its prefix and the API rejects the whole request ("Invalid `signature` in
+# `thinking` block ... Content before this block differs from when it was
+# created", fable-5-2, 2026-11-13).  These two helpers let the caller find
+# where the prefix changed and drop the reasoning signed after that point.
+
+_SIGNED_REASONING_TYPES = ("thinking", "redacted_thinking")
+
+
+def image_result_counts(conversation: List[Dict[str, Any]]) -> Dict[int, int]:
+    """Number of image-carrying tool_result blocks per message index."""
+    counts: Dict[int, int] = {}
+    for i, msg in enumerate(conversation):
+        mc = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(mc, list):
+            continue
+        n = sum(1 for blk in mc
+                if isinstance(blk, dict) and blk.get("type") == "tool_result"
+                and has_image_blocks(blk.get("content")))
+        if n:
+            counts[i] = n
+    return counts
+
+
+def first_changed_image_message(before: Dict[int, int],
+                                after: Dict[int, int]) -> Optional[int]:
+    """Lowest message index that lost an image result between two
+    ``image_result_counts`` snapshots, or None when nothing changed."""
+    changed = [i for i, n in before.items() if after.get(i, 0) < n]
+    return min(changed) if changed else None
+
+
+def strip_signed_thinking_after(conversation: List[Dict[str, Any]],
+                                start: int) -> int:
+    """Remove thinking / redacted_thinking blocks from every assistant
+    message at an index greater than ``start``.
+
+    Messages at or before ``start`` are untouched: their reasoning was
+    signed before the changed content existed, and leaving them alone keeps
+    the cached prefix up to the change.  Other block types (text, tool_use,
+    tool-search passback) stay.  A turn left empty gets a text placeholder,
+    since an empty content list is itself rejected.  Returns the number of
+    blocks removed.
+    """
+    removed = 0
+    for msg in conversation[start + 1:]:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        kept = [b for b in content
+                if not (isinstance(b, dict)
+                        and b.get("type") in _SIGNED_REASONING_TYPES)]
+        if len(kept) == len(content):
+            continue
+        removed += len(content) - len(kept)
+        msg["content"] = kept or [{
+            "type": "text",
+            "text": "[reasoning omitted: an earlier image was compacted]"}]
+    return removed

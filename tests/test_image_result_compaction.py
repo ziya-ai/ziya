@@ -342,3 +342,96 @@ class TestSeenPlaceholderWording:
         before = copy.deepcopy(conv)
         assert compact_prior_image_results(conv) == 0
         assert conv == before
+
+
+# ---------------------------------------------------------------------------
+# Signed thinking after a compacted image (2026-11-13: a turn died with
+# "Invalid `signature` in `thinking` block ... Content before this block
+# differs from when it was created" after view_image results were compacted
+# under a later assistant turn's echoed thinking).
+# ---------------------------------------------------------------------------
+
+def _img_result(tid):
+    return {"type": "tool_result", "tool_use_id": tid, "content": [
+        {"type": "text", "text": f"Image {tid}"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}]}
+
+
+def _asst(tag, tool_id=None):
+    content = [{"type": "thinking", "thinking": tag, "signature": "sig-" + tag},
+               {"type": "text", "text": "text-" + tag}]
+    if tool_id:
+        content.append({"type": "tool_use", "id": tool_id, "name": "view_image", "input": {}})
+    return {"role": "assistant", "content": content}
+
+
+def _thinking_tags(conversation):
+    return [b["thinking"] for m in conversation if m.get("role") == "assistant"
+            for b in m["content"] if b.get("type") == "thinking"]
+
+
+def _loop_conversation():
+    return [
+        {"role": "user", "content": "go"},
+        _asst("a", "t1"),                                   # 1: before any image
+        {"role": "user", "content": [_img_result("t1")]},   # 2: image 1
+        _asst("b", "t2"),                                   # 3: signed with image 1 in view
+        {"role": "user", "content": [_img_result("t2")]},   # 4: image 2 (newest)
+    ]
+
+
+def test_compaction_reports_where_the_prefix_changed_and_strips_later_thinking():
+    from app.utils.image_result_compaction import (
+        compact_prior_image_results, first_changed_image_message,
+        image_result_counts, strip_signed_thinking_after)
+    conv = _loop_conversation()
+    before = image_result_counts(conv)
+    assert before == {2: 1, 4: 1}
+    assert compact_prior_image_results(conv, keep_recent=1) == 1
+    first = first_changed_image_message(before, image_result_counts(conv))
+    assert first == 2
+    assert strip_signed_thinking_after(conv, first) == 1
+    # Reasoning signed before the image existed is kept; the block signed
+    # with the now-rewritten image in its prefix is gone.
+    assert _thinking_tags(conv) == ["a"]
+    # Text and tool_use of the stripped turn survive, in order.
+    assert [b["type"] for b in conv[3]["content"]] == ["text", "tool_use"]
+
+
+def test_nothing_is_stripped_when_no_image_was_compacted():
+    from app.utils.image_result_compaction import (
+        compact_prior_image_results, first_changed_image_message, image_result_counts)
+    conv = _loop_conversation()
+    before = image_result_counts(conv)
+    assert compact_prior_image_results(conv, keep_recent=5) == 0
+    assert first_changed_image_message(before, image_result_counts(conv)) is None
+    assert _thinking_tags(conv) == ["a", "b"]
+
+
+def test_thinking_only_turn_gets_a_placeholder_and_passback_blocks_stay():
+    from app.utils.image_result_compaction import strip_signed_thinking_after
+    conv = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": [{"type": "redacted_thinking", "data": "x"}]},
+        {"role": "user", "content": "more"},
+        {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "t", "signature": "s"},
+            {"type": "server_tool_use", "id": "s1", "name": "tool_search", "input": {}}]},
+    ]
+    assert strip_signed_thinking_after(conv, 0) == 2
+    assert conv[1]["content"][0]["type"] == "text" and conv[1]["content"][0]["text"]
+    assert [b["type"] for b in conv[3]["content"]] == ["server_tool_use"]
+
+
+def test_executor_strips_thinking_where_it_compacts_images():
+    """Seam: the helpers are only a fix if the tool loop calls them at the
+    compaction site."""
+    import inspect
+    from app.streaming_tool_executor import StreamingToolExecutor
+    src = inspect.getsource(StreamingToolExecutor)
+    i = src.index("compact_prior_image_results(")
+    j = src.index("_provider_takes_images = ", i)
+    site = src[src.rindex("sanitize_unsupported_images(conversation)", 0, i) - 200:j]
+    assert "image_result_counts(conversation)" in site
+    assert "first_changed_image_message(" in site
+    assert "strip_signed_thinking_after(conversation" in site

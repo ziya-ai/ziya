@@ -3225,6 +3225,10 @@ class StreamingToolExecutor:
         # dropped, 2 = older history compacted. Each rung retries once with a
         # smaller payload; see the refusal branch in the iteration loop.
         refusal_rungs_used = 0
+        # One retry per turn for a request rejected with "Invalid signature
+        # in thinking block": the echoed thinking is removed and the request
+        # re-sent (app/utils/thinking_signature.py).
+        thinking_signature_retry_used = False
         # Non-prefill incomplete-code-block continuation (step 2). The stall
         # counter bounds only *unproductive* rounds: it resets to 0 whenever a
         # round makes progress (new fence transitions vs. the prior round, OR a
@@ -3841,6 +3845,26 @@ class StreamingToolExecutor:
                                        'content': stream_event.message}
                             break
                         else:
+                            # A signed thinking block whose prefix was
+                            # rewritten after it was produced fails the whole
+                            # request.  Without the echoed thinking the same
+                            # request is valid, so strip it and re-send once
+                            # instead of ending the turn.
+                            from app.utils.thinking_signature import is_thinking_signature_error
+                            if (not thinking_signature_retry_used
+                                    and not assistant_text
+                                    and is_thinking_signature_error(stream_event.message)):
+                                thinking_signature_retry_used = True
+                                _n_sig = self._strip_thinking_blocks(conversation)
+                                if _n_sig:
+                                    thinking_signature_retry_pending = True
+                                    logger.warning(
+                                        "🧠 THINKING_SIGNATURE_RETRY: request rejected "
+                                        "(%s); removed %d echoed thinking block(s), "
+                                        "retrying once (iteration=%s).",
+                                        stream_event.message[:200], _n_sig, iteration,
+                                    )
+                                    break
                             # Non-retryable (e.g. CONTEXT_LIMIT) — surface to user
                             non_retryable_error_surfaced = True
                             if stream_event.error_type == ErrorType.CONTEXT_LIMIT:
@@ -4589,6 +4613,11 @@ Please retry the tool call with valid JSON. Ensure:
                     yield {'type': 'stream_end'}
                     break
 
+                # Signature 400 with thinking now removed: re-send the same
+                # request.  Nothing was streamed, so nothing is duplicated.
+                if thinking_signature_retry_pending:
+                    continue
+
                 # A non-retryable provider error (e.g. a CONTEXT_LIMIT 400) was
                 # already surfaced to the user as an error chunk. Re-issuing
                 # the identical request can only fail identically, so do NOT
@@ -4871,8 +4900,13 @@ Please retry the tool call with valid JSON. Ensure:
                         DEFAULT_KEEP_RECENT_INTERACTIVE,
                         DEFAULT_MAX_IMAGE_BYTES,
                         IMAGE_OMITTED_PLACEHOLDER, compact_prior_image_results,
+                        first_changed_image_message, image_result_counts,
                         image_blocks_to_text, sanitize_unsupported_images,
+                        strip_signed_thinking_after,
                     )
+                    # Snapshot before anything rewrites an image result, so
+                    # the first changed message can be found afterwards.
+                    _img_before = image_result_counts(conversation)
                     sanitize_unsupported_images(conversation)
                     from app.utils.image_pin_context import take_image_retain_floor
                     _keep_recent = (DEFAULT_KEEP_RECENT_INTERACTIVE if interactive
@@ -4903,6 +4937,20 @@ Please retry the tool call with valid JSON. Ensure:
                             f"(kept newest {_keep_recent}, "
                             f"interactive={interactive})"
                         )
+                    # A signed thinking block is bound to the messages before
+                    # it.  An assistant step after a rewritten image result
+                    # reasoned with the image in view, so its echoed thinking
+                    # no longer matches and the API rejects the request
+                    # ("Invalid signature in thinking block").  Drop the
+                    # reasoning signed after the first changed message.
+                    _img_first = first_changed_image_message(
+                        _img_before, image_result_counts(conversation))
+                    if _img_first is not None:
+                        _n_think = strip_signed_thinking_after(conversation, _img_first)
+                        if _n_think:
+                            logger.info(
+                                f"🧠 THINKING_PASSBACK: dropped {_n_think} thinking block(s) "
+                                f"signed after compacted image result at message {_img_first}")
                     _provider_takes_images = self.provider.supports_feature('image_tool_results')
                     provider_tool_results = []
                     iteration_had_block = False
