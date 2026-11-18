@@ -6,7 +6,9 @@ import { enhanceToolDisplayHeader, stripRedundantCdForDisplay } from '../utils/m
 import { renderToolPart, toolPartFromEvent } from '../utils/renderToolPart';
 import { handleToolStart, handleToolDisplay, ToolEventContext } from '../utils/mcpToolHandlers';
 import { Project } from '../types/project';
+import { applyDiffWaitEvent } from '../utils/diffWaitStore';
 import { projectSync } from '../utils/projectSync';
+import { createStreamRelay } from '../utils/streamRelay';
 import { escapeHtml } from '../utils/htmlSanitize';
 
 import { extractSingleFileDiff, buildDiffRejectionNotice } from '../utils/diffUtils';
@@ -836,8 +838,6 @@ export const sendPayload = async (
     // written after the index is already fixed.
     const thinkingTurnId = newThinkingTurnId();
     let thinkingLocal: ThinkingBlockData[] = [];
-    // Throttle BroadcastChannel relay to avoid flooding other tabs
-    let lastBroadcastTime = 0;
     let hallucinationDetected = false;  // Failsafe: track if model is generating fake tool output
     // ── Screen Wake Lock ──────────────────────────────────────────────
     // Prevent the display from dimming / OS from sleeping while a
@@ -871,6 +871,21 @@ export const sendPayload = async (
     };
 
     const BROADCAST_INTERVAL_MS = 300;
+    // Mirror of this stream for other same-project tabs.  Offered from
+    // flushStreamedContent, which every mutation of currentContent calls,
+    // so tool blocks reach a mirroring tab as well as prose.
+    const crossTabRelay = createStreamRelay(
+        content => projectSync.post('streaming-chunk', { conversationId, content }),
+        BROADCAST_INTERVAL_MS);
+    // Every end path calls removeStreamingConversation, which posts
+    // streaming-ended.  A trailing relay after that would re-mark the
+    // conversation as streaming in the mirroring tabs, so close it first.
+    const endStreamingConversation = removeStreamingConversation;
+    removeStreamingConversation = (id: string) => {
+        if (id === conversationId) crossTabRelay.close();
+        endStreamingConversation(id);
+    };
+
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
     // Parallel batches whose container is open in this stream (utils/toolGroupDisplay.ts).
     const openedToolGroups = new Set<string>();
@@ -907,6 +922,9 @@ export const sendPayload = async (
     const flushStreamedContent = () => {
         // Guard against post-abort flushes — once aborted, no more React state updates
         if (isAborted) return;
+        // Before the scheduled check: this runs in the SSE handler, not a
+        // timer, so a hidden owner tab's timer throttling does not delay it.
+        crossTabRelay.offer(currentContent);
         if (_streamFallbackId !== null) return; // already scheduled
         _streamFallbackId = setTimeout(_doFlush, FLUSH_MIN_INTERVAL_MS);
     };
@@ -2277,16 +2295,6 @@ export const sendPayload = async (
                     // the model is actively streaming text to the user.
                     if (typeof setProcessingState === 'function') {
                         setProcessingState('idle');
-                    }
-
-                    // Relay to other same-project tabs (throttled)
-                    const now = Date.now();
-                    if (now - lastBroadcastTime >= BROADCAST_INTERVAL_MS) {
-                        lastBroadcastTime = now;
-                        projectSync.post('streaming-chunk', {
-                            conversationId,
-                            content: currentContent
-                        });
                     }
 
                     flushStreamedContent();

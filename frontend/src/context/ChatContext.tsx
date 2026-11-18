@@ -342,6 +342,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
+    // Read by the streaming-probe reply, which lives in an effect that must
+    // not re-subscribe on every flush.
+    const streamedContentMapRef = useRef(streamedContentMap);
+    streamedContentMapRef.current = streamedContentMap;
     // Latest syncWithServer closure, published by the sync effect below so
     // the stream-end effect can trigger an immediate poll.  Null while no
     // sync effect is mounted (pre-init, ephemeral mode, between projects).
@@ -4507,6 +4511,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (!streamingConversationsRef.current.has(id)) return;
             if (remoteStreamingIdsRef.current.has(id)) return;
             projectSync.post('streaming-state', { conversationId: id, state: 'sending' });
+            // The mark alone leaves the asking tab showing a live turn with
+            // no text until the next relayed chunk, which during a long tool
+            // call may be an hour away.
+            const content = streamedContentMapRef.current.get(id);
+            if (content) projectSync.post('streaming-chunk', { conversationId: id, content });
+        };
+
+        // The tab that owned a mirrored stream is going away.  Release the
+        // mark locally (no re-broadcast), then let ChatTurnReattachWatcher
+        // decide whether this tab takes the turn over.
+        const handleStreamingOrphaned = (msg: any) => {
+            const id = msg.conversationId;
+            if (!id || !remoteStreamingIdsRef.current.has(id)) return;
+            remoteStreamingIdsRef.current.delete(id);
+            removeStreamingConversation(id, { broadcast: false });
+            window.dispatchEvent(new CustomEvent(CHAT_TURN_ORPHANED_EVENT, { detail: { conversationId: id } }));
         };
 
         projectSync.on('conversations-changed', handleConversationsChanged);
