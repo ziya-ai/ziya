@@ -239,6 +239,8 @@ class AnthropicDirectProvider(LLMProvider):
         return messages
 
     def supports_feature(self, feature_name: str) -> bool:
+        from app.utils.mcp_ondemand import native_tool_search_supported
+        _model_id = self.model_id if isinstance(self.model_id, str) else ""
         feature_map = {
             "thinking": self.model_config.get("supports_thinking", False),
             "adaptive_thinking": self.model_config.get("supports_adaptive_thinking", False),
@@ -255,6 +257,10 @@ class AnthropicDirectProvider(LLMProvider):
             # Anthropic tool_result blocks may carry image content blocks;
             # deliverable only if the model itself has vision.
             "image_tool_results": self.model_config.get("supports_vision", False),
+            # Deferred tool definitions + the API's tool search
+            # (design/mcp-on-demand.md).  The executor's gate; the prompt
+            # builder applies the same model check via native_search_for.
+            "tool_search": native_tool_search_supported(self.model_config, _model_id),
         }
         return bool(feature_map.get(feature_name, False))
 
