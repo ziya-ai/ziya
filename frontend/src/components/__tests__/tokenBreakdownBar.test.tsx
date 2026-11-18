@@ -18,10 +18,11 @@ describe('segmentPercents', () => {
         expect(p.files).toBeCloseTo(15.6, 1);
         expect(p.tools).toBeCloseTo(9.3, 1);
     });
-    it('never exceeds 100 in total', () => {
+    it('never exceeds 100 in total; the last segment in bar order is the one cut', () => {
         const p = segmentPercents({ files: 150_000, chat: 80_000, tools: 10_000, ast: 0, limit: 200_000 });
         expect(p.files + p.chat + p.tools + p.ast).toBeLessThanOrEqual(100);
-        expect(p.tools).toBe(0);
+        expect(p.tools).toBeCloseTo(5, 5);
+        expect(p.chat).toBeCloseTo(20, 5);
     });
     it('is all zero without a limit', () => {
         expect(Object.values(segmentPercents({ ...b, limit: 0 })).every(v => v === 0)).toBe(true);
@@ -29,12 +30,14 @@ describe('segmentPercents', () => {
 });
 
 describe('TokenBreakdownBar', () => {
-    it('renders the four segments in spender order with token classes, not inline colours', () => {
+    it('renders the four segments in the footer legend order with token classes, not inline colours', () => {
+        // Same left-to-right order as the footer text under the bar
+        // (TokenCountDisplay breakdownItems: files, tools, chat, ast).
         render(<TokenBreakdownBar breakdown={b} />);
         const segs = Array.from(screen.getByTestId('token-breakdown-bar').children) as HTMLElement[];
-        expect(segs.map(s => s.className)).toEqual(['files', 'chat', 'tools', 'ast']);
+        expect(segs.map(s => s.className)).toEqual(['files', 'tools', 'chat', 'ast']);
         for (const s of segs) expect(s.style.background).toBe('');
-        expect(segs[2].style.width).toMatch(/^9\.3/);
+        expect(segs[1].style.width).toMatch(/^9\.3/);
     });
     it('marks the track danger past the threshold', () => {
         const { rerender } = render(<TokenBreakdownBar breakdown={b} />);
@@ -56,7 +59,7 @@ describe('TokenBreakdownLegend', () => {
     it('carries a swatch per spender and hides zero tools/ast', () => {
         render(<TokenBreakdownLegend breakdown={{ ...b, ast: 0 }} />);
         const sw = screen.getByTestId('token-breakdown-legend').querySelectorAll('.sw');
-        expect(Array.from(sw).map(e => e.className)).toEqual(['sw files', 'sw chat', 'sw tools']);
+        expect(Array.from(sw).map(e => e.className)).toEqual(['sw files', 'sw tools', 'sw chat']);
         expect(screen.getByText(/tools 18\.6k/)).toBeTruthy();
     });
     it('fmtK', () => {
