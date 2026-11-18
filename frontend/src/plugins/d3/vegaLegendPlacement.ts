@@ -19,7 +19,9 @@
  * vegaEmbed.
  */
 import {
+  computeLegendLabelLimitPx,
   estimateTextWidthPx,
+  legendLabelRoomPx,
   VEGA_DEFAULT_LEGEND_LABEL_LIMIT,
   VEGA_LEGEND_LABEL_FONT_PX,
 } from './vegaTextFit';
@@ -443,4 +445,87 @@ export function fitNarrowConcatCellLegends(spec: any): CellLegendFit[] {
   };
   visit(spec, undefined);
   return fits;
+}
+
+// ── An authored legend labelLimit too small to show any text ────────────────
+//
+// Vega reads labelLimit in px.  A value meant as characters (labelLimit: 6)
+// cuts every label to "…", and every fitting pass treats an authored limit as
+// intent.  Below this threshold no label shows more than one or two
+// characters, so the value is replaced with a fitted width.  0 is Vega's
+// "no truncation" and is not touched.
+
+/** Below this, an authored labelLimit shows little more than the ellipsis. */
+export const TINY_LEGEND_LABEL_LIMIT_PX = 24;
+
+export interface LegendLabelLimitRepair {
+  /** 'config' for config.legend, else the encoding channel. */
+  site: string;
+  from: number;
+  to: number;
+}
+
+const isTinyLimit = (v: any): v is number =>
+  typeof v === 'number' && v > 0 && v < TINY_LEGEND_LABEL_LIMIT_PX;
+
+/** Longest label when the labels are known, else the room the legend has. */
+function fittedLabelLimit(
+  labels: string[], paneWidthPx: number, orient: string, columns: number, font: number,
+): number {
+  return labels.length > 0
+    ? computeLegendLabelLimitPx({ labels, containerWidthPx: paneWidthPx, orient, columns, fontPx: font })
+    : legendLabelRoomPx(paneWidthPx, orient, columns);
+}
+
+/**
+ * Replace every positive authored legend labelLimit below
+ * TINY_LEGEND_LABEL_LIMIT_PX, in config.legend and on each legend-bearing
+ * channel.  Mutates the spec; returns one record per value replaced.
+ */
+export function repairTinyLegendLabelLimits(spec: any, paneWidthPx: number): LegendLabelLimitRepair[] {
+  if (!isObj(spec)) return [];
+  const repairs: LegendLabelLimitRepair[] = [];
+  const sites = collectLegendSites(spec);
+  const cfg = isObj(spec.config) && isObj(spec.config.legend) ? spec.config.legend : null;
+  const cfgOrient = cfg && typeof cfg.orient === 'string' ? cfg.orient : 'right';
+  const cfgColumns = cfg && positiveNumber(cfg.columns) !== null ? cfg.columns : 1;
+
+  if (cfg && isTinyLimit(cfg.labelLimit)) {
+    const font = typeof cfg.labelFontSize === 'number' ? cfg.labelFontSize : VEGA_LEGEND_LABEL_FONT_PX;
+    // The config limit applies to every legend, so the known labels only
+    // bound it when every legend's labels are known.
+    const labels = sites.length > 0 && sites.every(s => s.labels.length > 0)
+      ? Array.from(new Set(sites.flatMap(s => s.labels))) : [];
+    const to = fittedLabelLimit(labels, paneWidthPx, cfgOrient, cfgColumns, font);
+    repairs.push({ site: 'config', from: cfg.labelLimit, to });
+    spec.config = { ...spec.config, legend: { ...cfg, labelLimit: to } };
+  }
+
+  for (const s of sites) {
+    const lg = s.encoding[s.channel]?.legend;
+    if (!isObj(lg) || !isTinyLimit(lg.labelLimit)) continue;
+    const orient = typeof lg.orient === 'string' ? lg.orient : cfgOrient;
+    const columns = positiveNumber(lg.columns) !== null ? lg.columns : cfgColumns;
+    const to = fittedLabelLimit(s.labels, paneWidthPx, orient, columns, fontPx(spec, s));
+    repairs.push({ site: s.channel, from: lg.labelLimit, to });
+    s.encoding[s.channel].legend = { ...lg, labelLimit: to };
+  }
+  return repairs;
+}
+
+/**
+ * Width a legend lays out across: the wider of a MEASURED pane and the
+ * chart's own width (a composite keeps its authored view widths, and a
+ * top/bottom legend spans them).  The pane gutter is added back to the chart
+ * width because the legend room helpers subtract it.  `fallbackPx` (the
+ * unmeasured floor) is used only when neither is known.
+ */
+export function legendWidthPx(
+  paneWidthPx: number | null | undefined, chartWidthPx: number | null | undefined,
+  fallbackPx: number,
+): number {
+  const pane = typeof paneWidthPx === 'number' && paneWidthPx > 0 ? paneWidthPx : null;
+  const chart = typeof chartWidthPx === 'number' && chartWidthPx > 0 ? chartWidthPx + 40 : null;
+  if (pane === null && chart === null) return fallbackPx;
+  return Math.max(pane ?? 0, chart ?? 0);
 }

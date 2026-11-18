@@ -1,7 +1,7 @@
 import { type EmbedOptions } from 'vega-embed';
 import { D3RenderPlugin } from '../../types/d3';
 import { applyHeightFloor, applySizing, isCompositeSpec, resolveAutosize, resolveSpecWidth } from './vegaSizing';
-import { estimateChartWidthPx, fitNarrowConcatCellLegends, relocateOverflowingSideLegend } from './vegaLegendPlacement';
+import { estimateChartWidthPx, fitNarrowConcatCellLegends, legendWidthPx, relocateOverflowingSideLegend, repairTinyLegendLabelLimits } from './vegaLegendPlacement';
 import { fixUnparsedDateFormatting } from './vegaDateExpr';
 import { fixTemporalZoneMismatch } from './vegaTemporalZone';
 import {
@@ -5592,6 +5592,21 @@ export const vegaLitePlugin: D3RenderPlugin = {
           });
         }
       };
+
+      // An authored legend labelLimit under ~1 character (labelLimit: 6,
+      // meant as characters but read as px) renders every label as "…".
+      // Replace it with a fitted width before the passes below treat it as
+      // the author's choice.
+      // Sized to the chart, not the unmeasured 400px floor: a bottom legend
+      // spans the chart's views.
+      const legendPaneKnown = typeof spec.containerWidth === 'number' && spec.containerWidth > 0
+        ? spec.containerWidth : null;
+      const legendRoomPx = legendWidthPx(
+        legendPaneKnown, estimateChartWidthPx(vegaSpec, _sizing.width), fitWidthPx,
+      );
+      for (const r of repairTinyLegendLabelLimits(vegaSpec, legendRoomPx)) {
+        console.info(`🔧 VEGA-LEGEND: ${r.site} legend labelLimit ${r.from}px shows no text; set to ${r.to}px`);
+      }
 
       // Apply legend optimization before rendering
       optimizeLegendLayout(vegaSpec);
