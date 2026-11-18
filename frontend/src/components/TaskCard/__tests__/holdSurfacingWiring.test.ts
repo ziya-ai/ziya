@@ -1,7 +1,9 @@
 /**
- * Static wiring guards for the three chosen hold surfaces: 1A (callee
- * panel), 2B (one-line breadth strip in the recovery banner), 3A (report
- * position even when nothing is wrong).
+ * Static wiring guards for the hold surfaces: 2B (one-line breadth strip
+ * in the recovery banner) and the callee derivation.  1A and 3A (the deck's
+ * callee hold panel) were retired when the Task Cards dialog gained a run
+ * pane; a callee's position is now marked in the definition outline, see
+ * deckPanesWiring.test.ts.
  *
  * These read source text rather than mounting, deliberately.  Every defect
  * this whole change set has surfaced was WIRING, not logic: a helper
@@ -20,7 +22,6 @@ const DIR = path.join(__dirname, '..');
 const read = (f: string) => fs.readFileSync(path.join(DIR, f), 'utf8');
 
 const banner = () => read('RunRecoveryBanner.tsx');
-const panel = () => read('CalleeHoldPanel.tsx');
 const library = () => read('TaskCardsLibrary.tsx');
 const holdChain = () => read('holdChain.ts');
 const css = () => read('task-card-inline-tile.css');
@@ -60,69 +61,6 @@ describe('2B — the recovery banner carries breadth on one line', () => {
   });
 });
 
-describe('1A — a callee resolves its own portion of the tree', () => {
-  it('fetches its own callee context', () => {
-    expect(panel()).toMatch(/getCalleeContext/);
-  });
-
-  it('derives through the callee-specific entry point', () => {
-    // Not deriveHoldChain directly: the callee frame needs the
-    // held_in_callee guard, and bypassing it is how a sibling's hold gets
-    // drawn on a card that is fine.
-    expect(panel()).toMatch(/deriveCalleeHoldChain/);
-  });
-
-  it('marks this card\'s own blocks with their position', () => {
-    expect(panel()).toMatch(/positionOf/);
-    expect(panel()).toMatch(/HELD HERE/);
-    expect(panel()).toMatch(/blocked/);
-  });
-
-  it('names the caller, since the hold is not this card\'s own run', () => {
-    expect(panel()).toMatch(/caller_card_id/);
-  });
-
-  it('prefers a hold that is actually this card\'s over a stale sibling', () => {
-    // A card called twice in one deck could otherwise show the healthy
-    // invocation and hide the held one.
-    expect(panel()).toMatch(/find\(c => c\.held_in_callee\)/);
-  });
-
-  it('suppresses the row map for a single-node card', () => {
-    // Same reason TaskRunMap does: one row restates the banner.
-    expect(panel()).toMatch(/rows\.length > 1/);
-  });
-
-  it('renders nothing when the card has never been called', () => {
-    expect(panel()).toMatch(/if \(!ctx\) return null/);
-  });
-
-  it('is mounted in the deck with the card\'s own root', () => {
-    const lib = library();
-    expect(lib).toMatch(/CalleeHoldPanel/);
-    expect(lib).toMatch(/root=\{draft\?\.root\}/);
-  });
-});
-
-describe('3A — position is reported even when nothing is wrong', () => {
-  it('renders a live indicator for a non-held invocation', () => {
-    // The alternative (silence unless held) is the bug we just fixed
-    // reappearing as a design choice: a card executing inside another
-        // card would look idle.
-    expect(panel()).toMatch(/!chain\.isHeld/);
-    expect(panel()).toMatch(/tc-callee--ok/);
-  });
-
-  it('styles the healthy case as information, not as a problem', () => {
-    // Blue, not violet/red, and no heavy panel border.
-    expect(css()).toMatch(/\.tc-callee--ok\s*\{[^}]*rgba\(31,111,235/);
-  });
-
-  it('reports the run status so "running in X" is legible', () => {
-    expect(panel()).toMatch(/run_status/);
-  });
-});
-
 describe('the deck no longer paints a held run as unremarkable', () => {
   it('gives held its own colour in the library status tag', () => {
     // It previously fell through to 'default' grey, indistinguishable at a
@@ -146,49 +84,5 @@ describe('the callee derivation refuses to blame the wrong card', () => {
     const src = holdChain();
     const fn = src.slice(src.indexOf('export function deriveCalleeHoldChain'));
     expect(fn).toMatch(/return deriveHoldChain\(/);
-  });
-});
-
-describe('the callee panel is a route to the run, not a dead end', () => {
-  it('offers an Open run control on BOTH branches', () => {
-    const src = panel();
-    expect(src).toMatch(/onOpenRun\?: \(ctx: CalleeContext\) => void/);
-    expect(src).toMatch(/tc-callee__open/);
-    // A merely-running study needs the route to its tile as much as a
-    // held one does.
-    const okBranch = src.slice(src.indexOf('tc-callee--ok'), src.indexOf('tc-callee__head'));
-    expect(okBranch).toMatch(/\{openButton\}/);
-    const heldBranch = src.slice(src.indexOf('tc-callee__head'));
-    expect(heldBranch).toMatch(/\{openButton\}/);
-  });
-
-  it('is wired from the deck to the conversation the run is anchored in', () => {
-    const lib = library();
-    expect(lib).toMatch(/onOpenRun=\{handleOpenCalleeRun\}/);
-    expect(lib).toMatch(/ctx\.source_conversation_id/);
-    // Fallback for a server that predates the field.
-    expect(lib).toMatch(/getTaskRun\(projectId, ctx\.run_id\)/);
-  });
-
-  it('the backend sends the conversation id the route needs', () => {
-    const py = fs.readFileSync(
-      path.join(DIR, '..', '..', '..', '..', 'app', 'utils', 'callee_hold_lookup.py'), 'utf8');
-    expect(py).toMatch(/"source_conversation_id": getattr\(\s*run, "source_conversation_id", None\)/);
-  });
-});
-
-describe('the deck pane stays usable under a deep held card', () => {
-  it('bounds the callee row map so it cannot swallow the editor', () => {
-    // One row per block of the card, unbounded, filled the fixed-height
-    // pane and the editor (flex: 1, min-height 0) collapsed to nothing.
-    expect(css()).toMatch(/\.tc-callee__map\s*\{[^}]*max-height:\s*\d+px;[^}]*overflow-y:\s*auto/);
-  });
-
-  it('keeps a floor under the editor and lets the pane scroll past it', () => {
-    const lib = library();
-    const editorBox = lib.slice(lib.indexOf('<TaskCardEditor') - 200, lib.indexOf('<TaskCardEditor'));
-    expect(editorBox).toMatch(/flex: 1, minHeight: 160, overflow: 'auto'/);
-    expect(lib).toMatch(/flexDirection: 'column', gap: 8, overflow: 'auto' \}\}/);
-    expect(lib).not.toMatch(/flexDirection: 'column', gap: 8, overflow: 'hidden' \}\}/);
   });
 });
