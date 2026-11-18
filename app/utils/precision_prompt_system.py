@@ -361,14 +361,21 @@ class PrecisionPromptSystem:
                 )
 
             # Bead tool calls are internal and absent from replayed history;
-            # append a store-sourced record to each assistant turn that
-            # created beads, so the model is not left to infer from a missing
-            # call that its "parked" never happened.  Keyed by the caller's
-            # real id, never the fabricated precision_ one.
+            # append a store-sourced record to the user message that follows
+            # each assistant turn that created beads, so the model is not
+            # left to infer from a missing call that its "parked" never
+            # happened.  The record goes on the user side because the model
+            # copied it into new replies when it sat at the end of its own.
+            # For the most recent reply the following user message is the
+            # current question, so that record joins the tail.  Keyed by the
+            # caller's real id, never the fabricated precision_ one.
             if chat_history:
                 try:
-                    from app.utils.bead_history_record import annotate_bead_history
-                    chat_history = annotate_bead_history(chat_history, real_conversation_id)
+                    from app.utils.bead_history_record import annotate_bead_history_with_tail
+                    chat_history, bead_record_tail = annotate_bead_history_with_tail(
+                        chat_history, real_conversation_id)
+                    if bead_record_tail:
+                        volatile_tail.append(bead_record_tail)
                 except Exception as e:  # noqa: BLE001 -- never fail a turn on this
                     logger.debug("Bead history record unavailable: %s", e)
 

@@ -1,5 +1,5 @@
 """
-Replay evidence of saved beads in the assistant turns that created them.
+Replay evidence of saved beads after the assistant turns that created them.
 
 Bead tools are internal: the frontend drops their tool_start/tool_display
 events, so a reply that said "parking X" is replayed with no call behind
@@ -7,27 +7,38 @@ it.  The bead directive treats an unbacked "parked" as a false claim, so on
 the next turn the model concluded its call never happened, apologised, and
 created the bead again (.ziya/diagnostics/ziya-beads-phantom-failure-2026-11-09.md).
 
-This module appends one line to each assistant turn in which beads were
-created, sourced from the bead STORE rather than from message text::
+For each assistant turn in which beads were created, this module appends
+one line to the USER message that follows it, sourced from the bead STORE
+rather than from message text::
 
-    ‹bead_record›Bead store: 2 bead(s) created in this turn were saved:
-    "fix CSS layout" [bead_1cd], "review auth" [bead_048].‹/bead_record›
+    ‹bead_record›Bead store: 2 bead(s) created in the reply before this
+    message were saved: "fix CSS layout" [bead_1cd], "review auth" [bead_048].‹/bead_record›
+
+Why the following user message and not the reply itself: a line at the end
+of the model's own earlier reply reads as something the model wrote, and it
+copied the pattern into new replies, where it reached the browser as plain
+text (2026-11-11).  On a user message it reads as injected context, like
+the "Pending Beads" list.  For the most recent reply the following user
+message is the current question, which is not in ``chat_history``; that
+record is returned separately for the caller to append there.
 
 Why the store and not a marker the frontend writes into the message: text
 in ``message.content`` cannot be told apart from text the model wrote, so a
 persisted marker would be forgeable evidence.  The store is written only by
-the bead tools.  For the same reason any ``‹bead_record`` lookalike already
-present in assistant text (the model imitating the line) is defanged.
+the bead tools.  For the same reason any ``‹bead_record`` lookalike in
+assistant text (the model imitating the line) is removed when it is a
+complete record and defanged otherwise.  The frontend hides the same spans
+on display (frontend/src/utils/beadRecordStrip.ts).
 
 Attribution is by time, not ``Bead.message_index``: that index counts the
 persisted record, which includes muted messages the frontend leaves out of
 ``chat_history``, and is documented as approximate.  A bead created while
 the model answered human turn k has ``created_at`` after human k's
-``_timestamp`` and before human k+1's, so it is attached to the last
-assistant message in that window, whichever moment the frontend stamped the
-assistant message with.  Human messages without a timestamp, or with
-timestamps out of order, disable attribution (no record is better than a
-wrong one).  Bead times are server clock and message times browser clock;
+``_timestamp`` and before human k+1's, so its record goes on human k+1
+(or on the current question for the last window), provided the window
+holds an assistant message at all.  Human messages without a timestamp, or
+with timestamps out of order, disable attribution (no record is better than
+a wrong one).  Bead times are server clock and message times browser clock;
 on the usual localhost setup they are the same clock.
 
 Only creation facts (content, id) are listed, never the current status, so
@@ -38,7 +49,7 @@ from __future__ import annotations
 
 import bisect
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
 
@@ -67,16 +78,36 @@ def defang(text: str) -> str:
     return _LOOKALIKE_RE.sub(r"[\1", text) if text else text
 
 
-def _defang_content(content: Any) -> Any:
+# A complete single-line record the model wrote in its own reply, in either
+# bracket alphabet, with the blank lines that precede it.  The real record
+# is rebuilt from the store on every request, so a typed one carries no
+# information; leaving it (even defanged) replays an example to copy.
+_SPAN_RE = re.compile(
+    r"\n{0,2}[<\u2039]\s*bead_record\s*[>\u203a][^\n]*?"
+    r"[<\u2039]\s*/\s*bead_record\s*[>\u203a]",
+    re.IGNORECASE,
+)
+
+
+def strip_record_spans(text: str) -> str:
+    """Remove complete model-written records; fragments are left for defang."""
+    return _SPAN_RE.sub("", text) if text else text
+
+
+def _scrub(text: str) -> str:
+    return defang(strip_record_spans(text))
+
+
+def _scrub_content(content: Any) -> Any:
     if isinstance(content, str):
-        out = defang(content)
+        out = _scrub(content)
         return content if out == content else out
     if isinstance(content, list):
         changed = False
         blocks = []
         for b in content:
             if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str):
-                t = defang(b["text"])
+                t = _scrub(b["text"])
                 if t != b["text"]:
                     b = {**b, "text": t}
                     changed = True
@@ -91,8 +122,8 @@ def _record_line(beads: List[Any]) -> str:
     more = len(beads) - len(listed)
     if more > 0:
         parts.append(f"+{more} more")
-    return (f"\n\n{OPEN}Bead store: {len(beads)} bead(s) created in this "
-            f"turn were saved: {', '.join(parts)}.{CLOSE}")
+    return (f"\n\n{OPEN}Bead store: {len(beads)} bead(s) created in the reply "
+            f"before this message were saved: {', '.join(parts)}.{CLOSE}")
 
 
 def _append(content: Any, line: str) -> Any:
@@ -104,7 +135,11 @@ def _append(content: Any, line: str) -> Any:
 
 
 def attribute_beads(history: List[Any], beads: List[Any]) -> Dict[int, List[Any]]:
-    """Map history index of an assistant message -> beads created in its turn."""
+    """Map the index of the human message FOLLOWING a turn -> beads it created.
+
+    The last window has no following message in *history*; its beads are
+    keyed by ``len(history)``, meaning the current question.
+    """
     humans: List[tuple] = []
     for i, m in enumerate(history):
         if isinstance(m, dict) and _role(m) == "human":
@@ -128,25 +163,27 @@ def attribute_beads(history: List[Any], beads: List[Any]) -> Dict[int, List[Any]
             continue  # before the first timed human message
         start = humans[k][1]
         end = humans[k + 1][1] if k + 1 < len(humans) else len(history)
-        target = None
-        for j in range(start + 1, end):
-            m = history[j]
-            if isinstance(m, dict) and _role(m) == "assistant":
-                target = j
-        if target is not None:
-            out.setdefault(target, []).append(bead)
+        # A window with no reply (a retried or unanswered question) has no
+        # turn to attribute to.
+        if any(isinstance(history[j], dict) and _role(history[j]) == "assistant"
+               for j in range(start + 1, end)):
+            out.setdefault(end, []).append(bead)
     return out
 
 
-def annotate_bead_history(history: List[Any], conversation_id: Optional[str],
-                          beads: Optional[List[Any]] = None) -> List[Any]:
-    """Return a copy of *history* with bead records appended, lookalikes defanged.
+def annotate_bead_history_with_tail(
+        history: List[Any], conversation_id: Optional[str],
+        beads: Optional[List[Any]] = None) -> Tuple[List[Any], str]:
+    """Return (history copy with records on user messages, record for the
+    current question).
 
-    *beads* overrides the store lookup (tests).  Input is not mutated; with
-    nothing to change, the original list is returned.
+    Assistant text is scrubbed of record lookalikes.  *beads* overrides the
+    store lookup (tests).  Input is not mutated; with nothing to change,
+    the original list is returned.  The second value is "" when the most
+    recent reply created no beads.
     """
     if not history:
-        return history
+        return history, ""
     if beads is None:
         beads = []
         if conversation_id:
@@ -157,16 +194,27 @@ def annotate_bead_history(history: List[Any], conversation_id: Optional[str],
                 logger.debug(f"📿 bead history record: store unavailable: {e}")
                 beads = []
     targets = attribute_beads(history, beads) if beads else {}
+    tail_beads = targets.pop(len(history), None)
+    tail = _record_line(tail_beads) if tail_beads else ""
 
     out: List[Any] = []
     changed = False
     for i, m in enumerate(history):
-        if isinstance(m, dict) and _role(m) == "assistant":
-            content = _defang_content(m.get("content", ""))
-            if i in targets:
+        if isinstance(m, dict):
+            role = _role(m)
+            content = original = m.get("content", "")
+            if role == "assistant":
+                content = _scrub_content(content)
+            elif role == "human" and i in targets:
                 content = _append(content, _record_line(targets[i]))
-            if content is not m.get("content", ""):
+            if content is not original:
                 m = {**m, "content": content}
                 changed = True
         out.append(m)
-    return out if changed else history
+    return (out if changed else history), tail
+
+
+def annotate_bead_history(history: List[Any], conversation_id: Optional[str],
+                          beads: Optional[List[Any]] = None) -> List[Any]:
+    """History half of :func:`annotate_bead_history_with_tail`."""
+    return annotate_bead_history_with_tail(history, conversation_id, beads)[0]
