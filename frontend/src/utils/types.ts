@@ -11,7 +11,7 @@ export interface Folders {
     };
 }
 
-export type MessageRole = 'human' | 'assistant' | 'system';
+export type MessageRole = 'human' | 'assistant' | 'system' | 'peer';
 
 export interface ImageAttachment {
     id?: string;

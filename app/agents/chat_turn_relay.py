@@ -97,7 +97,7 @@ _CONTENT_PREFIX = 'data: {"content": '
 _STATUS_KEYS = (
     "conversation_id", "turn_id", "active", "held", "hold_reasons", "cancelled",
     "error", "started_at", "finished_at", "subscribers", "buffered_frames",
-    "dropped_frames", "ran_tool", "end_reason",
+    "dropped_frames", "ran_tool", "end_reason", "server_authored",
 )
 
 
@@ -127,11 +127,16 @@ class _Turn:
         "dropped", "subscribers", "done", "cancelled", "error", "started_at",
         "finished_at", "headers", "holds", "grace_task", "retention_task",
         "ran_tool", "end_reason", "checkpoint_task", "snap_seq", "saved_seq",
-        "save_mutex",
+        "save_mutex", "server_authored",
     )
 
-    def __init__(self, conversation_id: str, headers: Optional[Dict[str, str]]):
+    def __init__(self, conversation_id: str, headers: Optional[Dict[str, str]],
+                 server_authored: bool = False):
         self.conversation_id = conversation_id
+        # The server saves this turn's answer to the chat record itself
+        # (app/utils/server_turn.py).  Such a turn needs no viewer, and a
+        # browser must not reattach and save a second copy.
+        self.server_authored = bool(server_authored)
         self.turn_id = uuid.uuid4().hex
         self.task: Optional[asyncio.Task] = None
         self.frames: Deque[str] = deque()
@@ -170,6 +175,7 @@ class _Turn:
             "dropped_frames": self.dropped,
             "ran_tool": self.ran_tool,
             "end_reason": self.end_reason,
+            "server_authored": self.server_authored,
         }
 
 
@@ -396,6 +402,7 @@ async def start_turn(
     conversation_id: str,
     source: AsyncIterator[str],
     headers: Optional[Dict[str, str]] = None,
+    server_authored: bool = False,
 ) -> str:
     """Begin a server-owned turn for ``conversation_id`` and return its id.
 
@@ -405,7 +412,7 @@ async def start_turn(
     reply would have carried (model attribution); the reattach endpoint
     serves them again so a late client is told the same truth.
     """
-    turn = _Turn(conversation_id, headers)
+    turn = _Turn(conversation_id, headers, server_authored)
     async with _lock:
         prev = _turns.get(conversation_id)
         _turns[conversation_id] = turn
@@ -425,6 +432,10 @@ def _arm_grace_locked(turn: _Turn) -> None:
     """Start the disconnect grace timer if the turn is running, unwatched,
     unheld and has none pending.  Caller holds ``_lock``."""
     if turn.done or turn.subscribers or turn.holds:
+        return
+    if turn.server_authored:
+        # Started by the server with no viewer; its answer is saved to the
+        # record whether or not anyone ever watches.
         return
     if turn.grace_task is not None and not turn.grace_task.done():
         return
@@ -631,6 +642,12 @@ def headers_for(conversation_id: str) -> Dict[str, str]:
 
 def has_turn(conversation_id: str) -> bool:
     return conversation_id in _turns or _disk_record(conversation_id) is not None
+
+
+def active_conversation_ids() -> List[str]:
+    """Conversations with a turn still running in this process (the update
+    chip restarts the server only when there are none)."""
+    return [cid for cid, t in list(_turns.items()) if not t.done]
 
 
 async def shutdown_all() -> None:

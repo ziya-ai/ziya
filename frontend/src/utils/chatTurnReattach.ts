@@ -30,6 +30,9 @@ export interface ChatTurnStatus {
   subscribers: number;
   buffered_frames: number;
   dropped_frames: number;
+  /** The server saves this turn's answer itself (app/utils/server_turn.py);
+   *  a browser must not reattach and save a second copy. */
+  server_authored?: boolean;
 }
 
 export type ReattachDecision =
@@ -55,6 +58,12 @@ export function decideReattach(
   alreadyReattachedTurnIds: ReadonlySet<string>,
 ): ReattachDecision {
   if (!status) return { reattach: false, reason: 'no turn on server' };
+  if (status.server_authored) {
+    // A reattach runs the send pipeline, which saves the assistant message
+    // at stream end.  The server has already written it; the browser gets
+    // that copy through sync.
+    return { reattach: false, reason: 'turn is saved by the server' };
+  }
   if (streamingLocally) {
     // Either this tab owns the turn or another tab in this browser is
     // mirroring it over BroadcastChannel.  Reattaching would render it twice.

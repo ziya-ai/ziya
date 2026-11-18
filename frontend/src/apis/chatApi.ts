@@ -1274,7 +1274,7 @@ export const sendPayload = async (
                 // post-turn save of the CURRENT conversation (_version=now)
                 // could push its stale title/folder back over the change.
                 if (unwrappedData.type === 'tool_display'
-                    && /^(folder_(list|create|update|delete)|chat_(move|rename|fork))$/
+                    && /^(folder_(list|create|update|delete)|chat_(move|rename|fork|post))$/
                         .test(String(unwrappedData.tool_name || '').replace(/^mcp_/, ''))) {
                     const raw = unwrappedData.result;
                     const result = typeof raw === 'string'

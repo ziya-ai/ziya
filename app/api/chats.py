@@ -1005,6 +1005,29 @@ def add_message(project_id: str, chat_id: str, message_data: Message):
     return chat
 
 
+class ChatPostBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    sourceChatId: str
+    text: str
+    mode: str = "context"
+
+
+@router.post("/api/v1/chats/{chat_id}/posts")
+async def post_to_chat_endpoint(chat_id: str, body: ChatPostBody):
+    """Post a message from ``sourceChatId`` into ``chat_id`` (any project).
+
+    ``async`` because a ``submit`` post is delivered through the feedback
+    queue, which must be touched on the event loop; the disk work inside
+    ``post_to_chat`` runs under ``asyncio.to_thread``.
+    See design/conversation-post.md.
+    """
+    from ..utils.chat_post import ChatPostError, post_to_chat
+    try:
+        return await post_to_chat(body.sourceChatId, chat_id, body.text, body.mode)
+    except ChatPostError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+
+
 # ── Message-level operations ───────────────────────────────────────
 #
 # The explicit shrink/edit intents bulk-sync can no longer express (it merges
