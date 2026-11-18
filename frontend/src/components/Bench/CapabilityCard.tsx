@@ -10,12 +10,14 @@
  * (CapabilityDetail).  Clicking the title row selects it; nothing unfolds
  * inside the lane.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { theme } from 'antd';
 import type { BenchItemView } from '../../hooks/useBench';
 import { DRAG_MIME, DropIntent, moveOptions } from './laneDnd';
 import { DeltaChip } from './DeltaChip';
 import { KindMark } from './KindMark';
+import { layoutViewportHeight, layoutViewportWidth, toLayoutPx } from '../../utils/uiScale';
 
 export interface CapabilityCardProps {
     item: BenchItemView;
@@ -31,6 +33,49 @@ export interface CapabilityCardProps {
 
 export const CapabilityCard: React.FC<CapabilityCardProps> = ({ item, onIntent, selected = false, onSelect, pickedUp = false, delta }) => {
     const [menuOpen, setMenuOpen] = useState(false);
+    // The menu is rendered into document.body, not inside the card.  Inside,
+    // an inherited card's opacity made the card a stacking context: the
+    // cards below painted over the menu and took its clicks, and a folded
+    // lane (overflow: hidden) clipped it.
+    const [menuPos, setMenuPos] = useState<React.CSSProperties>({});
+    const moveBtnRef = useRef<HTMLButtonElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
+    const openMenu = () => {
+        const r = moveBtnRef.current?.getBoundingClientRect();
+        if (r) {
+            // The rect is in viewport px; a fixed box under the zoomed body
+            // is positioned in layout px (utils/uiScale.ts).
+            const right = Math.max(4, layoutViewportWidth() - toLayoutPx(r.right));
+            const below = toLayoutPx(r.bottom) + 2;
+            const estimate = moveOptions(item).length * 26 + 12;
+            setMenuPos(below + estimate > layoutViewportHeight()
+                ? { right, bottom: layoutViewportHeight() - toLayoutPx(r.top) + 2 }
+                : { right, top: below });
+        }
+        setMenuOpen(true);
+    };
+    useEffect(() => {
+        if (!menuOpen) return;
+        const close = () => setMenuOpen(false);
+        const onDown = (e: MouseEvent) => {
+            const t = e.target as Node;
+            // The ⋯ button toggles on click; closing here too would reopen it.
+            if (menuRef.current?.contains(t) || moveBtnRef.current?.contains(t)) return;
+            close();
+        };
+        // Capture, and stop it there: Escape closes the menu, not the Bench modal.
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+        document.addEventListener('mousedown', onDown, true);
+        document.addEventListener('keydown', onKey, true);
+        window.addEventListener('scroll', close, true);
+        window.addEventListener('resize', close);
+        return () => {
+            document.removeEventListener('mousedown', onDown, true);
+            document.removeEventListener('keydown', onKey, true);
+            window.removeEventListener('scroll', close, true);
+            window.removeEventListener('resize', close);
+        };
+    }, [menuOpen]);
     // The menu floats over other cards, so it needs an opaque surface.  Taken
     // from antd's tokens (they follow the ConfigProvider algorithm): the old
     // 'var(--ant-color-bg-elevated, Canvas)' was never defined (no cssVar), and
@@ -61,13 +106,14 @@ export const CapabilityCard: React.FC<CapabilityCardProps> = ({ item, onIntent, 
             data-held={String(held)}
             draggable
             onDragStart={e => {
+                setMenuOpen(false);
                 e.dataTransfer.effectAllowed = 'move';
                 try {
                     e.dataTransfer.setData(DRAG_MIME, item.key);
                     e.dataTransfer.setData('text/plain', item.key);
                 } catch { /* some browsers restrict custom types */ }
             }}
-            onContextMenu={e => { e.preventDefault(); setMenuOpen(true); }}
+            onContextMenu={e => { e.preventDefault(); openMenu(); }}
             style={{
                 position: 'relative',
                 padding: '6px 8px',
@@ -124,22 +170,24 @@ export const CapabilityCard: React.FC<CapabilityCardProps> = ({ item, onIntent, 
                 )}
                 <button
                     type="button"
+                    ref={moveBtnRef}
                     aria-label={`Move ${item.name}`}
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
-                    onClick={() => setMenuOpen(o => !o)}
+                    onClick={() => (menuOpen ? setMenuOpen(false) : openMenu())}
                     style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'inherit', padding: '0 2px' }}
                 >⋯</button>
             </div>
             {v.pinnedHigher && (
                 <div style={{ opacity: 0.8, fontSize: 10 }}>overridden by {item.origin}</div>
             )}
-            {menuOpen && (
+            {menuOpen && createPortal(
                 <div
                     role="menu"
-                    onKeyDown={e => { if (e.key === 'Escape') setMenuOpen(false); }}
+                    ref={menuRef}
                     style={{
-                        position: 'absolute', right: 4, top: '100%', zIndex: 10, marginTop: 2,
+                        position: 'fixed', ...menuPos, zIndex: token.zIndexPopupBase + 50,
+                        fontSize: 12,
                         display: 'flex', flexDirection: 'column', minWidth: 170,
                         border: '1px solid ' + token.colorBorderSecondary,
                         borderRadius: 6, padding: 4, background: token.colorBgElevated,
@@ -158,7 +206,8 @@ export const CapabilityCard: React.FC<CapabilityCardProps> = ({ item, onIntent, 
                                      cursor: o.disabled ? 'default' : 'pointer', color: 'inherit', opacity: o.disabled ? 0.5 : 1 }}
                         >{o.label}</button>
                     ))}
-                </div>
+                </div>,
+                document.body,
             )}
         </div>
     );
