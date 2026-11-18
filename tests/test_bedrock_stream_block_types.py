@@ -135,7 +135,7 @@ class TestHarnessActuallyCaptures:
     async def test_capture_sees_a_known_warning(self):
         _, warnings, _ = await _drain([
             _chunk({"type": "content_block_start", "index": 0,
-                    "content_block": {"type": "server_tool_use"}}),
+                    "content_block": {"type": "web_search_tool_result"}}),
         ])
         assert warnings, "harness captured nothing -- assertions are vacuous"
 
@@ -192,7 +192,7 @@ class TestUnknownTypesStillWarn:
     async def test_unknown_block_start_warns(self):
         _, warnings, _ = await _drain([
             _chunk({"type": "content_block_start", "index": 0,
-                    "content_block": {"type": "server_tool_use"}}),
+                    "content_block": {"type": "web_search_tool_result"}}),
         ])
         assert any("UNHANDLED content_block_start" in w for w in warnings), (
             "the warning channel must still fire for a type we do not "
