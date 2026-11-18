@@ -14,8 +14,9 @@
  *         the running-task set is correctly emptied when a run holds --
  *         which left the row completely silent, indistinguishable from an
  *         idle conversation.  Worst case for an unattended multi-hour run.
- * Item 2: CalleeHoldPanel fetched once on card-select, so a hold arriving
- *         while the deck was already open never appeared.
+ * Item 2: (retired) CalleeHoldPanel's polling.  The panel was replaced by
+ *         the Task Cards dialog's run pane and outline markers; see
+ *         deckPanesWiring.test.ts.
  * Item 3: the iteration-resume control was offered for parallel loops,
  *         where the server refuses it outright with a 422.
  */
@@ -30,7 +31,6 @@ const CHAT_CTX = () => read('../../../context/ChatContext.tsx');
 const ACTIVE_CTX = () => read('../../../context/ActiveChatContext.tsx');
 const CONVERSATION = () => read('../../Conversation.tsx');
 const SIDEBAR = () => read('../../MUIChatHistory.tsx');
-const PANEL = () => read('../CalleeHoldPanel.tsx');
 const DETAIL = () => read('../BlockDetailPanel.tsx');
 const CSS = () => read('../task-card-inline-tile.css');
 
@@ -44,50 +44,6 @@ const CSS = () => read('../task-card-inline-tile.css');
 // bindings-derived design that replaced it.  Deleted rather than skipped:
 // a retained test for a rejected design pulls the next reader back toward
 // it.
-
-describe('item 2: the callee panel stays current', () => {
-  it('polls rather than fetching once', () => {
-    // The surface whose job is "am I stuck?" cannot answer only as of
-    // whenever the user last clicked the card.
-    expect(PANEL()).toMatch(/setInterval/);
-  });
-
-  it('matches the deck run-list poll interval', () => {
-    // Two surfaces in one modal polling at different rates would make the
-    // deck read as inconsistent with itself.
-    expect(PANEL()).toMatch(/\}, 4000\)/);
-  });
-
-  it('clears the timer on unmount', () => {
-    expect(PANEL()).toMatch(/clearInterval\(timer\)/);
-  });
-
-  it('stops polling once the run is no longer live', () => {
-    // A hold is terminal: nothing further changes until the user acts, so
-    // continued polling is pure noise.  An idle card polls not at all.
-    const src = PANEL();
-    expect(src).toMatch(/shouldPoll/);
-    expect(src).toMatch(/run_status === 'running'/);
-  });
-
-  it('keeps the last good context when a poll fails', () => {
-    // A transient error must not clear a hold the user is reading.
-    const src = PANEL();
-    const timer = src.slice(src.indexOf('setInterval'));
-    expect(timer).toMatch(/catch/);
-    expect(timer).not.toMatch(/setCtx\(null\)/);
-  });
-
-  it('still prefers a hold in THIS callee over a healthy sibling', () => {
-    // Preserved through the refactor: a card called twice must not show
-    // the healthy invocation and hide the held one.
-    const src = PANEL();
-    const hits = src.match(/list\.find\(c => c\.held_in_callee\)/g) ?? [];
-    expect(hits.length).toBeGreaterThanOrEqual(2); // initial load + poll
-  });
-});
-
-// ---------------------------------------------------------------- item 3
 
 describe('item 3: no control that can only ever fail', () => {
   it('detects a parallel loop from the block itself', () => {
