@@ -14,9 +14,16 @@ from app.utils.logging_utils import get_mode_aware_logger
 # Module level on purpose: when the install dir is pruned under a running
 # server, a lazy import inside the error handler would itself fail.
 from app.utils.install_integrity import missing_install_message
+# Same reason: the non-retryable ErrorEvent branch below runs exactly when
+# a pruned install has broken TLS, and a lazy import there masked the fault.
+from app.utils.provider_error_chunks import build_provider_error_chunk
 from app.config.env_registry import ziya_env
 from app.utils.sanitizer_util import sanitize_message_content
 from app.hallucination import scannable_line_indices
+from app.utils.research_offer import (
+    RESEARCH_OFFER_CONTINUE_NOTE, RESEARCH_OFFER_STALL_CAP,
+    judge_research_offer, looks_like_research_offer,
+)
 logger = get_mode_aware_logger(__name__)
 
 # Global usage tracker for telemetry
@@ -814,6 +821,11 @@ class StreamingToolExecutor:
                                        side effects as inject_intent_continue;
                                        no/error → end) and logs the probe with
                                        decider='judge'
+          'judge_offer'              — the response ends by offering, or asking
+                                       permission, to investigate further; caller
+                                       resolves via research_offer (yes → inject
+                                       the research-offer note and continue;
+                                       no/error → end)
           'block_continue'           — non-prefill: append assistant + "finish the
                                        code block" user turn; caller manages the
                                        progress-reset stall counter; continue
@@ -890,6 +902,16 @@ class StreamingToolExecutor:
                 # one, so worst case we decline to auto-continue a genuine
                 # "let me check X?" — where letting the user answer is correct.
                 _yields_to_user = assistant_text.rstrip().endswith('?')
+                # An investigation that stops to ask whether it should keep
+                # investigating ("Want me to trace X?", "I can check Y if you'd
+                # like") is not a hand-back the user wants. Prefilter only: the
+                # caller's judge ends the turn for an offer of an action that
+                # changes something, a choice between outcomes, or a request
+                # for something only the user has. Shares intent_stalls, with
+                # its own tighter cap.
+                if (_clean_stop and intent_stalls < RESEARCH_OFFER_STALL_CAP
+                        and looks_like_research_offer(assistant_text)):
+                    return ('judge_offer', 'no_prefill_offer_prefilter', None)
                 if (_clean_stop and _has_intent and not _yields_to_user
                         and intent_stalls < self._INTENT_CONTINUE_STALL_CAP):
                     # Prefilter only — substring matching cannot distinguish a
@@ -5641,6 +5663,20 @@ Please retry the tool call with valid JSON. Ensure:
                             else:
                                 _verdict, _reason = 'end', 'no_prefill_end'
 
+                        if _verdict == 'judge_offer':
+                            # Fail-closed like the intent judge: error or "no"
+                            # ends the turn, so an offer to post, commit or
+                            # apply something is never acted on unapproved.
+                            _offer_yes = await judge_research_offer(assistant_text)
+                            logger.info(
+                                f"⚖️ RESEARCH_OFFER_JUDGE: prefilter matched, judge says "
+                                f"{'continue' if _offer_yes else 'end'} (iteration={iteration})"
+                            )
+                            if _offer_yes:
+                                _verdict, _reason = 'inject_intent_continue', 'no_prefill_offer_continue'
+                            else:
+                                _verdict, _reason = 'end', 'no_prefill_end'
+
                         # The iteration-end block above ("Add assistant response
                         # to conversation") has already appended this turn's
                         # text whenever assistant_text is non-empty, which is
@@ -5682,7 +5718,11 @@ Please retry the tool call with valid JSON. Ensure:
                                 conversation.append({"role": "assistant", "content": assistant_text})
                             conversation.append({
                                 "role": "user",
-                                "content": "[System: You described an action you intend to take but have not taken it yet. Proceed now — either call the tool you described, or if no action is actually needed, give your final answer.]"
+                                "content": (
+                                    RESEARCH_OFFER_CONTINUE_NOTE
+                                    if _reason == 'no_prefill_offer_continue' else
+                                    "[System: You described an action you intend to take but have not taken it yet. Proceed now — either call the tool you described, or if no action is actually needed, give your final answer.]"
+                                ),
                             })
                             continue
                         if _verdict == 'block_continue':
