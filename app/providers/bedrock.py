@@ -25,6 +25,7 @@ from app.providers.base import (
     ErrorEvent,
     ErrorType,
     LLMProvider,
+    PassbackBlock,
     ProviderConfig,
     ProcessingEvent,
     StreamEnd,
@@ -683,6 +684,11 @@ class BedrockProvider(LLMProvider):
             # Anthropic-format tool_result blocks may carry image content
             # blocks; deliverable only if the model itself has vision.
             "image_tool_results": self.model_config.get("supports_vision", False),
+            # Deferred tool definitions + the API's tool search on the Invoke
+            # API (design/mcp-on-demand.md).  Opt-in per model: the explicit
+            # config flag, the same rule native_search_for applies for the
+            # prompt builder.
+            "tool_search": self.model_config.get("supports_tool_search") is True,
         }
         return bool(feature_map.get(feature_name, False))
 
@@ -1036,6 +1042,11 @@ class BedrockProvider(LLMProvider):
         # content-block index.  A signature_delta is what closes each one; a
         # block without a signature cannot be echoed back and is dropped.
         _thinking_blocks: Dict[int, Dict[str, Any]] = {}
+        # Tool-search blocks (server_tool_use, tool_search_tool_result) by
+        # index, echoed back verbatim at content_block_stop.  A
+        # server_tool_use's input streams as input_json_delta like a
+        # tool_use's; the result block arrives whole on its start event.
+        _passback: Dict[int, Dict[str, Any]] = {}
 
         # Pending read task — ensures we never call next(stream_iter) concurrently.
         # When a timeout occurs we must NOT start a new to_thread call; instead we
@@ -1210,6 +1221,14 @@ class BedrockProvider(LLMProvider):
                         "index": idx,
                     }
                     yield ToolUseStart(id=tool_id, name=tool_name, index=idx)
+                elif block_type in ("server_tool_use", "tool_search_tool_result"):
+                    # Never a ToolUseStart: the search ran on the provider's
+                    # side, and a tool_result for a srvtoolu_ id is rejected.
+                    _blk = dict(cb)
+                    if block_type == "server_tool_use":
+                        _blk["input"] = {}
+                        _blk["_json"] = ""
+                    _passback[idx] = _blk
                 elif block_type:
                     logger.warning(
                         "🔍 UNHANDLED content_block_start type=%r index=%s keys=%s",
@@ -1253,13 +1272,16 @@ class BedrockProvider(LLMProvider):
 
                 elif delta_type == "input_json_delta":
                     partial = delta.get("partial_json", "")
-                    _tool_json_chars += len(partial)
-                    # Accumulate for ToolUseEnd
-                    for tid, tdata in active_tools.items():
-                        if tdata["index"] == idx:
-                            tdata["partial_json"] += partial
-                            break
-                    yield ToolUseInput(partial_json=partial, index=idx)
+                    if idx in _passback:
+                        _passback[idx]["_json"] += partial
+                    else:
+                        _tool_json_chars += len(partial)
+                        # Accumulate for ToolUseEnd
+                        for tid, tdata in active_tools.items():
+                            if tdata["index"] == idx:
+                                tdata["partial_json"] += partial
+                                break
+                        yield ToolUseInput(partial_json=partial, index=idx)
 
                 else:
                     logger.warning(
@@ -1307,6 +1329,16 @@ class BedrockProvider(LLMProvider):
                             content=_tb.get("thinking", ""),
                             signature=None, index=idx,
                         )
+                _pb = _passback.pop(idx, None)
+                if _pb is not None:
+                    _raw = _pb.pop("_json", "")
+                    if _pb.get("type") == "server_tool_use":
+                        try:
+                            _pb["input"] = json.loads(_raw) if _raw else {}
+                        except json.JSONDecodeError:
+                            _pb["input"] = {}
+                        logger.info(f"🔎 TOOL_SEARCH: {_pb.get('name')} {_pb['input']}")
+                    yield PassbackBlock(block=_pb, index=idx)
                 # Find the tool that just finished
                 finished_id = None
                 for tid, tdata in active_tools.items():

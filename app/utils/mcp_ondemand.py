@@ -411,15 +411,33 @@ def native_tool_search_supported(model_config: Optional[Mapping[str, Any]], mode
 
 def native_search_for(endpoint: Optional[str], model_cfg: Optional[Mapping[str, Any]],
                       model_id: Optional[str] = None) -> bool:
-    """Whether a request routed by ``endpoint`` + ``model_cfg`` takes the
-    Anthropic Messages path AND a model that accepts deferred tools.  The
-    prompt builder and the executor must agree on this, so both call it:
-    the catalog must name the search the model actually has."""
+    """Whether a request routed by ``endpoint`` + ``model_cfg`` is sent with
+    deferred tools.  The prompt builder and the executor must agree on this,
+    so the prompt builder calls it and each provider's
+    ``supports_feature('tool_search')`` applies the same rule: the catalog
+    must name the search the model actually has.
+
+    * Anthropic Messages path (``anthropic``, or ``bedrock`` through the
+      mantle gateway on its Anthropic API): a Claude model at 4.5 or later,
+      or the explicit ``supports_tool_search`` flag.
+    * Bedrock Invoke API (plain ``bedrock``): only a model whose config sets
+      ``supports_tool_search: True``.  Opt-in per model because acceptance
+      was verified live per model (fable5.2, 2026-11-14), not by version.
+    """
     cfg = model_cfg or {}
-    anthropic_path = endpoint == "anthropic" or (
-        endpoint == "bedrock" and cfg.get("endpoint_override") == "bedrock-mantle"
-        and cfg.get("mantle_api") != "openai-responses")
-    return anthropic_path and native_tool_search_supported(cfg, model_id or cfg.get("model_id") or "")
+    if endpoint == "anthropic" or (
+            endpoint == "bedrock" and cfg.get("endpoint_override") == "bedrock-mantle"):
+        if cfg.get("mantle_api") == "openai-responses":
+            return False
+        return native_tool_search_supported(cfg, model_id or cfg.get("model_id") or "")
+    if endpoint == "bedrock" and not cfg.get("endpoint_override"):
+        return invoke_tool_search_enabled(cfg)
+    return False
+
+
+def invoke_tool_search_enabled(model_config: Optional[Mapping[str, Any]]) -> bool:
+    """The Bedrock Invoke API rule: the explicit flag, nothing inferred."""
+    return (model_config or {}).get("supports_tool_search") is True
 
 
 def native_tool_payload(pairs: Sequence[Tuple[Any, Dict[str, Any]]], server_of,

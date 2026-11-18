@@ -65,7 +65,11 @@ def test_native_search_for_is_the_anthropic_messages_path_only():
     cfg = {"model_id": "claude-sonnet-4-6"}
     assert od.native_search_for("anthropic", cfg)
     assert od.native_search_for("bedrock", {**cfg, "endpoint_override": "bedrock-mantle"})
-    assert not od.native_search_for("bedrock", cfg)                      # Invoke API: follow-up
+    # Invoke API: opt-in per model, never inferred from the version.
+    assert not od.native_search_for("bedrock", cfg)
+    assert od.native_search_for("bedrock", {**cfg, "supports_tool_search": True})
+    assert not od.native_search_for("bedrock", {**cfg, "supports_tool_search": False})
+    assert not od.native_search_for("openai", {**cfg, "supports_tool_search": True})
     assert not od.native_search_for("bedrock", {**cfg, "endpoint_override": "bedrock-mantle",
                                                 "mantle_api": "openai-responses"})
     assert not od.native_search_for("openai", cfg)
@@ -239,3 +243,100 @@ def test_executor_defers_within_reach_on_native_providers():
     # the loader rebuild is gated off on the native path
     loop = inspect.getsource(StreamingToolExecutor._stream_with_tools_impl)
     assert "PassbackBlock" in loop
+
+
+# -- Bedrock Invoke API (BedrockProvider) -------------------------------------
+#
+# Event shapes are the ones recorded live from us.anthropic.claude-fable-5-2
+# on bedrock-runtime (.ziya/probe_native_tool_search/invoke-*.jsonl, phase 3).
+
+def _bedrock_provider(flag=True):
+    from app.providers.bedrock import BedrockProvider
+    p = BedrockProvider.__new__(BedrockProvider)
+    p.model_id = "us.anthropic.claude-fable-5-2"
+    p.model_config = {"family": "claude", "supports_thinking": True,
+                      **({"supports_tool_search": True} if flag else {})}
+    return p
+
+
+def _chunk(obj):
+    import json as _json
+    return {"chunk": {"bytes": _json.dumps(obj).encode()}}
+
+
+def _invoke_search_stream():
+    return [
+        _chunk({"type": "message_start", "message": {"usage": {"input_tokens": 5}}}),
+        _chunk({"type": "content_block_start", "index": 0, "content_block": {
+            "type": "server_tool_use", "id": "srvtoolu_bdrk_1", "name": "tool_search_tool_regex", "input": {}}}),
+        _chunk({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"patt'}}),
+        _chunk({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": 'ern": "jira"}'}}),
+        _chunk({"type": "content_block_stop", "index": 0}),
+        _chunk({"type": "content_block_start", "index": 1, "content_block": {
+            "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_bdrk_1",
+            "content": {"type": "tool_search_tool_search_result",
+                        "tool_references": [{"type": "tool_reference", "tool_name": "mcp_get_jira_issue"}]}}}),
+        _chunk({"type": "content_block_stop", "index": 1}),
+        _chunk({"type": "content_block_start", "index": 2, "content_block": {
+            "type": "tool_use", "id": "toolu_bdrk_2", "name": "mcp_get_jira_issue", "input": {}}}),
+        _chunk({"type": "content_block_delta", "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": '{"issue_key": "RAD-1"}'}}),
+        _chunk({"type": "content_block_stop", "index": 2}),
+        _chunk({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 9}}),
+        _chunk({"type": "message_stop"}),
+    ]
+
+
+def test_bedrock_provider_gate_is_the_explicit_flag_and_matches_the_prompt_builder():
+    on, off = _bedrock_provider(True), _bedrock_provider(False)
+    assert on.supports_feature("tool_search") is True
+    assert off.supports_feature("tool_search") is False
+    # The seam: provider (executor's gate) and native_search_for (prompt
+    # builder's gate) give the same answer for the same config.
+    for p in (on, off):
+        assert od.native_search_for("bedrock", p.model_config, p.model_id) is p.supports_feature("tool_search")
+
+
+@pytest.mark.asyncio
+async def test_bedrock_stream_yields_passback_blocks_for_search_events():
+    from app.providers.base import PassbackBlock, ToolUseEnd, ToolUseInput, ToolUseStart
+    p = _bedrock_provider()
+    from app.providers.base import ProviderConfig
+    events = [e async for e in p._parse_stream_events(
+        {"body": iter(_invoke_search_stream())}, ProviderConfig(temperature=None))]
+    pb = [e for e in events if isinstance(e, PassbackBlock)]
+    assert [(b.index, b.block["type"]) for b in pb] == [(0, "server_tool_use"), (1, "tool_search_tool_result")]
+    assert pb[0].block == {"type": "server_tool_use", "id": "srvtoolu_bdrk_1",
+                           "name": "tool_search_tool_regex", "input": {"pattern": "jira"}}
+    assert pb[1].block["tool_use_id"] == "srvtoolu_bdrk_1"
+    assert pb[1].block["content"]["tool_references"][0]["tool_name"] == "mcp_get_jira_issue"
+    # The search is not a client tool call: no ToolUse* event carries its id
+    # or index (the executor would try to execute it and return a
+    # tool_result for a srvtoolu_ id, which the API rejects).
+    assert [(t.id, t.name, t.index) for t in events if isinstance(t, ToolUseEnd)] == [
+        ("toolu_bdrk_2", "mcp_get_jira_issue", 2)]
+    assert [t.id for t in events if isinstance(t, ToolUseStart)] == ["toolu_bdrk_2"]
+    assert {t.index for t in events if isinstance(t, ToolUseInput)} == {2}
+    # And the echoed assistant turn keeps the three blocks in order.
+    tu = [e for e in events if isinstance(e, ToolUseEnd)]
+    msg = p.build_assistant_message(
+        "", [{"id": t.id, "name": t.name, "input": t.input, "index": t.index} for t in tu],
+        thinking_blocks=[{**b.block, "_index": b.index} for b in pb])
+    assert [c["type"] for c in msg["content"]] == ["server_tool_use", "tool_search_tool_result", "tool_use"]
+    assert all("_index" not in c for c in msg["content"])
+
+
+def test_bedrock_request_body_carries_deferred_tools_unchanged():
+    from app.providers.base import ProviderConfig
+    p = _bedrock_provider()
+    tools = od.native_tool_payload(
+        [(None, {"name": "mcp_a", "input_schema": {"type": "object"}}),
+         ("srv", {"name": "mcp_b", "input_schema": {"type": "object"}})], lambda s: s, ["srv"])
+    body = p._build_request_body([{"role": "user", "content": "hi"}], "sys", tools,
+                                 ProviderConfig(temperature=None))
+    assert body["tools"][0] == od.TOOL_SEARCH_ENTRY
+    assert body["tools"][-1] == {"name": "mcp_b", "input_schema": {"type": "object"}, "defer_loading": True}
+    # A deferred tool with cache_control is a 400.
+    assert not any("cache_control" in t for t in body["tools"])

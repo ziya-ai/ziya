@@ -141,11 +141,129 @@ What changes on that path, and nowhere else:
   `native_search_for`, so the wording and the tool list cannot disagree.
 - A deferred tool may not carry `cache_control` (400); the breakpoint stays
   on the system block.
+- The executor's gate is `provider.supports_feature('tool_search')`.  The
+  commit that landed this path did not add that entry to
+  `AnthropicDirectProvider.supports_feature`, so the executor never deferred
+  while the prompt builder (which calls `native_search_for`) named the API's
+  search.  Fixed 2026-11-14: the provider answers with
+  `native_tool_search_supported(model_config, model_id)`.
+
+### Measured 2026-11-14 (`scripts/probe_native_tool_search.py`)
+
+One run, `anthropic.claude-fable-5` on bedrock-mantle us-east-1, through
+`BedrockMantleProvider.stream_response` and `build_assistant_message`, with
+322 real tool schemas (310 on seven within-reach servers), a 13K-token system
+prompt, adaptive thinking, canned tool results.  Three user turns, each
+needing a tool the conversation had not used (two Jira, one Slack).  Rows in
+`.ziya/probe_native_tool_search/run-20261114-044454-4beb0893.jsonl`.
+
+| arm | requests | input | cache write | cache read | mid-turn full misses | peak context | wall |
+|---|---|---|---|---|---|---|---|
+| eager (all on hand) | 6 | 322 | 177,089 | 884,170 | 0 | 177,178 | 16.1 s |
+| loader (search + load) | 12 | 1,869 | 61,656 | 121,483 | 3 | 17,396 | 29.7 s |
+| native (deferred) | 6 | 321 | 28,664 | 94,009 | 0 | 28,753 | 25.6 s |
+
+- Native worked on every turn: `server_tool_use` and `tool_search_tool_result`
+  came back as passback blocks, the found tool was called in the same
+  response, and all three continuations that echoed the blocks were accepted
+  (with a signed thinking block in the same turn).
+- The first native request wrote 13,222 cache tokens against 176,603 for
+  eager: the 310 deferred definitions are outside the prefix.
+- The loader path needed two extra requests per new tool and re-wrote its
+  whole prefix after each load (cache read 0 on the request after
+  `load_server_tools`).  With a 13K prefix that is cheap; the cost grows with
+  the system prompt and history, which this probe kept small.
+- Native context grows by whatever a search matches, and Ziya does not
+  control that: the pattern `comment` expanded about 11K tokens of
+  definitions that stayed for the rest of the conversation.  The loader path
+  peaked lower (17.4K against 28.8K) because it loads named tools only.
+- A search inside a response is slower than a plain request (5.7 s and 8.5 s
+  against about 2.4 s), so native was faster than the loader path overall but
+  slower than eager.
+- The API validates a deferred tool's schema like any other (a root-level
+  `oneOf` is a 400).
+
+Not covered: the executor's own `_load_and_prepare_tools` on this path
+against a real bench, the Anthropic API directly, and more than one run.
+
+### Reuse turns and the Invoke API, measured 2026-11-14
+
+Second mantle run with three more turns that reuse tools already found
+(`run-20261114-045809-836fb4e5.jsonl`).  No reuse turn searched or loaded
+again on any path.  Sums over the three reuse turns:
+
+| arm | requests | cache read | cache write | input cost (in + 1.25 write + 0.1 read) | wall | context |
+|---|---|---|---|---|---|---|
+| eager | 6 | 1,064,352 | 858 | 107,758 | 24.4 s | 178K |
+| loader | 6 | 105,708 | 778 | 11,793 | 16.1 s | 18K |
+| native | 6 | 173,902 | 862 | 18,718 | 21.4 s | 29.5K |
+
+After the search a native turn is an ordinary cached request; it carries
+the definitions its searches matched (here about 11K more than the loader
+path, from one broad pattern) as cache read on every later request.
+
+Invoke API (`scripts/probe_invoke_tool_search.py`,
+`invoke-20261114-045549-430d706d.jsonl`): `us.anthropic.claude-fable-5-2` on
+bedrock-runtime us-west-2 accepts the search entry and `defer_loading` with
+no `anthropic_beta` and with `tool-search-tool-2025-10-19`;
+`advanced-tool-use-2025-11-20` is a ValidationException.  The stream events
+are the SDK path's: `content_block_start` with `server_tool_use` (id
+`srvtoolu_bdrk_…`, input by `input_json_delta`) and
+`tool_search_tool_result` (whole on the start event).  Six turns with the
+response content echoed verbatim were accepted, including thinking blocks
+between two searches in one response.  Two things seen there and not on
+mantle: a request containing a search reported the prefix as cache read
+several times (51K and 71K against a 13K prefix), and with a cache
+breakpoint on the system block only, the expanded definitions were billed as
+uncached input on every later request (28K by turn 6).  The shipped
+provider's conversation breakpoint covered them in the mantle run.
+
+Checked on the Invoke path the same day (`--conv-cache bedrock`, which calls
+`BedrockProvider.prepare_cache_control`; `invoke-20261114-050706-b5b9094b.jsonl`):
+the found definitions are cached.  The breakpoint sits four messages from the
+end, so the one request after a search bills them as input once (12,287 and
+10,080 tokens); from then on each request had 138–339 uncached input tokens
+and about 37K cache read.  With the Anthropic provider's placement
+(`messages[-2]`, `invoke-20261114-050819-b77ec751.jsonl`) that one-off does
+not occur (23–89 input tokens on the request after a search).
+
+### Invoke API implementation (2026-11-14)
+
+`BedrockProvider` handles the two search block types in its raw-event parser
+(`server_tool_use` input by `input_json_delta`, `tool_search_tool_result`
+whole on the start event) and yields `PassbackBlock`s; no `ToolUse*` event is
+emitted for a search.  No `anthropic_beta` entry is sent.  The gate on this
+path is the explicit model-config flag `supports_tool_search: True`
+(`mcp_ondemand.invoke_tool_search_enabled`), used by both
+`BedrockProvider.supports_feature('tool_search')` and `native_search_for`;
+it is set for `fable5.2`, the one model called live.  Other Invoke-API Claude
+models stay on the loader path until each is probed.
 
 Unchanged: shelving, the bench card's placement, the ✦ event (there is no
 load event on this path; the found tool's own call records usage).  The
 bench's "loaded" chip does not show for native-path conversations — the
 API, not Ziya, knows what was found.
+
+### Replay rules, probed 2026-11-16 (`scripts/probe_tool_search_pairing.py`)
+
+`global.anthropic.claude-fable-5-2`, Invoke API, a genuine search turn
+replayed in hand-built histories
+(`.ziya/probe_native_tool_search/pairing-20261116-154812-964ccdc9.jsonl`):
+
+- A `server_tool_use` with no `tool_search_tool_result` for its id in the
+  same assistant message is a 400: "`tool_search_tool_regex` tool use with id
+  … was found without a corresponding `tool_search_tool_result` block".
+- The result does not have to follow the use directly: `[server_tool_use,
+  text, tool_search_tool_result, tool_use]` was accepted.
+- A cache marker on the use or on the result is accepted.
+- A client `tool_use` placed BEFORE the search blocks in the same message is
+  refused ("`tool_use` ids were found without `tool_result` blocks
+  immediately after"), even with its `tool_result` in the next message.  The
+  API never returns that order; do not construct it.
+
+`mcp_ondemand.drop_unpaired_searches` applies the first rule to every
+outgoing request (see the 2026-11-16 CHANGELOG entry for the report that
+prompted it, whose cause is not established).
 
 ## Design
 
