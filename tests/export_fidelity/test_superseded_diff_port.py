@@ -79,6 +79,20 @@ def test_sequential_pair_not_treated_as_supersession():
     assert CE._find_superseded_diff_parts([earlier, later]) == {}
 
 
+def test_one_line_replacement_revised_later_is_superseded():
+    # 1 remove / 1 add passes the count test for a sequential pair, but both
+    # diffs remove the SAME line: the later is a second attempt at the edit.
+    earlier = _diff("one.py", 1, 3, ["STALE"], removes=1)
+    later = _diff("one.py", 1, 3, ["LIVE"], removes=1)
+    assert CE._find_superseded_diff_parts([earlier, later]) == {0: {0}}
+
+
+def test_one_line_replacements_of_different_lines_are_both_kept():
+    earlier = _diff("one.py", 1, 3, ["FIRST"], removes=1)
+    later = _diff("one.py", 1, 3, ["SECOND"], removes=1).replace("-removed_line", "-another_line")
+    assert CE._find_superseded_diff_parts([earlier, later]) == {}
+
+
 def test_multi_file_fence_supersedes_only_matching_section():
     # One fence with two files; a later fence supersedes only file m.py.
     block1 = (

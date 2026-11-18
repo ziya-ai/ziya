@@ -15,6 +15,7 @@ import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import { db } from '../utils/db';
 import { buildSearchPattern, buildSearchSplitPattern } from '../utils/searchPattern';
+import { useDiffWaitLookup } from '../utils/diffWaitStore';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal, globalMenuItemState } from '../utils/folderUtil';import { v4 as uuidv4 } from 'uuid';
 import { dispatchHandoffOpen } from '../utils/handoffOpen';
 import { handoffSegmentOrdinals } from '../utils/lineage';
@@ -187,6 +188,9 @@ interface ChatTreeItemProps {
   /** Epoch seconds the user last opened this conversation (utils/jobSeen). */
   jobsSeenAt?: number;
   hasUnreadResponse?: boolean;
+  /** The turn is held until its diffs are applied (design/await-diff-apply.md):
+   *  it needs the user, so the row shows the check, not "Processing…". */
+  awaitingApply?: boolean;
   conversationCount?: number;
   // Direct child folders (folder rows only) — shown in the trailing badge so
   // a folder containing only subfolders is distinguishable from an empty one.
@@ -269,6 +273,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     jobs,
     jobsSeenAt,
     hasUnreadResponse = false,
+    awaitingApply = false,
     conversationCount = 0,
     subfolderCount = 0,
     isTargetFolder = false,
@@ -485,7 +490,13 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
               />
             ) : (
               <Box sx={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, overflow: 'hidden' }}>
-                {hasUnreadResponse && !isCurrentItem && (
+                {awaitingApply && (
+                  <Tooltip title="Waiting for you to apply its diffs">
+                    <CheckCircleIcon data-testid="chat-row-awaiting-apply" fontSize="small" color="success"
+                      sx={{ mr: 0.5, fontSize: compact ? 14 : 16, flexShrink: 0 }} />
+                  </Tooltip>
+                )}
+                {hasUnreadResponse && !isCurrentItem && !awaitingApply && (
                   <Tooltip title="Finished while you were away">
                     <CheckCircleIcon data-testid="chat-row-unread" fontSize="small" color="success"
                       sx={{ mr: 0.5, fontSize: compact ? 14 : 16, flexShrink: 0 }} />
@@ -1187,6 +1198,7 @@ const MUIChatHistory = () => {
     moveConversationToFolder,
     forkConversation,
   } = useConversationList();
+  const isAwaitingApply = useDiffWaitLookup();
   const {
     currentConversationId,
     setCurrentConversationId,
@@ -4469,6 +4481,9 @@ const MUIChatHistory = () => {
                   node.conversation?.hasUnreadResponse && nodeId.substring(5) !== currentConversationId;
                 const convId = !isFolder && nodeId.startsWith('conv-') ? nodeId.substring(5) : null;
                 const isStreamingConv = !!(convId && streamingConversations.has(convId));
+                // Held for its diffs to be applied.  Only while the stream is
+                // live, so a stale entry cannot outlive its stream.
+                const rowAwaitingApply = isStreamingConv && isAwaitingApply(convId);
                 // Optimistic pre-binding indicator only; every terminal
                 // status is reported by the gear cluster from the bindings
                 // below.  This declaration was overwritten when the
@@ -4580,7 +4595,8 @@ const MUIChatHistory = () => {
                       handoffOrdinal={rowOrdinal}
                       isCurrentItem={isCurrentItem} isGlobalItem={isGlobalItem}
                       isEphemeralItem={isEphemeralItem}
-                      isStreaming={isStreamingConv} hasUnreadResponse={hasUnreadResponse}
+                      isStreaming={isStreamingConv && !rowAwaitingApply} hasUnreadResponse={hasUnreadResponse}
+                      awaitingApply={rowAwaitingApply}
                       activityAt={isStreamingConv && convId ? getProcessingActivityAt(convId) : undefined}
                       isRunningTask={isRunningTaskConv}
                       taskBindings={rowTaskBindings}

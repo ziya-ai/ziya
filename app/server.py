@@ -2242,7 +2242,12 @@ async def stream_chunks(body):
                     mcp_tools = preferred + others
                     logger.info(f"🎯 SKILL_TOOLS: Prioritized {len(preferred)} tools from active skills, {len(others)} others")
 
-                async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id, project_root=project_root):
+                # hold_for_diff_apply: this surface has Apply buttons, so a
+                # response with diffs waits for them (design/await-diff-apply.md).
+                # A server-started turn (app/utils/server_turn.py) has nobody
+                # at the buttons and turns the hold off in its body.
+                async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id, project_root=project_root,
+                                                              hold_for_diff_apply=body.get("config", {}).get("hold_for_diff_apply", True)):
                     chunk_count += 1
                     
                     # Centralized REWIND_MARKER stripping: remove from ALL text content
@@ -2345,6 +2350,9 @@ async def stream_chunks(body):
                         yield f"data: {json.dumps(chunk)}\n\n"
                     elif chunk.get('type') in ('processing', 'processing_state'):
                         # Forward processing/thinking heartbeats to frontend
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    elif chunk.get('type') == 'diff_wait':
+                        # Awaiting-apply indicator; see design/await-diff-apply.md.
                         yield f"data: {json.dumps(chunk)}\n\n"
                     elif chunk.get('type') == 'iteration_continue':
                         # Send heartbeat to flush stream before next iteration

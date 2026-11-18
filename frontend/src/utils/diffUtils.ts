@@ -325,14 +325,34 @@ function rangesOverlap(a: [number, number][], b: [number, number][]): boolean {
     return false;
 }
 
+/** Trimmed text of the lines a diff removes (file headers excluded). */
+function removedLines(diffContent: string): Set<string> {
+    const out = new Set<string>();
+    for (const line of diffContent.split('\n')) {
+        if (!line.startsWith('-') || line.startsWith('---')) continue;
+        const body = line.slice(1).trim();
+        if (body) out.add(body);
+    }
+    return out;
+}
+
 /**
  * Check if two overlapping diffs are sequential (first prepares for the
  * second) rather than the later superseding the earlier.
  *
  * Heuristic: if the earlier diff is predominantly subtractive (removing
  * code to make way) and the later adds new content, they're complementary.
+ *
+ * Not when both remove the same source line: the later diff was then written
+ * against the same base as the earlier, so it is a second attempt at that
+ * edit (once the earlier is applied the line is gone). Counts alone cannot
+ * tell: a one-line replacement is one removal and one addition.
  */
 function isSequentialPair(earlierDiff: string, laterDiff: string): boolean {
+    const earlierRemoved = removedLines(earlierDiff);
+    for (const line of removedLines(laterDiff)) {
+        if (earlierRemoved.has(line)) return false;
+    }
     let earlierAdds = 0, earlierRemoves = 0, laterAdds = 0;
     for (const line of earlierDiff.split('\n')) {
         if (line.startsWith('@@') || line.startsWith('diff ') ||

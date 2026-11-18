@@ -1760,6 +1760,13 @@ export const sendPayload = async (
                     return;
                 }
 
+                // Turn held until its diffs are applied (design/await-diff-apply.md).
+                // Out-of-band state for the awaiting-apply chip; never content.
+                if (unwrappedData.type === 'diff_wait') {
+                    applyDiffWaitEvent(conversationId, unwrappedData);
+                    return;
+                }
+
                 // Feedback delivery acknowledgment. MUST sit with the other type
                 // dispatches, NOT inside the contentToAdd block below: this chunk
                 // carries only a message field, so contentToAdd is empty and the

@@ -2705,7 +2705,7 @@ class StreamingToolExecutor:
         except (ImportError, KeyError, AttributeError, OSError, ValueError) as calib_error:
             logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
 
-    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False, feedback_key: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False, feedback_key: Optional[str] = None, hold_for_diff_apply: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
         """Public entry point — wraps _stream_with_tools_impl with refcounted
         cleanup of the shared per-conversation pending-feedback list (see
         app.server.pending_feedback_lists).  Multiple concurrent generators
@@ -2766,6 +2766,7 @@ class StreamingToolExecutor:
                 tool_denylist=tool_denylist,
                 unattended=unattended,
                 feedback_key=_fb_key,
+                hold_for_diff_apply=hold_for_diff_apply,
                 _monitor_holder=_monitor,
             ):
                 yield chunk
@@ -2796,7 +2797,7 @@ class StreamingToolExecutor:
                         pending_feedback_lists.pop(_fb_key, None)
                     pending_feedback_refcounts.pop(_fb_key, None)
 
-    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False, feedback_key: Optional[str] = None, _monitor_holder: Optional[List[Optional[asyncio.Task]]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False, tool_denylist: Optional[List[str]] = None, unattended: bool = False, feedback_key: Optional[str] = None, hold_for_diff_apply: bool = False, _monitor_holder: Optional[List[Optional[asyncio.Task]]] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # Re-assert the request-scoped project root into THIS task's context.
         #
         # An async generator borrows the caller's context on each __anext__ --
@@ -3035,6 +3036,20 @@ class StreamingToolExecutor:
         conversation, system_content = self._build_conversation_from_messages(messages)
         logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Built conversation with {len(conversation)} messages")
 
+        # Applies made since the model's last turn (app/utils/apply_ledger.py).
+        # A diff applied after its turn ended reached nobody, so the model
+        # could not tell "applied" from "still waiting".  Same opt-in as the
+        # diff-apply hold below: only the web chat has Apply buttons.
+        if hold_for_diff_apply and conversation_id and not unattended and not is_delegate:
+            try:
+                from app.utils import apply_ledger as _al_turn
+                _apply_note = _al_turn.begin_turn(conversation_id, conversation)
+                if _apply_note:
+                    logger.info("⧗ DIFF_APPLY_NOTE: told the model about applies since its last turn "
+                                "(%d line(s))", _apply_note.count("\n"))
+            except Exception as _al_err:  # noqa: BLE001 -- a status note must never break a turn
+                logger.debug(f"apply status note skipped: {_al_err!r}")
+
         # Iterative execution with proper tool result handling
         recent_commands = []  # Track recent commands to prevent duplicates
         using_extended_context = False  # Track if we've enabled extended context
@@ -3216,6 +3231,21 @@ class StreamingToolExecutor:
         # Read-only calls started before message end (app/utils/tool_prestart.py);
         # one prestarter per iteration, reaped when the next attempt starts.
         _prestart = None
+        # Diff-apply hold (design/await-diff-apply.md).  Only the web chat
+        # opts in: it is the one surface with Apply buttons.  Apply results
+        # count after ``_dw_since``; diffs count in the assistant turns
+        # appended after ``_dw_conv_start`` plus the current response.
+        # ``_dw_bounds``: conversation offsets where a user reply ended a
+        # wait.  The reply does not drop the diffs before it; they stay
+        # expected unless the same file is diffed again after it.
+        _dw_since = None
+        _dw_conv_start = 0
+        _dw_bounds = []
+        _dw_note = None
+        if hold_for_diff_apply and conversation_id and not unattended and not is_delegate:
+            from app.utils import apply_ledger as _apply_ledger
+            _dw_since = _apply_ledger.current_seq()
+            _dw_conv_start = len(conversation)
         for iteration in range(max_iterations):
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             # Check for user-requested cancellation before making a new LLM call.
@@ -5180,6 +5210,106 @@ Please retry the tool call with valid JSON. Ensure:
                     yield {'type': 'iteration_continue', 'iteration': iteration + 1}
                     continue  # Immediately start next iteration
                 else:
+                    # Diff-apply hold: a clean end with closed diff fences does
+                    # not end the turn.  Wait (no model call, no timer) until
+                    # every diffed file has an apply result, any apply comes back
+                    # partial/failed, or the user sends a message; then resume
+                    # the same chain with the per-file outcome.
+                    if (_dw_since is not None and assistant_text.strip()
+                            and last_stop_reason in ('end_turn', 'stop', 'stop_sequence')
+                            and not code_block_tracker.get('in_block')):
+                        _dw_segs = []
+                        _dw_prev = _dw_conv_start
+                        for _dw_b in _dw_bounds:
+                            _dw_segs.append(_apply_ledger.turn_text(conversation[_dw_prev:_dw_b]))
+                            _dw_prev = _dw_b
+                        _dw_segs.append(_apply_ledger.turn_text(conversation[_dw_prev:], assistant_text))
+                        _dw_turn = _apply_ledger.expected_for_turn(_dw_segs)
+                        _dw_expected = _dw_turn["expected"]
+                        # Diffs written before this turn (or before the last
+                        # completed wait), and diffs this turn has since
+                        # revised: applying one of those is not an apply of
+                        # the diff being waited on, even for the same file.
+                        _dw_foreign = (_apply_ledger.keys_in(conversation[:_dw_conv_start])
+                                       | _dw_turn["superseded"])
+                        # An answer to a reply that adds no diffs, with
+                        # nothing left unapplied, ends the turn.
+                        if (_dw_expected and _dw_bounds
+                                and not _apply_ledger.expected_from_text(_dw_segs[-1])["expected"]
+                                and _apply_ledger.wait_state(
+                                    conversation_id, _dw_expected, _dw_since, _dw_foreign)["complete"]):
+                            _dw_expected = []
+                        if _dw_expected:
+                            _dw_outcome = None
+                            _dw_last = None
+                            _dw_chip = {}
+                            _dw_state = {}
+                            _dw_beat = time.time()
+                            logger.info(
+                                "⧗ DIFF_WAIT: holding turn for %d file(s): %s",
+                                len(_dw_expected), [e['path'] for e in _dw_expected])
+                            while True:
+                                _dw_state = _apply_ledger.wait_state(
+                                    conversation_id, _dw_expected, _dw_since, _dw_foreign)
+                                _dw_chip = _apply_ledger.chip_view(_dw_state)
+                                if _dw_chip != _dw_last:
+                                    _dw_last = _dw_chip
+                                    yield {'type': 'diff_wait', 'state': 'waiting', **_dw_chip}
+                                if _dw_state['failed']:
+                                    _dw_outcome = 'failed'
+                                    break
+                                if _dw_state['complete']:
+                                    _dw_outcome = 'complete'
+                                    break
+                                if _pending_feedback:
+                                    _dw_outcome = 'feedback'
+                                    break
+                                if cancel_event is not None and cancel_event.is_set():
+                                    break
+                                # Keeps the SSE connection observably alive so a
+                                # closed browser tab tears the generator down.
+                                if time.time() - _dw_beat > 15:
+                                    _dw_beat = time.time()
+                                    yield {'type': 'heartbeat', 'heartbeat': True}
+                                await asyncio.sleep(0.5)
+                            logger.info("⧗ DIFF_WAIT: ended (%s)", _dw_outcome or 'cancelled')
+                            yield {'type': 'diff_wait', 'state': 'done',
+                                   'outcome': _dw_outcome or 'cancelled', **_dw_chip}
+                            if _dw_outcome:
+                                # Handed to the model below (or with the feedback that
+                                # ended the wait); the next turn must not repeat them.
+                                _apply_ledger.mark_state_reported(conversation_id, _dw_state)
+                            if _dw_outcome in ('complete', 'failed'):
+                                # The response is usually already the last
+                                # message (appended on the way here); a second
+                                # copy would replay it twice.
+                                if assistant_text.strip() and not (
+                                        conversation and conversation[-1].get('role') == 'assistant'):
+                                    conversation.append({"role": "assistant", "content": assistant_text})
+                                conversation.append({
+                                    "role": "user",
+                                    "content": _apply_ledger.format_report(_dw_state, _dw_outcome),
+                                })
+                                _dw_conv_start = len(conversation)
+                                _dw_since = _apply_ledger.current_seq()
+                                _dw_bounds = []
+                                yield track_yield({
+                                    'type': 'text',
+                                    'content': ("\n\n**✅ All diffs applied — continuing.**\n\n"
+                                                if _dw_outcome == 'complete' else
+                                                "\n\n**⚠️ An apply did not succeed cleanly — reporting it.**\n\n"),
+                                })
+                                # The notice is text, which the client takes as
+                                # the model streaming (state -> idle); restore
+                                # the waiting-for-model spinner for the resume.
+                                yield {
+                                    'type': 'processing_state',
+                                    'state': 'awaiting_model_response',
+                                    'iteration': iteration + 1,
+                                }
+                                continue
+                            if _dw_outcome == 'feedback':
+                                _dw_note = _apply_ledger.format_report(_dw_state, 'feedback')
                     # Check for pending feedback without blocking.
                     # The feedback monitor runs continuously so any messages
                     # already received are in _pending_feedback right now.
@@ -5216,14 +5346,23 @@ Please retry the tool call with valid JSON. Ensure:
                         # so the model knows what it said and can respond to the
                         # feedback in context.  Without this, two consecutive user
                         # messages appear and the model loses its own output.
-                        if assistant_text.strip():
+                        # It is usually already the last message (appended when
+                        # the iteration ended); a second copy replays the
+                        # response twice and doubles the diff-apply hold's count.
+                        if assistant_text.strip() and not (
+                                conversation and conversation[-1].get('role') == 'assistant'):
                             conversation.append({"role": "assistant", "content": assistant_text})
 
                         # Add feedback to conversation
                         conversation.append({
                             "role": "user",
-                            "content": f"[User feedback]: {combined_feedback}"
+                            # A diff-apply wait ended by this message hands the
+                            # model what was applied before the user replied.
+                            "content": ((_dw_note + "\n\n") if _dw_note else "")
+                                       + f"[User feedback]: {combined_feedback}"
                         })
+                        _dw_note = None
+                        _dw_bounds.append(len(conversation))
                         
                         # Notify user
                         yield track_yield({
@@ -5235,6 +5374,13 @@ Please retry the tool call with valid JSON. Ensure:
                             'type': 'feedback_delivered',
                             'message': combined_feedback[:80],
                         })
+                        # Same as the diff-wait resume: the feedback notice
+                        # cleared the spinner; the model call is next.
+                        yield {
+                            'type': 'processing_state',
+                            'state': 'awaiting_model_response',
+                            'iteration': iteration + 1,
+                        }
                         
                         # Continue to next iteration so model can respond
                         logger.debug(f"🔄 PRE-END FEEDBACK: Continuing to next iteration to process feedback")

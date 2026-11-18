@@ -148,3 +148,26 @@ describe('changeSignature', () => {
         expect(sig).toEqual(new Set(['-removed_thing()', '+added_thing()']));
     });
 });
+
+// A sequence (remove, then add) is told from a revision by WHAT is removed,
+// not by counts: a one-line replacement has one removal and one addition,
+// which the count test alone reads as "clearing the way".
+describe('a revision removes the same line again; a sequence cannot', () => {
+    it('supersedes a one-line replacement that is revised later', () => {
+        const first = diff('@@ -10,3 +10,3 @@', ['     keep', '-    timeout = 30', '+    timeout = 60', '     more']);
+        const second = diff('@@ -10,3 +10,3 @@', ['     keep', '-    timeout = 30', '+    timeout = 45', '     more']);
+        expect(findSupersededDiffIndices([first, second])).toEqual(new Set([0]));
+    });
+
+    it('supersedes a removal that is revised to remove the same lines and add', () => {
+        const first = diff('@@ -10,3 +10,1 @@', ['     keep', '-    old_line_alpha()', '-    old_line_beta()']);
+        const second = diff('@@ -10,3 +10,2 @@', ['     keep', '-    old_line_alpha()', '-    old_line_beta()', '+    new_line()']);
+        expect(findSupersededDiffIndices([first, second])).toEqual(new Set([0]));
+    });
+
+    it('keeps one-line replacements of two different lines in the same range', () => {
+        const first = diff('@@ -10,3 +10,3 @@', ['     keep', '-    timeout = 30', '+    timeout = 60', '     retries = 3']);
+        const second = diff('@@ -10,3 +10,3 @@', ['     keep', '     timeout = 60', '-    retries = 3', '+    retries = 5']);
+        expect(findSupersededDiffIndices([first, second])).toEqual(new Set());
+    });
+});

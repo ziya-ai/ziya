@@ -125,6 +125,9 @@ class DiffValidationHook:
         # validation_retry event so the frontend can mark exactly those
         # fences unappliable and explain the pause before the correction.
         self.last_rejected: List[Dict[str, Any]] = []
+        # Fences not validated because the apply ledger already holds their
+        # outcome, as {file_path, body_hash, reason}; see validate_and_enhance.
+        self.settled_diffs: List[Dict[str, Any]] = []
         # The phrase by which the most recent response cited a diff it never
         # emitted (app/utils/phantom_diff.py), or None.  server.py reads it
         # to word the correction request: this is "nothing was produced",
@@ -269,9 +272,29 @@ class DiffValidationHook:
         self.phantom_reference = None
         self.phantom_evidence = []
         feedback_parts: List[str] = []
+        settled = self._settled_parts(content)
         for diff_info in self.detect_completed_diffs(content):
             # Two byte-identical fences share a key; the second is a no-op.
             if diff_info["diff_key"] in self.validated_diffs:
+                continue
+            # Already through the Apply button (or overtaken by a later
+            # applied diff for the same file).  This runs after the whole
+            # stream, which the diff-apply hold keeps open across applies,
+            # so the live file is no longer the base the fence was written
+            # against; dry-running it reports a diff that applied as failed.
+            reason = self._settled_reason(settled, diff_info)
+            if reason:
+                self.validated_diffs[diff_info["diff_key"]] = True
+                self.settled_diffs.append({
+                    "file_path": diff_info["file_path"],
+                    "body_hash": diff_info["body_hash"],
+                    "reason": reason,
+                })
+                if reason == "applied":
+                    self.successful_diffs.append(diff_info["file_path"])
+                logger.info(
+                    f"⏭️ Skipping validation of diff for {diff_info['file_path']}: "
+                    f"{reason} (apply ledger)")
                 continue
             feedback = self._validate_one(diff_info, model_messages, send_event)
             if feedback:
@@ -312,6 +335,38 @@ class DiffValidationHook:
                 })
             return phantom_diff_feedback(phrase, self.phantom_evidence)
         return None
+
+    def _settled_parts(self, content: str) -> Dict[tuple, str]:
+        """apply_ledger.settled_parts for this request's conversation.
+
+        The id comes from the constructor, else from the request context
+        (server.stream_chunks sets it before streaming).  Empty when there
+        is no conversation, no ledger entry, or anything goes wrong: the
+        fence is then validated as before.
+        """
+        try:
+            cid = self.conversation_id
+            if not cid:
+                from app.context import get_conversation_id_or_none
+                cid = get_conversation_id_or_none()
+            if not cid:
+                return {}
+            from app.utils import apply_ledger
+            return apply_ledger.settled_parts(cid, content)
+        except Exception as e:  # noqa: BLE001 -- fall back to validating
+            logger.debug(f"apply ledger lookup skipped: {e!r}")
+            return {}
+
+    @staticmethod
+    def _settled_reason(settled: Dict[tuple, str], diff_info: Dict[str, Any]) -> Optional[str]:
+        if not settled or not diff_info.get("file_path"):
+            return None
+        from app.utils import apply_ledger
+        key = apply_ledger.diff_key(diff_info["diff_content"])
+        if not key:
+            return None
+        path = str(diff_info["file_path"]).strip().lstrip("./")
+        return settled.get((path, key))
 
     def _validate_one(
         self,
@@ -572,6 +627,7 @@ class DiffValidationHook:
         self.successful_diffs.clear()
         self.failed_diff_details.clear()
         self.added_files.clear()
+        self.settled_diffs.clear()
         self.created_in_response.clear()
         self.phantom_reference = None
         self.phantom_evidence = []

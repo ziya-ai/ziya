@@ -596,7 +596,23 @@ def _diff_is_sequential_pair(earlier_diff: str, later_diff: str) -> bool:
 
     Earlier diff is predominantly subtractive (removing code to make way) and
     the later adds new content -> complementary, NOT a supersession.
+
+    Two diffs that remove the same source line were written against the same
+    base: the later is a revision, whatever the add/remove counts.
     """
+    def _removed(diff: str) -> set:
+        out = set()
+        for line in diff.split('\n'):
+            if not line.startswith('-') or line.startswith('---'):
+                continue
+            body = line[1:].strip()
+            if body:
+                out.add(body)
+        return out
+
+    if _removed(earlier_diff) & _removed(later_diff):
+        return False
+
     earlier_adds = earlier_removes = later_adds = 0
     for line in earlier_diff.split('\n'):
         if (line.startswith('@@') or line.startswith('diff ')

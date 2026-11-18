@@ -170,6 +170,16 @@ async def apply_changes(request: Request):
             if _auto:
                 result = {**result, 'auto_context': _auto}
         
+        # A turn held for this diff (design/await-diff-apply.md) resumes once
+        # every diffed file has a result; record this one.
+        if _conversation_id and isinstance(result, dict):
+            try:
+                from app.utils import apply_ledger
+                apply_ledger.record(_conversation_id, raw_path, result, request_id=request_id,
+                                    diff=target_diff)
+            except Exception as _al_err:  # noqa: BLE001
+                logger.warning(f"apply ledger update failed: {_al_err}")
+
         # Check the result status and return appropriate response
         status_code = 200 # Default to OK
         if result.get('status') == 'error':

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Button, Tooltip } from 'antd';
 import { useActiveChat } from '../context/ActiveChatContext';
+import { useDiffWait } from '../utils/diffWaitStore';
 
 interface StopStreamButtonProps {
   conversationId: string;
@@ -23,6 +24,10 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
   } = useActiveChat();
 
   const isStreaming = streamingConversations.has(conversationId);
+  // A turn held for its diffs to be applied is not generating, so the stop
+  // sign becomes "Stop waiting": a reply does not release the turn while
+  // diffs are unapplied (design/await-diff-apply.md).
+  const diffWait = useDiffWait(conversationId);
   const processingState = getProcessingState(conversationId);
   const isThinking = processingState === 'model_thinking';
   const isProcessingTools = processingState === 'processing_tools';
@@ -85,6 +90,17 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
       </text>
     </svg>
   );
+
+  if (diffWait) {
+    return (
+      <Tooltip title="End this turn without waiting for the remaining diffs">
+        <Button type="link" size={size} onClick={handleStopStream}
+          data-testid="stop-diff-wait" style={{ padding: '0 4px', ...style }}>
+          Stop waiting
+        </Button>
+      </Tooltip>
+    );
+  }
 
   // Status label shown next to the stop button
   const statusLabel = isThinking ? '🧠 Deep thinking…' :

@@ -7,6 +7,7 @@ import type { ProcessingState } from '../context/ChatContext';
 import { Space, Alert, Typography, Button } from 'antd';
 import { v4 as uuidv4 } from 'uuid';
 import StopStreamButton from './StopStreamButton';
+import { useDiffWait, clearDiffWait } from '../utils/diffWaitStore';
 import { RawMarkdownView } from './RawMarkdownView';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useQuestionContext } from '../context/QuestionContext';
@@ -422,7 +423,36 @@ export const StreamedContent: React.FC<{}> = () => {
         };
     }, [currentConversationId, streamingConversations]);
 
-    const LoadingIndicator = () => (
+    // Turn held for its diffs to be applied (design/await-diff-apply.md):
+    // a chip instead of the spinner, no Stop.  Cleared when the stream ends.
+    const diffWait = useDiffWait(currentConversationId);
+    const isWaitingForApply = !!diffWait && streamingConversations.has(currentConversationId);
+    useEffect(() => {
+        if (currentConversationId && !streamingConversations.has(currentConversationId)) {
+            clearDiffWait(currentConversationId);
+        }
+    }, [streamingConversations, currentConversationId]);
+
+    const LoadingIndicator = () => isWaitingForApply ? (() => {
+        const names = diffWait!.remainingPaths.map(p => p.split('/').pop());
+        const shown = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3} more` : '');
+        return (
+            <div className="diff-wait-chip" style={{ padding: '10px 20px' }}>
+                <span
+                    data-testid="diff-wait-chip"
+                    title={diffWait!.remainingPaths.join('\n')}
+                    style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 6,
+                        border: '1px dashed #d97706', color: '#b45309',
+                        borderRadius: 12, padding: '3px 10px', fontSize: 12,
+                    }}
+                >
+                    ⧗ Waiting for {diffWait!.remaining} of {diffWait!.total} diff
+                    {diffWait!.total === 1 ? '' : 's'} to be applied{shown ? `: ${shown}` : ''}; continues when done
+                </span>
+            </div>
+        );
+    })() : (
         <Space direction="vertical" style={{ width: '100%' }}>
             <div style={{
                 visibility: ['processing_tools', 'awaiting_tool_response', 'tool_throttling', 'tool_limit_reached', 'model_thinking', 'awaiting_model_response'].includes(processingState) ||
@@ -1025,14 +1055,16 @@ export const StreamedContent: React.FC<{}> = () => {
             This ensures users always see activity feedback, not just
             a static stop sign during long tool chains. */}
             {streamingConversations.has(currentConversationId) &&
-                !error && (isLoading || isPendingResponse) &&
+                // A diff-apply hold starts after the response has streamed,
+                // when processingState is 'idle', so it bypasses that gate.
+                !error && (isWaitingForApply || ((isLoading || isPendingResponse) &&
                 (
                     // Scenario 1: No content yet (initial loading)
                     (!streamedContentMap.has(currentConversationId) ||
                         streamedContentMap.get(currentConversationId) === '') ||
                     // Scenario 2: Content exists but we're in an active processing state
                     (hasStreamedContent && processingState !== 'idle' && processingState !== 'sending')
-                ) && (
+                ))) && (
                     <LoadingIndicator />
                 )}
             {/* Continue button after preserved-content error recovery.

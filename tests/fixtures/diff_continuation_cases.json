@@ -1,0 +1,104 @@
+{
+  "_comment": "Shared by tests/test_diff_continuation_parity.py and frontend/src/components/__tests__/diffContinuationParity.test.ts. Each case is the diff fences of one message, in order. into[i] says what happens to block i: \"head\" = a diff with its own file header; a number = merged into that earlier block (one Apply button, sent as one diff); null = headerless and not merged. The client rule is chainHeaderlessContinuationDiffs (MarkdownRenderer.tsx); the server rule is _chains_to_previous (app/utils/apply_ledger.py). Change one side only with the other. Hunk markers are written as \\u0040\\u0040 so no line of this file looks like a hunk header to diff tooling.",
+  "cases": [
+    {
+      "name": "numeric hunk header continues the diff before it",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1",
+        "\u0040\u0040 -20,1 +20,2 \u0040\u0040\n d = 1\n+e = 1"
+      ],
+      "into": ["head", 0]
+    },
+    {
+      "name": "bare body that only adds lines is merged",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1",
+        "+f = 1\n+g = 1"
+      ],
+      "into": ["head", 0]
+    },
+    {
+      "name": "section-hint header that only adds lines is merged",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1",
+        "\u0040\u0040 def tail\n+f = 1"
+      ],
+      "into": ["head", 0]
+    },
+    {
+      "name": "section-hint header with a context line is not merged",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1",
+        "\u0040\u0040 def tail\n d = 1\n+e = 1"
+      ],
+      "into": ["head", null]
+    },
+    {
+      "name": "bare body with a removal is not merged",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1",
+        "-d = 1\n+d = 2"
+      ],
+      "into": ["head", null]
+    },
+    {
+      "name": "headerless block before any headed diff stays alone",
+      "blocks": [
+        "+x = 1",
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1"
+      ],
+      "into": [null, "head"]
+    },
+    {
+      "name": "continuation follows the most recent headed diff",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1",
+        "diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n\u0040\u0040 -1 +1 \u0040\u0040\n-x\n+y",
+        "+z = 1"
+      ],
+      "into": ["head", "head", 1]
+    },
+    {
+      "name": "a block that is not merged does not break the chain",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1",
+        "-d = 1\n+d = 2",
+        "+h = 1"
+      ],
+      "into": ["head", null, 0]
+    },
+    {
+      "name": "head with only ---/+++ headers takes a continuation",
+      "blocks": [
+        "--- a/SKILL.md\n+++ b/SKILL.md\n\u0040\u0040 Key Rules\n - Sleep 1s between queries\n+- New rule line",
+        "+### Step 0\n+\n+Some added paragraph."
+      ],
+      "into": ["head", 0]
+    },
+    {
+      "name": "continuation after a two-file fence joins its last file",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1\ndiff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n\u0040\u0040 -1 +1 \u0040\u0040\n-x\n+y",
+        "+z = 1"
+      ],
+      "into": ["head", 0]
+    },
+    {
+      "name": "two continuations both join the same diff",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1",
+        "+f = 1",
+        "\u0040\u0040 -30 +31 \u0040\u0040\n-q\n+r"
+      ],
+      "into": ["head", 0, 0]
+    },
+    {
+      "name": "blank lines and a no-newline marker do not stop an add-only merge",
+      "blocks": [
+        "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n\u0040\u0040 -1,2 +1,2 \u0040\u0040\n-a = 1\n+a = 2\n b = 1",
+        "+f = 1\n\n+g = 1\n\\ No newline at end of file"
+      ],
+      "into": ["head", 0]
+    }
+  ]
+}
