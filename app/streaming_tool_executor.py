@@ -3127,11 +3127,13 @@ class StreamingToolExecutor:
                 
                 # Only establish baseline if not already measured
                 # Also re-establish if the MCP tool count has changed since last measurement
-                current_tool_count = len(bedrock_tools) if bedrock_tools else 0
+                from app.utils.mcp_ondemand import in_context_tools
+                current_tool_count = len(in_context_tools(bedrock_tools))
                 previous_tool_count = calibrator.baseline_tool_counts.get(model_family, 0)
                 should_establish_baseline = (
                     model_family not in calibrator.baselines_measured
                     or current_tool_count != previous_tool_count
+                    or calibrator.get_baseline_tool_names(model_family) is None
                 )
             except (ImportError, KeyError, AttributeError) as e:
                 logger.debug(f"Could not check baseline status: {e}")
@@ -3280,7 +3282,11 @@ class StreamingToolExecutor:
                 logger.info(f"📊 BASELINE: Establishing baseline for {model_family} (first time)")
 
                 try:
-                    mcp_tool_count = len(bedrock_tools) if bedrock_tools else 0
+                    # Deferred (within-reach) tools are held out of context by
+                    # the provider; measure and key the baseline without them.
+                    from app.utils.mcp_ondemand import in_context_tools
+                    _baseline_tools = in_context_tools(bedrock_tools)
+                    mcp_tool_count = len(_baseline_tools)
 
                     # Baseline measures FRAMEWORK overhead (tools + system
                     # template), not the per-request file context: swap the
@@ -3304,13 +3310,13 @@ class StreamingToolExecutor:
                         _measure = self.provider.measure_baseline_tokens
                         baseline_tokens = await asyncio.get_event_loop().run_in_executor(
                             None,
-                            lambda: _measure(baseline_system_text, bedrock_tools or []),
+                            lambda: _measure(baseline_system_text, _baseline_tools),
                         )
 
                     if baseline_tokens:
                         _baseline_src = "provider measurement"
                     else:
-                        tool_json_size = len(json.dumps(bedrock_tools)) if bedrock_tools else 0
+                        tool_json_size = len(json.dumps(_baseline_tools)) if _baseline_tools else 0
                         # Tool definitions are re-rendered by the backend;
                         # ~2.5x raw JSON is a reasonable upper-middle guess.
                         estimated_tool_tokens = int(tool_json_size * 2.5 / 3.5)
@@ -3321,6 +3327,7 @@ class StreamingToolExecutor:
                     calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
                     calibrator.baselines_measured.add(model_family)
                     calibrator.baseline_tool_counts[model_family] = mcp_tool_count
+                    calibrator.record_baseline_tool_names(model_family, _baseline_tools)
                     # Off the event loop: the save is a synchronous file write
                     # and this runs inside the stream (see token_calibrator).
                     calibrator.request_save()

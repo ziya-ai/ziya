@@ -452,6 +452,21 @@ def is_native_search_request(tools: Optional[Sequence[Mapping[str, Any]]]) -> bo
     return any((t or {}).get("type") == TOOL_SEARCH_TYPE for t in (tools or []))
 
 
+def in_context_tools(tools: Optional[Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
+    """The entries of a request's ``tools`` array whose definitions occupy
+    the model's context: everything except ``defer_loading`` tools and the
+    tool-search entry that exists only to find them.
+
+    The overhead baseline is measured and keyed on this list, not on the
+    full array.  Measured on the full array, a size-based estimate priced
+    every within-reach schema as if it were on hand, and the tool count the
+    baseline is invalidated on did not move when a server went from on hand
+    to within reach.  A list with no deferred tools is returned unchanged
+    in content."""
+    return [dict(t) for t in (tools or [])
+            if not (t or {}).get("defer_loading") and (t or {}).get("type") != TOOL_SEARCH_TYPE]
+
+
 # -- search ------------------------------------------------------------------
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
