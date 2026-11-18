@@ -6,7 +6,7 @@ import '@maxgraph/core/css/common.css';
 import { loadStencilsForShapes } from './drawioStencilLoader';
 import { iconRegistry } from './iconRegistry';
 import { enhanceSVGVisibility, isLightBackground, getOptimalTextColor, hexToRgb, calculateContrastRatio } from '../../utils/colorUtils';
-import { compositeOver, CHART_DARK_BG, CHART_LIGHT_BG } from './chartTheme';
+import { compositeOver, chartSurface } from './chartTheme';
 import { DrawIOEnhancer } from './drawioEnhancer';
 import { runLayout, applyLayoutToMaxGraph, LayoutNode, LayoutEdge, LayoutContainer } from './layoutEngine';
 import { registerDrawioExtraShapes, registerDrawioExtraEdgeMarkers, registerDrawioDefaultEdgeMarkers } from './drawioShapes';
@@ -153,7 +153,7 @@ export function reconcileCanvasLabelColor(
     const onDefaultVertexFill = isVertex && !hasFillColor;
     const backdrop = onDefaultVertexFill
         ? MAXGRAPH_DEFAULT_VERTEX_FILL
-        : (isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG);
+        : chartSurface(isDarkMode);
     // D-387: a label/title on the themed CANVAS must meet the 4.5 WCAG text floor,
     // not the lax 3.0 "distinguishable" floor. A saturated author hue tuned for one
     // theme fails the OTHER background — e.g. the trust-boundary titles of drawio-w1-09:
@@ -182,7 +182,7 @@ export function reconcileSwimlaneLabelColor(
     fillColor: string,
     isDarkMode: boolean
 ): string {
-    const canvasBg = isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG;
+    const canvasBg = chartSurface(isDarkMode);
     const effectiveBg = compositeOver(fillColor, canvasBg, 0.20);
     if (authorFont && calculateContrastRatio(authorFont, effectiveBg) >= 3.0) return authorFont;
     return getOptimalTextColor(effectiveBg);
@@ -247,7 +247,7 @@ export function resolveEdgeLabelBackground(
 ): Record<string, any> {
     if (!styleObj || typeof styleObj !== 'object') return styleObj;
     if (!opts.hasLabel) return styleObj;
-    styleObj['labelBackgroundColor'] = opts.isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG;
+    styleObj['labelBackgroundColor'] = chartSurface(opts.isDarkMode);
     return styleObj;
 }
 

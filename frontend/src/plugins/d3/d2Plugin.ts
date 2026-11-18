@@ -3,7 +3,7 @@ import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
 import { calculateContrastRatio, hslStringToRgb, hexToRgb } from '../../utils/colorUtils';
-import { namedColorToHex } from './chartTheme';
+import { namedColorToHex, lightChartSurface } from './chartTheme';
 import { addDiagramActions, diagramSourceText } from './diagramActions';
 
 export interface D2Spec {
@@ -2159,7 +2159,7 @@ export const d2Plugin: D3RenderPlugin = {
         // unstyled node nodeFill(d) is the theme node colour, whose optimal
         // text equals colors.text, so unstyled nodes are byte-identical.
         if (isUsableD2Color(c)) return c;
-        return d2ReadableTextOn(nodeFill(d), isDarkMode ? D2_DARK_BG : D2_LIGHT_BG, colors.text);
+        return d2ReadableTextOn(nodeFill(d), isDarkMode ? D2_DARK_BG : lightChartSurface(), colors.text);
     };
 
             // Render containers first (as background rectangles). Bounds are
@@ -2381,7 +2381,7 @@ nodeGroups.each(function (this: any, d: any) {
             const EDGE_LABEL_CHAR_W = 6;   // ~0.6em at 10px Arial
             const EDGE_LABEL_PAD_X = 3;
             const EDGE_LABEL_PAD_Y = 2;
-            const edgeLabelBg = isDarkMode ? D2_DARK_BG : D2_LIGHT_BG;
+            const edgeLabelBg = isDarkMode ? D2_DARK_BG : lightChartSurface();
             const edgeLabelText = (d: any): string => (d && d.label != null) ? String(d.label) : '';
             const edgeLabelMid = (d: any): { x: number; y: number } | null => {
                 if (!d) return null;

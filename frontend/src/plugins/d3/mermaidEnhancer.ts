@@ -8,7 +8,7 @@
  */
 
 import { hexToRgb } from '../../utils/colorUtils';
-import { contrastRatio, ensureReadableFill, CHART_DARK_BG, CHART_LIGHT_BG } from './chartTheme';
+import { contrastRatio, ensureReadableFill, CHART_DARK_BG, chartSurface } from './chartTheme';
 import { escapeSequenceMessageSemicolons } from './mermaidSequenceSemicolons';
 import { withUnzoomedMeasureHost } from '../../utils/uiScale';
 import { flattenNestedClassGenerics } from './mermaidClassGenerics';
@@ -906,7 +906,7 @@ export function ensureShapeBordersAgainstCanvas(
   isDarkMode: boolean,
   floor = 1.6,
 ): number {
-  const canvasHex = isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG;
+  const canvasHex = chartSurface(isDarkMode);
   const canvasRgb = resolveStyleColorToRgb(canvasHex);
   if (!canvasRgb) return 0;
   const outline = isDarkMode ? '#e6e6e6' : '#333333';
@@ -6082,7 +6082,7 @@ export function enhanceQuadrantAndMindmapLegibility(
   svg: Element,
   isDarkMode: boolean,
 ): number {
-  const canvasHex = isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG;
+  const canvasHex = chartSurface(isDarkMode);
   const canvasRgb = resolveStyleColorToRgb(canvasHex);
   if (!canvasRgb) return 0;
   const ink = isDarkMode ? '#f5f5f5' : '#1a1a1a';       // point-label text

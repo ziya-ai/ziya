@@ -5683,6 +5683,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
         ...(embedMaySize && (!vegaSpec.width || vegaSpec.width === 0) && { width: availableWidth }),
         ...(embedMaySize && (!vegaSpec.height || vegaSpec.height === 0) && { height: availableHeight * 0.6 }),
         config: {
+          // The 'excel' theme paints #fff; use the page's paper colour. A
+          // background set in the spec still wins over this config value.
+          ...(isDarkMode ? {} : { background: lightChartSurface() }),
           view: {
             // Only set continuous dimensions if not explicitly specified
             ...(embedMaySize && (!vegaSpec.width || vegaSpec.width === 0) && { continuousWidth: availableWidth }),

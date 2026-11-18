@@ -17,6 +17,7 @@
  */
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useTheme } from '../context/ThemeContext';
+import { pinLightChartSurface } from '../plugins/d3/chartTheme';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 
 const D3Renderer = lazyWithRetry(
@@ -56,6 +57,9 @@ export const DiagramRenderPage: React.FC = () => {
     const [diag, setDiag] = useState<{ elapsedMs: number; lastEvent: string }>({ elapsedMs: 0, lastEvent: 'init' });
     const [errorMessage, setErrorMessage] = useState<string>('');
     const { isDarkMode, setTheme } = useTheme();
+    // This page draws light diagrams on its own white wrapper, whatever paper
+    // tone the browser profile has stored. Idempotent; set before any child renders.
+    pinLightChartSurface('#ffffff');
     const renderTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
     const applySpec = useCallback((incoming: DiagramSpec) => {

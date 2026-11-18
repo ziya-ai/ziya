@@ -5,7 +5,7 @@ import {
     normalizeSmartQuotes,
     withBraceCollapse,
 } from '../../utils/d3SpecParser';
-import { classifyColor, contrastRatio, compositeOver, isDarkBackground, ensureReadableFill, truncateLabel } from './chartTheme';
+import { classifyColor, contrastRatio, compositeOver, isDarkBackground, ensureReadableFill, truncateLabel, lightChartSurface } from './chartTheme';
 
 /** Canonical effective canvas surfaces for network contrast resolution.
  *  The network SVG paints no background, so foreground colours are resolved
@@ -1051,7 +1051,7 @@ export function readableLinkStroke(
  */
 export function resolveNetworkColors(isDarkMode: boolean, style: any = {}): NetworkColors {
     const bgClass = classifyColor(style?.background);
-    const effectiveBg = bgClass && bgClass.hex ? bgClass.hex : (isDarkMode ? NETWORK_DARK_BG : NETWORK_LIGHT_BG);
+    const effectiveBg = bgClass && bgClass.hex ? bgClass.hex : (isDarkMode ? NETWORK_DARK_BG : lightChartSurface());
     const darkCanvas = isDarkBackground(effectiveBg);
     // Labels: 4.5 text floor.
     const defaultLabel = darkCanvas ? '#e0e0e0' : '#333333';

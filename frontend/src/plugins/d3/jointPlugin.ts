@@ -15,7 +15,7 @@ import {
     computeLabelPlacement,
 } from './jointLinkRouting';
 import { normalizeJointCells } from './jointShapeResolver';
-import { classifyColor, ensureReadableFill, namedColorToHex } from './chartTheme';
+import { classifyColor, ensureReadableFill, namedColorToHex, lightChartSurface } from './chartTheme';
 import {
     stripDefinitionFence,
     normalizeSmartQuotes,
@@ -2811,7 +2811,7 @@ export const jointPlugin: D3RenderPlugin = {
                 defaultLink: () => new shapes.standard.Link(),
                 defaultConnector: { name: 'rounded', args: { radius: 15 } },
                 background: {
-                    color: theme === 'dark' ? '#1f1f1f' : '#ffffff'
+                    color: theme === 'dark' ? '#1f1f1f' : lightChartSurface()
                 },
             });
 

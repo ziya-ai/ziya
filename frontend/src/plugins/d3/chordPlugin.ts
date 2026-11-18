@@ -27,7 +27,7 @@
  *     }
  */
 import { D3RenderPlugin } from '../../types/d3';
-import { isDarkBackground, classifyColor, ensureReadableFill, contrastRatio, truncateLabel } from './chartTheme';
+import { isDarkBackground, classifyColor, ensureReadableFill, contrastRatio, truncateLabel, lightChartSurface } from './chartTheme';
 import { lenientParseObject } from './forceDirectedPlugin';
 import { addDiagramActions, diagramSourceText } from './diagramActions';
 
@@ -151,7 +151,7 @@ export function normalizeChordColorToHex(input: any): string | null {
  * Exported for regression testing.
  */
 export function resolveChordBackground(rawBg: any, isDarkMode: boolean): string {
-  return normalizeChordColorToHex(rawBg) ?? (isDarkMode ? '#1a1a2e' : '#ffffff');
+  return normalizeChordColorToHex(rawBg) ?? (isDarkMode ? '#1a1a2e' : lightChartSurface());
 }
 
 /**

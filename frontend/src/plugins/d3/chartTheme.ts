@@ -17,6 +17,57 @@
 export const CHART_LIGHT_BG = '#ffffff';
 export const CHART_DARK_BG = '#1e1e1e';
 
+// Light mode is a selectable paper tone (design/visual-refresh.md), so the
+// light surface is the page canvas, not a constant. CHART_LIGHT_BG remains
+// the fallback when the page defines no token (tests, capture pages).
+const CANVAS_TOKEN = '--z-canvas';
+let pinnedLightSurface: string | null = null;
+let cachedLightSurface: { key: string; hex: string } | null = null;
+
+/**
+ * Fix the light surface regardless of the page. The capture pages (PDF
+ * export, render_diagram) draw on their own white wrapper and call this with
+ * '#ffffff'. Pass null to follow the page again.
+ */
+export function pinLightChartSurface(hex: string | null): void {
+    pinnedLightSurface = hex;
+}
+
+/**
+ * The surface a light-mode diagram sits on: the page canvas colour for the
+ * selected paper tone. Cached per `data-paper` value; a read that yields no
+ * colour (stylesheet not loaded yet) is not cached.
+ */
+export function lightChartSurface(): string {
+    if (pinnedLightSurface) return pinnedLightSurface;
+    if (typeof document === 'undefined' || typeof window === 'undefined') return CHART_LIGHT_BG;
+    const root = document.documentElement;
+    const key = root.getAttribute('data-paper') || '';
+    if (cachedLightSurface && cachedLightSurface.key === key) return cachedLightSurface.hex;
+    let rgb: [number, number, number] | null = null;
+    try {
+        const raw = window.getComputedStyle(root).getPropertyValue(CANVAS_TOKEN);
+        const hex = classifyColor(raw)?.hex;
+        rgb = hex ? hexToRgb(hex) : null;
+    } catch {
+        rgb = null;
+    }
+    if (!rgb) return CHART_LIGHT_BG;
+    cachedLightSurface = { key, hex: rgbToHex(rgb) };
+    return cachedLightSurface.hex;
+}
+
+/** The theme surface: the paper in light mode, CHART_DARK_BG in dark. */
+export function chartSurface(isDarkMode: boolean): string {
+    return isDarkMode ? CHART_DARK_BG : lightChartSurface();
+}
+
+/** Test seam: forget the pin and the cached read. */
+export function _resetChartSurfaceForTests(): void {
+    pinnedLightSurface = null;
+    cachedLightSurface = null;
+}
+
 export interface ChartColors {
     /** Background used for contrast math (the effective chart surface). */
     bg: string;
@@ -39,7 +90,7 @@ export interface ChartColors {
  */
 export function resolveChartColors(isDarkMode: boolean, style: any = {}): ChartColors {
     // Effective surface: a caller-pinned background wins, else the theme surface.
-    const rawBg = style?.background || (isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG);
+    const rawBg = style?.background || chartSurface(isDarkMode);
     // Resolve the surface to a hex so the light/dark default choice AND contrast
     // maths run against the ACTUAL backdrop, not a raw isDarkMode flag — a caller
     // may pin a light panel under dark theme or vice-versa (D-006/w1-09: a
@@ -48,7 +99,7 @@ export function resolveChartColors(isDarkMode: boolean, style: any = {}): ChartC
     const cbg = classifyColor(rawBg);
     const bgHex = cbg?.hex
         || (cbg?.named ? namedColorToHex(cbg.named) : null)
-        || (isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG);
+        || chartSurface(isDarkMode);
     const darkSurface = isDarkBackground(bgHex);
 
     const axisDefault = darkSurface ? '#cfcfcf' : '#333333';

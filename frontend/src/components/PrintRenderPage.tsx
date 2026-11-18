@@ -42,6 +42,7 @@ import React, {
     useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
 import { useTheme } from '../context/ThemeContext';
+import { pinLightChartSurface } from '../plugins/d3/chartTheme';
 import { ActiveChatProvider } from '../context/ActiveChatContext';
 import { StreamingProvider } from '../context/StreamingContext';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
@@ -491,6 +492,9 @@ export const PrintRenderPage: React.FC = () => {
     // ThemeContext is the real provider (mounted above in index.tsx). Force
     // light DETERMINISTICALLY rather than hoping a body-class removal sticks.
     const { setTheme, isDarkMode } = useTheme();
+    // The printed page is white whatever paper tone is stored. Idempotent;
+    // set before any child renders.
+    pinLightChartSurface('#ffffff');
 
     const applySpec = useCallback((incoming: ConversationSpec) => {
         setSpec(incoming);

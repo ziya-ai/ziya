@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, CSSProperties, useCallback } from 'react';
 import { useTheme } from '../context/ThemeContext';
+import { getAppearance, subscribeAppearance } from '../utils/appearance';
 import { Spin, Modal, message } from 'antd';
 import { D3RenderPlugin } from '../types/d3';
 import { findPluginForSpec, loadPlugin, getAvailablePlugins } from '../plugins/d3/registry';
@@ -33,10 +34,17 @@ const PARKED_RENDER_TTL_MS = 15000;
 interface ParkedRender {
     node: HTMLElement;
     cleanups: (() => void)[];
-    isDarkMode: boolean;
+    themeKey: string;
     timer: ReturnType<typeof setTimeout>;
 }
 const parkedRenders = new Map<string, ParkedRender>();
+
+// What a render's colours were resolved for: dark, or light on one paper
+// tone. Light-mode diagrams bake the paper colour in, so a render made on
+// one tone must not be adopted after the tone changes.
+function renderThemeKey(isDarkMode: boolean): string {
+    return isDarkMode ? 'dark' : `light:${getAppearance().paper}`;
+}
 
 function runRenderCleanups(cleanups: (() => void)[]): void {
     cleanups.forEach(cleanup => {
@@ -44,7 +52,7 @@ function runRenderCleanups(cleanups: (() => void)[]): void {
     });
 }
 
-function parkRender(key: string, node: HTMLElement, cleanups: (() => void)[], isDarkMode: boolean): void {
+function parkRender(key: string, node: HTMLElement, cleanups: (() => void)[], themeKey: string): void {
     const prior = parkedRenders.get(key);
     if (prior) {
         clearTimeout(prior.timer);
@@ -56,14 +64,14 @@ function parkRender(key: string, node: HTMLElement, cleanups: (() => void)[], is
         parkedRenders.delete(key);
         runRenderCleanups(entry.cleanups);
     }, PARKED_RENDER_TTL_MS);
-    parkedRenders.set(key, { node, cleanups, isDarkMode, timer });
+    parkedRenders.set(key, { node, cleanups, themeKey, timer });
 }
 
 // Returns the parked render for `key` if its theme matches, removing it from
 // the park; the caller now owns the node and its cleanups.
-function claimParkedRender(key: string, isDarkMode: boolean): ParkedRender | null {
+function claimParkedRender(key: string, themeKey: string): ParkedRender | null {
     const entry = parkedRenders.get(key);
-    if (!entry || entry.isDarkMode !== isDarkMode) return null;
+    if (!entry || entry.themeKey !== themeKey) return null;
     clearTimeout(entry.timer);
     parkedRenders.delete(key);
     return entry;
@@ -320,7 +328,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 && first instanceof HTMLElement ? first : null;
             if (parkable) {
                 parkable.remove();
-                parkRender(cacheKeyRef.current, parkable, cleanupFunctionsRef.current, isDarkModeRef.current);
+                parkRender(cacheKeyRef.current, parkable, cleanupFunctionsRef.current, renderThemeKey(isDarkModeRef.current));
                 cleanupFunctionsRef.current = [];
             }
 
@@ -447,7 +455,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         // rendering it again.
         if (!forceRender) {
             const host = d3ContainerRef.current;
-            const parked = host ? claimParkedRender(cacheKey, isDarkModeRef.current) : null;
+            const parked = host ? claimParkedRender(cacheKey, renderThemeKey(isDarkModeRef.current)) : null;
             if (parked && host) {
                 console.info('🔧 D3RENDERER: Adopting parked render across remount');
                 host.innerHTML = '';
@@ -1121,6 +1129,32 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             return () => clearTimeout(themeChangeTimer);
         }
     }, [isDarkMode]); // Remove initializeVisualization dependency to break circular dependency
+
+    // Light-mode diagrams take their surface, label chips and contrast
+    // reference from the paper tone. Re-render when it changes. Dark does not
+    // use the paper, so nothing is done there.
+    useEffect(() => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let lastPaper = getAppearance().paper;
+        const unsubscribe = subscribeAppearance(prefs => {
+            if (prefs.paper === lastPaper) return;
+            lastPaper = prefs.paper;
+            if (isDarkModeRef.current || !lastSpecRef.current || !hasSuccessfulRenderRef.current) return;
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => {
+                timer = null;
+                try {
+                    initializeVisualization(true);
+                } catch (error) {
+                    console.error('Paper tone change render failed:', error);
+                }
+            }, 100);
+        });
+        return () => {
+            unsubscribe();
+            if (timer) clearTimeout(timer);
+        };
+    }, []);
 
     const isD3Render = useMemo(() => {
         return type === 'd3' || (typeof spec === 'object' && (spec?.renderer === 'd3' || !!plugin));

@@ -6,6 +6,7 @@ import { zoomIn, zoomOut, resetZoom, storeOriginalViewBox } from '../../utils/zo
 import { downloadSvg } from '../../utils/svgUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
+import { lightChartSurface } from './chartTheme';
 
 /**
  * D-125: selectors for text the universal SVG enhancer must NOT recolour.
@@ -2167,7 +2168,7 @@ export function restrokeInvisibleClusterBorder(polygonEl: Element, clusterBorder
  * labels clear the floor and are left untouched. Returns the count re-themed.
  */
 export function retintStrandedEdgeLabels(root: Element, isDarkMode: boolean): number {
-    const bg = isDarkMode ? GRAPHVIZ_DARK_PANEL_BG : GRAPHVIZ_LIGHT_PAGE_BG;
+    const bg = isDarkMode ? GRAPHVIZ_DARK_PANEL_BG : lightChartSurface();
     const fallback = isDarkMode ? '#ffffff' : '#000000';
     let fixed = 0;
     const texts = root.querySelectorAll('g.edge text');
@@ -2201,7 +2202,7 @@ export function retintStrandedEdgeLabels(root: Element, isDarkMode: boolean): nu
  * 16.67:1; black on the light page = 21:1). Returns the count re-themed.
  */
 export function retintStrandedClusterLabels(root: Element, isDarkMode: boolean): number {
-    const bg = isDarkMode ? GRAPHVIZ_DARK_PANEL_BG : GRAPHVIZ_LIGHT_PAGE_BG;
+    const bg = isDarkMode ? GRAPHVIZ_DARK_PANEL_BG : lightChartSurface();
     const fallback = isDarkMode ? '#ffffff' : '#000000';
     let fixed = 0;
     const clusters = root.querySelectorAll('g.cluster');

@@ -10,6 +10,7 @@
  */
 import { D3RenderPlugin } from '../../types/d3';
 import { addDiagramActions, diagramSourceText } from './diagramActions';
+import { lightChartSurface } from './chartTheme';
 import {
   classifyColor,
   contrastRatio,
@@ -249,7 +250,7 @@ export function floorLinkOpacity(
 }
 
 export function resolveForceColors(isDarkMode: boolean, style: ForceStyle = {}): ForceColorResolution {
-  const themeBg = isDarkMode ? FORCE_DARK_BG : FORCE_LIGHT_BG;
+  const themeBg = isDarkMode ? FORCE_DARK_BG : lightChartSurface();
   const explicit = classifyColor(style.background);
   const effectiveBg = explicit && explicit.hex ? explicit.hex : themeBg;
   const paintBg = style.background ? style.background : null;
