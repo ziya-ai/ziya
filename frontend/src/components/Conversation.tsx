@@ -10,9 +10,12 @@ import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlin
 
 import { DocumentChip, ImageChip } from './FileChip';
 import ModelChangeNotification from './ModelChangeNotification';
+import ProjectChangeNotification from './ProjectChangeNotification';
+import PeerPostNotice from './PeerPostNotice';
 import LineageBar from './LineageBar';
 import HandoffBanner from './HandoffBanner';
 import HandoffNotice, { isSupersededHandoffNotice } from './HandoffNotice';
+import { AgentSeam } from './AgentSeam';
 import SeamRibbon from './SeamRibbon';
 import { getSeamHighlight, SEAM_HIGHLIGHT_EVENT, SeamHighlight } from '../utils/seamHighlight';
 import { useSetQuestion } from '../context/QuestionContext';
@@ -1131,6 +1134,19 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                 changeKey={msg.modelChange.changeKey}
                                 newModel={msg.modelChange.to}
                             />
+                        ) : msg.role === 'system' && msg.projectChange ? (
+                            // Server-authored: the conversation changed project or
+                            // global scope here.  Its content is for the model.
+                            <ProjectChangeNotification change={msg.projectChange} />
+                        ) : msg.role === 'peer' && msg.peerPost ? (
+                            // Server-authored: another conversation posted this.
+                            <PeerPostNotice
+                                post={msg.peerPost}
+                                muted={!!msg.muted}
+                                onNavigate={(id) => activeChat.loadConversation(id)}
+                                actions={<MessageActions message={msg} actualIndex={actualIndex}
+                                    isEditing={false} needsResponse={false} />}
+                            />
                         ) : msg.role === 'system' && msg.handoffNotice ? (
                             // Local-only notice: muted, never sent to the model.
                             // Links forward to the continuation once one exists.
@@ -1140,6 +1156,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                 conversations={conversations as any}
                                 onNavigate={(id) => activeChat.loadConversation(id)}
                             />
+                        ) : msg.role === 'system' && msg.agentNotice ? (
+                            // Local-only seam: an agent was turned on or off here.
+                            <AgentSeam notice={msg.agentNotice} />
                         ) : (
                             // Skip rendering empty messages entirely
                             msg.content ? (
