@@ -661,3 +661,53 @@ class TestConversationValidation:
         ]
         issues = _validate_conversation_order(conv)
         assert len(issues) > 0
+
+
+# ── The executor's own dedup helper, and that every feedback path uses it ──
+# Found 2026-11-13: the helper above was mirrored here and tested, but the
+# executor never called it.  Its feedback paths appended the response a
+# second time (one unguarded, one comparing a block list to a string), so
+# the model was sent its own text twice and the diff-apply hold counted
+# every diff twice.
+
+class TestExecutorAssistantTextDedup:
+
+    @staticmethod
+    def _helper():
+        from app.streaming_tool_executor import StreamingToolExecutor
+        return StreamingToolExecutor._assistant_text_in_conversation
+
+    def test_real_helper_finds_text_beside_a_tool_use(self):
+        conv = [
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "t1", "name": "n", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+        ]
+        assert self._helper()("Let me check.", conv)
+        assert not self._helper()("Something else.", conv)
+
+    def test_real_helper_ignores_trailing_whitespace_and_block_splits(self):
+        # A provider may trim the text or split it across text blocks
+        # (interleaved thinking); it is still the same response.
+        conv = [{"role": "assistant", "content": [
+            {"type": "text", "text": "First part. "},
+            {"type": "thinking", "thinking": "x"},
+            {"type": "text", "text": "Second part."}]}]
+        assert self._helper()("First part. Second part.\n", conv)
+        assert self._helper()("Plain.\n\n", [{"role": "assistant", "content": "Plain."}])
+        assert not self._helper()("Plain.", [{"role": "user", "content": "Plain."}])
+
+    def test_every_append_of_the_response_is_guarded(self):
+        import inspect
+        from app.streaming_tool_executor import StreamingToolExecutor
+        lines = inspect.getsource(StreamingToolExecutor._stream_with_tools_impl).splitlines()
+        target = 'conversation.append({"role": "assistant", "content": assistant_text})'
+        guards = ("_assistant_text_in_conversation(", "_assistant_turn_pending",
+                  "conversation[-1].get('role') == 'assistant'")
+        sites = [i for i, ln in enumerate(lines) if ln.strip() == target]
+        assert len(sites) >= 5, "append sites not found; the test no longer sees the code"
+        unguarded = [i for i in sites
+                     if not any(g in ln for ln in lines[max(0, i - 4):i] for g in guards)]
+        assert not unguarded, ["\n".join(lines[i - 4:i + 1]) for i in unguarded]

@@ -1142,19 +1142,25 @@ class StreamingToolExecutor:
 
         Handles both plain string content and structured content blocks
         (list of dicts from build_assistant_message) so the dedup check
-        works regardless of whether tools were involved.
+        works regardless of whether tools were involved.  Whitespace at the
+        ends is ignored, and text split across several text blocks is read
+        as one.
         """
+        want = (text or "").strip()
+        if not want:
+            return False
         for m in conversation[-lookback:]:
             if m.get('role') != 'assistant':
                 continue
             content = m.get('content')
-            if content == text:
-                return True
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get('type') == 'text':
-                        if block.get('text') == text:
-                            return True
+            if isinstance(content, str):
+                if content.strip() == want:
+                    return True
+            elif isinstance(content, list):
+                texts = [str(b.get('text') or '') for b in content
+                         if isinstance(b, dict) and b.get('type') == 'text']
+                if any(t.strip() == want for t in texts) or "".join(texts).strip() == want:
+                    return True
         return False
 
     @staticmethod
@@ -5207,7 +5213,10 @@ Please retry the tool call with valid JSON. Ensure:
                         if _halluc_fb:
                             _combined_halluc_fb = ' '.join(_halluc_fb)
                             logger.info(f"🔄 PRE-END FEEDBACK (hallucination path): Processing {len(_halluc_fb)} feedback message(s) before stream end")
-                            if assistant_text.strip():
+                            # Already appended when the iteration ended; a
+                            # second copy replays the response twice.
+                            if assistant_text.strip() and not self._assistant_text_in_conversation(
+                                    assistant_text, conversation):
                                 conversation.append({"role": "assistant", "content": assistant_text})
                             conversation.append({"role": "user", "content": f"[User feedback]: {_combined_halluc_fb}"})
                             yield track_yield({
@@ -5312,10 +5321,8 @@ Please retry the tool call with valid JSON. Ensure:
                         # injecting the feedback user message.  The tool-results
                         # path above already appended tool_result messages, but
                         # assistant_text (the model's prose) may not be there yet.
-                        if assistant_text.strip() and not any(
-                            m.get('role') == 'assistant' and m.get('content') == assistant_text
-                            for m in conversation[-3:]
-                        ):
+                        if assistant_text.strip() and not self._assistant_text_in_conversation(
+                                assistant_text, conversation):
                             conversation.append({"role": "assistant", "content": assistant_text})
                         logger.info(f"🔄 FEEDBACK_PRE_CONTINUE: Injecting feedback before next iteration: {fb_msg[:60]}")
                         conversation.append({"role": "user", "content": f"[User feedback]: {fb_msg}"})
