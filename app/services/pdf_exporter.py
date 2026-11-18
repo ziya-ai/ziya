@@ -1261,8 +1261,11 @@ class ConversationRenderSession:
             async def _capture() -> bytes:
                 return await page.pdf(**pdf_kwargs)
 
+            # The pypdf steps below parse the whole PDF in Python (seconds on
+            # a long document), so they run on a worker thread, not the loop.
             if not outline:
-                return _apply_document_metadata(await _capture(), doc_metadata)
+                return await asyncio.to_thread(
+                    _apply_document_metadata, await _capture(), doc_metadata)
 
             # QUAL-01: two-pass outline synthesis.  Failures degrade to a plain
             # single-pass capture rather than losing the export.
@@ -1279,7 +1282,8 @@ class ConversationRenderSession:
                 anchors = []
 
             if not anchors:
-                return _apply_document_metadata(await _capture(), doc_metadata)
+                return await asyncio.to_thread(
+                    _apply_document_metadata, await _capture(), doc_metadata)
 
             probe_pdf = await _capture()
             try:
@@ -1288,10 +1292,12 @@ class ConversationRenderSession:
                 logger.warning("outline sentinel removal failed", exc_info=True)
             clean_pdf = await _capture()
 
-            mapping = _map_sentinels_to_pages(probe_pdf, anchors)
+            mapping = await asyncio.to_thread(
+                _map_sentinels_to_pages, probe_pdf, anchors)
             # QUAL-02: stamp document metadata in the same post-process cycle.
-            outlined = _synthesize_outline(clean_pdf, mapping)
-            return _apply_document_metadata(outlined, doc_metadata)
+            outlined = await asyncio.to_thread(_synthesize_outline, clean_pdf, mapping)
+            return await asyncio.to_thread(
+                _apply_document_metadata, outlined, doc_metadata)
         finally:
             await page.close()
 
@@ -1676,7 +1682,9 @@ async def export_document_pdf(
     # FEWER pages is kept; otherwise the first capture stands.
     squeeze_step = 0
     chosen_css = DOCUMENT_PRINT_CSS
-    first_words = _pdf_page_words(pdf_bytes, margin)
+    # pdfplumber interprets every page in Python: off the event loop, here
+    # and for each recapture below.
+    first_words = await asyncio.to_thread(_pdf_page_words, pdf_bytes, margin)
     cur_words = first_words
     pages_before = len(first_words) if first_words else None
     if (_is_runt_last_page(first_words, sections)
@@ -1686,7 +1694,7 @@ async def export_document_pdf(
                 payload, pre_capture_css=DOCUMENT_PRINT_CSS + step_css,
                 **capture_kwargs,
             )
-            cand_words = _pdf_page_words(candidate, margin)
+            cand_words = await asyncio.to_thread(_pdf_page_words, candidate, margin)
             if _squeeze_candidate_ok(first_words, cand_words):
                 pdf_bytes, squeeze_step = candidate, step_no
                 chosen_css = DOCUMENT_PRINT_CSS + step_css
@@ -1701,7 +1709,7 @@ async def export_document_pdf(
         logger.info(
             "document export: runt last page (%s words); squeeze step %s "
             "(pages %s -> %s)", first_words[-1], squeeze_step, pages_before,
-            len(_pdf_page_words(pdf_bytes, margin) or []) if squeeze_step else pages_before,
+            len(cur_words or []) if squeeze_step else pages_before,
         )
 
     # d027: a page ending in a big gap before a page that starts with an
@@ -1711,7 +1719,7 @@ async def export_document_pdf(
     # content is lost and the gap shrank.
     float_figures: List[int] = []
     float_applied = False
-    gaps = _pdf_figure_gaps(pdf_bytes, margin)
+    gaps = await asyncio.to_thread(_pdf_figure_gaps, pdf_bytes, margin)
     if gaps and cur_words:
         float_figures = [n for n, _f in gaps]
         float_opts = {
@@ -1723,8 +1731,8 @@ async def export_document_pdf(
         candidate = await session.capture_pdf(
             payload, pre_capture_css=chosen_css, **float_kwargs,
         )
-        cand_words = _pdf_page_words(candidate, margin)
-        cand_gaps = _pdf_figure_gaps(candidate, margin)
+        cand_words = await asyncio.to_thread(_pdf_page_words, candidate, margin)
+        cand_gaps = await asyncio.to_thread(_pdf_figure_gaps, candidate, margin)
         if _float_candidate_ok(cur_words, cand_words, gaps, cand_gaps, float_figures):
             pdf_bytes, float_applied = candidate, True
         else:
