@@ -127,7 +127,8 @@ def test_route_returns_estimate_for_project_root(tmp_path, monkeypatch):
     from app.routes import token_routes
     (tmp_path / "a.py").write_text(SRC)
     monkeypatch.setenv("ZIYA_USER_CODEBASE_DIR", str(tmp_path))
-    monkeypatch.setattr(token_routes, "_current_tool_definitions", lambda: ([{"name": "m"}], [{"name": "b"}]))
+    monkeypatch.setattr(token_routes, "_current_tool_definitions",
+                        lambda *a, **k: ([{"name": "m"}], [{"name": "b"}], [{"name": "m"}]))
     monkeypatch.setattr(token_routes, "_resolve_model_identity", lambda m: ("us.anthropic.claude-fable-5-1", "claude"))
     app = FastAPI(); app.include_router(token_routes.router)
     r = TestClient(app).post("/api/context-estimate", json={"files": ["a.py", "nope.py"]})
