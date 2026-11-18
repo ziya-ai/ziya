@@ -235,7 +235,7 @@ context-window exhaustion from metadata bloat.  The sanitizer
 transforms in order:
 
 1. **Plugin filters** — `ToolResultFilterProvider` plugins are called first, in priority order.  This is the extension point for site-specific cleanup (e.g. stripping Quip `sectionId` HTML comments in enterprise deployments).  Each filter receives the output of the previous one.
-2. **Base64 blob replacement** — Long base64 strings are detected.  PDFs are decoded and text-extracted via `document_extractor.py` (pdfplumber/pypdf).  ZIP-based Office documents (DOCX, XLSX, PPTX) are identified by inspecting the ZIP contents and extracted with the appropriate library (python-docx, openpyxl/pandas, python-pptx).  Legacy OLE2 documents (.xls, .doc) are also detected.  Other binary blobs are replaced with size placeholders.
+2. **Base64 blob replacement** — Long base64 strings are detected.  PDFs are decoded and text-extracted via `document_extractor.py` (pdfplumber/pypdf).  ZIP-based Office documents (DOCX, XLSX, PPTX) are identified by inspecting the ZIP contents and extracted with the appropriate library (python-docx, openpyxl/pandas, python-pptx).  Legacy OLE2 documents (.xls, .doc) are also detected.  Other binary blobs are replaced with size placeholders.  The replacement is skipped for tools whose output the model asked for directly (`run_shell_command`, `shadow_send`/`shadow_read`/`shadow_wait`, `job_read`/`job_wait`, `file_read`), so `base64 -w0 file` shows the encoded text rather than a placeholder.
 3. **Size cap** — Results exceeding `TOOL_RESULT_MAX_CHARS` (default 100K, configurable via env var) are truncated with a note.
 
 The sanitizer runs at the point where `result_text` is determined in the streaming tool executor, before the result enters both the user display path and the model conversation context.
@@ -350,7 +350,7 @@ Two normalisations happen once, at pipeline entry, so every stage sees the same 
 
 The recounted header is deliberately **not** what the git-apply and difflib stages receive on the fallthrough path (patch failed, then git apply failed): the recount pass carries system-patch-specific heuristics that regress `git apply`, so those stages get the original text and the parser's own body-vs-header reconciliation. That reconciliation only raises counts that are 2+ lines under on both sides; a one-line undercount, or an undercount paired with an overcount, keeps the model's number. Every consumer of `old_count` in the difflib stage must therefore treat it as a lower bound and size by the body where it matters — the overlapping-hunk merge now does (`max(old_count, len(old_block))` per hunk). `ZIYA_FORCE_DIFFLIB=1` runs difflib on the *recounted* text, so a test under that flag does not exercise this route; drive `run_difflib_stage` with the raw diff to test it.
 
-The streaming **diff verifier** (`app/utils/diff_validation_hook.py`) runs this same pipeline on a temporary copy of the *current* file when a fence closes. If the user has already applied that diff, the verifier should see "already applied"; a "both old and new content exist" verdict after a user apply means the apply itself left the file in a mixed state and is worth believing.
+The streaming **diff verifier** (`app/utils/diff_validation_hook.py`) runs this same pipeline on a temporary copy of the *current* file when a fence closes. It runs once, after the whole stream. In the web chat the stream stays open across applies (the diff-apply hold), so the verifier first asks the apply ledger (`apply_ledger.settled_parts`) and does not dry-run a fence that already has an apply result, or an earlier fence for a file once a later fence for that file has been applied: the Apply click is the authoritative outcome and the model is told of it by the hold. For a fence with no apply result, "already applied" is still the expected verdict if the file was changed another way, and a "both old and new content exist" verdict means the file is in a mixed state and is worth believing.
 
 ### Language Validation
 
@@ -359,6 +359,8 @@ After applying a diff, the pipeline runs a **language-specific validator** (`app
 The TypeScript handler uses `tsc` when available (preferring a project-local `node_modules/.bin/tsc`). Because tsc cannot validate isolated files (missing imports, tsconfig context), the handler passes `--isolatedModules --noResolve` and only treats **syntax errors** (TS1xxx) as hard failures. Import/type resolution errors (TS2xxx+) fall back to basic bracket-matching validation. For `.tsx` files, the handler uses the correct file extension and `--jsx react-jsx` so JSX syntax is parsed correctly.
 
 When tsc reports only non-syntax diagnostics (TS2xxx+), the handler trusts tsc's syntax analysis and returns valid — it does not fall back to heuristic validation.  When tsc is completely unavailable, the fallback path uses bracket-matching as the structural gate; additional heuristic checks (semicolon usage, angle bracket balance, `any` type usage) are logged as debug warnings but do not block diff application, since they produce too many false positives on real-world TSX/JSX files.
+
+The Rust handler follows the same shape with `rustc`. The file it checks is one module of a crate with the rest of the crate absent, so `rustc --crate-type lib --emit=metadata --cap-lints allow` (edition from the nearest `Cargo.toml`, default 2021) will always report unresolved `use crate::…` paths, missing `mod` files and unknown derive macros. Those are resolution errors and are ignored. Only **parse-class** diagnostics (no error code, or one of the lexer/parser codes such as E0765 unterminated string) count, and only when the pre-patch file did not already have the same one — so an unclosed brace the patch introduced is refused and named by line, while a module that merely cannot see its crate is not. Style is never judged: elided lifetimes, re-exports and uncommented `unsafe` are all valid Rust. Without `rustc` the check is delimiter balance with comments, strings and char literals skipped.
 
 ---
 
@@ -784,6 +786,30 @@ another outage re-arms it with the longer wait.  `POST /api/v1/memory/resume`
 (the Health tab's **Resume memory**; `GET /api/v1/memory/pause` to inspect)
 only skips the wait.  A network-shaped credential failure classifies as
 `connection_error`, not `authentication_error` (`infra_errors.is_auth_failure`).
+
+Because `ServiceInfraError` is a `BaseException`, `except Exception` never
+catches it, and every path that can reach an embedding or service-model
+call outside a memory pass needs a handler that names it.  Each call site
+turns the outage into its own result, and each kind of entry point has a
+backstop above the call sites:
+
+| Path | On an outage |
+|---|---|
+| Prompt assembly (relevance ranking of memory facts) | Ranking is skipped for the turn, with a warning; the model call reports the outage |
+| Chat stream | An error frame (`chat_turn_relay._pump`, `_keepalive_wrapper`, `stream_chunks`) |
+| Intent and research-offer judges | "no": the turn ends normally |
+| Builtin tool call | A tool error returned to the model |
+| Until judge | The run is held and can be resumed |
+| Improve judge, self-improve critic | Their failure verdicts; nothing is rewritten |
+| Task run, task block | Held (`drive_run`, `execute_block`) |
+| Delegate | Marked failed |
+| HTTP route | 503 with `error_type` and `where` (`app/utils/infra_error_middleware.py`) |
+
+In the browser, a chat response that closes without any data frame shows
+an error pointing at credentials and the server log.
+
+When adding a caller of `call_service_model` or an embedding function,
+decide what the outage means there and catch `ServiceInfraError` by name.
 
 ### Auto-Maintenance (Phase 2)
 
