@@ -83,7 +83,16 @@ it('enabling a local skill in the Skills tab puts its chip in the side panel at 
 it('no placement is written behind the hook any more', () => {
     const src = path.join(__dirname, '..', '..');
     const pc = fs.readFileSync(path.join(src, 'context', 'ProjectContext.tsx'), 'utf8');
-    expect(pc).not.toMatch(/placeBench|isBenchLive|benchWriteThrough|announceBenchChanged|_writeThroughPrev/);
+    expect(pc).not.toMatch(/placeBench|isBenchLive|benchWriteThrough|_writeThroughPrev/);
+    // ProjectContext may announce a change to the SET of skills (create, edit,
+    // delete: skillsTabImportThenEnable.test.tsx), never a placement.  Every
+    // announcement sits in one of those three callbacks.
+    const announced = pc.match(/announceBenchChanged\(/g) ?? [];
+    const inSkillWrites = ['createSkillFn', 'updateSkillFn', 'deleteSkillFn'].filter(fn => {
+        const start = pc.indexOf(`const ${fn} = useCallback(`);
+        return start > -1 && pc.slice(start, pc.indexOf('}, [currentProject]);', start)).includes('announceBenchChanged(');
+    });
+    expect(announced.length).toBe(inSkillWrites.length);
     expect(fs.existsSync(path.join(src, 'utils', 'benchWriteThrough.ts'))).toBe(false);
     expect(fs.existsSync(path.join(src, 'hooks', '__tests__', 'useBenchWriteThrough.test.tsx'))).toBe(false);
     // Positive control: the tab is where the bench is now mounted and written.

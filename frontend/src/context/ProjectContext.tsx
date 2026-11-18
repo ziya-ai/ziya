@@ -25,6 +25,7 @@ import {
   staleSkillIds,
 } from '../utils/skillActivation';
 import { SKILLS_CHANGED_EVENT } from '../utils/skillsChanged';
+import { announceBenchChanged } from '../hooks/useBench';
 import * as syncApi from '../api/conversationSyncApi';
 import * as folderSyncApi from '../api/folderSyncApi';
 import FirstRunProjectDialog from '../components/FirstRunProjectDialog';
@@ -833,11 +834,15 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [currentProject]);
   
   // Skill actions
+  // Each write announces BENCH_CHANGED_EVENT: the Skills tab draws its cards
+  // from ``skills`` but enables them through a useBench() view, which has no
+  // item for a skill created (or renamed) after it was fetched.
   const createSkillFn = useCallback(async (data: SkillCreate) => {
     if (!currentProject) throw new Error('No project selected');
     
     const skill = await skillApi.createSkill(currentProject.id, data);
     setSkills(prev => [...prev, skill]);
+    announceBenchChanged(currentProject.id);
     
     return skill;
   }, [currentProject]);
@@ -847,6 +852,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     
     const updated = await skillApi.updateSkill(currentProject.id, id, updates);
     setSkills(prev => prev.map(s => s.id === id ? updated : s));
+    announceBenchChanged(currentProject.id);
   }, [currentProject]);
   
   const deleteSkillFn = useCallback(async (id: string) => {
@@ -855,6 +861,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     await skillApi.deleteSkill(currentProject.id, id);
     setSkills(prev => prev.filter(s => s.id !== id));
     setActiveSkillIds(prev => prev.filter(sid => sid !== id));
+    announceBenchChanged(currentProject.id);
   }, [currentProject]);
   
   const addContextToLens = useCallback((contextId: string) => {
