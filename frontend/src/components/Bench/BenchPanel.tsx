@@ -14,9 +14,16 @@ import { useBenchActions } from './BenchActions';
 import { BenchBoard } from './BenchBoard';
 import { BenchFind } from './BenchFind';
 import { CapabilityDetail } from './CapabilityDetail';
+import { hasPackages } from './packageTree';
+import type { GroupBy } from './packageTree';
 import { LensStrip } from './LensStrip';
 import { SkillEditor } from './SkillEditor';
 import { WeightGauge } from './WeightGauge';
+import { WithinReachNotice } from './WithinReachNotice';
+import { NotInstalledHere, missingCountByRoot } from './NotInstalledHere';
+import type { MissingCapability } from './NotInstalledHere';
+import { PackagedAgents } from './PackagedAgents';
+import type { PackagedAgentsModel } from './PackagedAgents';
 import { EnvironmentRow } from './EnvironmentRow';
 
 export interface BenchPanelModel {
@@ -39,12 +46,16 @@ export interface BenchPanelModel {
     reauthorize?: (server: string, force?: boolean) => Promise<ReauthorizeResult>;
     flash?: TokenFlash | null;
     /** Find view (slice 8b); absent = no arrange/find toggle. */
-    find?: (q: string, n?: number) => Promise<FindResponse>;
+    find?: (q: string, n?: number, registriesOff?: string[]) => Promise<FindResponse>;
     install?: (source: string, id: string, state: PlacementState | null) => Promise<unknown>;
+    /** Install an MCP server from its registry (Find view). */
+    installServer?: (serviceId: string, providerId?: string | null) => Promise<{ server_name?: string; warnings?: string[] }>;
     /** Skill editing (slice 6 edit mode).  Custom skills only; the detail says which. */
     createSkill?: (data: SkillCreate) => Promise<Skill>;
     updateSkill?: (skillId: string, key: string, data: SkillUpdate) => Promise<void>;
     deleteSkill?: (skillId: string, key: string) => Promise<void>;
+    /** What installed packages need that is not configured here. */
+    missing?: MissingCapability[];
 }
 
 export interface BenchPanelProps {
@@ -56,15 +67,29 @@ export interface BenchPanelProps {
     mcpAttention?: Attention;
     /** Shows a "⌘K" affordance beside the lens strip. */
     onOpenPalette?: () => void;
+    /** Agents installed with packages; absent = no agent list. */
+    agents?: PackagedAgentsModel;
 }
 
-export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, onOpenShellConfig, mcpAttention, onOpenPalette }) => {
+/** localStorage key for the board's grouping choice ('none' | 'package'). */
+export const GROUP_PREF_KEY = 'ZIYA_BENCH_GROUP';
+
+export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, onOpenShellConfig, mcpAttention, onOpenPalette, agents }) => {
     const { openRegistry, openMcpServers } = useBenchActions();
     const [selectedKey, setSelectedKey] = useState<string | null>(null);
     // arrange = the board; find = a query to the sources (slice 8b).
     const [mode, setMode] = useState<'arrange' | 'find'>('arrange');
     // "＋ New skill": the editor takes the drawer slot until saved or cancelled.
     const [creating, setCreating] = useState(false);
+    // Set when Find is opened for one name (a server a package is missing).
+    const [findQuery, setFindQuery] = useState('');
+    const [groupBy, setGroupBy] = useState<GroupBy>(() => {
+        try { return localStorage.getItem(GROUP_PREF_KEY) === 'package' ? 'package' : 'none'; } catch { return 'none'; }
+    });
+    const chooseGroup = (g: GroupBy) => {
+        setGroupBy(g);
+        try { localStorage.setItem(GROUP_PREF_KEY, g); } catch { /* private mode */ }
+    };
     if (!bench.ready) {
         return bench.error
             ? <div role="alert" style={{ color: '#d46b08' }}>Could not load the bench.</div>
@@ -78,12 +103,31 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
     // The drawer follows the selected card; a key that left the bench closes it.
     const selected = selectedKey ? bench.items.find(i => i.key === selectedKey) ?? null : null;
     const finding = mode === 'find' && !!bench.find;
+    // Offered only when something on this bench came from a package.
+    const packaged = hasPackages(bench.items);
     return (
-        <div data-testid="bench-panel" style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: 1, minHeight: 0 }}>
+        // Scrolls when the window is too short for the board's floor plus the strips under it.
+        <div data-testid="bench-panel" style={{ display: 'flex', flexDirection: 'column', gap: 12, flex: 1, minHeight: 0,
+                                               overflowY: 'auto' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <LensStrip lenses={bench.lenses} lens={bench.lens} deltas={bench.deltas} onChange={bench.setLens}
                            items={bench.items} />
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    {packaged && !finding && (
+                        <div role="tablist" aria-label="Group"
+                             style={{ display: 'inline-flex', borderRadius: 6, overflow: 'hidden',
+                                      border: '1px solid var(--mockup-border, rgba(127,127,127,0.35))' }}>
+                            {([['none', 'flat'], ['package', 'by package']] as const).map(([g, label]) => (
+                                <button key={g} type="button" role="tab" aria-selected={groupBy === g}
+                                        data-testid={`groupby-${g}`} onClick={() => chooseGroup(g)}
+                                        style={{ border: 'none', padding: '2px 10px', fontSize: 11, cursor: 'pointer',
+                                                 color: groupBy === g ? '#0d9488' : 'inherit', fontWeight: groupBy === g ? 600 : 400,
+                                                 background: groupBy === g ? 'rgba(20,184,166,0.15)' : 'transparent' }}>
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    )}
                     {bench.createSkill && !finding && (
                         <button type="button" data-testid="bench-new-skill" title="Write a new custom skill for this project"
                                 onClick={() => { setSelectedKey(null); setCreating(true); }}
@@ -98,7 +142,7 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
                                       border: '1px solid var(--mockup-border, rgba(127,127,127,0.35))' }}>
                             {(['arrange', 'find'] as const).map(m => (
                                 <button key={m} type="button" role="tab" aria-selected={mode === m} data-testid={`mode-${m}`}
-                                        onClick={() => setMode(m)}
+                                        onClick={() => { setFindQuery(''); setMode(m); }}
                                         style={{ border: 'none', padding: '2px 10px', fontSize: 11, cursor: 'pointer',
                                                  color: mode === m ? '#0d9488' : 'inherit', fontWeight: mode === m ? 600 : 400,
                                                  background: mode === m ? 'rgba(20,184,166,0.15)' : 'transparent' }}>
@@ -118,12 +162,19 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
                 </div>
             </div>
             <WeightGauge items={bench.items} weight={bench.weight} delta={bench.flash?.always} />
+            {!finding && <WithinReachNotice items={bench.items} place={bench.place} />}
             {finding ? (
-                <BenchFind model={{ find: bench.find!, install: bench.install, lens: bench.lens }} />
+                <BenchFind key={findQuery} initialQuery={findQuery}
+                           model={{ find: bench.find!, install: bench.install, installServer: bench.installServer,
+                                    lens: bench.lens }} />
             ) : (
-                <div style={{ display: 'flex', gap: 12, flex: 1, minHeight: 0 }}>
+                // A floor: at minHeight 0 the row collapsed and the lanes
+                // (minHeight 120) painted under whatever follows the board.
+                <div data-testid="bench-board-row" style={{ display: 'flex', gap: 12, flex: 1, minHeight: 180 }}>
                     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                        <BenchBoard bench={bench} selectedKey={selectedKey} onSelect={setSelectedKey} />
+                        <BenchBoard bench={bench} selectedKey={selectedKey} onSelect={setSelectedKey}
+                                    groupBy={packaged ? groupBy : 'none'}
+                                    missingByRoot={missingCountByRoot(bench.missing ?? [])} />
                     </div>
                     {creating && bench.createSkill ? (
                         <aside data-testid="bench-detail" aria-label="New skill"
@@ -173,11 +224,16 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
                     )}
                 </div>
             )}
+            {!finding && (bench.missing?.length ?? 0) > 0 && (
+                <NotInstalledHere missing={bench.missing!}
+                                  onFind={bench.find ? name => { setFindQuery(name); setMode('find'); } : undefined} />
+            )}
             {notHere.length > 0 && (
                 <div data-testid="bench-not-installed" style={{ fontSize: 11, opacity: 0.7 }}>
                     Placed but not installed here: {notHere.map(k => k.slice(k.indexOf(':') + 1)).join(', ')}
                 </div>
             )}
+            {!finding && agents && <PackagedAgents model={agents} />}
             <EnvironmentRow items={env} warning={bench.environmentWarning}
                             onToggle={bench.setEnvironment ? (c, e) => void bench.setEnvironment!(c, e) : undefined}
                             shellAttention={shellAttention} onOpenShellConfig={onOpenShellConfig} />
