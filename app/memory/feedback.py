@@ -239,6 +239,69 @@ def _record_feedback_stats(rows: List[Dict[str, Any]]) -> None:
         tmp.replace(path)
     except Exception as e:
         logger.debug(f"Feedback stats write skipped (non-fatal): {e}")
+    _record_daily_aggregate(rows, ts=int(time.time() * 1000))
+
+
+# ── Daily aggregate ──────────────────────────────────────────────────────
+# The row ring above holds ~1 day at current volume (2026-11-18: ~1,750
+# proposal rows/day), so no change could be evaluated over more than a day.
+# This file keeps one small record per local day and kind, unbounded: counts
+# at several thresholds, because 0.55 is the operating threshold but a blind
+# calibration (2026-11-09) put "the reply used it" at >= 0.60.
+DAILY_THRESHOLDS = (0.55, 0.60, 0.70)
+
+
+def _daily_file():
+    return _stats_file().with_name("feedback_daily.json")
+
+
+def _record_daily_aggregate(rows: List[Dict[str, Any]], ts: int) -> None:
+    """Fold ``rows`` into ``{day: {kind: {n, sum_cos, used@T...}}}``.  Never raises."""
+    if not rows:
+        return
+    from app.utils.paths import memory_writes_allowed
+    if not memory_writes_allowed():
+        return
+    try:
+        from app.storage.json_state import JsonStateStore
+        path = _daily_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        day = time.strftime("%Y-%m-%d", time.localtime(ts / 1000))
+        with JsonStateStore(path).locked():
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                if not isinstance(doc, dict):
+                    doc = {}
+            except (OSError, ValueError):
+                doc = {}
+            per_kind = doc.setdefault(day, {})
+            for r in rows:
+                kind = r.get("kind", "memory")
+                cos = float(r.get("best_cos", 0.0) or 0.0)
+                agg = per_kind.setdefault(kind, {"n": 0, "sum_cos": 0.0,
+                                                 **{f"used@{t:.2f}": 0 for t in DAILY_THRESHOLDS}})
+                agg["n"] += 1
+                agg["sum_cos"] = round(agg["sum_cos"] + cos, 4)
+                for t in DAILY_THRESHOLDS:
+                    if cos >= t:
+                        agg[f"used@{t:.2f}"] = agg.get(f"used@{t:.2f}", 0) + 1
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(doc, indent=1, sort_keys=True), encoding="utf-8")
+            tmp.replace(path)
+    except Exception as e:
+        logger.debug(f"Feedback daily aggregate skipped (non-fatal): {e}")
+
+
+def load_feedback_daily() -> Dict[str, Any]:
+    """The daily aggregate, ``{}`` when absent or unreadable."""
+    try:
+        path = _daily_file()
+        if path.exists():
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            return doc if isinstance(doc, dict) else {}
+    except Exception as e:
+        logger.debug(f"Feedback daily read failed: {e}")
+    return {}
 
 
 def load_feedback_stats() -> List[Dict[str, Any]]:
@@ -287,6 +350,7 @@ def feedback_stats_summary() -> Dict[str, Any]:
         "threshold": threshold,
         **_block(rows),
         "by_kind": {k: _block([r for r in rows if r.get("kind", "memory") == k]) for k in kinds},
+        "daily": load_feedback_daily(),
     }
 
 
