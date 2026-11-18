@@ -5043,6 +5043,12 @@ def cmd_jobs(args):
 
 def cmd_shadow(args):
     """Handle: ziya shadow [--label L] [--allow-exec] [--allow-control] [--meta k=v] [cmd...]"""
+    if getattr(args, 'hooks', None):
+        # Printing only; usable on any platform, e.g. piped over ssh into a
+        # remote rc file.
+        from app.shadow.prompt_marker import hooks_snippet
+        print(hooks_snippet(args.hooks))
+        return
     if sys.platform == 'win32':
         # Sessions run on a pseudo-terminal (pty/termios) and are reached
         # over AF_UNIX sockets, none of which Windows provides.
@@ -5224,6 +5230,10 @@ Examples:
                                help='Redact every match of RX from the journal (repeatable)')
     shadow_parser.add_argument('--list', '-l', action='store_true', dest='list_sessions',
                                help='List live shadow sessions and exit')
+    shadow_parser.add_argument('--hooks', choices=['zsh', 'bash'],
+                               help='Print OSC 133 hooks for that shell\'s rc file and exit. '
+                                    'Installed on a host (including the far side of ssh), they '
+                                    'give exact command boundaries and real exit codes')
     shadow_parser.set_defaults(func=cmd_shadow, _shadow_parser=shadow_parser)
 
     # ziya jobs: inspect, tail, kill and garbage-collect managed jobs

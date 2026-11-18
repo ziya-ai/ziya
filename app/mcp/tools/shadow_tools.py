@@ -385,6 +385,33 @@ class ShadowControlTool(BaseMCPTool):
             return _error(e)
 
 
+def _unfinished_command(records: List[Dict[str, Any]], cmd_seq: Optional[int],
+                        sent_at_seq: Optional[int], segmentation: str) -> Optional[int]:
+    """The cmd_seq of the sent command if the journal says it has not ended.
+
+    Output going quiet is not the command finishing (a silent build, a
+    ``sleep``, a first line still crossing ssh).  Where the segmenter
+    records ends -- prompt-heuristic and osc133 -- a ``cmd`` with no
+    ``exit`` yet is still running.  osc133 assigns the cmd at marker C,
+    after send_line returned, so there it is the first cmd after the send.
+    Raw never records an end, so there is nothing to wait for.
+    """
+    if segmentation not in ("prompt-heuristic", "osc133"):
+        return None
+    cs = cmd_seq
+    if cs is None:
+        if segmentation != "osc133":
+            return None
+        after = int(sent_at_seq or 0)
+        cs = next((r.get("seq") for r in records
+                   if r.get("t") == "cmd" and int(r.get("seq") or 0) > after), None)
+        if cs is None:
+            return None
+    if any(r.get("t") == "exit" and r.get("cmd_seq") == cs for r in records):
+        return None
+    return cs
+
+
 class ShadowSendInput(BaseModel):
     """Input schema for shadow_send."""
     session: str = Field(..., description="Session id, label, or label:id (must hold a lease)")
@@ -392,7 +419,9 @@ class ShadowSendInput(BaseModel):
     quiet_ms: int = Field(800, ge=100, le=5000,
                           description="Consider the command done after this much output silence.")
     timeout_ms: int = Field(15000, ge=500, le=120000,
-                            description="Give up waiting for quiescence after this long.")
+                            description=("Wait this long at most. Quiet output alone does not end "
+                                         "the wait while the command has no recorded exit; past "
+                                         "this, still_running comes back with a shadow_wait hint."))
     max_chars: int = Field(8000, ge=200, le=40000, description="Cap on returned transcript.")
 
 
@@ -432,25 +461,53 @@ class ShadowSendTool(BaseMCPTool):
             # every other request in the process stalls meanwhile.
             sent = await asyncio.to_thread(client.send_line, session, lease_id, line,
                                            provenance=_provenance(kwargs))
+            timeout_ms = int(kwargs.get("timeout_ms", 15000))
+            started = time.monotonic()
             idle = await asyncio.to_thread(client.wait_idle, session,
                                            quiet_ms=int(kwargs.get("quiet_ms", 800)),
-                                           timeout_ms=int(kwargs.get("timeout_ms", 15000)))
+                                           timeout_ms=timeout_ms)
             frm = sent.get("sent_at_seq") or 1
             page = await asyncio.to_thread(client.read, session, from_seq=int(frm), max_records=500)
+            unfinished = _unfinished_command(page["records"], sent.get("cmd_seq"), frm,
+                                             entry.segmentation)
+            if unfinished is not None and idle.get("idle"):
+                # Quiet, but the journal has no end for it: spend the rest of
+                # the budget waiting for its exit, in hops a stop can break.
+                from app.utils import tool_interrupt
+                wait_from = int(frm)
+                while True:
+                    remaining = timeout_ms - int((time.monotonic() - started) * 1000)
+                    if remaining <= 0:
+                        break
+                    resp = await asyncio.to_thread(
+                        client.wait, session, until=["exit"], cmd_seq=unfinished,
+                        from_seq=wait_from, timeout_ms=min(remaining, client.WAIT_CHUNK_MS, 10_000),
+                        max_tail_records=1)
+                    wait_from = resp.get("from_seq", wait_from)
+                    if resp.get("reason") in ("exit", "session_ended"):
+                        unfinished = None
+                        break
+                    if resp.get("reason") != "timeout" or tool_interrupt.requested():
+                        break
+                page = await asyncio.to_thread(client.read, session, from_seq=int(frm), max_records=500)
             from app.mcp.response_validator import sanitize_text
             transcript = sanitize_text(
                 client.format_records(page["records"],
                                       max_chars=int(kwargs.get("max_chars", 8000))),
                 source_tool="shadow_send")
             out = {"ok": True, "session_id": entry.session_id, "sent": line,
-                   "cmd_seq": sent.get("cmd_seq"), "idle": idle.get("idle"),
+                   "cmd_seq": sent.get("cmd_seq"),
+                   "idle": bool(idle.get("idle")) and unfinished is None,
                    "timed_out": idle.get("timed_out", False),
                    "next_seq": page.get("next_seq"), "transcript": transcript or "(no output)"}
-            if not idle.get("idle"):
-                # Still producing output: say what to do next, so the model
-                # waits on an event instead of sleeping in a local shell.
+            if not idle.get("idle") or unfinished is not None:
+                # Still producing output, or silent with no end recorded: say
+                # what to do next, so the model waits on an event instead of
+                # sleeping in a local shell.
                 out["still_running"] = True
                 cs = sent.get("cmd_seq")
+                if cs is None:
+                    cs = unfinished
                 if cs is not None or entry.segmentation == "osc133":
                     # osc133 assigns cmd_seq at marker C, after send_line
                     # returns; the next exit is this command's.

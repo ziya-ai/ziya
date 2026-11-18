@@ -226,6 +226,21 @@ in the prompt itself, the shadowed shell has `ZIYA_SHADOW_SESSION` set, so in
 [[ -n $ZIYA_SHADOW_SESSION ]] && PROMPT="%F{yellow}⏺%f $PROMPT"
 ```
 
+Ziya finds command boundaries by watching for the prompt to come back, which
+needs nothing installed on any host. A command a chat runs with
+`shadow_send` also gets its real exit code: the line is typed with a short
+POSIX suffix (`; _zx=$?; printf …; (exit $_zx)`) that the host's own shell
+runs to report the status. You will see that suffix in the terminal and in
+the remote shell's history. Commands you type yourself show
+`→ done (exit code unknown)`. `C-x C-z` → `i` types OSC 133 hooks into
+the shell you are in, for that shell's lifetime only, which gives exact
+boundaries and exit codes until it exits. Moving between hooked and
+un-hooked shells (ssh in and out) is handled: an un-hooked stretch falls
+back to prompt detection until the marks return. Optionally, if you also
+want exact codes for commands you type on a host you control,
+`ziya shadow --hooks zsh` (or `bash`, 4.4+) prints the same hooks as a
+block for that host's rc file. Nothing requires it.
+
 To let a chat run commands in a session you already have open, press
 `C-x C-z` then `c` to raise the control ceiling (`supervised` = you approve
 every command; `gated` = only commands outside the read-only policy ask;

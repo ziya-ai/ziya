@@ -277,6 +277,12 @@ class ShadowCore:
                     # input, so the cmd record precedes its output).
                     self.segmenter.feed_input(payload)
                     cmd_seq = self.segmenter.on_enter(masked=False)
+                    # In a prompt-heuristic stretch, append a POSIX suffix
+                    # that has the host's shell report the exit status.
+                    # Added after the policy verdict, which judged the line.
+                    typed = self.segmenter.with_exit_report(text.rstrip("\r\n"), cmd_seq)
+                    if typed != text.rstrip("\r\n"):
+                        payload = typed.encode("utf-8", errors="replace")
                     self._write_locked(payload + b"\r")
                     return {"cmd_seq": cmd_seq, "sent_at_seq": sent_at}
             if time.monotonic() >= deadline:

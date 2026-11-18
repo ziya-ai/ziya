@@ -29,8 +29,9 @@ terminal always receives the untouched bytes — cleaning applies only to
 what is recorded.
 """
 import codecs
-import threading
 import re
+import secrets
+import threading
 import time
 from collections import deque
 from typing import Callable, Deque, List, Optional, Tuple
@@ -40,6 +41,11 @@ _OSC133 = re.compile(r"\x1b\]133;([A-D])((?:;[^\x07\x1b]*)?)(?:\x07|\x1b\\)")
 # Alternate screen buffer enter/exit (DECSET/DECRST 1049, with legacy 47/1047)
 _ALT_ENTER = re.compile(r"\x1b\[\?(?:1049|1047|47)h")
 _ALT_EXIT = re.compile(r"\x1b\[\?(?:1049|1047|47)l")
+# Exit report for a line shadow_send typed (see Segmenter.with_exit_report):
+# ESC ] 6973 ; <session token> ; <cmd_seq> ; <status> BEL.  A private OSC
+# number, so terminals ignore it; the token keeps another session's (or a
+# replayed file's) report from ending this session's command.
+_EXIT_REPORT = re.compile(r"\x1b\]6973;([0-9a-f]+);(\d+);(\d+)(?:\x07|\x1b\\)")
 # Any CSI / OSC / two-byte escape, for prompt fingerprinting and cleanup
 _ANSI_ANY = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 # Control bytes other than \t \n \r \b
@@ -59,6 +65,15 @@ _MAX_ESC_CARRY = 64
 # Minimum length of a learned prompt suffix before we trust reappearance
 # matching.  Prompts almost always end in "$ ", "# ", "> " or "% ".
 _PROMPT_SUFFIX_LEN = 2
+# A held first line (see Segmenter._echo_expect) is released unchecked once
+# it grows past this many characters beyond the command without a newline:
+# an echo is the command plus escape sequences (syntax highlighting), so
+# anything much longer is output.
+_ECHO_HOLD_SLACK = 4096
+# Shell words after which nothing may be appended: the line opens a compound
+# command the human or model is still writing.
+_OPEN_WORDS = {"do", "then", "else", "elif", "in", "if", "while", "until",
+               "for", "case", "select", "function", "{", "(", "!", "time"}
 
 
 def strip_ansi(text: str) -> str:
@@ -98,6 +113,27 @@ def clean_output(text: str) -> str:
     return "\n".join(lines)
 
 
+def _is_echo(line: str, cmd: str) -> bool:
+    """Whether ``line`` (one raw output line) is the terminal's echo of ``cmd``.
+
+    An exact match after cleaning is an echo.  A line the terminal wrapped
+    at the margin carries a bare CR, and cleaning keeps only its last row,
+    so there a suffix of the command (or the command after a redrawn
+    prompt) counts too.  Without a CR a suffix is ordinary output: ``seq 9
+    | tail -1`` printing ``1`` is not an echo.
+    """
+    body = strip_ansi(line).rstrip("\r\n")
+    shown = clean_output(body).strip()
+    cmd = cmd.strip()
+    if not shown or not cmd:
+        return False
+    if shown == cmd:
+        return True
+    if "\r" in body:
+        return cmd.endswith(shown) or shown.endswith(cmd)
+    return False
+
+
 def _split_incomplete_escape(text: str) -> Tuple[str, str]:
     """Hold back a trailing escape sequence that has not terminated yet.
 
@@ -123,6 +159,70 @@ def _split_incomplete_escape(text: str) -> Tuple[str, str]:
             return text, ""
         return text[:idx], tail
     return text, ""
+
+
+def _report_separator(line: str) -> Optional[str]:
+    """What to put between ``line`` and the exit report, or None to send the
+    line unchanged.
+
+    The report is appended as another command, so it is only safe when
+    ``line`` is one complete command: no unterminated quote, backslash,
+    parenthesis or here-document, no trailing comment (it would swallow the
+    report), and no trailing operator or compound-opening keyword that
+    leaves the command unfinished.  A trailing ``&`` backgrounds the line,
+    so its status is not the command's anyway.  When in doubt, None: the
+    command then ends with an unknown code, as before.
+    """
+    if not line.strip() or "\n" in line or "\r" in line:
+        return None
+    quote = ""            # "'", '"', '`' while inside one
+    depth = 0             # unquoted ( and $( nesting
+    prev = " "
+    i, n = 0, len(line)
+    while i < n:
+        ch = line[i]
+        if quote == "'":
+            if ch == "'":
+                quote = ""
+        elif quote in ('"', "`"):
+            if ch == "\\":
+                i += 1
+            elif ch == quote:
+                quote = ""
+        elif ch == "\\":
+            if i == n - 1:
+                return None   # line continuation
+            i += 1
+        elif ch in ("'", '"', "`"):
+            quote = ch
+        elif ch == "#" and prev in " \t;&|()":
+            return None       # comment: the report would be inside it
+        elif ch == "<" and line.startswith("<<", i):
+            return None       # here-document (or here-string): body follows
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        prev = ch
+        i += 1
+    if quote or depth != 0:
+        return None
+    body = line.rstrip()
+    if body.endswith(";;"):
+        return None
+    if body.endswith(("&", "|")):
+        return None           # &&, ||, |, & (background)
+    words = body.replace(";", " ; ").split()
+    if words and words[-1] in _OPEN_WORDS:
+        return None
+    # The first word opening a compound the line does not close.
+    if words and words[0] in ("for", "while", "until", "select") and "done" not in words:
+        return None
+    if words and words[0] == "if" and "fi" not in words:
+        return None
+    if words and words[0] == "case" and "esac" not in words:
+        return None
+    return " " if body.endswith(";") else "; "
 
 
 def _locked(fn):
@@ -180,6 +280,24 @@ class Segmenter:
         # The newline that terminates the echoed command line belongs to
         # the command, not its output; strip it once after each cmd.
         self._eat_leading_newline = False
+        # A line delivered in one write (shadow_send, a paste) reaches
+        # on_enter before the child has echoed it, so over ssh the echo
+        # arrives a moment later as the command's first output.  When the
+        # command text did not come from an echo already on screen,
+        # _echo_expect holds it and the first output line is buffered in
+        # _echo_buf until its newline, then dropped if it is that echo.
+        self._echo_expect: Optional[str] = None
+        self._echo_buf = ""
+        # osc133 mode was left because the markers stopped framing input
+        # (an un-instrumented shell, e.g. across ssh).  The next marker
+        # closes the command the heuristic opened meanwhile with an unknown
+        # code; D's code belongs to the instrumented shell's command.
+        self._osc_lapsed = False
+        # The line taken at Enter in osc133 mode: the cmd text at marker C
+        # when nothing was echoed between B and C.
+        self._osc_typed = ""
+        # Session token in exit reports (with_exit_report / _EXIT_REPORT).
+        self.exit_token = secrets.token_hex(4)
         # The PTY read loop (feed_output/tick) and an input source on
         # another thread (headless handle_input, Phase-3 send_line) both
         # mutate _pending/state; serialize them so a command record can
@@ -245,7 +363,13 @@ class Segmenter:
         In osc133 mode boundaries otherwise come from the markers, so Enter
         only consumes the typed line.  In the other modes this is the moment
         we decide whether a command started.
+
+        In osc133 mode an Enter while a command runs, on a line that has
+        something before the typed text (a prompt), means the markers have
+        stopped: the foreground program is an un-instrumented shell.  The
+        stretch drops to the heuristic until the next marker.
         """
+        self._release_echo_hold()
         if self._typed_lines:
             typed = self._typed_lines.popleft().strip()
         else:
@@ -259,14 +383,50 @@ class Segmenter:
             if reason != "echo-off":
                 self._suppress_until_newline = True
             return None
-        if self.mode == MODE_OSC133 or self.altscreen:
+        if self.altscreen:
+            return None
+        if self.mode == MODE_OSC133:
+            if self.state == "output" and self._prompted_line(typed):
+                return self._lapse_osc133(typed)
+            self._osc_typed = typed
             return None
         return self._heuristic_enter(typed)
 
     @_locked
+    def with_exit_report(self, line: str, cmd_seq: Optional[int]) -> str:
+        """The text to type for ``line`` so the host's own shell reports its
+        exit status (a line written whole by send_line, after on_enter).
+
+        Only in a prompt-heuristic stretch, where nothing else knows the
+        code, and only for a line that just opened command ``cmd_seq``.
+        The suffix is plain POSIX shell: it saves ``$?``, prints the report
+        escape, and restores ``$?`` with a subshell so the user's next
+        command (and their prompt) still sees it.  Nothing is installed on
+        the host.  The cmd record stays ``line``; the echo of the longer
+        text is what the echo hold now expects.
+        """
+        if (cmd_seq is None or cmd_seq != self.cmd_seq or self.mode != MODE_PROMPT
+                or self.state != "output"):
+            return line
+        sep = _report_separator(line)
+        if sep is None:
+            return line
+        typed = (f"{line.rstrip()}{sep}_zx=$?; printf '\\033]6973;{self.exit_token};"
+                 f"{cmd_seq};%s\\007' $_zx; (exit $_zx)")
+        if self._echo_expect is not None:
+            self._echo_expect = typed
+        return typed
+
+    @_locked
     def tick(self, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
-        if not self._pending or now - self._last_output_at < IDLE_FLUSH_S:
+        if now - self._last_output_at < IDLE_FLUSH_S:
+            return
+        if self._echo_buf:
+            # Quiet with the held first line still unterminated: not an
+            # echo in progress (a bare returning prompt, a y/n question).
+            self._release_echo_hold()
+        if not self._pending:
             return
         if self.state == "output" and self.mode != MODE_OSC133:
             # A quiescent stretch whose last line is the prompt means the
@@ -288,6 +448,7 @@ class Segmenter:
         if self._carry:
             self._pending += self._carry
             self._carry = ""
+        self._release_echo_hold()
         self._flush_output(keep_tail=False)
         if self.altscreen:
             self._exit_altscreen()
@@ -301,7 +462,8 @@ class Segmenter:
             m_osc = _OSC133.search(text, pos)
             m_in = _ALT_ENTER.search(text, pos)
             m_out = _ALT_EXIT.search(text, pos)
-            cands = [m for m in (m_osc, m_in, m_out) if m]
+            m_rep = _EXIT_REPORT.search(text, pos)
+            cands = [m for m in (m_osc, m_in, m_out, m_rep) if m]
             if not cands:
                 self._consume(text[pos:])
                 return
@@ -309,6 +471,8 @@ class Segmenter:
             self._consume(text[pos:m.start()])
             if m is m_osc:
                 self._osc133(m.group(1), m.group(2))
+            elif m is m_rep:
+                self._exit_report(m.group(1), int(m.group(2)), int(m.group(3)))
             elif m is m_in:
                 self._enter_altscreen()
             else:
@@ -338,14 +502,47 @@ class Segmenter:
             text = stripped
             if not text:
                 return
+        if self._echo_expect is not None:
+            text = self._take_echo(text)
+            if not text:
+                return
         self._pending += text
+
+    # -- delayed echo ---------------------------------------------------------
+
+    def _take_echo(self, text: str) -> str:
+        """Buffer the first output line after a command whose echo is owed;
+        return what should be journaled now (the line unless it is the
+        echo, plus anything after it)."""
+        self._echo_buf += text
+        nl = self._echo_buf.find("\n")
+        if nl < 0:
+            if len(self._echo_buf) > len(self._echo_expect or "") * 4 + _ECHO_HOLD_SLACK:
+                self._release_echo_hold()
+            return ""
+        line, rest = self._echo_buf[: nl + 1], self._echo_buf[nl + 1:]
+        expect = self._echo_expect or ""
+        self._echo_buf, self._echo_expect = "", None
+        return rest if _is_echo(line, expect) else line + rest
+
+    def _release_echo_hold(self) -> None:
+        """Stop waiting for an echo; anything held becomes ordinary output."""
+        held, self._echo_buf, self._echo_expect = self._echo_buf, "", None
+        if held:
+            self._pending += held
 
     # -- OSC 133 ----------------------------------------------------------------
 
     def _osc133(self, letter: str, params: str) -> None:
+        self._release_echo_hold()
+        if self._osc_lapsed:
+            self._osc_lapsed = False
+            self._flush_output(keep_tail=False)
+            self._finish_command()
         if self.mode != MODE_OSC133:
             self._set_mode(MODE_OSC133)
         if letter == "A":                     # prompt start
+            self._osc_typed = ""
             if self.state == "output":
                 self._flush_output(keep_tail=False)
                 self._finish_command()
@@ -362,7 +559,8 @@ class Segmenter:
                 self._masked_cmd_pending = False
                 cmd = ""
             else:
-                cmd = echo or "".join(self._typed).strip()
+                cmd = echo or self._osc_typed or "".join(self._typed).strip()
+            self._osc_typed = ""
             self._typed.clear()
             self._typed_lines.clear()
             self._pending = ""
@@ -384,6 +582,25 @@ class Segmenter:
 
     # -- prompt heuristic ------------------------------------------------------
 
+    def _prompted_line(self, typed: str) -> bool:
+        """Something other than the typed text is on the line (a prompt).
+        Type-ahead echoed under a running command's output has nothing
+        before it and stays input to that command."""
+        t = self._tail_line().rstrip()
+        if typed and t.endswith(typed):
+            t = t[: len(t) - len(typed)]
+        return bool(t.strip())
+
+    def _lapse_osc133(self, typed: str) -> Optional[int]:
+        """The markers stopped framing input: close the running command
+        (unknown code) and segment this stretch by the prompt heuristic
+        until the next marker."""
+        self._flush_output(keep_tail=True)
+        self._finish_command()
+        self._osc_lapsed = True
+        self._set_mode(MODE_PROMPT if self._prompt_suffix else MODE_RAW)
+        return self._heuristic_enter(typed)
+
     def _heuristic_enter(self, typed: str) -> Optional[int]:
         tail = self._tail_line()
         if self.state == "output":
@@ -402,14 +619,17 @@ class Segmenter:
         # prompt is known; otherwise from what was typed, and learn the
         # prompt as whatever preceded it on the line.
         cmd = ""
+        from_echo = False      # cmd was read off the screen, not just typed
         if tail:
             if self._prompt_suffix and self._prompt_suffix in tail:
                 cmd = tail.rsplit(self._prompt_suffix, 1)[-1].strip()
                 self._prompt_full = tail[: len(tail) - len(cmd)].rstrip()
+                from_echo = bool(cmd)
             elif typed and tail.rstrip().endswith(typed):
                 prompt = tail[: len(tail.rstrip()) - len(typed)]
                 self._learn_prompt(prompt)
                 cmd = typed
+                from_echo = True
             elif not typed:
                 # Bare Enter at an unknown prompt: the tail IS the prompt.
                 self._learn_prompt(tail)
@@ -423,6 +643,9 @@ class Segmenter:
             return None
         self.cmd_seq = self.sink.cmd(cmd)
         self._eat_leading_newline = True
+        # The line was written whole (send_line, a paste): its echo is
+        # still to come and must not open the command's output.
+        self._echo_expect = None if from_echo else cmd
         if not self._prompt_suffix:
             # raw: no learned prompt, so nothing will ever say this command
             # ended.  Group its output under it, but stay "idle" so the next
@@ -496,6 +719,20 @@ class Segmenter:
         can run, so a real exit is never duplicated."""
         if self.cmd_seq is not None:
             self.sink.exit(self.cmd_seq, None)
+        self.cmd_seq = None
+        self.state = "idle"
+
+    def _exit_report(self, token: str, cmd_seq: int, code: int) -> None:
+        """A report from with_exit_report's suffix: end the command it names
+        with its real code.  Anything else (another session's token, a
+        command already ended, a stretch that has switched to osc133) is
+        dropped, and the heuristic ends the command as before."""
+        if (token != self.exit_token or cmd_seq != self.cmd_seq
+                or self.state != "output" or self.mode == MODE_OSC133):
+            return
+        self._release_echo_hold()
+        self._flush_output(keep_tail=False)
+        self.sink.exit(cmd_seq, code)
         self.cmd_seq = None
         self.state = "idle"
 
