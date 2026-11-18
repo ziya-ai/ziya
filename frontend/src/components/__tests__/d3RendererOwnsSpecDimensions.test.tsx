@@ -39,10 +39,13 @@ jest.mock('../../context/ThemeContext', () => ({
 const mockRenderSpy = jest.fn();
 let mockActivePlugin: any;
 
+// Plain functions, not jest.fn: CRA's resetMocks clears a jest.fn
+// implementation before each test, which left findPluginForSpec returning
+// undefined and getAvailablePlugins() undefined.
 jest.mock('../../plugins/d3/registry', () => ({
-    findPluginForSpec: jest.fn(async () => mockActivePlugin),
-    loadPlugin: jest.fn(async () => mockActivePlugin),
-    getAvailablePlugins: jest.fn(() => [{ name: 'stub', priority: 1 }]),
+    findPluginForSpec: async () => mockActivePlugin,
+    loadPlugin: async () => mockActivePlugin,
+    getAvailablePlugins: () => [{ name: 'stub', priority: 1 }],
 }));
 
 import React from 'react';
