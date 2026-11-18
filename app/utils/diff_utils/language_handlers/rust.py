@@ -1,401 +1,273 @@
 """
 Rust-specific language handler.
+
+The validator's job is to tell a patch that BROKE the file (unclosed brace,
+``let x = ;``) from one that did not.  It is not a linter, and it is not a
+build: the file it sees is one module of a crate, with nothing else of the
+crate present.
+
+The previous handler failed every real Rust file three ways over.  ``rustc
+--emit=metadata`` on a lone module cannot resolve ``use crate::…``, ``mod
+x;``, derive macros or any external crate, and without ``--crate-type lib``
+demanded a ``main``; a set of "common issue" lints then refused elided
+lifetimes (``fn f(x: &str)``), re-exports as "unused imports" and any
+``unsafe`` block without a comment; and the no-rustc fallback read ``match``
+arms and struct fields as "missing semicolon".  Every ``.rs`` diff was
+therefore refused with "the patched file fails the language check".
+
+Now:
+
+* ``rustc`` runs with ``--crate-type lib --emit=metadata --cap-lints allow``
+  and the crate's edition (from the nearest ``Cargo.toml``, default 2021).
+* Its diagnostics are split into PARSE-class errors (no error code, or one
+  of the few codes the parser itself emits) and everything else (name
+  resolution, types, missing modules), which a single-file view cannot
+  judge.
+* A parse error that the original file did not have is a hard failure.
+  Anything else is accepted, as the C++ handler accepts errors the
+  pre-patch file shares.
+* Without ``rustc`` (or on timeout) the only check is delimiter balance,
+  with comments, strings and char literals skipped so ``"{"`` and ``'}'``
+  are not counted.
 """
 
+import os
 import re
 import subprocess
-from typing import List, Tuple, Optional, Dict
+import tempfile
+from typing import Dict, List, Optional, Set, Tuple
 
 from app.utils.logging_utils import logger
 from .base import LanguageHandler
 
 
+# Error codes rustc's parser/lexer emits.  Every other coded error comes
+# from a later phase (resolution, type check, borrow check) and says nothing
+# about whether the patch produced well-formed Rust.
+_PARSE_ERROR_CODES = frozenset({
+    "E0585",  # doc comment not attached to anything
+    "E0586",  # inclusive range with no end
+    "E0758",  # unterminated block comment
+    "E0762",  # unterminated character literal
+    "E0763",  # unterminated byte constant
+    "E0765",  # unterminated double quote string
+    "E0766",  # unterminated double quote byte string
+    "E0767",  # unreachable label (parser-ish, rare)
+    "E0768",  # number with no digits
+})
+
+# ``--error-format=short`` lines: ``path:line:col: error[E0432]: message`` or
+# ``path:line:col: error: message``.
+_SHORT_DIAG_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+):(?P<col>\d+): error(?:\[(?P<code>E\d{4})\])?: (?P<msg>.*)$")
+
+_RUSTC_TIMEOUT_S = 30
+
+
 class RustHandler(LanguageHandler):
     """Handler for Rust files."""
-    
+
     @classmethod
     def can_handle(cls, file_path: str) -> bool:
-        """
-        Determine if this handler can process the given file.
-        
-        Args:
-            file_path: Path to the file
-            
-        Returns:
-            True if this is a Rust file, False otherwise
-        """
         return file_path.endswith('.rs')
-    
+
     @classmethod
     def verify_changes(cls, original_content: str, modified_content: str, file_path: str) -> Tuple[bool, Optional[str]]:
         """
-        Verify that changes are valid for Rust.
-        
-        Args:
-            original_content: Original file content
-            modified_content: Modified file content
-            file_path: Path to the file
-            
-        Returns:
-            Tuple of (is_valid, error_message)
+        Differential syntax check of one module file.
+
+          1. If rustc accepts the modified file outright, accept.
+          2. If it reports parse-class errors the original file does not
+             have, reject with them: the patch broke the file.
+          3. Otherwise (resolution/type errors only, or parse errors the
+             original shares) accept; those are the missing crate context
+             or pre-existing, not this patch.
+          4. With no rustc, fall back to delimiter balance.
         """
-        # Try to use rustc to validate syntax if available
-        try:
-            # Create a temporary file with the modified content
-            import tempfile
-            import os
-            
-            with tempfile.NamedTemporaryFile(suffix='.rs', delete=False) as temp:
-                temp.write(modified_content.encode('utf-8'))
-                temp_path = temp.name
-            
-            try:
-                # Use rustc to check syntax
-                result = subprocess.run(
-                    ['rustc', '--emit=metadata', '-o', os.devnull, temp_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=5  # 5 second timeout
-                )
-                
-                if result.returncode != 0:
-                    error_msg = result.stderr.strip()
-                    logger.error(f"Rust syntax validation failed for {file_path}: {error_msg}")
-                    return False, error_msg
-                
-                # Additional verification: check for common issues
-                issues = cls._check_common_issues(original_content, modified_content)
-                if issues:
-                    return False, f"Code verification issues: {'; '.join(issues)}"
-                
-                return True, None
-            finally:
-                # Clean up the temporary file
-                os.unlink(temp_path)
-        except (subprocess.SubprocessError, FileNotFoundError, Exception) as e:
-            # If rustc is not available or fails, fall back to basic validation
-            logger.warning(f"Falling back to basic Rust validation: {str(e)}")
-            
-            # Basic validation: check for matching braces, parentheses, etc.
-            is_valid, error = cls._basic_rust_validation(modified_content)
-            if not is_valid:
-                logger.error(f"Basic Rust validation failed for {file_path}: {error}")
-                return False, error
-            
+        edition = cls._crate_edition(file_path)
+        mod_errs = cls._rustc_errors(modified_content, edition)
+        if mod_errs is None:
+            return cls._balanced_delimiters(modified_content)
+        if not mod_errs:
             return True, None
-    
-    @classmethod
-    def _check_common_issues(cls, original_content: str, modified_content: str) -> List[str]:
-        """
-        Check for common issues in the modified content.
-        
-        Args:
-            original_content: Original file content
-            modified_content: Modified file content
-            
-        Returns:
-            List of issue descriptions
-        """
-        issues = []
-        
-        # Check for inconsistent naming conventions
-        if cls._has_inconsistent_naming(modified_content):
-            issues.append("Inconsistent naming conventions detected")
-        
-        # Check for missing lifetime specifiers
-        if cls._has_missing_lifetimes(modified_content):
-            issues.append("Potential missing lifetime specifiers")
-        
-        # Check for unsafe blocks without comments
-        if cls._has_uncommented_unsafe(modified_content):
-            issues.append("Unsafe blocks without explanatory comments")
-        
-        # Check for unused imports
-        unused_imports = cls._find_unused_imports(original_content, modified_content)
-        if unused_imports:
-            issues.append(f"Potentially unused imports: {', '.join(unused_imports)}")
-        
-        return issues
-    
-    @classmethod
-    def _has_inconsistent_naming(cls, content: str) -> bool:
-        """Check for inconsistent naming conventions."""
-        # Check for mixed snake_case and camelCase in functions
-        snake_case_funcs = len(re.findall(r'fn\s+[a-z][a-z0-9_]*_[a-z0-9_]*\s*\(', content))
-        camel_case_funcs = len(re.findall(r'fn\s+[a-z][a-z0-9_]*[A-Z][a-zA-Z0-9_]*\s*\(', content))
-        
-        # If both styles are used, it's inconsistent
-        if snake_case_funcs > 0 and camel_case_funcs > 0:
-            return True
-        
-        # Check for mixed naming in structs/enums
-        snake_case_types = len(re.findall(r'(?:struct|enum)\s+[a-z][a-z0-9_]*_[a-z0-9_]*', content))
-        pascal_case_types = len(re.findall(r'(?:struct|enum)\s+[A-Z][a-zA-Z0-9_]*', content))
-        
-        # In Rust, types should use PascalCase
-        if snake_case_types > 0:
-            return True
-        
-        return False
-    
-    @classmethod
-    def _has_missing_lifetimes(cls, content: str) -> bool:
-        """Check for potential missing lifetime specifiers."""
-        # Look for references in struct definitions without lifetimes
-        struct_refs_no_lifetime = re.search(r'struct\s+\w+\s*{[^}]*&\s*(?!\')\w+', content)
-        if struct_refs_no_lifetime:
-            return True
-        
-        # Look for references in function signatures without lifetimes
-        fn_refs_no_lifetime = re.search(r'fn\s+\w+\s*\([^)]*&\s*(?!\')\w+', content)
-        if fn_refs_no_lifetime:
-            return True
-        
-        return False
-    
-    @classmethod
-    def _has_uncommented_unsafe(cls, content: str) -> bool:
-        """Check for unsafe blocks without explanatory comments."""
-        lines = content.splitlines()
-        for i, line in enumerate(lines):
-            if 'unsafe' in line and '{' in line:
-                # Check if there's a comment on this line or the previous line
-                has_comment = '//' in line
-                if i > 0:
-                    has_comment = has_comment or '//' in lines[i-1]
-                
-                if not has_comment:
-                    return True
-        
-        return False
-    
-    @classmethod
-    def _find_unused_imports(cls, original_content: str, modified_content: str) -> List[str]:
-        """Find potentially unused imports in the modified content."""
-        unused_imports = []
-        
-        # Extract imports
-        import_pattern = r'use\s+([^;]+);'
-        imports = re.findall(import_pattern, modified_content)
-        
-        for imp in imports:
-            # Get the last part of the import path
-            parts = imp.split('::')
-            last_part = parts[-1].strip()
-            
-            # Skip wildcard imports
-            if last_part == '*':
-                continue
-            
-            # Check if it's a bracketed import list
-            if '{' in last_part and '}' in last_part:
-                # Extract individual items
-                items = re.findall(r'([a-zA-Z0-9_]+)', last_part)
-                for item in items:
-                    # Check if the item is used in the code (excluding the import line)
-                    content_without_imports = re.sub(import_pattern, '', modified_content)
-                    if not re.search(r'\b' + re.escape(item) + r'\b', content_without_imports):
-                        unused_imports.append(item)
-            else:
-                # Check if the import is used in the code (excluding the import line)
-                content_without_imports = re.sub(import_pattern, '', modified_content)
-                if not re.search(r'\b' + re.escape(last_part) + r'\b', content_without_imports):
-                    unused_imports.append(last_part)
-        
-        return unused_imports
-    
-    @classmethod
-    def _basic_rust_validation(cls, content: str) -> Tuple[bool, Optional[str]]:
-        """
-        Perform basic Rust validation by checking for matching braces, etc.
-        
-        Args:
-            content: Rust content to validate
-            
-        Returns:
-            Tuple of (is_valid, error_message)
-        """
-        # Check for balanced delimiters
-        stack = []
-        brackets = {')': '(', '}': '{', ']': '['}
-        
-        for i, char in enumerate(content):
-            if char in '({[':
-                stack.append(char)
-            elif char in ')}]':
-                if not stack or stack.pop() != brackets[char]:
-                    line_num = content[:i].count('\n') + 1
-                    col_num = i - content[:i].rfind('\n')
-                    return False, f"Mismatched bracket at line {line_num}, column {col_num}"
-        
-        if stack:
-            return False, f"Unclosed brackets: {', '.join(stack)}"
-        
-        # Check for common Rust syntax errors
-        issues = []
-        
-        # Missing semicolons
-        lines = content.splitlines()
-        for i, line in enumerate(lines):
-            line = line.strip()
-            # Skip comments, empty lines, and lines that don't need semicolons
-            if (not line or line.startswith('//') or line.startswith('/*') or
-                line.endswith(';') or line.endswith('{') or line.endswith('}') or
-                line.endswith(':') or line.startswith('#') or
-                'fn ' in line or 'struct ' in line or 'enum ' in line or
-                'impl ' in line or 'trait ' in line or 'mod ' in line):
-                continue
-            
-            # Check if the next line starts with a character that suggests a missing semicolon
-            if i < len(lines) - 1:
-                next_line = lines[i + 1].strip()
-                if next_line and not next_line.startswith(('.', '+', '-', '*', '/', '&&', '||', '?')):
-                    issues.append(f"Possible missing semicolon at line {i+1}")
-        
-        # Check for common macro syntax errors
-        for i, line in enumerate(lines):
-            if '!' in line and '(' in line and ')' not in line:
-                # Check if the closing parenthesis is on a subsequent line
-                found_closing = False
-                for j in range(i+1, min(i+5, len(lines))):
-                    if ')' in lines[j]:
-                        found_closing = True
-                        break
-                
-                if not found_closing:
-                    issues.append(f"Possible unclosed macro at line {i+1}")
-        
-        if issues:
-            return False, "; ".join(issues[:3])  # Return first few issues
-        
+
+        mod_parse = [d for d in mod_errs if cls._is_parse_error(d)]
+        if mod_parse:
+            orig_errs = cls._rustc_errors(original_content, edition) or []
+            orig_keys = {cls._diag_key(d) for d in orig_errs if cls._is_parse_error(d)}
+            new_parse = [d for d in mod_parse if cls._diag_key(d) not in orig_keys]
+            if new_parse:
+                msg = "\n".join(cls._format(d, file_path) for d in new_parse[:5])
+                logger.error(f"Rust syntax validation failed for {file_path}: {msg}")
+                return False, msg
+            logger.warning(
+                f"Rust validation for {file_path}: parse errors present but the "
+                f"pre-patch file has the same ones; not a patch defect. Accepting."
+            )
+            return True, None
+
+        # Only resolution / type errors.  A lone module cannot resolve its
+        # crate, so these are expected; they are a patch defect only when the
+        # original file compiled clean on its own, which a real module never
+        # does but a self-contained file might.
+        orig_errs = cls._rustc_errors(original_content, edition)
+        if orig_errs == []:
+            msg = "\n".join(cls._format(d, file_path) for d in mod_errs[:5])
+            logger.error(f"Rust validation failed for {file_path} (original compiled clean): {msg}")
+            return False, msg
+        logger.debug(
+            f"Rust validation for {file_path}: only resolution/type errors "
+            f"({len(mod_errs)}), expected for a single module file. Accepting."
+        )
         return True, None
-        
+
+    # -- rustc ---------------------------------------------------------------
+
+    @classmethod
+    def _rustc_errors(cls, content: str, edition: str) -> Optional[List[Dict[str, str]]]:
+        """Parsed error diagnostics from rustc, [] when clean, None when
+        rustc is unavailable, timed out, or produced nothing parseable
+        while failing (the caller then falls back)."""
+        # Source and output both live in a scratch directory.  ``-o
+        # os.devnull`` (the previous form) made rustc create its working
+        # temp dir beside the output, i.e. under /dev, which fails with
+        # "couldn't create a temp dir" -- so rustc never returned 0, even
+        # for a file that compiled cleanly.
+        with tempfile.TemporaryDirectory(prefix="ziya-rustc-") as work:
+            src = os.path.join(work, "module.rs")
+            with open(src, "w", encoding="utf-8") as f:
+                f.write(content)
+            try:
+                result = subprocess.run(
+                    ['rustc', '--crate-type', 'lib', '--edition', edition,
+                     '--emit=metadata', '--error-format=short', '--cap-lints', 'allow',
+                     '--out-dir', work, src],
+                    capture_output=True, text=True, timeout=_RUSTC_TIMEOUT_S,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+                logger.warning(f"Falling back to basic Rust validation: {e}")
+                return None
+            if result.returncode == 0:
+                return []
+            diags = cls._parse_short_diagnostics(result.stderr)
+            if not diags:
+                # Failed for a reason that is not a source diagnostic (bad
+                # edition flag on an old toolchain, ICE, ...): no verdict.
+                logger.warning(f"rustc failed without diagnostics; falling back: {result.stderr.strip()[:200]}")
+                return None
+            return diags
+
+    @staticmethod
+    def _parse_short_diagnostics(stderr: str) -> List[Dict[str, str]]:
+        out: List[Dict[str, str]] = []
+        for line in (stderr or "").splitlines():
+            m = _SHORT_DIAG_RE.match(line.strip())
+            if m:
+                out.append(m.groupdict())
+        return out
+
+    @staticmethod
+    def _is_parse_error(d: Dict[str, str]) -> bool:
+        code = d.get("code")
+        return not code or code in _PARSE_ERROR_CODES
+
+    @staticmethod
+    def _diag_key(d: Dict[str, str]) -> Tuple[Optional[str], str]:
+        """Identity of a diagnostic independent of where it sits: a patch
+        above a pre-existing error moves its line number."""
+        return (d.get("code"), d.get("msg", ""))
+
+    @staticmethod
+    def _format(d: Dict[str, str], file_path: str) -> str:
+        code = f"[{d['code']}]" if d.get("code") else ""
+        return f"{file_path}:{d['line']}:{d['col']}: error{code}: {d['msg']}"
+
+    @staticmethod
+    def _crate_edition(file_path: str) -> str:
+        """``edition`` of the nearest enclosing Cargo.toml, default 2021."""
+        try:
+            d = os.path.dirname(os.path.abspath(file_path))
+            for _ in range(12):
+                cargo = os.path.join(d, "Cargo.toml")
+                if os.path.isfile(cargo):
+                    with open(cargo, "r", encoding="utf-8", errors="replace") as f:
+                        m = re.search(r'^\s*edition\s*=\s*"(\d{4})"', f.read(), re.MULTILINE)
+                    return m.group(1) if m else "2021"
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+        except OSError:
+            pass
+        return "2021"
+
+    # -- fallback ------------------------------------------------------------
+
+    # Leftmost-match alternation so a ``//`` inside a string is a string and
+    # a ``"`` inside a comment is a comment.  Lifetimes (``'a``) do not match
+    # the char-literal branch because no closing quote follows.
+    _SKIP_RE = re.compile(
+        r"/\*.*?\*/"                      # block comment (non-nested)
+        r"|//[^\n]*"                      # line comment
+        r"|b?r(#*)\"(?:.|\n)*?\"\1"       # raw string r"…" / r#"…"#
+        r"|b?\"(?:\\.|[^\"\\])*\""        # string / byte string
+        r"|b?'(?:\\[^']*|[^'\\])'",       # char / byte literal
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _balanced_delimiters(cls, content: str) -> Tuple[bool, Optional[str]]:
+        """Delimiter balance over the code outside comments and literals."""
+        def _blank(m: "re.Match") -> str:
+            # Keep newlines so reported line numbers stay right.
+            return re.sub(r"[^\n]", " ", m.group(0))
+        code = cls._SKIP_RE.sub(_blank, content)
+        pairs = {')': '(', '}': '{', ']': '['}
+        stack: List[Tuple[str, int]] = []
+        for i, ch in enumerate(code):
+            if ch in '({[':
+                stack.append((ch, i))
+            elif ch in ')}]':
+                if not stack or stack[-1][0] != pairs[ch]:
+                    line = code.count('\n', 0, i) + 1
+                    col = i - code.rfind('\n', 0, i)
+                    return False, f"error: unexpected closing delimiter '{ch}' at line {line}, column {col}"
+                stack.pop()
+        if stack:
+            ch, i = stack[-1]
+            line = code.count('\n', 0, i) + 1
+            return False, f"error: unclosed delimiter '{ch}' opened at line {line}"
+        return True, None
+
+    # -- duplicates (advisory; see git_diff.py) ------------------------------
+
     @classmethod
     def detect_duplicates(cls, original_content: str, modified_content: str) -> Tuple[bool, List[str]]:
-        """
-        Detect duplicated functions/structs/enums in Rust code.
-        
-        Args:
-            original_content: Original file content
-            modified_content: Modified file content
-            
-        Returns:
-            Tuple of (has_duplicates, duplicate_identifiers)
-        """
-        # Extract definitions from both contents
+        """Definitions that occur more often after the patch than before."""
         original_definitions = cls._extract_rust_definitions(original_content)
         modified_definitions = cls._extract_rust_definitions(modified_content)
-        
-        # Check for duplicates
         duplicates = []
         for def_type, def_dict in modified_definitions.items():
             for def_name, occurrences in def_dict.items():
                 if len(occurrences) > 1:
-                    # Check if it was already duplicated in the original
-                    original_count = 0
-                    if def_type in original_definitions and def_name in original_definitions[def_type]:
-                        original_count = len(original_definitions[def_type][def_name])
-                    
+                    original_count = len(original_definitions.get(def_type, {}).get(def_name, []))
                     if len(occurrences) > original_count:
-                        # Get line numbers for better reporting
                         line_numbers = ", ".join(str(line) for line in occurrences)
                         duplicates.append(f"{def_type} {def_name} (lines {line_numbers})")
                         logger.warning(f"{def_type} '{def_name}' appears to be duplicated after diff application at lines {line_numbers}")
-        
-        # Check for similar function implementations
-        similar_functions = cls._detect_similar_functions(modified_content)
-        for func_pair, similarity in similar_functions:
-            if similarity > 0.9:  # High similarity threshold
-                duplicates.append(f"Similar functions: {func_pair[0]} and {func_pair[1]} ({similarity:.2f} similarity)")
-                logger.warning(f"Functions '{func_pair[0]}' and '{func_pair[1]}' appear to be very similar ({similarity:.2f} similarity)")
-        
         return bool(duplicates), duplicates
-    
+
     @classmethod
     def _extract_rust_definitions(cls, content: str) -> Dict[str, Dict[str, List[int]]]:
-        """
-        Extract Rust definitions (functions, structs, enums, etc.).
-        
-        Args:
-            content: Source code content
-            
-        Returns:
-            Dictionary mapping definition types to dictionaries of definition names and their line numbers
-        """
-        definitions = {
-            'fn': {},
-            'struct': {},
-            'enum': {},
-            'trait': {},
-            'impl': {},
-            'mod': {},
-        }
-        
-        # Regex patterns for Rust definitions
+        definitions: Dict[str, Dict[str, List[int]]] = {k: {} for k in ('fn', 'struct', 'enum', 'trait', 'mod')}
         patterns = {
-            'fn': r'fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:<[^>]*>)?\s*\(',
-            'struct': r'struct\s+([a-zA-Z_][a-zA-Z0-9_]*)',
-            'enum': r'enum\s+([a-zA-Z_][a-zA-Z0-9_]*)',
-            'trait': r'trait\s+([a-zA-Z_][a-zA-Z0-9_]*)',
-            'impl': r'impl(?:\s+<[^>]*>)?\s+([a-zA-Z_][a-zA-Z0-9_]*)',
-            'mod': r'mod\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+            'fn': r'\bfn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:<[^>]*>)?\s*\(',
+            'struct': r'\bstruct\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+            'enum': r'\benum\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+            'trait': r'\btrait\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+            'mod': r'\bmod\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[;{]',
         }
-        
         for i, line in enumerate(content.splitlines(), 1):
             for def_type, pattern in patterns.items():
-                matches = re.finditer(pattern, line)
-                for match in matches:
-                    def_name = match.group(1)
-                    if def_name not in definitions[def_type]:
-                        definitions[def_type][def_name] = []
-                    definitions[def_type][def_name].append(i)
-        
+                for match in re.finditer(pattern, line):
+                    definitions[def_type].setdefault(match.group(1), []).append(i)
         return definitions
-    
-    @classmethod
-    def _detect_similar_functions(cls, content: str) -> List[Tuple[Tuple[str, str], float]]:
-        """
-        Detect functions with similar implementations.
-        
-        Args:
-            content: Source code content
-            
-        Returns:
-            List of tuples containing pairs of function names and their similarity score
-        """
-        import difflib
-        
-        # Extract function bodies
-        function_bodies = {}
-        
-        # Find function declarations and their bodies
-        fn_pattern = r'fn\s+([a-zA-Z_][a-zA-Z0-9_]*)(?:<[^>]*>)?\s*\([^)]*\)(?:\s*->\s*[^{]*)?(?:\s*where\s*[^{]*)?\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}'
-        for match in re.finditer(fn_pattern, content, re.DOTALL):
-            func_name = match.group(1)
-            body = match.group(2).strip()
-            function_bodies[func_name] = body
-        
-        # Compare function bodies for similarity
-        similar_functions = []
-        function_names = list(function_bodies.keys())
-        
-        for i in range(len(function_names)):
-            for j in range(i+1, len(function_names)):
-                name1 = function_names[i]
-                name2 = function_names[j]
-                
-                body1 = function_bodies[name1]
-                body2 = function_bodies[name2]
-                
-                # Skip empty or very short functions
-                if len(body1) < 10 or len(body2) < 10:
-                    continue
-                
-                # Calculate similarity
-                similarity = difflib.SequenceMatcher(None, body1, body2).ratio()
-                
-                # Only include pairs with significant similarity
-                if similarity > 0.8:
-                    similar_functions.append(((name1, name2), similarity))
-        
-        return similar_functions
