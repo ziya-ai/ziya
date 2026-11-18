@@ -27,7 +27,7 @@ import {
   isD3HierarchySpec,
   hierarchySpecToPlotly,
 } from './plotlyPreprocessor';
-import { classifyColor, namedColorToHex, isDarkBackground, ensureReadableFill } from './chartTheme';
+import { classifyColor, namedColorToHex, isDarkBackground, ensureReadableFill, lightChartSurface } from './chartTheme';
 
 declare global {
   interface Window {
@@ -194,7 +194,7 @@ export function sanitizeLayoutColorsForTheme(layout: any, isDarkMode: boolean): 
   if (!layout || typeof layout !== 'object') return layout;
   // #8a8a8a = 3.45:1 on #ffffff / 4.83:1 on #1e1e1e; #767676 = 4.54:1 / 3.67:1.
   const themeVals = {
-    bg: isDarkMode ? '#1e1e1e' : '#ffffff',
+    bg: isDarkMode ? '#1e1e1e' : lightChartSurface(),
     grid: '#8a8a8a',
     line: '#767676',
   };
@@ -276,7 +276,7 @@ export function reconcilePlotlyThemeSurface(merged: any, base: any, isDarkMode: 
     && typeof base.font.color === 'string');
   if (authorPinnedFont) return merged;
 
-  const surface = isDarkMode ? '#1e1e1e' : '#ffffff';
+  const surface = isDarkMode ? '#1e1e1e' : lightChartSurface();
   const themeFont = isDarkMode ? '#e0e0e0' : '#333333';
   let out: any = merged;
   const clone = () => { if (out === merged) out = { ...merged }; };
@@ -312,7 +312,7 @@ export function reconcilePlotlyThemeSurface(merged: any, base: any, isDarkMode: 
  */
 export function repairAuthorColorsForTheme(layout: any, isDarkMode: boolean): any {
   if (!layout || typeof layout !== 'object') return layout;
-  const surface = isDarkMode ? '#1e1e1e' : '#ffffff';
+  const surface = isDarkMode ? '#1e1e1e' : lightChartSurface();
   const themeFont = isDarkMode ? '#e0e0e0' : '#333333';
   const themeLine = '#767676'; // 4.54:1 on #fff / 3.67:1 on #1e1e1e (line floor)
   const paperHex = resolveToHex(layout.paper_bgcolor) || surface;
@@ -440,11 +440,21 @@ export function applyPlotlyTheme(layout: any, isDarkMode: boolean): any {
       },
     };
   } else {
+    const surface = lightChartSurface();
+    // Plotly defaults polar / ternary / geo surfaces to white. On white paper
+    // that already matches, so the layout is left as it was; on a tinted
+    // paper they would be white panels inside the figure.
+    const tinted = surface !== '#ffffff';
     merged = {
-      paper_bgcolor: '#ffffff',
-      plot_bgcolor: '#ffffff',
+      paper_bgcolor: surface,
+      plot_bgcolor: surface,
       font: { color: '#333333' },
       ...base,
+      ...(tinted ? {
+        polar: { bgcolor: surface, ...(base.polar || {}) },
+        ternary: { bgcolor: surface, ...(base.ternary || {}) },
+        geo: { bgcolor: surface, ...(base.geo || {}) },
+      } : {}),
     };
   }
   // D-233 (dark half): the `...base` spread lets an author paper/plot_bgcolor
