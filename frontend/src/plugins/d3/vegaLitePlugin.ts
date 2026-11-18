@@ -32,6 +32,7 @@ import {
   enhanceArcChartsWithTextLabels,
   resolveConcatScaleConflicts,
   sanitizeResolveScale,
+  absorbFacetParentFilters,
   applyCategoricalPaletteFix,
   liftLowOpacityLightCategorical,
   sanitizeThemeTokens,
@@ -772,6 +773,68 @@ export const isVegaLiteDefinitionComplete = (definition: string): boolean => {
     return false;
   }
 };
+
+// Fix 3.8: honour an explicitly authored numeric scale domain.
+//
+// Vega-Lite applies `nice: true` to quantitative scales by default, which
+// rounds the domain outward: an authored [0, 430] becomes [0, 450]. That
+// silently rescales the plot, so a reference rule or annotation placed at a
+// specific value no longer sits where the author put it.
+//
+// `zero` widens the domain from the other end. Vega-Lite defaults `zero` to
+// false when the encoding carries its own domain, but a SIBLING layer on the
+// shared scale that has no domain (a `rule` at `y: {datum: 35}`) still
+// contributes the default `zero: true`, and the compiled scale keeps both:
+// `domain: [28, 80], zero: true`, which Vega extends to [0, 80]. No warning
+// is emitted. An explicit `zero: false` on the authored encoding wins the
+// merge (verified against the vega-lite compiler, 2026-11-10).
+//
+// An explicit two-element numeric domain is a deliberate statement about the
+// axis bounds, so nice-ing is disabled for it and, when the domain excludes
+// 0, so is zero-inclusion. An authored `nice` or `zero` (either value) is
+// always respected. Mutates in place; returns the number of scales changed.
+export function respectExplicitNumericDomain(view: any): number {
+  if (!view || typeof view !== 'object') return 0;
+  let changed = 0;
+
+  if (view.encoding) {
+    ['x', 'y'].forEach(channel => {
+      const scale = view.encoding[channel]?.scale;
+      if (!scale ||
+          !Array.isArray(scale.domain) ||
+          scale.domain.length !== 2 ||
+          !scale.domain.every((v: any) => typeof v === 'number')) {
+        return;
+      }
+      const notes: string[] = [];
+      if (scale.nice === undefined) {
+        scale.nice = false;
+        notes.push('nice-ing');
+      }
+      const lo = Math.min(scale.domain[0], scale.domain[1]);
+      const hi = Math.max(scale.domain[0], scale.domain[1]);
+      if (scale.zero === undefined && (lo > 0 || hi < 0)) {
+        scale.zero = false;
+        notes.push('zero-inclusion');
+      }
+      if (notes.length) {
+        changed++;
+        console.info(
+          `🔧 VEGA-PREPROCESS: Disabled ${notes.join(' and ')} on ${channel} to preserve ` +
+          `the authored domain ${JSON.stringify(scale.domain)}`
+        );
+      }
+    });
+  }
+
+  ['layer', 'hconcat', 'vconcat', 'concat'].forEach(key => {
+    if (Array.isArray(view[key])) {
+      view[key].forEach((child: any) => { changed += respectExplicitNumericDomain(child); });
+    }
+  });
+  if (view.spec) changed += respectExplicitNumericDomain(view.spec);
+  return changed;
+}
 
 // Fix 3.9 helper: clip zero-baselined marks whose explicit domain excludes 0.
 //
@@ -3005,43 +3068,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       fixLogScaleBarStacking(spec);
 
-      // Fix 3.8: Honour an explicitly authored numeric scale domain.
-      //
-      // Vega-Lite applies \`nice: true\` to quantitative scales by default,
-      // which rounds the domain outward — an authored [0, 430] becomes
-      // [0, 450]. That silently rescales the plot, so a reference rule or
-      // annotation placed at a specific value no longer sits where the author
-      // put it relative to the top of the chart.
-      //
-      // An explicit two-element numeric domain is a deliberate statement about
-      // the axis bounds, so nice-ing is disabled for it. An authored \`nice\`
-      // (either value) is always respected.
-      const respectExplicitNumericDomain = (view: any): void => {
-        if (!view || typeof view !== 'object') return;
-
-        if (view.encoding) {
-          ['x', 'y'].forEach(channel => {
-            const scale = view.encoding[channel]?.scale;
-            if (scale &&
-                Array.isArray(scale.domain) &&
-                scale.domain.length === 2 &&
-                scale.domain.every((v: any) => typeof v === 'number') &&
-                scale.nice === undefined) {
-              scale.nice = false;
-              console.info(
-                `🔧 VEGA-PREPROCESS: Disabled nice-ing on ${channel} to preserve ` +
-                `the authored domain ${JSON.stringify(scale.domain)}`
-              );
-            }
-          });
-        }
-
-        ['layer', 'hconcat', 'vconcat', 'concat'].forEach(key => {
-          if (Array.isArray(view[key])) view[key].forEach(respectExplicitNumericDomain);
-        });
-        if (view.spec) respectExplicitNumericDomain(view.spec);
-      };
-
+      // Fix 3.8: honour an explicitly authored numeric domain (nice:false,
+      // and zero:false when the domain excludes 0). Module-level + exported
+      // so it is tested against the shipped code; see its doc comment.
       respectExplicitNumericDomain(spec);
 
       // Fix 3.9: bar/area marks baseline at 0, so an authored domain that
@@ -5622,6 +5651,18 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // keeps for composites.
       resolveConcatScaleConflicts(vegaSpec);
       sanitizeResolveScale(vegaSpec);
+
+      // A facet sub-layer with its own data filtered on `parent.<field>`
+      // fails with `Unrecognized signal name: "parent"` (Vega-Lite hoists
+      // layer data to the root, where no facet signal exists). Merge the rows
+      // into the faceted dataset instead; see absorbFacetParentFilters.
+      const absorbedLayers = absorbFacetParentFilters(vegaSpec);
+      if (absorbedLayers) {
+        console.info(
+          `🔧 VEGA-FACET: merged ${absorbedLayers} sub-layer dataset(s) filtered on ` +
+          `parent.<facet field> into the faceted data`
+        );
+      }
 
       // Rewrite literal currency symbols (£, €, ¥, …) in format strings to the
       // d3 currency placeholder `$`, capturing the symbol so we can restore it

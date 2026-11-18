@@ -1350,6 +1350,15 @@ export function themeBoxplotStrokes(spec: any, readable: string, darkCanvas: boo
  * marks render with an undefined fill and vanish. `resolve.scale.*
  * = "independent"` is the only correction for that, and it is not part of
  * the faceted `spec.spec` hang this function guards against.
+ *
+ * Faceted / repeated specs (`spec.spec` present) keep their TOP-LEVEL resolve
+ * too: that is where Vega-Lite documents facet-level resolution, and it is
+ * what lets two panels hours apart each get their own time axis instead of
+ * collapsing to dots at the edges of one shared one. Probed 2026-11-10 with
+ * vega-lite 6 + vega 6 headless: the top-level form compiles and runs; the
+ * NESTED `spec.spec.resolve` form fails in `vega.parse` with "Unrecognized
+ * scale name: child_layer_N_y" (a compiler bug), which is the "hang" the
+ * nested strip below guards against. The two are independent.
  */
 export function sanitizeResolveScale(spec: any): any {
   if (!spec || typeof spec !== 'object') return spec;
@@ -1357,7 +1366,8 @@ export function sanitizeResolveScale(spec: any): any {
     Array.isArray(spec.layer) ||
     Array.isArray(spec.vconcat) ||
     Array.isArray(spec.hconcat) ||
-    Array.isArray(spec.concat);
+    Array.isArray(spec.concat) ||
+    (spec.spec && typeof spec.spec === 'object' && (spec.facet || spec.repeat));
   if (spec.resolve && spec.resolve.scale && !isComposite) {
     delete spec.resolve;
   }
@@ -2042,4 +2052,119 @@ export function liftLowOpacityLightCategorical(spec: any, isDarkMode: boolean): 
     return floor;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Faceted sub-layer with its own dataset filtered on `parent.<facetField>`.
+//
+// A model-authored pattern (observed 2026-11-10 on a two-column facet of
+// satellite elevation): one layer under `spec.spec.layer` carries its own
+// `data.values` (the shaded slot per panel) and selects the current panel's
+// rows with `{"filter": "datum.h == parent.h"}`. In Vega, `parent` exists
+// only inside a facet group mark, but Vega-Lite hoists every layer's
+// data/transform to the root of the compiled Vega spec, so the filter is
+// evaluated where no `parent` signal is defined and the render fails with
+// `Unrecognized signal name: "parent"`. Vega-Lite has no supported way for a
+// sub-layer's private dataset to see the facet value.
+//
+// The rewrite moves the rows into the faceted dataset, where the facet
+// partitions them by `h` for free, and tags them with FACET_LAYER_TAG so the
+// owning layer can select them and every sibling layer that inherits the
+// faceted data can exclude them (otherwise a `color: sat` legend grows an
+// `undefined` entry and the line/point marks see rows with no `t`/`el`).
+//
+// Fires only when the rewrite is provably equivalent: inline `data.values`
+// on the sub-layer, every `parent.<f>` naming a facet field, every own row
+// carrying every facet field, and the `parent` comparison joined to the rest
+// of the filter (if any) by `&&`. Anything else is left as written.
+// Mutates `spec`; returns the number of layers absorbed.
+export const FACET_LAYER_TAG = '__ziyaFacetLayer';
+
+const PARENT_REF_RE = /\bparent\s*(?:\.\s*[A-Za-z_$]|\[)/;
+
+function facetFieldsOf(spec: any): string[] {
+  const f = spec?.facet;
+  if (!f || typeof f !== 'object') return [];
+  const out: string[] = [];
+  if (typeof f.field === 'string') out.push(f.field);
+  for (const k of ['row', 'column']) {
+    if (typeof f[k]?.field === 'string') out.push(f[k].field);
+  }
+  return out;
+}
+
+const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Remove every `datum.<f> == parent.<f>` comparison (either order, `==` or
+ * `===`, dot or bracket access) for the facet fields from a filter
+ * expression. Returns the remainder ('' when nothing is left), or null when
+ * the expression cannot be rewritten safely: a `parent` reference survives
+ * (non-facet field), or the comparison sat inside a disjunction.
+ */
+export function stripFacetParentClauses(expr: string, fields: string[]): string | null {
+  let out = expr;
+  for (const f of fields) {
+    const ref = `(?:datum|parent)\\s*(?:\\.\\s*${escRe(f)}\\b|\\[\\s*(?:'${escRe(f)}'|"${escRe(f)}")\\s*\\])`;
+    const clause = new RegExp(`\\(?\\s*${ref}\\s*===?\\s*${ref}\\s*\\)?`, 'g');
+    out = out.replace(clause, (m) => (PARENT_REF_RE.test(m) ? ' ' : m));
+  }
+  if (PARENT_REF_RE.test(out)) return null;
+  if (/\|\|/.test(out)) return null;
+  out = out
+    .replace(/&&\s*&&/g, '&&')
+    .replace(/^\s*&&\s*/, '')
+    .replace(/\s*&&\s*$/, '')
+    .trim();
+  return out;
+}
+
+function absorbOneLayer(layer: any, idx: number, fields: string[], rows: any[]): boolean {
+  if (!layer || typeof layer !== 'object' || !Array.isArray(layer.transform)) return false;
+  const own = layer.data?.values;
+  if (!Array.isArray(own)) return false;
+  const refersToParent = layer.transform.some(
+    (t: any) => typeof t?.filter === 'string' && PARENT_REF_RE.test(t.filter),
+  );
+  if (!refersToParent) return false;
+  if (!own.every((r: any) => r && typeof r === 'object' && fields.every((f) => r[f] !== undefined))) {
+    return false;
+  }
+  const rewritten: any[] = [];
+  for (const t of layer.transform) {
+    if (typeof t?.filter !== 'string' || !PARENT_REF_RE.test(t.filter)) {
+      rewritten.push(t);
+      continue;
+    }
+    const rest = stripFacetParentClauses(t.filter, fields);
+    if (rest === null) return false;
+    if (rest) rewritten.push({ ...t, filter: rest });
+  }
+  rewritten.unshift({ filter: `datum.${FACET_LAYER_TAG} == ${idx}` });
+  layer.transform = rewritten;
+  delete layer.data;
+  for (const r of own) rows.push({ ...r, [FACET_LAYER_TAG]: idx });
+  return true;
+}
+
+export function absorbFacetParentFilters(spec: any): number {
+  if (!spec || typeof spec !== 'object') return 0;
+  const fields = facetFieldsOf(spec);
+  const layers = spec.spec?.layer;
+  const rows = spec.data?.values;
+  if (!fields.length || !Array.isArray(layers) || !Array.isArray(rows)) return 0;
+
+  const absorbed = new Set<number>();
+  layers.forEach((layer: any, idx: number) => {
+    if (absorbOneLayer(layer, idx, fields, rows)) absorbed.add(idx);
+  });
+  if (!absorbed.size) return 0;
+
+  // Siblings that inherit the faceted data must not see the merged rows.
+  layers.forEach((layer: any, idx: number) => {
+    if (absorbed.has(idx) || !layer || typeof layer !== 'object' || layer.data) return;
+    const existing = Array.isArray(layer.transform) ? layer.transform : [];
+    layer.transform = [{ filter: `datum.${FACET_LAYER_TAG} == null` }, ...existing];
+  });
+  return absorbed.size;
 }
