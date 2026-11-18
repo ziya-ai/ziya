@@ -5078,11 +5078,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // The server also keeps its chat index current on this path.  For a
         // followed move this completes before the switch, so the target's
         // server sync already finds the chat there.
+        let noteMsg: Message | undefined;
         if (isCrossProject && capturedConv) {
             try {
-                const outcome = await syncApi.moveChat(sourceProjectId!, targetProjectId, conversationId);
-                if (outcome === 'moved') {
+                const result = await syncApi.moveChat(sourceProjectId!, targetProjectId, conversationId);
+                if (result.status === 'moved') {
                     console.log(`📡 Move: server moved conversation ${sourceProjectId} → ${targetProjectId}`);
+                    // The server appended a note recording the move.  Kept
+                    // locally only for the conversation in view, which is
+                    // fully loaded; any other reaches it through sync.
+                    if (follow && result.note) {
+                        noteMsg = { ...result.note, _timestamp: result.note.timestamp };
+                    }
                     // A moved chat is scoped to its new project.  The move
                     // endpoint copies the record as-is, so clear a global flag
                     // on the server too (locally it is already false).
@@ -5112,7 +5119,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // the switch preload read followMoveRef to keep it on screen and
         // selected while the rest of the project loads.
         if (follow && capturedConv) {
-            followMoveRef.current = { conversationId, projectId: targetProjectId, conv: moved(capturedConv) };
+            let followed: Conversation = moved(capturedConv);
+            const base = conversationsRef.current.find(c => c.id === conversationId) ?? followed;
+            if (noteMsg && !base.messages.some(m => m.id === noteMsg!.id)) {
+                followed = { ...moved(base), messages: [...base.messages, noteMsg] };
+                const withNote = conversationsRef.current.map(c => c.id === conversationId ? followed : c);
+                setConversations(prev => prev.map(c => c.id === conversationId ? followed : c));
+                // Awaited for the same reason as the save above.
+                await queueSave(withNote, { changedIds: [conversationId] }).catch(console.error);
+            }
+            followMoveRef.current = { conversationId, projectId: targetProjectId, conv: followed };
             saveProjectConversationId(targetProjectId, conversationId);
             try {
                 await switchProject(targetProjectId);

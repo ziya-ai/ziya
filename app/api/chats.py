@@ -901,6 +901,13 @@ def set_chat_global(project_id: str, chat_id: str, body: dict):
     raw = storage._read_json(storage._chat_file(chat_id))
     if not raw:
         raise HTTPException(status_code=404, detail="Chat not found")
+    # Record a real flip in the transcript; a repeat of the same value
+    # (including the move path clearing an already-cleared flag) adds nothing.
+    if bool(raw.get("isGlobal")) != is_global:
+        from ..utils.project_change_note import build_project_change_message
+        raw.setdefault("messages", []).append(build_project_change_message(
+            "global_on" if is_global else "global_off",
+            ProjectStorage(get_ziya_home()).get(project_id)))
     raw["isGlobal"] = is_global
     # Bump _version and lastActiveAt so the next sync wins over any
     # in-flight bulk-sync that doesn't carry the new flag.
@@ -976,18 +983,24 @@ def move_chat(project_id: str, chat_id: str, body: ChatMoveBody):
     same-project move (folder moves go through bulk-sync's ``folderId``),
     404 when either project or the chat is missing.  Task bindings stay
     under this project with the card and run they reference; GET
-    /task-bindings finds them from the chat's new home.
+    /task-bindings finds them from the chat's new home.  A ``system`` note
+    naming both projects and their root directories is appended to the
+    record and returned as ``note`` (app/utils/project_change_note.py).
     """
     if body.targetProjectId == project_id:
         raise HTTPException(status_code=400, detail="Target is the source project")
     source = get_chat_storage(project_id)
     target = get_chat_storage(body.targetProjectId)
+    from ..utils.project_change_note import build_project_change_message
+    projects = ProjectStorage(get_ziya_home())
+    note = build_project_change_message(
+        "moved", projects.get(project_id), projects.get(body.targetProjectId))
     with chat_record_lock(source):
-        moved = source.move_to(chat_id, target, body.targetProjectId)
+        moved = source.move_to(chat_id, target, body.targetProjectId, note=note)
     if moved is None:
         raise HTTPException(status_code=404, detail="Chat not found")
     logger.info(f"Moved chat {chat_id[:8]} from project {project_id[:8]} to {body.targetProjectId[:8]}")
-    return {"moved": True, "chatId": chat_id, "projectId": body.targetProjectId}
+    return {"moved": True, "chatId": chat_id, "projectId": body.targetProjectId, "note": note}
 
 @router.post("/api/v1/projects/{project_id}/chats/{chat_id}/messages", response_model=Chat)
 def add_message(project_id: str, chat_id: str, message_data: Message):

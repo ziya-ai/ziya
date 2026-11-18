@@ -1,7 +1,12 @@
 /**
  * The transcript row for a server-authored `projectChange` system message
- * shows the from/to projects and NOT the working directories, which live in
- * `content` for the model (app/utils/project_change_note.py).
+ * states the from/to projects AND their root directories as visible text.
+ *
+ * An earlier version of this test required the directories to be hidden
+ * (they were to live only in `content`, for the model).  That left the
+ * rendered transcript — what a person, a screenshot or a pasted copy shows —
+ * without the half of the record that says where the conversation is rooted.
+ * A tooltip is not a record: nothing that reads the page sees it.
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
@@ -10,7 +15,7 @@ import * as path from 'path';
 
 jest.mock('../../context/ThemeContext', () => ({ useTheme: () => ({ isDarkMode: false }) }));
 
-import ProjectChangeNotification, { projectChangeText } from '../ProjectChangeNotification';
+import ProjectChangeNotification, { projectChangeText, projectChangeDirs } from '../ProjectChangeNotification';
 
 const moved = {
     kind: 'moved' as const,
@@ -19,22 +24,35 @@ const moved = {
 };
 
 describe('ProjectChangeNotification', () => {
-    it('names both projects and never shows a directory', () => {
+    it('names both projects and shows both root directories as text', () => {
         render(<ProjectChangeNotification change={moved} />);
-        const row = screen.getByText(/Moved from project Alpha to project Beta/);
-        expect(row).toBeInTheDocument();
-        expect(document.body.textContent).not.toContain('/work/alpha');
-        expect(document.body.textContent).not.toContain('/work/beta');
+        expect(screen.getByText(/Moved from project Alpha to project Beta/)).toBeInTheDocument();
+        const text = document.body.textContent || '';
+        expect(text).toContain('/work/alpha');
+        expect(text).toContain('/work/beta');
+        // From before to: the order is the information.
+        expect(text.indexOf('/work/alpha')).toBeLessThan(text.indexOf('/work/beta'));
     });
 
-    it('describes the global flips', () => {
-        expect(projectChangeText({ kind: 'global_on', from: moved.from, to: moved.from })).toMatch(/Made global.*Alpha/);
-        expect(projectChangeText({ kind: 'global_off', from: moved.from, to: moved.from })).toMatch(/No longer global.*Alpha/);
+    it('the directories are not carried by a title attribute alone', () => {
+        const { container } = render(<ProjectChangeNotification change={moved} />);
+        expect(container.querySelector('[title]')).toBeNull();
     });
 
-    it('falls back to the id when a project has no name', () => {
-        expect(projectChangeText({ kind: 'moved', from: { id: 'p1' }, to: { id: 'p2' } }))
-            .toBe('Moved from project p1 to project p2');
+    it('describes the global flips, with the owner directory', () => {
+        const on = { kind: 'global_on' as const, from: moved.from, to: moved.from };
+        const off = { kind: 'global_off' as const, from: moved.from, to: moved.from };
+        expect(projectChangeText(on)).toMatch(/Made global.*Alpha/);
+        expect(projectChangeText(off)).toMatch(/No longer global.*Alpha/);
+        expect(projectChangeDirs(on)).toBe('Root directory: /work/alpha');
+        render(<ProjectChangeNotification change={off} />);
+        expect(document.body.textContent).toContain('/work/alpha');
+    });
+
+    it('falls back to the id when a project has no name, and says so when a directory is unknown', () => {
+        const bare = { kind: 'moved' as const, from: { id: 'p1' }, to: { id: 'p2' } };
+        expect(projectChangeText(bare)).toBe('Moved from project p1 to project p2');
+        expect(projectChangeDirs(bare)).toBe('Root directory: unknown \u2192 unknown');
     });
 });
 

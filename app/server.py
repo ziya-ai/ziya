@@ -1549,6 +1549,15 @@ async def chat_endpoint(request: Request):
                 elif has_images:
                     logger.info(f"🖼️ Keeping last message despite matching question - has images")
             
+            # A project-move / global-toggle note is a system entry, which the
+            # role filter below drops; fold its text into the turn beside it.
+            from app.utils.project_change_note import fold_project_change_notes
+            messages_to_process = fold_project_change_notes(messages_to_process)
+            # A post from another conversation has role 'peer', which the
+            # filter also drops; it becomes human-role text.
+            from app.utils.chat_post import fold_peer_posts
+            messages_to_process = fold_peer_posts(messages_to_process)
+
             for msg in messages_to_process:
                 if isinstance(msg, list) and len(msg) >= 2:
                     # Frontend tuple format: ["human", "content"]

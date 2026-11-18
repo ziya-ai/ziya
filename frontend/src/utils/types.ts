@@ -39,6 +39,13 @@ export interface ModelChange {
     changeKey?: string;
 }
 
+/** A project as named in a projectChange note. */
+export interface ProjectChangeRef {
+    id?: string | null;
+    name?: string | null;
+    path?: string | null;
+}
+
 // Updated Message type to include 'system' role and modelChange property
 export type Message = {
     id?: string;

@@ -420,10 +420,11 @@ class ChatStorage(BaseStorage[Chat]):
             logger.debug("Bindings cleanup failed for %s: %s", chat_id, e)
 
     def move_to(self, chat_id: str, target: "ChatStorage",
-                target_project_id: str) -> Optional[dict]:
+                target_project_id: str, note: Optional[dict] = None) -> Optional[dict]:
         """Move a chat into another project's storage.
 
-        Returns the moved record, or None when the chat is not here.
+        Returns the moved record, or None when the chat is not here.  ``note``
+        (a message dict) is appended to the record in the same write.
 
         Replaces the client's bulk-sync-then-DELETE sequence, which could
         delete the only copy (bulk-sync drops shell conversations silently)
@@ -443,6 +444,8 @@ class ChatStorage(BaseStorage[Chat]):
         raw["isGlobal"] = False
         raw["groupId"] = None
         raw["folderId"] = None
+        if note is not None:
+            raw.setdefault("messages", []).append(note)
         raw["_version"] = int(time.time() * 1000)
         target._write_json(target._chat_file(chat_id), raw)
         src.unlink()

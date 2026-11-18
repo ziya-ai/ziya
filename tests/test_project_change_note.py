@@ -152,3 +152,87 @@ def test_global_toggle_appends_once_per_flip(env):
     msgs = r3.json()["messages"]
     assert [m["projectChange"]["kind"] for m in msgs] == ["global_on", "global_off"]
     assert _read(SRC, chat_id)["messages"][-1]["projectChange"]["kind"] == "global_off"
+
+
+# ── the note reaches the model ─────────────────────────────────────────
+#
+# The chat endpoint builds history from human and assistant entries only,
+# so a system-role note was dropped before the prompt was built: the record
+# held the move, the model was never told.  fold_project_change_notes puts
+# the text into the turn beside it.
+
+from app.utils.project_change_note import (
+    NOTE_PREFIX, fold_project_change_notes, is_project_change_note,
+)
+
+
+def _note_text(kind="moved"):
+    return build_project_change_message(
+        kind, {"id": SRC, "name": "Alpha", "path": SRC_PATH},
+        {"id": DST, "name": "Beta", "path": DST_PATH})["content"]
+
+
+@pytest.mark.parametrize("kind", ["moved", "global_on", "global_off"])
+def test_every_note_kind_is_recognised_by_its_text(kind):
+    assert _note_text(kind).startswith(NOTE_PREFIX)
+    assert is_project_change_note(_note_text(kind))
+    assert not is_project_change_note("Model changed from a to b")
+    assert not is_project_change_note(None)
+
+
+def test_fold_appends_the_note_to_the_turn_before_it():
+    note = _note_text()
+    history = [["human", "look at src/a.py", "", "1"],
+               ["assistant", "done", "", "2"],
+               ["system", note, "", "3"],
+               ["human", "now what", "", "4"]]
+    out = fold_project_change_notes(history)
+    assert [m[0] for m in out] == ["human", "assistant", "human"]     # roles still alternate
+    assert out[1][1] == "done\n\n" + note
+    assert SRC_PATH in out[1][1] and DST_PATH in out[1][1]
+    assert out[1][2:] == ["", "2"] and out[2] == history[3]
+    assert history[1][1] == "done"                                    # input untouched
+
+
+def test_fold_skips_over_other_system_entries_and_keeps_them():
+    note = _note_text()
+    history = [["assistant", "a"], ["system", "Model changed from x to y"], ["system", note]]
+    out = fold_project_change_notes(history)
+    assert out == [["assistant", "a\n\n" + note], ["system", "Model changed from x to y"]]
+
+
+def test_fold_prepends_to_the_next_turn_when_nothing_precedes():
+    note = _note_text()
+    out = fold_project_change_notes([{"role": "system", "content": note},
+                                     {"role": "human", "content": "hi", "images": None}])
+    assert out == [{"role": "human", "content": note + "\n\nhi", "images": None}]
+    # Nothing to attach to: dropped, not sent as a turn of its own.
+    assert fold_project_change_notes([["system", note]]) == []
+
+
+def test_fold_leaves_history_without_notes_alone():
+    history = [["human", "q"], ["system", "Model changed"], ["assistant", "a"]]
+    assert fold_project_change_notes(history) == history
+    assert fold_project_change_notes(None) is None
+
+
+def test_chat_endpoint_folds_before_it_filters_by_role():
+    """The seam: server.py calls the fold on the list its role filter walks,
+    ahead of that loop."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "app" / "server.py").read_text()
+    call = src.find("messages_to_process = fold_project_change_notes(messages_to_process)")
+    assert call > -1
+    loop = src.find("for msg in messages_to_process:")
+    assert loop > call
+
+
+def test_move_and_toggle_endpoints_build_the_note():
+    """The seam the first landing missed: the builder existed, nothing called it."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    api = (root / "app" / "api" / "chats.py").read_text()
+    assert api.count("build_project_change_message(") >= 2
+    storage = (root / "app" / "storage" / "chats.py").read_text()
+    move_to = storage[storage.index("def move_to("):storage.index("def add_message(")]
+    assert 'raw.setdefault("messages", []).append(note)' in move_to
