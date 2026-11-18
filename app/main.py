@@ -19,6 +19,7 @@ from typing import Optional
 from app.utils.logging_utils import logger
 from app.utils.process_utils import configure_stdio, env_hint
 from app.utils.version_util import get_current_version, get_latest_version
+from app.utils import install_lock
 
 from app.config.env_registry import ziya_env
 # Import configuration instead of individual constants
@@ -131,12 +132,48 @@ def check_version_and_upgrade():
         return
     
     current_version = get_current_version()
+    # Set by _restart_into_new_version: this process IS the restart after an
+    # upgrade.  Popped so shells and tools it spawns don't inherit it.
+    if os.environ.pop(_REEXEC_ENV, None):
+        install_lock.hold_shared()
+        logger.info(f"Ziya version {current_version} (restarted after upgrade).")
+        return
     latest_version = get_latest_version()
 
     if latest_version and current_version != latest_version:
-        update_package(current_version, latest_version)
+        if update_package(current_version, latest_version):
+            _restart_into_new_version(latest_version)
     else:
         logger.info(f"Ziya version {current_version} is up to date.")
+
+    # Hold the installation for this process's lifetime so another ziya
+    # cannot upgrade it in place underneath us (app/utils/install_lock.py).
+    if install_lock.hold_shared() == "waited":
+        # Another ziya upgraded this installation while we were starting;
+        # the modules we already imported are from the old version.
+        _restart_into_new_version(None)
+
+
+_REEXEC_ENV = "ZIYA_UPGRADE_REEXEC"
+
+
+def _restart_into_new_version(version: Optional[str]) -> None:
+    """Re-exec this process with the same command line, so it runs the
+    upgraded files instead of old in-memory code against new ones.  Called
+    before the server starts, so nothing is interrupted."""
+    os.environ[_REEXEC_ENV] = version or "1"
+    argv = install_lock.reexec_argv()
+    logger.info(f"Restarting into ziya {version or 'the upgraded version'}")
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    try:
+        os.execv(sys.executable, argv)
+    except OSError as e:
+        os.environ.pop(_REEXEC_ENV, None)
+        logger.warning(f"Upgraded ziya; restart it to use the new version ({e})")
 
 def is_package_installed_with_pip(package_name: str) -> bool:
     try:
@@ -163,14 +200,23 @@ def _upgrade_command() -> str:
     return f'"{sys.executable}" -m pip install --upgrade ziya'
 
 
-def update_package(current_version: str, latest_version: Optional[str]) -> None:
+def update_package(current_version: str, latest_version: Optional[str]) -> bool:
+    """Upgrade in place.  True only when the installation was replaced."""
     if sys.platform == "win32":
         # Windows will not let pip replace ziya.exe while it runs.  pip fails
         # with WinError 32 only after renaming the installed package out of
         # the way, and does not put it back, so ziya is left uninstalled.
         logger.warning(f"Ziya {latest_version} is available (you have {current_version}). "
                        f"To upgrade, close ziya and run: {_upgrade_command()}")
-        return
+        return False
+    # Upgrading replaces files under every ziya running from this
+    # installation; their next lazy import then fails mid-response.
+    if not install_lock.acquire_for_upgrade():
+        logger.warning(f"Ziya {latest_version} is available (you have {current_version}). "
+                       f"Not upgrading now: another ziya is running from this installation "
+                       f"and upgrading would replace its files while it runs. Stop all "
+                       f"ziya processes, then run: {_upgrade_command()}")
+        return False
     try:
         logger.info(f"Updating ziya from {current_version} to {latest_version}")
 
@@ -188,10 +234,13 @@ def update_package(current_version: str, latest_version: Optional[str]) -> None:
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             logger.info("ziya is not installed with pip or pipx.")
+            return False
 
-        logger.info("Update completed. Next time you run ziya it will be with the latest version.")
+        logger.info(f"Updated ziya to {latest_version}.")
+        return True
     except Exception as e:
         logger.info(f"Unexpected error upgrading ziya: {e}")
+        return False
 
 def print_version():
     """Print version information quickly."""

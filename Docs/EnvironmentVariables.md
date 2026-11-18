@@ -244,7 +244,7 @@ unconditional path, a conversation the regex would have skipped.
 |---|---|---|---|---|
 | `ZIYA_SCAN_TIMEOUT` | int | `45` | — | Maximum seconds for folder scanning |
 | `ZIYA_MAX_DEPTH` | int | `15` | `--max-depth` | Maximum depth for folder tree traversal |
-| `ZIYA_DISABLE_AUTO_UPDATE` | bool | `false` | — | Disable automatic pip/pipx upgrade check |
+| `ZIYA_DISABLE_AUTO_UPDATE` | bool | `false` | — | Disable automatic pip/pipx upgrade check. When enabled, the upgrade is skipped while another ziya runs from the same installation (it would replace that process's files), and after upgrading the process restarts itself into the new version before serving |
 | `ZIYA_TASK_IMPROVE_RUN_MAX` | int | `10` | — | Run-wide ceiling on self-improvement card edits across every improving level of one task run (bounds the multiplicative cost of nested self-improving blocks) |
 | `ZIYA_IMPROVE_JUDGE_MODEL` | str | (endpoint's `medium` tier) | — | Model override for the Task Card self-improvement judge (the `improve_judge` service category; defaults to the endpoint's `medium` tier via the same tags `model_tier` uses) |
 

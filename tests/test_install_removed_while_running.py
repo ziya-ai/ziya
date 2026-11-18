@@ -121,3 +121,84 @@ def test_orchestrator_does_not_retry_and_says_restart(tmp_path):
 def test_orchestrator_tls_drop_still_retried():
     res = _classify(TLS_DROP)
     assert res['type'] == 'read_timeout' and res['should_retry'] is True
+
+
+# ── stream ErrorEvent branch (reported 2026-11-11: users saw
+#    "No module named 'app.utils.provider_error_chunks'" after an upgrade,
+#    because that module was imported lazily in this branch) ─────────────
+
+def test_provider_error_chunks_imported_at_module_level():
+    import app.streaming_tool_executor as ste
+    tree = ast.parse(inspect.getsource(ste))
+    top = [n for n in tree.body if isinstance(n, ast.ImportFrom)
+           and n.module == "app.utils.provider_error_chunks"]
+    assert top, "streaming_tool_executor must import provider_error_chunks at module level"
+
+
+async def _run_error_event(message):
+    """Drive the real stream_with_tools loop; the provider yields one
+    non-retryable ErrorEvent.  provider_error_chunks is made unloadable
+    (sys.modules entry None) as a pruned install makes it."""
+    import os
+    from unittest.mock import AsyncMock
+    from app.providers.base import ErrorEvent
+
+    class _P:
+        provider_name = "scripted"
+        async def stream_response(self, *a, **k):
+            yield ErrorEvent(message=message, error_type=ErrorType.UNKNOWN, retryable=False)
+        def supports_feature(self, n): return False
+        def prepare_cache_control(self, m, *a, **k): return m
+        def build_assistant_message(self, text, tool_uses, *a, **k):
+            return {"role": "assistant", "content": [{"type": "text", "text": text}]}
+        def build_tool_result_message(self, r): return {"role": "user", "content": []}
+
+    with patch.dict(os.environ, {"ZIYA_ENDPOINT": "bedrock", "ZIYA_MODEL": "sonnet3.7"}):
+        from app.streaming_tool_executor import StreamingToolExecutor
+        ex = StreamingToolExecutor.__new__(StreamingToolExecutor)
+    ex.model_id, ex.bedrock, ex.provider = "m", None, _P()
+    ex.model_config = {"family": "claude", "max_output_tokens": 8192}
+    ex._block_opening_buffer = ""
+    ex._normalize_fence_spacing = lambda t, tr, **k: t
+    ex._update_code_block_tracker = lambda t, tr: None
+    opt = MagicMock()
+    opt.add_content.side_effect = lambda t: [t] if t else []
+    opt.flush_remaining.return_value = ""
+    ex._content_optimizer = opt
+    ex._build_conversation_from_messages = MagicMock(return_value=(
+        [{"role": "user", "content": [{"type": "text", "text": "Go"}]}], "sys"))
+    ex._format_tools_for_api = MagicMock(return_value=[])
+    ex._build_provider_config = MagicMock(return_value=MagicMock(max_output_tokens=8192))
+    ex._handle_usage_event = MagicMock()
+    ex._load_and_prepare_tools = AsyncMock(return_value=([], [], set(), set(), set()))
+    mgr = MagicMock(is_initialized=True)
+    events = []
+    with patch("app.mcp.manager.get_mcp_manager", return_value=mgr), \
+         patch.dict(sys.modules, {"app.utils.provider_error_chunks": None}):
+        async for ev in ex.stream_with_tools(messages=[{"role": "user", "content": "Go"}], tools=[]):
+            events.append(ev)
+            if len(events) > 50:
+                break
+    return [e for e in events if e.get("type") == "error"]
+
+
+@pytest.mark.asyncio
+async def test_stream_error_with_pruned_install_says_restart(tmp_path):
+    gone = str(tmp_path / "gone" / "app")
+    with patch.object(ii, "install_dir_missing", return_value=gone):
+        errors = await _run_error_event(LIVE)
+    assert errors, "no error chunk was yielded"
+    text = " ".join(str(e) for e in errors)
+    assert "No module named" not in text and "halted" not in text
+    assert errors[-1]["error_type"] == "installation_changed"
+    assert "Restart ziya" in errors[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_stream_error_ordinary_still_uses_provider_chunk():
+    # Positive control: an unrelated error still goes through
+    # build_provider_error_chunk (now bound at import time).
+    errors = await _run_error_event("oMLX prefill memory guard rejected this prompt")
+    assert errors and errors[-1].get("error_type") != "installation_changed"
+    assert "No module named" not in str(errors) and "halted" not in str(errors)
+    assert "memory guard" in str(errors[-1])

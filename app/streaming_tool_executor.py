@@ -3884,17 +3884,27 @@ class StreamingToolExecutor:
                                     'can_retry': True, 'retry_message': _help,
                                 }
                             else:
-                                # Tags recognisable provider messages (e.g. a
-                                # local server's memory ceiling) so the
-                                # frontend can show a specific banner instead
-                                # of the generic collapsed error block.
-                                from app.utils.provider_error_chunks import (
-                                    build_provider_error_chunk)
-                                yield build_provider_error_chunk(stream_event.message)
+                                _install_msg = missing_install_message(stream_event.message)
+                                if _install_msg:
+                                    # Install removed under the running server
+                                    # (upgrade pruned the old venv): say so.
+                                    yield {
+                                        'type': 'error', 'error_type': 'installation_changed',
+                                        'content': _install_msg, 'detail': stream_event.message,
+                                        'can_retry': False,
+                                    }
+                                else:
+                                    # Tags recognisable provider messages (e.g. a
+                                    # local server's memory ceiling) so the
+                                    # frontend can show a specific banner instead
+                                    # of the generic collapsed error block.
+                                    yield build_provider_error_chunk(stream_event.message)
                             break
                     elif isinstance(stream_event, StreamEnd):
                         chunk = {'type': 'message_stop',
-                                 'stop_reason': stream_event.stop_reason}
+                                 'stop_reason': stream_event.stop_reason,
+                                 'stop_category': stream_event.stop_category,
+                                 'stop_explanation': stream_event.stop_explanation}
                     else:
                         logger.info(
                             f"🔍 UNHANDLED_EVENT: {type(stream_event).__name__} "
