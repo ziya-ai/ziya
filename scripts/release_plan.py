@@ -285,8 +285,18 @@ def referenced_by_tracked(path, root):
         needle = stem
     else:
         needle = f"{parent}/{stem}"
+    # A tracked file with the same name elsewhere (the real
+    # ``__tests__/diffSupersedeParity.test.ts`` beside a scratch copy under
+    # ``tmpPatched/``) is what a bare-stem hit names; require the parent too.
+    base = os.path.basename(path.rstrip("/"))
+    twins = [p for p in git(["ls-files", "--", f"*{base}"], root).splitlines()
+             if p.strip() and p != path and os.path.basename(p) == base]
+    if twins and parent:
+        needle = f"{parent}/{stem}"
     out = git(["grep", "-l", "-F", "-e", needle], root)
-    return any(line.strip() and line.strip() != path for line in out.splitlines())
+    # Prose (CHANGELOG, design notes) citing a path is not code that needs it.
+    return any(line.strip() and line.strip() != path and not line.strip().endswith(".md")
+               for line in out.splitlines())
 
 
 def triaged_paths(triage_dir, untracked=None, rejected=None,
@@ -374,8 +384,11 @@ def triaged_paths(triage_dir, untracked=None, rejected=None,
                     if is_referenced(v["path"]):
                         bad.add(v["path"])
                         continue
-                if (v["disposition"] == "assign" and current is not None
-                        and v.get("entry_id") not in current):
+                # An assign must name an entry: one with no entry_id (run
+                # cli-a6a8a9537c96 wrote five) is not a verdict.
+                if v["disposition"] == "assign" and (
+                        not v.get("entry_id")
+                        or (current is not None and v.get("entry_id") not in current)):
                     old.add(v["path"])
                     continue
                 if v["disposition"] in ("assign", "new_entry") and (
@@ -399,21 +412,50 @@ RESERVED = frozenset({"CHANGELOG.md", "CHANGELOG.1.md", "pyproject.toml",
                       "poetry.lock", "setup.py", "frontend/package.json"})
 
 
-def build_batches(unclaimed, triaged, size=15):
+def build_batches(unclaimed, triaged, size=15, open_entries=None,
+                  untracked=None, root=None):
     """Batch every unclaimed path that has no verdict yet, exactly once.
 
     Paths sort by directory so related files share a batch.  Each batch's
     ``id`` is a hash of its paths, so a rerun names the file it writes after
     what it holds rather than after its position, and cannot overwrite an
-    earlier run's verdicts for different paths."""
+    earlier run's verdicts for different paths.
+
+    Each batch also carries what its triage needs to give a VALID verdict:
+    ``open_entries`` (the entries not yet committed -- the only ones an
+    'assign' may name) and per-path ``facts`` (tracked, and for an untracked
+    file whether tracked code names it -- either rules out 'exclude').
+    Without them triage guessed: run cli-a6a8a9537c96 assigned 8 paths to
+    committed entries, 5 to no entry at all, and excluded a referenced file,
+    every one of which the commit plan deferred and the next run re-batched."""
     import hashlib
     pending = sorted({p for p in unclaimed if p not in triaged and p not in RESERVED},
                      key=lambda p: (os.path.dirname(p), p))
+    untracked_set = set(untracked) if untracked is not None else None
     batches = []
     for i in range(0, len(pending), size):
         paths = pending[i:i + size]
         digest = hashlib.sha256("\n".join(paths).encode()).hexdigest()[:10]
-        batches.append({"id": digest, "paths": paths})
+        batch = {"id": digest, "paths": paths}
+        if open_entries is not None:
+            batch["open_entries"] = list(open_entries)
+        if untracked_set is not None:
+            facts = {}
+            for p in paths:
+                tracked = p not in untracked_set
+                facts[p] = {"tracked": tracked,
+                            "referenced": (not tracked and root is not None
+                                           and referenced_by_tracked(p, root))}
+                if not tracked and root is not None:
+                    # An untracked file sharing a tracked file's name is
+                    # usually a scratch copy of it (``tmpPatched/diffUtils.ts``).
+                    base = os.path.basename(p)
+                    twins = [t for t in git(["ls-files", "--", f"*{base}"], root).splitlines()
+                             if t.strip() and os.path.basename(t) == base]
+                    if twins:
+                        facts[p]["copy_of"] = twins
+            batch["facts"] = facts
+        batches.append(batch)
     return batches
 
 
@@ -456,7 +498,14 @@ def main(argv=None):
                                 entry_ids=entry_ids, stale=stale,
                                 committed=committed if isinstance(committed, list) else None,
                                 root=root)
-        batches = build_batches(unclaimed, triaged, max(1, args.size))
+        done_ids = set(committed) if isinstance(committed, list) else set()
+        open_entries = ([{"entry_id": e.get("entry_id"), "title": e.get("title", "")}
+                         for e in entries
+                         if isinstance(e, dict) and e.get("entry_id") not in done_ids]
+                        if isinstance(entries, list) else None)
+        batches = build_batches(unclaimed, triaged, max(1, args.size),
+                                open_entries=open_entries,
+                                untracked=index.get("untracked"), root=root)
         json.dump({"batches": batches,
                    "pending": sum(len(b["paths"]) for b in batches),
                    "triaged": len([p for p in unclaimed if p in triaged]),

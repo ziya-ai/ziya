@@ -116,8 +116,20 @@ def test_a_later_valid_assign_wins_over_a_stale_one(tmp_path, capsys):
 
 
 def test_nothing_pending_gives_an_empty_list(tmp_path, capsys):
-    _setup(tmp_path, ["a/1.py"], {"batch-q.json": [{"path": "a/1.py", "disposition": "assign"}]})
+    _setup(tmp_path, ["a/1.py"], {"batch-q.json": [
+        {"path": "a/1.py", "disposition": "assign", "entry_id": "e1"}]})
     assert _run(tmp_path, capsys)["batches"] == []
+
+
+def test_an_assign_naming_no_entry_is_rebatched(tmp_path, capsys):
+    """Run cli-a6a8a9537c96 (2026-11-18): triage wrote five 'assign'
+    verdicts with entry_id null; the commit plan deferred all five."""
+    _setup(tmp_path, ["a/1.py", "a/2.py"], {"batch-q.json": [
+        {"path": "a/1.py", "disposition": "assign", "entry_id": None},
+        {"path": "a/2.py", "disposition": "assign", "entry_id": "e1"}]})
+    out = _run(tmp_path, capsys)
+    assert [p for b in out["batches"] for p in b["paths"]] == ["a/1.py"]
+    assert out["stale_assigns"] == ["a/1.py"] and out["triaged"] == 1
 
 
 # -- consumed verdicts (runs cli-600cd44c2821 / cli-97476739fd29, 2026-11-18) --
@@ -209,6 +221,48 @@ def test_exclude_on_an_untracked_file_tracked_code_imports_is_rebatched(tmp_path
     assert [p for b in out["batches"] for p in b["paths"]] == ["src/utils/references.ts"]
     assert out["rejected_excludes"] == ["src/utils/references.ts"]
     assert out["triaged"] == 1          # the unreferenced scratch exclude stands
+
+
+def test_a_batch_carries_the_open_entries_and_per_path_facts(tmp_path, capsys):
+    """Triage can only give a valid verdict if it knows which entries are
+    still open and which paths cannot be excluded (run cli-a6a8a9537c96)."""
+    root = _repo(tmp_path)
+    _commit(root, "src/components/View.tsx", "import { r } from '../utils/references';\n", 500)
+    _commit(root, "src/Other.tsx", "v1", 500)
+    _commit(root, "NOTES.md", "see scratch/probe.mjs\n", 500)          # prose is not a reference
+    (root / "src/Other.tsx").write_text("changed")
+    for p in ("src/utils/references.ts", "scratch/probe.mjs"):
+        (root / p).parent.mkdir(parents=True, exist_ok=True)
+        (root / p).write_text("x")
+    untracked = ["scratch/probe.mjs", "src/utils/references.ts"]
+    (root / "ledger.json").write_text(json.dumps({
+        "groups_done": ["done-entry"],
+        "entry_index": {"unclaimed": ["src/Other.tsx", *untracked], "untracked": untracked,
+                        "entries": [{"entry_id": "done-entry", "title": "Done."},
+                                    {"entry_id": "open-entry", "title": "Open."}]}}))
+    (root / "triage").mkdir()
+    (batch,) = _run(root, capsys)["batches"]
+    assert batch["open_entries"] == [{"entry_id": "open-entry", "title": "Open."}]
+    assert batch["facts"] == {
+        "src/Other.tsx": {"tracked": True, "referenced": False},
+        "scratch/probe.mjs": {"tracked": False, "referenced": False},
+        "src/utils/references.ts": {"tracked": False, "referenced": True}}
+
+
+def test_a_scratch_copy_is_not_referenced_by_mentions_of_its_tracked_twin(tmp_path):
+    root = _repo(tmp_path)
+    _commit(root, "src/__tests__/parityCheckerCase.test.ts", "x", 500)
+    _commit(root, "tests/parity.py", "# twin: src/__tests__/parityCheckerCase.test.ts\n", 500)
+    (root / "src/__tests__/tmpCopies").mkdir(parents=True)
+    (root / "src/__tests__/tmpCopies/parityCheckerCase.test.ts").write_text("x")
+    assert not rp.referenced_by_tracked("src/__tests__/tmpCopies/parityCheckerCase.test.ts", str(root))
+    assert rp.referenced_by_tracked("src/__tests__/parityCheckerCase.test.ts", str(root))   # control
+    (batch,) = rp.build_batches(["src/__tests__/tmpCopies/parityCheckerCase.test.ts"], set(),
+                                untracked=["src/__tests__/tmpCopies/parityCheckerCase.test.ts"],
+                                root=str(root))
+    assert batch["facts"]["src/__tests__/tmpCopies/parityCheckerCase.test.ts"] == {
+        "tracked": False, "referenced": False,
+        "copy_of": ["src/__tests__/parityCheckerCase.test.ts"]}
 
 
 def test_reserved_release_metadata_is_never_batched(tmp_path, capsys):
