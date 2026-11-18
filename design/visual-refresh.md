@@ -184,3 +184,33 @@ on linen inverted the hierarchy (inset on sidebar is a 1-step difference).
   current-row rule).
 - Bundled serif (Source Serif 4 / Literata) if Charter's Windows fallback
   proves unsatisfying; ~100 KB font file.
+
+## Diagrams on paper (2026-11-16)
+
+Light-mode diagrams use the page canvas (`--z-canvas`) as their surface.
+
+- `plugins/d3/chartTheme.ts`: `lightChartSurface()` reads the token from
+  `<html>` (cached per `data-paper`, never caching an empty read), falling
+  back to `#ffffff`. `chartSurface(isDarkMode)` is that or `CHART_DARK_BG`.
+- Painted surfaces (vega-lite, plotly, joint, packet, orbit, chord) paint the
+  canvas colour rather than going transparent: edge-label chips (drawio, d2),
+  marker halos and the orbit label halo need an opaque colour anyway, and
+  Plotly's own image export then matches the screen.
+- `D3Renderer` subscribes to appearance changes and re-renders light-mode
+  diagrams when the paper tone changes; parked renders are keyed on theme
+  and paper.
+- An author-pinned background wins, as before.
+- Capture pages (`DiagramRenderPage`, `PrintRenderPage`) call
+  `pinLightChartSurface('#ffffff')`: their own wrapper is white, and goldens
+  were judged on white.
+- Drag-out and copy are white in light mode: `diagramDrag.exportBackground`
+  returns `#ffffff` (dark keeps the nearest opaque ancestor), and
+  `whitenPaperSurface` replaces the paper colour inside the serialized SVG.
+  Plotly exports through `plotlyExportLayout`, which whitens the surfaces
+  that equal the paper. Not covered: a canvas-only picture (the orbit globe),
+  whose surface is baked into the WebGL frame.
+- Dark is untouched. The dark surfaces still differ from each other
+  (`#1e1e1e`, `#1f1f1f`, `#1a1a2e`, page `#1c1f24`); the same helper can
+  close that later.
+- Not covered: pop-out windows (their own page), and vega specs rendered
+  through `vegaPlugin.ts`, which paints no background in light mode.
