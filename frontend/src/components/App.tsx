@@ -16,6 +16,7 @@ import {
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
 import { AppearancePopover } from './AppearancePopover';
+import { UpdateChip } from './UpdateChip';
 import { SCHEDULES_OPEN_EVENT } from './TaskCard/scheduleCadence';
 import { useConversationList } from '../context/ConversationListContext';
 import PanelResizer from './PanelResizer';
@@ -629,6 +630,8 @@ export const App: React.FC = () => {
                                 )}
                             </h2>
                             <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                {/* Newer installed version; renders nothing otherwise. */}
+                                <UpdateChip />
                                 {/* One button for skills, MCP servers, registry and shell: the
                                     Bench carries the shell + MCP attention its panels used to. */}
                                 <Tooltip title={attentionTooltip('Bench — skills and MCP servers for this conversation',
@@ -759,6 +762,8 @@ export const App: React.FC = () => {
                                     onClose={() => { setShowMCPStatus(false); setMcpFocusServer(undefined); headerAttention.refresh(); }}
                                     onOpenShellConfig={handleOpenShellConfig}
                                     focusServer={mcpFocusServer}
+                                    conversationId={currentConversationId}
+                                    projectPath={currentProject?.path}
                                 />}
                                 {showMCPRegistry && <MCPRegistryModal
                                     visible={showMCPRegistry}

@@ -6,6 +6,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import { summarizeServiceDescription } from '../utils/mcpDescriptionSummary';
 import { copyJsonToClipboard, handlePlainTextCopy } from '../utils/plainTextCopy';
 import { portableServerStanza } from '../utils/mcpStanza';
+import { McpTokenHeading, McpTokenBreakdown, serverTokenLabel } from './McpTokenHeading';
 import {
     CheckCircleOutlined,
     CloseCircleOutlined,
@@ -58,6 +59,10 @@ interface MCPStatusModalProps {
     onOpenShellConfig?: () => void;
     /** Pre-expand this server's panel (opened from a Bench card back). */
     focusServer?: string;
+    /** The open conversation: the token heading counts what IT sends. */
+    conversationId?: string | null;
+    /** Sent as X-Project-Root so the server resolves this project's bench. */
+    projectPath?: string | null;
 }
 
 interface MCPServer {
@@ -129,6 +134,7 @@ interface MCPStatus {
             total_models: number;
             per_model_cost: number;
         };
+        breakdown?: McpTokenBreakdown;
     };
 }
 
@@ -196,7 +202,7 @@ interface MCPPermissions {
     }>;
 }
 
-const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpenShellConfig, focusServer }) => {
+const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpenShellConfig, focusServer, conversationId, projectPath }) => {
     const [status, setStatus] = useState<MCPStatus | null>(null);
     const { isDarkMode } = useTheme();
     const [builtinTools, setBuiltinTools] = useState<Record<string, BuiltinToolCategory>>({});
@@ -230,12 +236,16 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                 window.removeEventListener('mcpStatusChanged', handleMCPStatusChange);
             };
         }
-    }, [visible]);
+    }, [visible, conversationId, projectPath]);
 
     const fetchMCPStatus = async (silent: boolean = false) => {
         if (!silent) setLoading(true);
         try {
-            const response = await fetch('/api/mcp/status');
+            const query = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : '';
+            const response = await fetch(
+                '/api/mcp/status' + query,
+                projectPath ? { headers: { 'X-Project-Root': projectPath } } : undefined,
+            );
             if (response.ok) {
                 const data = await response.json();
                 console.log('MCP Status received:', data);
@@ -682,7 +692,10 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                             />
                         </Col>
                         <Col span={12}>
-                            {status.token_costs && (() => {
+                            {status.token_costs?.breakdown && (
+                                <McpTokenHeading breakdown={status.token_costs.breakdown} />
+                            )}
+                            {status.token_costs && !status.token_costs.breakdown && (() => {
                                 const { total_tool_tokens, enabled_tool_tokens, instructions } = status.token_costs;
                                 
                                 // Calculate token savings from disabled servers/tools
@@ -1233,6 +1246,9 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                     <Tag color={isEnabled && server.connected ? undefined : 'default'}
                                                          style={isEnabled && server.connected ? {} : { opacity: 0.5 }}>
                                                         {(() => {
+                                                            // What this server sends for the open conversation.
+                                                            const placed = serverTokenLabel(status.token_costs?.breakdown?.per_server?.[name]);
+                                                            if (placed) return placed.text;
                                                             const details = status.token_costs?.server_details?.[name];
                                                             const totalTokens = status.token_costs!.servers[name];
                                                             if (details && details.enabled_tokens < totalTokens) {
@@ -1312,12 +1328,14 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                         const details = status.token_costs?.server_details?.[name];
                                                         const enabledTokens = details?.enabled_tokens ?? totalTokens;
                                                         const disabledTokens = totalTokens - enabledTokens;
+                                                        const row = status.token_costs?.breakdown?.per_server?.[name];
+                                                        const placed = row && row.placement !== 'on_hand' ? serverTokenLabel(row) : null;
                                                         
                                                         return (
                                                             <span>
-                                                                <Tag color={isEnabled && server.connected ? 'blue' : 'default'}
+                                                                <Tag color={isEnabled && server.connected && (!placed || placed.sent) ? 'blue' : 'default'}
                                                                      style={isEnabled && server.connected ? {} : { opacity: 0.5 }}>
-                                                                    {formatTokenCount(enabledTokens)} tokens active
+                                                                    {placed ? placed.text : `${formatTokenCount(enabledTokens)} tokens active`}
                                                                 </Tag>
                                                                 {disabledTokens > 0 && (
                                                                     <Tag color="default" style={{ opacity: 0.6 }}>

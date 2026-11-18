@@ -307,7 +307,7 @@ def calculate_model_instruction_tokens() -> Dict[str, Any]:
     }
 
 @router.get("/status")
-def get_mcp_status():
+def get_mcp_status(conversation_id: Optional[str] = None):
     """
     Get the status of all MCP servers.
     
@@ -396,6 +396,7 @@ def get_mcp_status():
         
         server_token_costs = {}
         server_tool_details = {}
+        breakdown_servers: Dict[str, Dict[str, Any]] = {}
         total_tool_tokens = 0
         enabled_tool_tokens = 0
         
@@ -414,6 +415,10 @@ def get_mcp_status():
                 token_count = count_server_tool_tokens(tools_dict)
                 server_token_costs[server_name] = token_count
                 total_tool_tokens += token_count
+                breakdown_servers[server_name] = {
+                    "enabled": bool(is_enabled), "total": token_count,
+                    "enabled_tokens": 0, "tools": {},
+                }
                 
                 # Calculate enabled tool tokens by filtering out disabled tools
                 if is_enabled:
@@ -449,6 +454,10 @@ def get_mcp_status():
                         "enabled_tokens": enabled_token_count,
                         "tool_tokens": tool_tokens,
                     }
+                    breakdown_servers[server_name].update(
+                        enabled_tokens=enabled_token_count,
+                        tools={t['name']: tool_tokens[t['name']] for t in enabled_tools_dict},
+                    )
                     
                     logger.debug(f"Server {server_name}: {len(enabled_tools_dict)}/{len(tools_dict)} tools enabled, {enabled_token_count}/{token_count} tokens")
         
@@ -468,11 +477,26 @@ def get_mcp_status():
             server_token_costs["ondemand"] = dynamic_token_count
             total_tool_tokens += dynamic_token_count
             enabled_tool_tokens += dynamic_token_count
+            # Trigger-loaded dynamic tools are in the tool list: on hand.
+            breakdown_servers["ondemand"] = {
+                "enabled": True, "total": dynamic_token_count,
+                "enabled_tokens": dynamic_token_count,
+                "tools": {t['name']: 0 for t in dynamic_tools_dict},
+            }
             
             logger.debug(f"Dynamic tools: {len(active_dynamic_tools)} tools, {dynamic_token_count} tokens")
         
         # Calculate instruction token costs
         instruction_costs = calculate_model_instruction_tokens()
+        # What is actually sent, split by bench placement for this
+        # conversation (app/utils/mcp_token_breakdown.py).
+        from app.context import get_project_root_or_none
+        from app.utils.mcp_token_breakdown import breakdown_for_request
+        token_breakdown = breakdown_for_request(
+            breakdown_servers, get_project_root_or_none(), conversation_id,
+            count_text=estimate_token_count,
+            instruction_tokens=instruction_costs.get("per_model_cost", 0),
+        )
         
         return {
             "initialized": True,
@@ -493,7 +517,8 @@ def get_mcp_status():
                 "total_tool_tokens": total_tool_tokens,
                 "enabled_tool_tokens": enabled_tool_tokens,
                 "server_details": server_tool_details,
-                "instructions": instruction_costs
+                "instructions": instruction_costs,
+                "breakdown": token_breakdown,
             }
         }
         

@@ -90,6 +90,25 @@ reload config* button under the board, or from a server card's drawer. The
 Bench refreshes itself after the reload, so a newly configured server gets a
 card without reopening it.
 
+The panel's heading, **MCP tokens in context**, counts only what the open
+conversation sends on each request: tool definitions of servers **On hand**,
+tools this conversation has loaded from servers **Within reach**, the
+one-line-per-server list of within-reach servers in the system prompt, and
+the instruction estimate. Below it, a *Not sent* line gives the weight of
+within-reach tools that are not loaded, shelved servers, and disabled tools.
+On a model with native tool search (the Anthropic API, or Bedrock through the
+mantle gateway, with Claude 4.5 or later; on Bedrock's Invoke API, a model
+whose config sets `supports_tool_search`, currently `fable5.2`),
+within-reach definitions are sent
+deferred: the provider holds them out of the model's context, so they appear
+on their own row and are not part of the total. Tools the model has since
+found through that search are not known to Ziya and are not counted. With no
+conversation open the heading describes the project's placements. Each
+server's row uses the same split: an on-hand server shows its tokens, a
+within-reach server shows *within reach · N if loaded* (or what it has
+loaded, or *sent deferred*), and a shelved server shows *shelved · N not
+sent*.
+
 Search order — the **first** file found wins, and this one is last:
 
 1. `./mcp_config.json` (current working directory)
