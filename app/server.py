@@ -1014,6 +1014,9 @@ async def _initialize_memory_background():
     store is empty, silently returns.
     """
     await asyncio.sleep(2.0)
+    # A BaseException: without naming it below, an outage at startup killed
+    # this task and skipped the phases after the one that hit it.
+    from app.utils.infra_errors import ServiceInfraError
 
     try:
         from app.mcp.builtin_tools import is_builtin_category_enabled
@@ -1071,8 +1074,8 @@ async def _initialize_memory_background():
                         logger.info(f"🧠 Memory startup: embedded {n} proposals")
                 except Exception as pe:
                     logger.debug(f"🧠 Memory startup: proposal backfill skipped: {pe}")
-        except Exception as e:
-            logger.debug(f"🧠 Memory startup: embedding backfill skipped: {e}")
+        except (Exception, ServiceInfraError) as e:
+            logger.warning(f"🧠 Memory startup: embedding backfill skipped: {e}")
 
         # Phase 2: Auto-organize if no mind-map exists
         try:
@@ -1090,7 +1093,7 @@ async def _initialize_memory_background():
                     f"{bootstrap.get('domains_created', 0)} domains, "
                     f"{bootstrap.get('memories_placed', 0)} memories placed"
                 )
-        except Exception as e:
+        except (Exception, ServiceInfraError) as e:
             logger.warning(f"🧠 Memory startup: auto-organize failed (non-fatal): {e}")
 
     except Exception as e:
@@ -2173,6 +2176,9 @@ async def stream_chunks(body):
             except (OSError, RuntimeError, asyncio.TimeoutError) as conn_check_error:
                 logger.debug(f"Connectivity pre-check failed: {conn_check_error}")
             
+            # Named in the handler below: a BaseException, so ``except
+            # Exception`` alone lets an embedding/service-model outage through.
+            from app.utils.infra_errors import ServiceInfraError
             try:
                 from app.streaming_tool_executor import StreamingToolExecutor
                 
@@ -2634,7 +2640,7 @@ async def stream_chunks(body):
                 yield f"data: {json.dumps({'error': f'Model initialization error: {sanitize_client_error(ve, max_len=200)}', 'error_type': 'ValueError'})}\n\n"
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 return
-            except Exception as e:  # Intentionally broad: STE can raise API/auth/config errors
+            except (Exception, ServiceInfraError) as e:  # Intentionally broad: STE can raise API/auth/config errors
                 # Falls back to LangChain path — must catch everything to avoid aborting
                 error_str = str(e)
                 error_details = traceback.format_exc()

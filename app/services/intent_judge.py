@@ -103,7 +103,12 @@ async def judge_dangling_intent(assistant_text: str) -> bool:
             max_tokens=4,
             temperature=0.0,
         )
-    except Exception as e:
+    except BaseException as e:
+        # ServiceInfraError (an outage of the judge model) is a
+        # BaseException; anything else that is not an Exception
+        # (cancellation, interpreter exit) is re-raised.
+        if not isinstance(e, Exception) and not getattr(e, "infra_kind", ""):
+            raise
         logger.warning(f"intent judge transport failed (→ no / end turn): {e}")
         return False
     return _parse_yes_no(out)

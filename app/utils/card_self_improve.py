@@ -416,7 +416,10 @@ async def critique(
             max_tokens=2048,
             temperature=0.2,
         )
-    except Exception as e:  # noqa: BLE001
+    except BaseException as e:  # noqa: BLE001
+        # See improve_evaluator: ServiceInfraError is a BaseException.
+        if not isinstance(e, Exception) and not getattr(e, "infra_kind", ""):
+            raise
         logger.warning(f"self-improve: critic transport failed (→ stop): {e}")
         return {"verdict": "no_improvement",
                 "lesson": f"critic unavailable: {e}", "patch": {}}

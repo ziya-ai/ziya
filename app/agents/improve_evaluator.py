@@ -239,7 +239,12 @@ async def evaluate_improvement(
             max_tokens=JUDGE_MAX_TOKENS,
             temperature=0.0,
         )
-    except Exception as e:  # noqa: BLE001 — transport must not fail the run
+    except BaseException as e:  # noqa: BLE001 — transport must not fail the run
+        # BaseException for ServiceInfraError (an outage of the judge model),
+        # which ``except Exception`` does not see; anything else that is not
+        # an Exception (cancellation, interpreter exit) is re-raised.
+        if not isinstance(e, Exception) and not getattr(e, "infra_kind", ""):
+            raise
         logger.warning(f"improve judge transport failed (→ error): {e}")
         return _error("transport", f"{type(e).__name__}: {e}")
     parsed = _extract_json(out)

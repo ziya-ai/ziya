@@ -1016,6 +1016,13 @@ async def _execute_block_dispatch(block: Block, ctx: ExecutionContext) -> Artifa
             error=str(exc),
         )
         raise
+    except BaseException as exc:
+        # An infra fault that is not an Exception (ServiceInfraError): mark
+        # the block held like its TaskInfraError counterpart above.
+        # Cancellation and interpreter exit pass through untouched.
+        if getattr(exc, "infra_kind", ""):
+            await _mark_block_status(ctx, block, "held", error=str(exc))
+        raise
     finally:
         ctx.scope_stack.pop()
         # A State's contract defaults outlive it (they apply to its later
@@ -3701,6 +3708,10 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
             try:
                 verdict = _coerce_until_verdict(
                     await _evaluate_until_condition_with_model(condition, artifact))
+            except TaskInfraError:
+                # The judge model is unreachable: hold the run rather than
+                # read the outage as "condition not met" and iterate again.
+                raise
             except Exception as e:
                 logger.warning(f"until condition eval failed (continuing): {e}")
                 verdict = UntilVerdict(False, f"evaluator error: {e}")

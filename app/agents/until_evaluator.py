@@ -150,6 +150,7 @@ async def evaluate_condition_verdict(condition: str, artifact: Artifact) -> Unti
     """Judge ``condition`` against ``artifact``; carries the reason when unmet."""
     if not condition.strip():
         return UntilVerdict(False, "")
+    from app.utils.infra_errors import ServiceInfraError
     try:
         from ..services.model_resolver import call_service_model
         out = await call_service_model(
@@ -161,6 +162,16 @@ async def evaluate_condition_verdict(condition: str, artifact: Artifact) -> Unti
             max_tokens=160,
             temperature=0.0,
         )
+    except ServiceInfraError as e:
+        # A BaseException (app/utils/infra_errors): it passed the handler
+        # below, the block executor's and the run driver's, and left the
+        # run recorded as "running" with no task behind it.  An outage is
+        # not a verdict, so it becomes the task system's own infra error:
+        # the block is marked held and the run can be resumed.
+        from .task_executor import TaskInfraError
+        raise TaskInfraError(
+            f"until evaluator could not reach the judge model: {e}",
+            infra_kind=e.infra_kind) from e
     except Exception as e:
         logger.warning(f"until evaluator transport failed (→ False): {e}")
         return UntilVerdict(False, "")

@@ -97,7 +97,22 @@ class _OffLoopMemoryBase(BaseMCPTool):
         raise NotImplementedError
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        return await asyncio.to_thread(self._execute_sync, **kwargs)
+        # ServiceInfraError is a BaseException (app/utils/infra_errors), so
+        # no tool-execution handler above this catches it and the whole
+        # chat turn would end.  Report the outage as this tool's result.
+        from app.utils.infra_errors import ServiceInfraError
+        try:
+            return await asyncio.to_thread(self._execute_sync, **kwargs)
+        except ServiceInfraError as e:
+            logger.warning(f"{self.name}: embedding/service model unreachable "
+                           f"({e.infra_kind}): {str(e)[:200]}")
+            return {
+                "error": True,
+                "message": (
+                    f"Memory backend unreachable ({e.infra_kind}). A save or "
+                    f"proposal may have been stored without its embedding; "
+                    f"do not retry it in this turn."),
+            }
 
 
 # ---------------------------------------------------------------------------
