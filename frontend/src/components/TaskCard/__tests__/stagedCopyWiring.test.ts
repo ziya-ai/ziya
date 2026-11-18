@@ -128,11 +128,15 @@ describe('the deck exposes the copy action', () => {
     expect(namedCallback('handleLaunchNew')).toMatch(/confirmIfUnsigned/);
   });
 
-  it('both handlers are bound to rendered buttons', () => {
+  it('both handlers are bound to rendered controls', () => {
     // A handler no control calls is the quietest way for this to ship
     // broken: every assertion above passes and nothing is clickable.
+    // They are items of the title bar's Launch menu.
     const src = LIBRARY();
-    expect(src).toMatch(/onClick=\{handleStageCurrent\}/);
-    expect(src).toMatch(/onClick=\{handleStageNew\}/);
+    expect(src).toMatch(/key: 'stage-current'/);
+    expect(src).toMatch(/key: 'stage-new'/);
+    expect(src).toMatch(/key === 'stage-current'\) void handleStageCurrent\(\)/);
+    expect(src).toMatch(/key === 'stage-new'\) void handleStageNew\(\)/);
+    expect(src).toMatch(/<Dropdown menu=\{launchMenu\}/);
   });
 });
