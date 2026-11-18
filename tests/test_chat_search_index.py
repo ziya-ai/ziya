@@ -204,3 +204,19 @@ def test_unreadable_file_is_cached_then_retried(corpus, monkeypatch):
 def test_kill_switch(corpus, monkeypatch):
     monkeypatch.setenv("ZIYA_DISABLE_CHAT_SEARCH_INDEX", "1")
     assert csi.candidate_files(corpus["ziya_home"], corpus["pid_a"], True, "monotonic") is None
+
+
+def test_fold_fast_path_equals_translate_for_every_input_shape():
+    """_fold skips str.translate unless one of the four mapped characters is
+    present (the translate was 60% of a cold index build, 2026-11-12).  The
+    result must be what the unconditional translate produced."""
+    from app.utils import chat_search_index as ci
+    samples = ["Plain ASCII Text_9", "emoji \U0001f50d and \u00e9 only",
+               "\u212aelvin", "long \u017f", "dotted \u0130 dotless \u0131",
+               "mixed \u212a\u017f\u0130\u0131 ABC \U0001f50d", ""]
+    for s in samples:
+        assert ci._fold(s) == s.translate(ci._FOLD).lower(), s
+    # The mapped characters really are folded to ASCII (not just equal to
+    # the reference by both being wrong).
+    assert ci._fold("\u212aELVIN \u017f\u0130\u0131") == "kelvin sii"
+    assert set(ci._FOLD_CHARS) == {chr(k) for k in ci._FOLD}

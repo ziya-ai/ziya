@@ -58,8 +58,18 @@ _FOLD = str.maketrans({"\u212a": "k", "\u017f": "s", "\u0130": "i", "\u0131": "i
 _TOKEN_RE = re.compile(r"[a-z0-9_]{3,}")
 
 
+_FOLD_CHARS = ("\u212a", "\u017f", "\u0130", "\u0131")
+
+
 def _fold(text: str) -> str:
-    return text.translate(_FOLD).lower()
+    # str.translate with a dict table is a per-character Python-level lookup
+    # (~20 ms per MB); over a 400 MB project that was 60% of the first-use
+    # index build and pushed it past the browser's 25 s search deadline.
+    # The four characters it maps are almost never present, and a substring
+    # probe for each is a C-speed scan.
+    if any(c in text for c in _FOLD_CHARS):
+        text = text.translate(_FOLD)
+    return text.lower()
 
 
 def _trigram_codes(tokens) -> Set[int]:
