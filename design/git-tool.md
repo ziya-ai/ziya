@@ -146,8 +146,13 @@ What keeps these apart from plain `commit`/`push` is the consent layer:
 - They get their own consent ops, `commit_amend` and `push_force`, through
   the tool's `consent_op_for`.
 - They are in `consent_human_only_ops`. For those ops the gate always asks.
-  `permissions.json` `always`, an autonomous project, and conversation or
-  session grants are all ignored, and the panel offers only `once`.
+  `permissions.json` `always` and conversation or project grants are
+  ignored, and the panel offers only `once`.
+- One exception (2026-11-11): in an autonomous project, an amend runs
+  unasked when its plan carries `replaces_unpublished` — git confirmed the
+  replaced commit is on no remote-tracking branch, as of the last fetch.
+  The tool says so through `consent_human_only_waived`; `push_force` and
+  `stash_drop` never waive.
 
 So the `enabled/always` posture described below still never covers a
 history rewrite. `rebase`, `reset`, bare `--force`, `--delete` and

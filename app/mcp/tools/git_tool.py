@@ -239,8 +239,10 @@ class GitTool(BaseMCPTool):
         "files); a provenance trailer is appended.  commit with amend=true "
         "replaces HEAD (message optional).  push pushes only the current "
         "branch; with force=true it is a lease on the sha the user approves, "
-        "never the remote's default branch.  amend and force ask the user on "
-        "every call.  switch refuses a dirty tree.  "
+        "never the remote's default branch.  force asks the user on every "
+        "call; so does amend, unless the project runs git autonomously and "
+        "the commit being replaced is on no remote branch.  "
+        "switch refuses a dirty tree.  "
         "To fix a commit below HEAD, stage the fix and call fixup with "
         "target=<that commit>: it adds a 'fixup! <subject>' commit and returns "
         "fold_in, the autosquash rebase that folds it in.  Do not run that "
@@ -293,6 +295,14 @@ class GitTool(BaseMCPTool):
         if op == "push" and git_ops.truthy(args.get("force")):
             return "push_force"
         return op
+
+    def consent_human_only_waived(self, op: str, preflight: Dict[str, Any]) -> bool:
+        """An autonomous project may amend without asking only when the plan
+        confirms the commit being replaced is on no remote-tracking branch:
+        nothing published is rewritten.  Force push and stash drop never
+        waive."""
+        return (op == "commit_amend" and preflight.get("amend") is True
+                and preflight.get("replaces_unpublished") is True)
 
     async def preflight(self, **kwargs) -> Optional[Dict[str, Any]]:
         """What the call would do — the payload the human approves."""

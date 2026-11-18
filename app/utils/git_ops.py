@@ -746,12 +746,18 @@ def _plan_amend(
     if not plan["files"] and plan["message"].rstrip() == old_msg:
         raise GitOpError("nothing to amend: nothing is staged and the message is unchanged")
     warnings: List[str] = []
-    published = _published_on(repo, sha)
+    known = _published_known(repo, sha)
+    published = known or []
     if published:
         plan["replaces_published_on"] = _cap(published)
         warnings.append(
             f"the commit being replaced ({short}) is already on {', '.join(published[:5])}: "
             "publishing the amended commit needs op=push with force=true")
+    elif known is not None:
+        # Git answered, and no remote-tracking branch has this commit (as of
+        # the last fetch).  An autonomous project amends such a commit
+        # without asking (GitTool.consent_human_only_waived).
+        plan["replaces_unpublished"] = True
     if len(parents.split()) > 1:
         warnings.append("HEAD is a merge commit; the amended commit keeps both parents")
     if warnings:
@@ -807,10 +813,17 @@ def _fixup_target(repo: Repo, target: Any) -> Dict[str, Any]:
             "parents": parents.split()}
 
 
-def _published_on(repo: Repo, sha: str) -> List[str]:
+def _published_known(repo: Repo, sha: str) -> Optional[List[str]]:
+    """Remote-tracking branches containing ``sha``; None when git could not say."""
     p = _run(["branch", "-r", "--contains", sha, "--format=%(refname:short)"],
              repo.root, check=False)
+    if p.returncode != 0:
+        return None
     return [r for r in (p.stdout or "").split() if r and not r.endswith("/HEAD")]
+
+
+def _published_on(repo: Repo, sha: str) -> List[str]:
+    return _published_known(repo, sha) or []
 
 
 def plan_fixup(

@@ -258,6 +258,86 @@ def test_autonomous_project_does_not_skip_a_human_only_op(gate, monkeypatch):
     assert _decide("rewrite")["approved"] is False
 
 
+# -- autonomous waiver: an amend of an unpublished commit --
+# Reported 2026-11-11: a project set to autonomous still asked for every
+# amend of a local, unpushed commit.
+
+class _Waiving(_Fake):
+    safe = True
+    boom = False
+
+    def preflight(self, **kwargs):
+        return {"safe": self.safe}
+
+    def consent_human_only_waived(self, op, preflight):
+        if self.boom:
+            raise RuntimeError("boom")
+        return op == "rewrite" and preflight.get("safe") is True
+
+
+def _decide_tool(tool, args, project_root=None):
+    async def go():
+        async for ev in cg.consent_gate(tool_name=getattr(tool, "name", "fake"), tool_id="t",
+                                        args=args, conversation_id=None, tool=tool,
+                                        project_root=project_root):
+            if ev["type"] == cg.DECISION_EVENT:
+                return ev
+    return asyncio.run(go())
+
+
+def _set_project_mode(monkeypatch, mode):
+    from app.utils import project_tool_modes as ptm
+    monkeypatch.setattr(ptm, "mode_for", lambda tool, root: mode)
+
+
+def test_autonomous_skips_a_human_only_op_only_when_the_tool_waives_it(gate, monkeypatch):
+    _set_project_mode(monkeypatch, "autonomous")
+    tool = _Waiving()
+    ev = _decide_tool(tool, {"op": "rewrite"})
+    assert ev["approved"] is True and ev["asked"] is False
+    tool.safe = False
+    assert _decide_tool(tool, {"op": "rewrite"})["approved"] is False
+    tool.safe = True
+    tool.boom = True
+    assert _decide_tool(tool, {"op": "rewrite"})["approved"] is False
+
+
+def test_the_waiver_needs_an_autonomous_project(gate, monkeypatch):
+    # The fixture configures permissions.json "always"; that is not enough.
+    assert _decide_tool(_Waiving(), {"op": "rewrite"})["approved"] is False
+    _set_project_mode(monkeypatch, "autonomous")
+    assert _decide_tool(_Waiving(), {"op": "rewrite"})["approved"] is True
+
+
+def test_amend_plan_says_whether_the_replaced_commit_is_published(repo, remote):
+    args = {"amend": True, "message": "reworded"}
+    plan = g.preflight("commit", args, str(repo), model="m", provenance=False)
+    assert plan["replaces_published_on"] == ["origin/feature"]
+    assert "replaces_unpublished" not in plan
+    (repo / "f.txt").write_text("2\n")
+    _git(repo, "commit", "-q", "-am", "local only")
+    plan = g.preflight("commit", args, str(repo), model="m", provenance=False)
+    assert plan["replaces_unpublished"] is True and "replaces_published_on" not in plan
+
+
+def test_real_git_tool_amends_unasked_while_head_is_unpublished(gate, monkeypatch, repo, remote):
+    from app.mcp.tools.git_tool import GitTool
+    tool = GitTool()
+    args = {"op": "commit", "amend": True, "message": "reworded"}
+    _set_project_mode(monkeypatch, "autonomous")
+    ev = _decide_tool(tool, args, str(repo))
+    assert ev["approved"] is False
+    assert "no interactive conversation" in ev["answer"]["answer"]
+    (repo / "f.txt").write_text("2\n")
+    _git(repo, "commit", "-q", "-am", "local only")
+    ev = _decide_tool(tool, args, str(repo))
+    assert ev["approved"] is True and ev["asked"] is False
+    _set_project_mode(monkeypatch, None)
+    assert _decide_tool(tool, args, str(repo))["approved"] is False
+    plan = {"amend": True, "replaces_unpublished": True}
+    assert not cg.human_only_waived(tool, "push_force", plan)
+
+
 # ── hazard text ───────────────────────────────────────────────────────────
 
 def test_hazard_redirect_no_longer_claims_amend_and_force_are_absent():

@@ -134,10 +134,12 @@ def human_only_ops(tool_instance: Any) -> Set[str]:
     """Ops a tool requires a human to approve on EVERY call.
 
     A tool declares ``consent_human_only_ops = ("op", ...)``.  For those ops
-    no configuration (permissions.json ``always``), no autonomous project
-    mode and no standing grant skips the prompt, and the panel offers only
+    no configuration (permissions.json ``always``) and no standing grant
+    skips the prompt, and the panel offers only
     ``once``.  The git tool uses it for history rewriting (``commit_amend``,
-    ``push_force``).  Never raises.
+    ``push_force``).  An autonomous project skips the prompt only for a call
+    the tool itself waives from its preflight (``human_only_waived``).
+    Never raises.
     """
     try:
         ops = getattr(tool_instance, "consent_human_only_ops", None)
@@ -146,6 +148,25 @@ def human_only_ops(tool_instance: Any) -> Set[str]:
     except Exception:  # noqa: BLE001
         pass
     return set()
+
+
+def human_only_waived(tool_instance: Any, op: str, preflight: Any) -> bool:
+    """Whether the tool says THIS call of a human-only op needs no human.
+
+    A tool declares ``consent_human_only_waived(op, preflight) -> bool``; the
+    gate asks it only when the project runs the tool in autonomous mode.
+    The git tool waives an amend whose replaced commit is on no remote
+    branch.  Only a literal True from a real plan waives: no hook, no
+    preflight, a hook that raises or any other value all mean "ask".
+    """
+    hook = getattr(tool_instance, "consent_human_only_waived", None)
+    if not callable(hook) or not isinstance(preflight, dict):
+        return False
+    try:
+        return hook(op, preflight) is True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"consent_human_only_waived failed: {exc}")
+        return False
 
 
 def set_consent_mode(tool_name: str, mode: str, op: Optional[str] = None) -> None:
@@ -465,6 +486,14 @@ async def consent_gate(
     preflight: Optional[Dict[str, Any]] = None
     if needs_ask or _wants_scope_preflight(inst):
         preflight = await _preflight(inst, args, project_root)
+    if (human_only and project_mode == "autonomous" and not _is_refusal(preflight)
+            and human_only_waived(inst, op, preflight)):
+        # The tool's own plan says this call is not the case the human-only
+        # rule exists for; the autonomous project then covers it like any
+        # other op.  Out-of-policy paths below still ask.
+        logger.info(f"consent: {tool_name} {op} waived by the tool under autonomous mode")
+        human_only = False
+        needs_ask = False
 
     # Part B (design/scope-consent.md): a plan that already knows the call
     # cannot succeed is returned to the model, not put in front of a human.
