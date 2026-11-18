@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     fetchBench, fetchBenchDetail, fetchBenchFind, installBenchServer, installBenchSkill, placeBench, reauthorizeBenchServer,
-    setBenchEnvironment, setBenchTool,
+    setBenchEnvironment, setBenchTool, setBenchUpdatePolicy,
     BenchView, BenchViewItem, BenchItemDetail, ToolDetail, FindResponse, InstallResult, ReauthorizeResult, ServerInstallResult,
 } from '../apis/benchApi';
 import * as skillApi from '../api/skillApi';
@@ -180,6 +180,19 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
         return r;
     }, [projectId, conversationId, announce]);
 
+    // What a later definition change does to a server.  Costs nothing, so
+    // the view is untouched; a publisher grant changes its siblings' details
+    // too, so the whole detail cache is dropped rather than one entry.
+    const setUpdatePolicy = useCallback(async (
+        server: string, policy: 'ask' | 'follow', scope: 'server' | 'publisher' = 'server',
+    ): Promise<BenchItemDetail> => {
+        if (!projectId) throw new Error('no project');
+        const d = await setBenchUpdatePolicy(projectId, server, policy, scope);
+        detailCache.current.clear();
+        detailCache.current.set(`mcp:${server}`, Promise.resolve(d));
+        return d;
+    }, [projectId]);
+
     // Find (slice 8b): a query to the sources, never a catalog.  Install lands
     // files at the lens's layer -- the conversation layer has no files, so it
     // installs to the project -- and places there; the returned view replaces
@@ -289,6 +302,7 @@ export function useBench({ projectId, conversationId, legacy }: UseBenchArgs) {
         detail,
         setTool,
         reauthorize,
+        setUpdatePolicy,
         flash,
         find,
         install,

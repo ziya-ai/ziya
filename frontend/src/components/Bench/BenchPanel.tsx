@@ -44,6 +44,8 @@ export interface BenchPanelModel {
     setTool?: (server: string, tool: string, enabled: boolean) => Promise<BenchItemDetail>;
     /** Lift an MCP server's rug-pull quarantine (authorization gate). */
     reauthorize?: (server: string, force?: boolean) => Promise<ReauthorizeResult>;
+    /** What a later definition change does: ask, or follow (per server or per registry provider). */
+    setUpdatePolicy?: (server: string, policy: 'ask' | 'follow', scope?: 'server' | 'publisher') => Promise<BenchItemDetail>;
     flash?: TokenFlash | null;
     /** Find view (slice 8b); absent = no arrange/find toggle. */
     find?: (q: string, n?: number, registriesOff?: string[]) => Promise<FindResponse>;
@@ -191,6 +193,7 @@ export const BenchPanel: React.FC<BenchPanelProps> = ({ bench, shellAttention, o
                     ) : selected && (
                         <CapabilityDetail item={selected} onClose={() => setSelectedKey(null)} detail={bench.detail}
                                           place={bench.place} onToolToggle={bench.setTool} onReauthorize={bench.reauthorize}
+                                          onUpdatePolicy={bench.setUpdatePolicy}
                                           onUpdateSkill={bench.updateSkill ? (id, draft) => bench.updateSkill!(id, selected.key, draft) : undefined}
                                           onDeleteSkill={bench.deleteSkill}
                                           delta={bench.flash?.byKey[selected.key]} />

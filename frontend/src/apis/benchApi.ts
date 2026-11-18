@@ -106,6 +106,8 @@ export interface BenchItemDetail {
     tool_permissions?: Record<string, boolean>;
     /** Authorization gate; null/absent = may run.  Today: rug-pull quarantine. */
     gate?: { state: string; reason: string } | null;
+    /** What a definition change does to this server and, while it is held, what changed. */
+    updates?: UpdateInfo | null;
     /** Per-tool rows for the detail drawer: what each tool costs and does. */
     tool_details?: ToolDetail[];
 }
@@ -153,6 +155,41 @@ export async function reauthorizeBenchServer(
     });
     if (!r.ok) throw new Error(`bench reauthorize failed: ${r.status}`);
     return r.json();
+}
+
+/** Difference between the approved definitions and what the server lists now. */
+export interface UpdateChanges {
+    /** False when the approved definitions were never recorded; the lists are then empty, not "no change". */
+    known: boolean;
+    added: string[]; removed: string[]; changed: { name: string; what: string[] }[]; summary: string;
+}
+/** app/utils/mcp_update_policy.py describe(). */
+export interface UpdateInfo {
+    /** ask = hold on every change; follow = accept a change that scans clean. */
+    policy: 'ask' | 'follow';
+    via?: 'server' | 'publisher' | null;
+    /** Registry provider the server was installed from; null for a hand-configured one. */
+    publisher?: string | null;
+    /** That registry's display name; the id when the registry is not loaded. */
+    publisher_name?: string | null;
+    publisher_follows?: boolean;
+    /** A per-server "follow" no longer applies because the launch command changed. */
+    lapsed?: boolean;
+    accepted_at?: number | null; accepted_by?: string | null; last_change?: string | null;
+    changes?: UpdateChanges;
+}
+
+/** Set the update policy for one server, or (scope publisher) every server from its registry provider. */
+export async function setBenchUpdatePolicy(
+    projectId: string, server: string, policy: 'ask' | 'follow', scope: 'server' | 'publisher' = 'server',
+): Promise<BenchItemDetail> {
+    const r = await fetch(base(projectId) + '/update-policy', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ server, policy, scope }),
+    });
+    if (!r.ok) throw new Error(`bench update-policy failed: ${r.status}`);
+    return (await r.json()).detail;
 }
 
 // -- find (slice 8b) --------------------------------------------------------

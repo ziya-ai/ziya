@@ -288,6 +288,44 @@ def reauthorize_mcp(server: str, force: bool = False) -> Dict[str, Any]:
     return mgr.reauthorize_server(server, force=force)
 
 
+def _update_info(mgr, name: str, cfg: Dict[str, Any], held_tools: Optional[List[Any]] = None) -> Optional[Dict[str, Any]]:
+    """Update policy for the drawer and, for a held server, what changed."""
+    try:
+        from app.utils import mcp_update_policy as upd
+        return upd.describe(upd.state_dir_of(mgr), name, cfg,
+                            [_tool_dict(t) for t in held_tools] if held_tools is not None else None)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("bench: update policy unavailable for %s: %s", name, e)
+        return None
+
+
+def set_update_policy(server: str, policy: str, scope: str = "server") -> None:
+    """What a later definition change does: ``ask`` or ``follow``.
+
+    ``scope`` is ``server``, or ``publisher`` for every server installed from
+    the same registry provider.  ValueError for a builtin (never gated), an
+    unknown policy or scope, or a publisher scope on a server with none.
+    """
+    from app.mcp.manager import get_mcp_manager
+    from app.utils import mcp_update_policy as upd
+    mgr = get_mcp_manager()
+    cfg = (mgr.server_configs or {}).get(server)
+    if cfg is None:
+        raise ItemNotFound(f"mcp:{server}")
+    if cfg.get("builtin"):
+        raise ValueError("built-in servers are not gated")
+    state = upd.state_dir_of(mgr)
+    if scope == "server":
+        upd.set_server_policy(state, server, cfg, policy)
+    elif scope == "publisher":
+        publisher = upd.publisher_of(cfg)
+        if not publisher:
+            raise ValueError(f"{server} was not installed from a registry")
+        upd.set_publisher_policy(state, publisher, policy)
+    else:
+        raise ValueError(f"unknown scope: {scope!r}")
+
+
 # Turning this category off removes get_skill_details, so every within-reach
 # skill becomes dead weight in the catalog.  Allowed (it is the user's
 # environment) but the row must say so.
@@ -433,6 +471,7 @@ def item_detail(project_id: str, key: str) -> Dict[str, Any]:
             "enabled": bool(cfg.get("enabled", True)),
             "connected": bool(tools) or held,
             "gate": dict(QUARANTINE_GATE) if held else None,
+            "updates": _update_info(mgr, name, cfg, raw if held else None),
             "builtin": bool(cfg.get("builtin", False)),
         }
     if kind == "builtin":

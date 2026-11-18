@@ -39,6 +39,8 @@ export interface CapabilityDetailProps {
     onToolToggle?: (server: string, tool: string, enabled: boolean) => Promise<BenchItemDetail>;
     /** Lift the server's rug-pull quarantine; the verdict may be a refusal with an override offered. */
     onReauthorize?: (server: string, force?: boolean) => Promise<ReauthorizeResult>;
+    /** What a later definition change does: ask (hold) or follow (accept if it scans clean). */
+    onUpdatePolicy?: (server: string, policy: 'ask' | 'follow', scope?: 'server' | 'publisher') => Promise<BenchItemDetail>;
     /** Edit a custom skill's text, by the Skill.id the detail names. */
     onUpdateSkill?: (skillId: string, draft: SkillDraft) => Promise<void>;
     /** Delete a custom skill; the drawer closes on success. */
@@ -61,7 +63,7 @@ export function toolRows(d: BenchItemDetail): ToolDetail[] {
     return (d.tools ?? []).map(name => ({ name, description: '', tokens: 0, enabled: d.tool_permissions?.[name] !== false }));
 }
 
-export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClose, detail, place, onToolToggle, onReauthorize, onUpdateSkill, onDeleteSkill, delta }) => {
+export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClose, detail, place, onToolToggle, onReauthorize, onUpdatePolicy, onUpdateSkill, onDeleteSkill, delta }) => {
     const [d, setD] = useState<BenchItemDetail | null>(null);
     const [err, setErr] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
@@ -113,13 +115,23 @@ export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClos
         onToolToggle?.(item.name, t.name, on).then(setD, e => setErr(String((e as Error)?.message ?? e)));
     // The gate from the card's health until the detail arrives, then the detail's.
     const gate = (d ? d.gate : (item.health?.gate as { state?: string; reason?: string } | null | undefined)) ?? null;
-    const reauthorize = async (force: boolean) => {
+    const updates = d?.updates ?? null;
+    const changes = updates?.changes;
+    const setPolicy = (policy: 'ask' | 'follow', scope: 'server' | 'publisher') =>
+        onUpdatePolicy?.(item.name, policy, scope)
+            .then(setD, e => setNotice(`Could not change the update policy: ${String((e as Error)?.message ?? e)}`));
+    // ``follow``: accept this change and stop asking about later ones.  The
+    // policy is set only after the accept succeeds, so a refusal changes nothing.
+    const reauthorize = async (force: boolean, follow = false) => {
         if (!onReauthorize) return;
         setNotice(null);
         try {
             const r = await onReauthorize(item.name, force);
             setD(r.detail);
-            if (r.result.success) { setRefusal(null); setNotice(r.result.message ?? `${item.name} re-authorized`); }
+            if (r.result.success) {
+                setRefusal(null); setNotice(r.result.message ?? `${item.name} re-authorized`);
+                if (follow && onUpdatePolicy) setD(await onUpdatePolicy(item.name, 'follow', 'server'));
+            }
             else setRefusal(r.result);
         } catch (e) { setNotice(`Could not re-authorize ${item.name}: ${String((e as Error)?.message ?? e)}`); }
     };
@@ -160,6 +172,24 @@ export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClos
                     <div style={{ ...muted, marginTop: 2 }}>
                         The card keeps its place; none of its tools reach the model until you accept the new definitions.
                     </div>
+                    {changes && (
+                        <div data-testid="detail-gate-changes" style={{ marginTop: 6, fontSize: 10 }}>
+                            {!changes.known ? (
+                                <span style={muted}>What changed is not known: these definitions were approved before Ziya kept a record of them. The next change will be itemised.</span>
+                            ) : (
+                                <>
+                                    {changes.added.length > 0 && <div><b>added</b> <code>{changes.added.join(', ')}</code></div>}
+                                    {changes.removed.length > 0 && <div><b>removed</b> <code>{changes.removed.join(', ')}</code></div>}
+                                    {changes.changed.map(c => (
+                                        <div key={c.name}><b>changed</b> <code>{c.name}</code> <span style={muted}>({c.what.join(', ')})</span></div>
+                                    ))}
+                                    {changes.added.length + changes.removed.length + changes.changed.length === 0 && (
+                                        <span style={muted}>{changes.summary}</span>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    )}
                     {refusal && (
                         <div data-testid="detail-gate-refusal" style={{ marginTop: 6 }}>
                             <div style={{ color: '#d4380d' }}>{refusal.message ?? 'Re-authorization refused'}</div>
@@ -175,9 +205,17 @@ export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClos
                     {onReauthorize && (
                         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                             {!refusal?.can_force ? (
-                                <button type="button" data-testid="detail-reauthorize" onClick={() => void reauthorize(false)}
-                                        style={{ fontSize: 11, padding: '2px 10px', borderRadius: 5, cursor: 'pointer', color: '#fff',
-                                                 background: '#d4380d', border: '1px solid #d4380d' }}>Re-authorize</button>
+                                <>
+                                    <button type="button" data-testid="detail-reauthorize" onClick={() => void reauthorize(false)}
+                                            style={{ fontSize: 11, padding: '2px 10px', borderRadius: 5, cursor: 'pointer', color: '#fff',
+                                                     background: '#d4380d', border: '1px solid #d4380d' }}>Approve this update</button>
+                                    {onUpdatePolicy && updates && updates.policy !== 'follow' && (
+                                        <button type="button" data-testid="detail-reauthorize-follow" onClick={() => void reauthorize(false, true)}
+                                                title="Approve this update, and approve later updates to this server automatically. An update that looks like a prompt-injection attempt still turns the server off until you look at it."
+                                                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 5, cursor: 'pointer', color: '#d4380d',
+                                                         background: 'none', border: '1px solid #d4380d' }}>Approve, and don't ask again for this server</button>
+                                    )}
+                                </>
                             ) : (
                                 <button type="button" data-testid="detail-reauthorize-force" onClick={() => void reauthorize(true)}
                                         style={{ fontSize: 11, padding: '2px 10px', borderRadius: 5, cursor: 'pointer', color: '#d4380d',
@@ -188,6 +226,45 @@ export const CapabilityDetail: React.FC<CapabilityDetailProps> = ({ item, onClos
                 </section>
             )}
             {d?.description && <div style={{ opacity: 0.8, marginTop: 6 }}>{d.description}</div>}
+
+            {item.kind === 'mcp' && updates && !d?.builtin && onUpdatePolicy && (
+                <section data-testid="detail-updates">
+                    <div style={label}>WHEN THIS SERVER'S TOOLS CHANGE</div>
+                    <label style={{ display: 'block', cursor: 'pointer' }}>
+                        <input type="radio" name={`updates-${item.key}`} data-testid="update-policy-ask"
+                               checked={updates.policy === 'ask'} onChange={() => void setPolicy('ask', 'server')} />
+                        {' '}<b>Turn it off until I approve</b>
+                        <div style={{ ...muted, margin: '0 0 4px 18px' }}>Its tools stop working after every update until you click Approve.</div>
+                    </label>
+                    <label style={{ display: 'block', cursor: 'pointer' }}>
+                        <input type="radio" name={`updates-${item.key}`} data-testid="update-policy-follow"
+                               checked={updates.policy === 'follow'} onChange={() => void setPolicy('follow', 'server')} />
+                        {' '}<b>Keep it working</b>
+                        <div style={{ ...muted, margin: '0 0 4px 18px' }}>
+                            Updates are approved for you. One that looks like a prompt-injection attempt still turns it off.
+                        </div>
+                    </label>
+                    {updates.publisher && (
+                        <label style={{ display: 'block', cursor: 'pointer', marginTop: 2 }}>
+                            <input type="checkbox" data-testid="update-policy-publisher" checked={!!updates.publisher_follows}
+                                   onChange={ev => void setPolicy(ev.target.checked ? 'follow' : 'ask', 'publisher')} />
+                            {' '}Keep all servers installed from {updates.publisher_name ?? updates.publisher} working
+                        </label>
+                    )}
+                    {updates.lapsed && (
+                        <div style={{ color: '#d4380d', fontSize: 10, marginTop: 2 }}>
+                            The command that starts this server was changed after you chose "Keep it working",
+                            so it is back to turning off until you approve.
+                        </div>
+                    )}
+                    {updates.accepted_by === 'policy' && updates.last_change && (
+                        <div style={{ ...muted, fontSize: 10, marginTop: 2 }}>
+                            Last update approved for you: {updates.last_change}
+                            {updates.accepted_at ? ` · ${new Date(updates.accepted_at * 1000).toLocaleDateString()}` : ''}
+                        </div>
+                    )}
+                </section>
+            )}
 
             <div style={label}>WHERE IT SITS</div>
             <table style={{ borderCollapse: 'collapse' }}><tbody>

@@ -51,6 +51,12 @@ class ReauthorizeRequest(BaseModel):
     force: bool = False              # human has reviewed the flagged descriptions
 
 
+class UpdatePolicyRequest(BaseModel):
+    server: str
+    policy: str                      # ask | follow
+    scope: str = "server"            # server | publisher (its registry provider)
+
+
 class SourceRequest(BaseModel):
     id: str
     kind: str                        # folder | git
@@ -211,6 +217,25 @@ def post_reauthorize(project_id: str, body: ReauthorizeRequest,
     resolved = bench_service.resolve_bench(project_id, conversation_id, items)
     return {"result": result, "detail": detail,
             "view": _view_model(project_id, items, resolved, conversation_id, bench_service.placement_meta(project_id))}
+
+
+@router.put("/update-policy")
+def put_update_policy(project_id: str, body: UpdatePolicyRequest) -> Dict[str, Any]:
+    """Choose what a later tool-definition change does to an MCP server.
+
+    ``ask`` holds the server for re-authorization (the default); ``follow``
+    accepts a change that scans clean and records it.  Costs nothing on the
+    gauge, so only the refreshed ``detail`` comes back.
+    """
+    key = f"mcp:{body.server}"
+    try:
+        bench_service.item_detail(project_id, key)          # 404 before writing
+        bench_service.set_update_policy(body.server, body.policy, body.scope)
+        return {"detail": bench_service.item_detail(project_id, key)}
+    except bench_service.ItemNotFound:
+        raise HTTPException(status_code=404, detail=f"not on this bench: {key}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # -- sources / browse / install (slice 8a) -----------------------------------

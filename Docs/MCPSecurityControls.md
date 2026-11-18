@@ -81,6 +81,25 @@ At connection time, each MCP server's tool definitions (names, descriptions, sch
 
 **Persistent, fingerprint-bound force-accept:** A forced override is durable, not session-scoped. `reauthorize_server(force=True)` records the accepted fingerprint to `~/.ziya/mcp_force_accepts.json`; on reconnection the connect-time scan keeps those blocking tools as long as the current fingerprint still equals the accepted one. This is deliberately narrower than marking the server `trusted` (which disables the scan entirely, forever, for all tools): the acceptance is bound to the exact descriptions the human reviewed. If the definitions mutate **again**, the fingerprint no longer matches, the force-accept no longer applies, and both the poisoning scan and rug-pull quarantine re-engage automatically — the override self-revokes on any later change. A subsequent clean (non-forced) re-authorization clears any prior force-accept.
 
+**What changed, and who decides (`app/utils/mcp_update_policy.py`):** Beside the fingerprint, Ziya keeps a per-tool record of the approved definitions (`~/.ziya/mcp_tool_snapshots.json`), so a held server's drawer on the Bench lists the tools that were added, removed or changed. Each server has a setting in that drawer, *When this server's tools change*:
+
+| Setting | What an update does |
+|---|---|
+| **Turn it off until I approve** (default) | The server is quarantined until you approve the new definitions. |
+| **Keep it working** | The update is approved for you and recorded. If a tool the update adds or changes matches an injection pattern, the server is quarantined as above. |
+
+*Keep it working* can be set for one server or, for a server installed from a registry, for every server installed from that registry (the `registry_provider` recorded in `mcp_config.json` at install time). That is provenance, not a verified identity: MCP has no signed publisher. A per-server choice is tied to the command that starts the server; if the entry is pointed at a different command, the server goes back to asking. The choices are stored in `~/.ziya/mcp_update_policy.json`.
+
+This is narrower than `"trusted": true`, which also disables the injection scan. Prefer it for servers that update often.
+
+Every quarantine, approval and automatic approval is written to `~/.ziya/audit/security_<date>.jsonl` as `mcp_definitions_quarantined`, `mcp_definitions_reauthorized` or `mcp_definitions_followed`.
+
+**Not counted as a change:** a connect on which the server listed no tools (a failed or timed-out `tools/list`) records nothing and quarantines nothing. A server installed under a name the manager has not seen starts with no baseline, even if an earlier server used that name.
+
+**Several Ziya processes:** the baseline file is shared by every process (the web server, `ziya task` runs). Each connect re-reads the server's baseline from disk and writes only that server's entry, and a quarantine is lifted in a process when another process has approved the same definitions.
+
+**Version pinning** is not offered. Most servers are started through a launcher that updates them (`npx -y`, `uvx`, a toolbox shim), which Ziya does not control.
+
 ### 5. Result Integrity
 
 **Module:** `app/mcp/signing.py`

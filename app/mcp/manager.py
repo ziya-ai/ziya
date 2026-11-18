@@ -17,6 +17,7 @@ from app.config.env_registry import ziya_env
 from app.utils.logging_utils import logger
 from app.mcp.dynamic_tools import get_dynamic_loader
 from app.mcp.tool_guard import scan_tool_description, detect_shadowing, fingerprint_tools, check_fingerprint_change, classify_warnings
+from app.utils import mcp_update_policy as _upd
 import time
 from app.context import get_project_root_or_none, get_conversation_id_or_none
 
@@ -429,8 +430,22 @@ class MCPManager:
         except (json.JSONDecodeError, OSError, ValueError) as e:
             logger.warning(f"Could not load persisted tool fingerprints: {e}")
 
-    def _save_persisted_fingerprints(self) -> None:
-        """Persist the current approved fingerprint baseline. Never raises."""
+    def _save_persisted_fingerprints(self, only: Optional[str] = None) -> None:
+        """Persist the approved fingerprint baseline. Never raises.
+
+        With ``only``, write that one server's entry into whatever is on disk
+        and adopt the rest.  Every Ziya process shares this file; dumping this
+        process's whole startup copy reverted baselines another process had
+        approved since, and the server was quarantined again for a change the
+        user had already accepted.
+        """
+        if only is not None:
+            try:
+                self._tool_fingerprints.update(_upd.write_baseline(
+                    self._fingerprint_store_path, only, self._tool_fingerprints.get(only)))
+            except OSError as e:
+                logger.warning(f"Could not persist tool fingerprint for '{only}': {e}")
+            return
         try:
             self._fingerprint_store_path.parent.mkdir(parents=True, exist_ok=True)
             # CWE-667 (atomic-write family, cf. PenPal #134/#143): write via
@@ -1389,6 +1404,11 @@ class MCPManager:
                 # from every listing until a full reinitialize re-read the
                 # file from disk. A user/registry server is never builtin,
                 # mirroring the config loader; a builtin keeps its flag.
+                if server_name not in self.server_configs:
+                    # A name the manager has never seen is a new install.  A
+                    # baseline stored under it belongs to a previous occupant
+                    # and would quarantine this server on its first connect.
+                    self._forget_stored_definitions(server_name)
                 prior = self.server_configs.get(server_name) or {}
                 self.server_configs[server_name] = {
                     **new_config,
@@ -1474,6 +1494,38 @@ class MCPManager:
                 self.invalidate_tools_cache()
                 return {"success": True, "message": f"{server_name} server disabled"}
 
+    def _forget_stored_definitions(self, server_name: str) -> None:
+        """Drop a server's baseline, snapshot and force-accept record."""
+        fp_path = getattr(self, "_fingerprint_store_path", None)
+        if fp_path is None:
+            return
+        self._tool_fingerprints.pop(server_name, None)
+        _upd.drop_server(fp_path.parent, fp_path, server_name)
+        if self._force_accepted_fingerprints.pop(server_name, None) is not None:
+            self._save_persisted_force_accepts()
+
+    def _adopt_external_approval(self, server_name: str, client: MCPClient) -> bool:
+        """Lift a quarantine that another Ziya process already cleared.
+
+        True when the baseline on disk equals what this server presents here:
+        the user re-authorized these exact definitions in another window or
+        process.  Goes through reauthorize_server, so the injection scan and
+        the force-accept record apply here as they did there.
+        """
+        try:
+            current = fingerprint_tools([
+                {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+                for t in client.tools
+            ])
+            if _upd.read_baseline(self._fingerprint_store_path, server_name) != current:
+                return False
+            self._load_persisted_force_accepts()
+            forced = self._force_accepted_fingerprints.get(server_name) == current
+            return bool(self.reauthorize_server(server_name, force=forced).get("success"))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Could not check '{server_name}' for an approval made elsewhere: {e}")
+            return False
+
     def reauthorize_server(self, server_name: str, force: bool = False) -> Dict[str, Any]:
         """Clear a rug-pull quarantine and accept the server's current tool
         definitions as the new approved baseline (CWE-345 re-authorization).
@@ -1552,8 +1604,19 @@ class MCPManager:
             {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
             for t in client.tools
         ])
+        _old_fp = self._tool_fingerprints.get(server_name)
         self._tool_fingerprints[server_name] = new_fp
-        self._save_persisted_fingerprints()
+        self._save_persisted_fingerprints(server_name)
+        # Record what was accepted, so the next change can be itemised.
+        _state_dir = self._fingerprint_store_path.parent
+        _tool_dicts = [
+            {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+            for t in client.tools
+        ]
+        _change = _upd.summarize(_upd.diff_tools(_upd.load_snapshot(_state_dir, server_name), _tool_dicts))
+        _upd.save_snapshot(_state_dir, server_name, new_fp, _tool_dicts, accepted_by="user", change=_change)
+        _upd.audit("reauthorized", server_name, _old_fp, new_fp, _change,
+                   {"forced": bool(force and _blocking_by_tool)})
         # Persist (or clear) the fingerprint-bound force-accept so the
         # decision survives restart. When the human forced past a blocking
         # injection-pattern match, record THIS fingerprint as accepted; the
@@ -1616,6 +1679,11 @@ class MCPManager:
                     for t in client.tools
                 ]
                 new_fp = fingerprint_tools(tool_dicts)
+                # Every Ziya process shares the baseline file; one of them may
+                # have approved a new baseline since this one loaded it.
+                _disk_fp = _upd.read_baseline(self._fingerprint_store_path, server_name)
+                if _disk_fp is not None:
+                    self._tool_fingerprints[server_name] = _disk_fp
                 old_fp = self._tool_fingerprints.get(server_name)
                 # A persistent, fingerprint-bound force-accept (human explicitly
                 # accepted THESE descriptions) suppresses re-quarantine as long
@@ -1625,8 +1693,14 @@ class MCPManager:
                 _force_ok = (
                     self._force_accepted_fingerprints.get(server_name) == new_fp
                 )
-                if (old_fp is not None and old_fp != new_fp
-                        and not is_builtin and not is_trusted and not _force_ok):
+                _state_dir = self._fingerprint_store_path.parent
+                _verdict = _upd.evaluate_connect(
+                    server=server_name, cfg=self.server_configs.get(server_name, {}),
+                    tools=tool_dicts, old_fp=old_fp, new_fp=new_fp,
+                    force_ok=_force_ok, state_dir=_state_dir,
+                )
+                _action = _verdict["action"]
+                if _action == "quarantine":
                     warning = check_fingerprint_change(server_name, old_fp, new_fp)
                     logger.error(
                         f"🚫 SECURITY: {warning} — quarantining '{server_name}' "
@@ -1637,12 +1711,34 @@ class MCPManager:
                         f"it quarantined and inspect the server."
                     )
                     self._quarantined_servers.add(server_name)
+                    _upd.audit("quarantined", server_name, old_fp, new_fp, _verdict["summary"])
                     # Do NOT overwrite the stored baseline — keep the last
                     # known-good fingerprint so the discrepancy is preserved
                     # for audit and re-authorization compares against it.
+                elif _action == "skip_empty":
+                    # connect() returns True even when tools/list failed or
+                    # timed out.  An empty listing is neither a baseline nor
+                    # a change: record nothing and hold nothing.
+                    logger.info(
+                        f"MCP server '{server_name}' listed no tools; its approved "
+                        f"definitions are left as they are"
+                    )
                 else:
+                    if _action == "follow":
+                        logger.warning(
+                            f"MCP server '{server_name}' tool definitions changed "
+                            f"({_verdict['summary']}); accepted under its 'follow "
+                            f"updates' policy"
+                        )
+                        _upd.audit("followed", server_name, old_fp, new_fp, _verdict["summary"])
                     self._tool_fingerprints[server_name] = new_fp
-                    self._save_persisted_fingerprints()
+                    if _disk_fp != new_fp:
+                        self._save_persisted_fingerprints(server_name)
+                    _upd.save_snapshot(
+                        _state_dir, server_name, new_fp, tool_dicts,
+                        accepted_by="policy" if _action == "follow" else "first_connect",
+                        change=_verdict.get("summary"),
+                    )
                     self._quarantined_servers.discard(server_name)
 
                 # Scan external tool descriptions for prompt injection
@@ -1775,7 +1871,8 @@ class MCPManager:
             
             logger.debug(f"MCP_MANAGER.get_all_tools: Server '{server_name}' - connected: {client.is_connected}, enabled: {is_enabled}")
             
-            if server_name in self._quarantined_servers:
+            if (server_name in self._quarantined_servers
+                    and not self._adopt_external_approval(server_name, client)):
                 # CWE-345: tools whose definitions changed since the last
                 # human-approved connection are withheld from every prompt
                 # path until reauthorize_server() is called.
