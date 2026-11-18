@@ -143,9 +143,20 @@ transcript. The turn's only durable effect is the `handoff_write` the model
 performs server-side. The drawer shows a spinner and the draft appears in
 place when it lands; the transcript gets a **local notice** (role `system`,
 `muted: true` — excluded from every send path, never seen by the model) with
-a "Review handoff" link back to the drawer. Disabled while the conversation
-is streaming (two turns on one conversation is the one thing this path must
-not do) and for a non-active conversation (its messages are not in memory).
+a "Review handoff" link back to the drawer. Disabled while the conversation's
+model is responding (the draft would be written from history that lacks the
+response in progress), but not while its turn is held waiting for diffs to
+be applied (`design/await-diff-apply.md`): that wait has no timer and no
+model call is running. The request carries `background: true`
+(`app/utils/background_turn.py`), on which the server streams it outside
+`chat_turn_relay` (which allows one turn per conversation and would cancel
+the held one), turns the diff-apply hold and note off, skips diff validation
+and gives the executor a feedback key of its own, so a reply typed for the
+held turn is not taken by the draft. The client appends the held turn's
+finished response to the history it sends, since that text is not a stored
+message until the turn ends. Added 2026-11-18; before it the button read
+"Wait for the current response to finish" for as long as diffs were unapplied.
+The button is also disabled for a non-active conversation (its messages are not in memory).
 Decided 2026-09-21 after the composer-inject shortcut was rejected. — the living draft
 
 The **conversation's own model**, through a standardized tool rather than a
