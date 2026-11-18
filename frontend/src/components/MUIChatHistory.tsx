@@ -2961,7 +2961,14 @@ const MUIChatHistory = () => {
       //      then server adds the project's locals.  Without invalidation here
       //      the locals never appear in the sidebar.
       //   3. Set shrank or membership shifted (deletion, rare but defensive).
-      // Reuse only when cached IDs and current IDs are equal as sets.
+      // When cached IDs and current IDs are equal as sets, the cache is for
+      // THIS folder-less project and the decision falls through to the
+      // two-level hash below.  It used to be returned here outright, which
+      // judged reuse on membership alone: a rename (or a flag, folder move,
+      // or any other hashed field) changes no ids, so the cached tree, with
+      // the old node.name, was returned on every render — React state held
+      // the new title (re-opening the editor showed it) while the row kept
+      // the old one, for every conversation in a project with no folders.
       const currentConvIds = new Set(safeConversations.map(c => c.id));
       const cachedConvIds = new Set<string>();
       let cachedFolderCount = 0;
@@ -2984,19 +2991,18 @@ const MUIChatHistory = () => {
       // permanently — the "open new project shows hundreds of stale folders
       // and swarm containers" symptom.  Only reuse when the cached tree's
       // folder population also matches the current input (zero == zero).
-      if (
+      const cacheIsForThisSet =
         lastTreeDataRef.current.length > 0
         && sameSize
         && isSubset
-        && cachedFolderCount === 0
-      ) {
-        return lastTreeDataRef.current;
+        && cachedFolderCount === 0;
+      if (!cacheIsForThisSet) {
+        console.debug('[TREE-CACHE-INVALIDATE]', { cached: cachedConvIds.size, current: currentConvIds.size, sameSize, isSubset, cachedFolderCount });
+        // Cache is empty or belongs to a different project → invalidate and rebuild
+        lastTreeDataInputsRef.current = 0;
+        lastSortHashRef.current = 0;
+        lastTreeDataRef.current = [];
       }
-      console.debug('[TREE-CACHE-INVALIDATE]', { cached: cachedConvIds.size, current: currentConvIds.size, sameSize, isSubset, cachedFolderCount });
-      // Cache is empty or belongs to a different project → invalidate and rebuild
-      lastTreeDataInputsRef.current = 0;
-      lastSortHashRef.current = 0;
-      lastTreeDataRef.current = [];
     }
 
     // Two-level hash: structural (folder/conversation identity) vs sort
