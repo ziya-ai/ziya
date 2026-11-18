@@ -31,6 +31,40 @@ from app.config.env_registry import ziya_env
 # as an archived row (see the UPDATE branch below).
 UPDATE_LOG_FILENAME = "updates.jsonl"
 
+# Memory.corroborated_by is a display list capped to the last N ids.
+_CORROBORATED_BY_CAP = 5
+
+
+def _credit_corroboration(mem, conversation_id) -> bool:
+    """Count ``conversation_id`` as corroborating ``mem`` at most once.
+
+    The server re-dispatches extraction with the full history on every
+    turn, so one long conversation re-extracts its earlier windows each
+    time.  Incrementing ``corroborations`` per event let a single
+    conversation corroborate a memory repeatedly (live 2026-11-10:
+    m_76b1efe8 bumped 4x in 30 min by one conversation), and promotion
+    and ranking read that count as independent agreement.  A memory's own
+    source conversation never corroborates it, and an unattributed event
+    (no conversation id) does not count -- the rule ProposalsStore already
+    applies to probationary entries.
+
+    Known limit: corroborated_by is capped, so a conversation that has
+    rotated out of the last _CORROBORATED_BY_CAP can be credited again.
+
+    Returns True when the count changed (the caller must save).
+    """
+    if not conversation_id:
+        return False
+    if conversation_id == getattr(mem, "learned_from_conversation", None):
+        return False
+    seen = list(getattr(mem, "corroborated_by", None) or [])
+    if conversation_id in seen:
+        return False
+    seen.append(conversation_id)
+    mem.corroborated_by = seen[-_CORROBORATED_BY_CAP:]
+    mem.corroborations = (mem.corroborations or 0) + 1
+    return True
+
 
 def _log_update_event(store, target_mem, superseded, candidate,
                       similar, conversation_id) -> None:
@@ -1964,8 +1998,7 @@ async def run_post_conversation_extraction(
                 continue
             already_corroborated_in_dedup.add(mid)
             active = store.get(mid)
-            if active:
-                active.corroborations = (active.corroborations or 0) + 1
+            if active and _credit_corroboration(active, conversation_id):
                 # save() re-embeds the memory; keep it off the event loop.
                 await asyncio.to_thread(store.save, active)
                 corroborated += 1
@@ -2035,9 +2068,12 @@ async def run_post_conversation_extraction(
                             target_mem.content = content
                             target_mem.tags = list(set(target_mem.tags + tags))
                             target_mem.last_accessed = time.strftime("%Y-%m-%d")
-                            # Independent extraction confirming an active
-                            # memory's substance — record corroboration.
-                            target_mem.corroborations = (target_mem.corroborations or 0) + 1
+                            # Extraction confirming an active memory's
+                            # substance — corroboration, once per foreign
+                            # conversation (see _credit_corroboration).
+                            # corroboration_recorded is set either way so the
+                            # ADD branch below does not credit it again.
+                            _credit_corroboration(target_mem, conversation_id)
                             corroboration_recorded = True
                             # Preserve importance — don't reset a memory the user has
                             # repeatedly retrieved just because the content was updated
@@ -2067,8 +2103,7 @@ async def run_post_conversation_extraction(
                     # via the find_similar_memories search path.
                     if top_id and top_id not in already_corroborated_in_dedup:
                         active = store.get(top_id)
-                        if active:
-                            active.corroborations = (active.corroborations or 0) + 1
+                        if active and _credit_corroboration(active, conversation_id):
                             await asyncio.to_thread(store.save, active)
                             corroboration_recorded = True
                             corroborated += 1
