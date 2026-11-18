@@ -105,23 +105,25 @@ const ContinuationCard: React.FC<Props> = ({ conversation, conversations, onNavi
 
   return (
     <div data-testid="handoff-card" style={{ background: bg, borderBottom: `1px solid ${border}`, padding: '8px 14px', fontSize: 13 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 15 }}>⛓</span>
-        <span style={{ color: isDarkMode ? '#e2e8f0' : '#1e293b' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 15, flexShrink: 0 }}>⛓</span>
+        <span title={source?.title}
+          style={{ color: isDarkMode ? '#e2e8f0' : '#1e293b', minWidth: 0, overflow: 'hidden',
+            textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           Continues{' '}
           {conversation.branchedFrom ? (
             <span onClick={() => onNavigate(conversation.branchedFrom!)} style={{ color: link, cursor: 'pointer', fontWeight: 600 }}
-              title="Open the earlier segment">
+              title={source?.title ? `Open "${source.title}"` : 'Open the earlier segment'}>
               {source?.title || 'the earlier segment'}
             </span>
           ) : 'an earlier segment'}
-          {count ? <span style={{ color: '#64748b' }}> · {count} messages there</span> : null}
         </span>
+        {count ? <span style={{ color: '#64748b', flexShrink: 0, whiteSpace: 'nowrap' }}>· {count} messages there</span> : null}
         <span style={{ flex: 1 }} />
-        <Button size="small" type="text" onClick={() => setExpanded(v => !v)}>
+        <Button size="small" type="text" style={{ flexShrink: 0 }} onClick={() => setExpanded(v => !v)}>
           {expanded ? 'Hide handoff' : 'Show handoff'}
         </Button>
-        {expanded && !editing && <Button size="small" type="text" onClick={() => setEditing(true)}>Edit</Button>}
+        {expanded && !editing && <Button size="small" type="text" style={{ flexShrink: 0 }} onClick={() => setEditing(true)}>Edit</Button>}
       </div>
       {expanded && (
         <div style={{ marginTop: 8 }}>

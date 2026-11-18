@@ -7,7 +7,7 @@
  * See design/bead-branching.md — this is Phase 0 of the conversation-graph
  * panel; the eventual graph reads the same lineage fields.
  */
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { buildLineageChain, LineageConversationLike } from '../utils/lineage';
 
@@ -17,20 +17,77 @@ interface LineageBarProps {
     onNavigate: (conversationId: string) => void;
 }
 
+// "Title (3)": the ordinal a fork or handoff appends to its source's title.
+const ORDINAL_SUFFIX = /\s*\((\d+)\)\s*$/;
+// Chains longer than this fold their middle ancestors behind a count.
+const COLLAPSE_ABOVE = 3;
+const CLIP: React.CSSProperties = {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+};
+
+/**
+ * Label for an ancestor in the breadcrumb.  A fork keeps its source's title
+ * and appends an ordinal, so a chain of forks repeats one long title per
+ * segment; an ancestor that differs from the current title only by that
+ * ordinal is shown as the ordinal alone ("(1)" when it has none).  Any other
+ * title is returned unchanged.
+ */
+export function abbreviateLineageTitle(title: string, currentTitle: string): string {
+    const base = (t: string) => t.replace(ORDINAL_SUFFIX, '').trim();
+    if (!base(title) || base(title) !== base(currentTitle)) return title;
+    const m = title.match(ORDINAL_SUFFIX);
+    return m ? `(${m[1]})` : '(1)';
+}
+
 const LineageBar: React.FC<LineageBarProps> = ({ conversationId, conversations, onNavigate }) => {
     const { isDarkMode } = useTheme();
+    const [expanded, setExpanded] = useState(false);
     const chain = useMemo(
         () => buildLineageChain(conversationId, conversations),
         [conversationId, conversations],
     );
+    useEffect(() => { setExpanded(false); }, [conversationId]);
 
     // Only branched conversations have lineage to show.
     if (chain.length <= 1) return null;
 
-    const seamLabel = chain[chain.length - 1].branchedFromLabel;
+    const current = chain[chain.length - 1];
+    const ancestors = chain.slice(0, -1);
+    const folded = chain.length > COLLAPSE_ABOVE && !expanded;
+    const hiddenCount = folded ? ancestors.length - 2 : 0;
+    const shown = folded ? [ancestors[0], ancestors[ancestors.length - 1]] : ancestors;
+    const seamLabel = current.branchedFromLabel;
+    const linkColor = isDarkMode ? '#4cc9f0' : '#1890ff';
+    const dim = isDarkMode ? '#475569' : '#94a3b8';
+    const chevron = (key: string) => (
+        <span key={key} style={{ color: dim, flexShrink: 0 }}>›</span>
+    );
+    const toggle = (
+        <span
+            key="toggle"
+            role="button"
+            data-testid="lineage-toggle"
+            onClick={() => setExpanded(v => !v)}
+            title={expanded ? 'Show only the first and the previous segment' : 'Show every earlier segment'}
+            style={{
+                color: '#64748b',
+                cursor: 'pointer',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
+                fontSize: 12,
+                marginLeft: expanded ? 'auto' : undefined,
+            }}
+        >
+            {expanded ? 'collapse' : `… ${hiddenCount} more`}
+        </span>
+    );
 
     return (
         <div
+            data-testid="lineage-bar"
             style={{
                 position: 'sticky',
                 top: 0,
@@ -41,36 +98,43 @@ const LineageBar: React.FC<LineageBarProps> = ({ conversationId, conversations, 
                 marginBottom: 8,
             }}
         >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, flexWrap: 'wrap' }}>
-                {chain.map((node, i) => {
-                    const isLast = i === chain.length - 1;
-                    if (isLast) {
-                        return (
-                            <span key={node.id} style={{ color: isDarkMode ? '#e2e8f0' : '#1e293b', fontWeight: 600 }}>
-                                {node.title}
-                            </span>
-                        );
-                    }
-                    return (
-                        <React.Fragment key={node.id}>
-                            <span
-                                onClick={() => onNavigate(node.id)}
-                                title={`Return to "${node.title}"`}
-                                style={{
-                                    color: isDarkMode ? '#4cc9f0' : '#1890ff',
-                                    cursor: 'pointer',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 4,
-                                }}
-                            >
-                                {i === 0 && <span style={{ fontSize: 15 }}>↰</span>}
-                                {node.title}
-                            </span>
-                            <span style={{ color: isDarkMode ? '#475569' : '#94a3b8' }}>›</span>
-                        </React.Fragment>
-                    );
-                })}
+            <div
+                data-testid="lineage-chain"
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 13,
+                    flexWrap: expanded ? 'wrap' : 'nowrap',
+                }}
+            >
+                <span
+                    onClick={() => onNavigate(chain[0].id)}
+                    title={`Return to "${chain[0].title}"`}
+                    style={{ color: linkColor, cursor: 'pointer', fontSize: 15, flexShrink: 0 }}
+                >↰</span>
+                {shown.map((node, i) => (
+                    <React.Fragment key={node.id}>
+                        <span
+                            data-testid={`lineage-node-${node.id}`}
+                            onClick={() => onNavigate(node.id)}
+                            title={`Return to "${node.title}"`}
+                            style={{ ...CLIP, color: linkColor, cursor: 'pointer', flex: '0 1 auto', maxWidth: 240 }}
+                        >
+                            {abbreviateLineageTitle(node.title, current.title)}
+                        </span>
+                        {chevron(`sep-${node.id}`)}
+                        {folded && i === 0 && [toggle, chevron('sep-toggle')]}
+                    </React.Fragment>
+                ))}
+                <span
+                    data-testid="lineage-current"
+                    title={current.title}
+                    style={{ ...CLIP, flex: '0 1 auto', color: isDarkMode ? '#e2e8f0' : '#1e293b', fontWeight: 600 }}
+                >
+                    {current.title}
+                </span>
+                {expanded && chain.length > COLLAPSE_ABOVE && toggle}
             </div>
             {seamLabel && (
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 5 }}>
