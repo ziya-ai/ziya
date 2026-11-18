@@ -284,7 +284,10 @@ class TestRegistration:
         assert "conversation_organize" in bt.BUILTIN_TOOL_CATEGORIES
         assert bt.BUILTIN_TOOL_CATEGORIES["conversation_organize"]["enabled_by_default"] is True
         names = {cls().name for cls in bt.get_builtin_tools_for_category("conversation_organize")}
-        assert names == set(ORGANIZE_TOOL_NAMES) == {
+        # chat_post (app/mcp/tools/chat_post_tool.py) shares the category but
+        # is not an ORGANIZE tool: it appends a message to another record.
+        assert names == set(ORGANIZE_TOOL_NAMES) | {"chat_post"}
+        assert set(ORGANIZE_TOOL_NAMES) == {
             "folder_list", "folder_create", "folder_update", "folder_delete",
             "chat_move", "chat_rename", "chat_fork"}
 
@@ -314,7 +317,9 @@ class TestFrontendSeam:
         assert m, "organize tool_display handler missing in chatApi.ts"
         covered = {f"folder_{x}" for x in m.group(1).split("|")} | \
                   {f"chat_{x}" for x in m.group(2).split("|")}
-        assert covered == set(ORGANIZE_TOOL_NAMES)
+        # chat_post changes another conversation's record, so it raises the
+        # same pull.
+        assert covered == set(ORGANIZE_TOOL_NAMES) | {"chat_post"}
         assert "conversationOrganizedFromBackend" in src
 
     def test_chat_context_listens_and_syncs(self):
