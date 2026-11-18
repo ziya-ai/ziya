@@ -1034,6 +1034,8 @@ class BedrockProvider(LLMProvider):
         # The true stop_reason arrives on message_delta, which this parser
         # never handled — Bedrock's message_stop carries only metrics.
         _delta_stop_reason: Optional[str] = None
+        _delta_stop_category: Optional[str] = None
+        _delta_stop_explanation: Optional[str] = None
 
         stream_iter = iter(stream_body)
         in_thinking_block = False
@@ -1362,6 +1364,10 @@ class BedrockProvider(LLMProvider):
                 _d = chunk.get("delta", {}) or {}
                 if _d.get("stop_reason"):
                     _delta_stop_reason = _d.get("stop_reason")
+                if _d.get("stop_details") is not None:
+                    from app.utils.refusal_details import stop_details_fields
+                    _delta_stop_category, _delta_stop_explanation = (
+                        stop_details_fields(_d.get("stop_details")))
                 _u = chunk.get("usage", {}) or {}
                 if "output_tokens" in _u:
                     _reported_output_tokens = _u.get("output_tokens")
@@ -1444,7 +1450,11 @@ class BedrockProvider(LLMProvider):
                         _text_deltas, _text_chars,
                         "yes" if _thinking_deltas else "NO",
                     )
-                yield StreamEnd(stop_reason=stop_reason)
+                yield StreamEnd(
+                    stop_reason=stop_reason,
+                    stop_category=_delta_stop_category,
+                    stop_explanation=_delta_stop_explanation,
+                )
 
     # ------------------------------------------------------------------
     # Helpers

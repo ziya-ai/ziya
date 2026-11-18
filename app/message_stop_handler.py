@@ -56,6 +56,9 @@ class MessageStopState:
     content_buffer: str = ""
     thinking_tag_opened: bool = False
     last_stop_reason: str = "end_turn"
+    # Refusal detail (see app/utils/refusal_details.py); None when absent.
+    last_stop_category: Optional[str] = None
+    last_stop_explanation: Optional[str] = None
     continuation_happened: bool = False
 
 
@@ -99,6 +102,8 @@ async def handle_message_stop(
         })
 
     state.last_stop_reason = chunk.get('stop_reason', 'end_turn')
+    state.last_stop_category = chunk.get('stop_category')
+    state.last_stop_explanation = chunk.get('stop_explanation')
 
     # --- 2. Flush content optimizer FIRST ---
     # The optimizer may hold earlier content that arrived before the

@@ -439,6 +439,8 @@ class AnthropicDirectProvider(LLMProvider):
         # continuation decider ends the stream mid-answer (observed live on
         # bedrock-mantle / claude-fable-5: a 35-char reply cut mid-token).
         final_stop_reason = "end_turn"
+        final_stop_category = None
+        final_stop_explanation = None
 
         async with _messages.stream(**request_kwargs) as stream:
             async for event in stream:
@@ -458,6 +460,10 @@ class AnthropicDirectProvider(LLMProvider):
                     delta = getattr(event, "delta", None)
                     if delta is not None and getattr(delta, "stop_reason", None):
                         final_stop_reason = delta.stop_reason
+                    if delta is not None and getattr(delta, "stop_details", None) is not None:
+                        from app.utils.refusal_details import stop_details_fields
+                        final_stop_category, final_stop_explanation = (
+                            stop_details_fields(delta.stop_details))
 
                 elif event.type == "content_block_start":
                     cb = event.content_block
@@ -578,7 +584,11 @@ class AnthropicDirectProvider(LLMProvider):
                         )
 
                 elif event.type == "message_stop":
-                    yield StreamEnd(stop_reason=final_stop_reason)
+                    yield StreamEnd(
+                        stop_reason=final_stop_reason,
+                        stop_category=final_stop_category,
+                        stop_explanation=final_stop_explanation,
+                    )
 
     # ------------------------------------------------------------------
     # Helpers

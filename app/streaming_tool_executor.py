@@ -1943,6 +1943,42 @@ class StreamingToolExecutor:
         return False
 
     @staticmethod
+    def _strip_thinking_blocks(conversation):
+        """Remove echoed thinking blocks from every assistant turn.
+
+        Signed ``thinking`` / ``redacted_thinking`` blocks are bound to the
+        request that produced them: the system prompt and the message prefix.
+        A refusal-recovery retry rewrites one of those (rung 1 the system
+        prompt, rung 2 older assistant text), and the API then rejects the
+        whole request -- "Invalid signature in thinking block ... The system
+        prompt differs from the one this block was created with" -- before
+        the smaller payload is evaluated (fable-5-2, 2026-11-10, twice).
+        Called only by the ladder, so a normal turn keeps every block.
+
+        Tool-search passback blocks stay: they are not bound to the system
+        prompt and the tool_use after them needs them.  A turn left empty
+        gets a text placeholder (an empty content list is itself a 400).
+        Returns the number of blocks removed.
+        """
+        removed = 0
+        for msg in conversation:
+            if not isinstance(msg, dict) or msg.get('role') != 'assistant':
+                continue
+            content = msg.get('content')
+            if not isinstance(content, list):
+                continue
+            kept = [b for b in content
+                    if not (isinstance(b, dict)
+                            and b.get('type') in ('thinking', 'redacted_thinking'))]
+            if len(kept) == len(content):
+                continue
+            removed += len(content) - len(kept)
+            msg['content'] = kept or [{
+                "type": "text",
+                "text": "[reasoning omitted to retry with a smaller request]"}]
+        return removed
+
+    @staticmethod
     def _compact_older_assistant_turns(conversation, keep_last=2, cap=1200):
         """Refusal-recovery rung 2: truncate older large assistant turns.
 
@@ -3508,7 +3544,11 @@ class StreamingToolExecutor:
             blocked_tools_this_iteration = 0  # Track blocked tools to prevent runaway loops
             commands_this_iteration = []  # Track commands executed in this specific iteration
             last_stop_reason = None  # Track whether model was cut off (max_tokens) or finished (end_turn)
+            # Refusal detail for the recovery gate (app/utils/refusal_details.py).
+            last_stop_category = None
+            last_stop_explanation = None
             non_retryable_error_surfaced = False  # Provider yielded a fatal ErrorEvent (e.g. CONTEXT_LIMIT)
+            thinking_signature_retry_pending = False  # Signature 400: thinking stripped, re-send
             interrupted_resume_attempted = False  # At most one mid-stream resume per iteration
             interrupted_stream_resumed = False  # A mid-stream fault was resumed and produced content
             empty_tool_calls_this_iteration = 0  # Track empty tool calls in this iteration
@@ -4617,6 +4657,8 @@ Please retry the tool call with valid JSON. Ensure:
                         # Sync mutable state back
                         assistant_text = _ms_state.assistant_text
                         last_stop_reason = _ms_state.last_stop_reason
+                        last_stop_category = _ms_state.last_stop_category
+                        last_stop_explanation = _ms_state.last_stop_explanation
                         continuation_happened = _ms_state.continuation_happened
                         thinking_tag_opened = _ms_state.thinking_tag_opened
                         break
@@ -5815,6 +5857,29 @@ Please retry the tool call with valid JSON. Ensure:
                             # legitimately reduced payload. Content is never
                             # perturbed or obfuscated to evade the
                             # classifier: we only send less.
+                            #
+                            # Only for refusals that size can change: no
+                            # category (the original case) or
+                            # reasoning_extraction.  Any other category
+                            # (cyber, ...) is not retried at all.
+                            from app.utils.refusal_details import refusal_is_recoverable
+                            _recoverable = refusal_is_recoverable(last_stop_category)
+                            if not _recoverable:
+                                logger.warning(
+                                    "🚫 REFUSAL: provider declined this request "
+                                    "(model=%s, iteration=%s, category=%s). Not "
+                                    "retrying: category is not size-dependent.",
+                                    self.model_id, iteration, last_stop_category,
+                                )
+                                yield {'type': 'error', 'content': (
+                                    f'The model declined to respond (refusal '
+                                    f'category: {last_stop_category}). '
+                                    + (f'{last_stop_explanation} ' if last_stop_explanation else '')
+                                    + 'Ziya did not retry, because a smaller '
+                                    'request does not change this kind of refusal.'
+                                )}
+                                yield {'type': 'stream_end'}
+                                break
                             _cb_marker = 'Below is the current codebase of the user:'
                             if (refusal_rungs_used == 0
                                     and isinstance(system_content, str)
@@ -5829,10 +5894,16 @@ Please retry the tool call with valid JSON. Ensure:
                                     "user to re-attach specific files if "
                                     "needed.)"
                                 )
+                                # The echoed thinking blocks are signed against
+                                # the system prompt just replaced; left in, the
+                                # retry 400s on signature before the smaller
+                                # payload is evaluated.
+                                _nt = self._strip_thinking_blocks(conversation)
                                 logger.warning(
                                     "🪜 REFUSAL_RECOVERY rung 1: dropped %d chars "
-                                    "of injected file context, retrying.",
-                                    len(_tail),
+                                    "of injected file context and %d echoed "
+                                    "thinking block(s), retrying (category=%s).",
+                                    len(_tail), _nt, last_stop_category,
                                 )
                                 yield {'type': 'refusal_recovery', 'rung': 1,
                                        'message': (
@@ -5842,11 +5913,16 @@ Please retry the tool call with valid JSON. Ensure:
                                 continue
                             if refusal_rungs_used <= 1:
                                 refusal_rungs_used = 2
+                                # Compaction edits the message prefix the blocks
+                                # are bound to: the same failure as rung 1.
+                                _nt = self._strip_thinking_blocks(conversation)
                                 _n = self._compact_older_assistant_turns(conversation)
                                 if _n:
                                     logger.warning(
                                         "🪜 REFUSAL_RECOVERY rung 2: compacted "
-                                        "%d older assistant turns, retrying.", _n,
+                                        "%d older assistant turns and dropped %d "
+                                        "echoed thinking block(s), retrying "
+                                        "(category=%s).", _n, _nt, last_stop_category,
                                     )
                                     yield {'type': 'refusal_recovery', 'rung': 2,
                                            'message': (
@@ -5857,15 +5933,16 @@ Please retry the tool call with valid JSON. Ensure:
                             # Ladder exhausted (or nothing left to reduce).
                             logger.warning(
                                 "🚫 REFUSAL: provider declined this request "
-                                "(model=%s, iteration=%s, input_tokens=%s, "
+                                "(model=%s, iteration=%s, category=%s, input_tokens=%s, "
                                 "recovery_rungs_tried=%s). Ending turn.",
-                                self.model_id, iteration,
+                                self.model_id, iteration, last_stop_category,
                                 getattr(iteration_usage, 'input_tokens', '?'),
                                 refusal_rungs_used,
                             )
                             yield {'type': 'error', 'content': (
                                 'The model declined to respond '
-                                '(stop_reason: refusal), including after '
+                                f'(refusal category: {last_stop_category or "not given"}), '
+                                'including after '
                                 'automatic retries with reduced context. '
                                 'Try removing or muting recent large '
                                 'messages, or switch models.'

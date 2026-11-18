@@ -168,6 +168,11 @@ class ErrorEvent(StreamEvent):
 class StreamEnd(StreamEvent):
     """The model finished generating for this turn."""
     stop_reason: str = "end_turn"  # end_turn | tool_use | max_tokens | stop_sequence
+    # From ``stop_details`` on a refusal (Anthropic family); None elsewhere.
+    # The refusal-recovery ladder gates on the category
+    # (app/utils/refusal_details.py).
+    stop_category: Optional[str] = None
+    stop_explanation: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
