@@ -19,6 +19,13 @@
 export const VEGA_TITLE_FONT_PX = 13;
 export const VEGA_SUBTITLE_FONT_PX = 12;
 export const VEGA_LEGEND_LABEL_FONT_PX = 10;
+/** Font stack for chart text when the spec sets none: the one the UI and the
+ *  PDF body use.  Vega's own default is a bare `sans-serif`. */
+export const VEGA_UI_FONT =
+  "system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+/** Y-axis labels, ticks and title drawn outside the view width; a title
+ *  spans them.  Same estimate as Y_AXIS_ROOM_PX in vegaLegendPlacement. */
+export const TITLE_AXIS_ROOM_PX = 70;
 /** Vega's built-in legend labelLimit; a fitted value at or below it is a no-op. */
 export const VEGA_DEFAULT_LEGEND_LABEL_LIMIT = 160;
 /** Used when the pane width is unknown (detached container reporting 0). */
@@ -48,12 +55,14 @@ function measureContext(): CanvasRenderingContext2D | null {
 }
 
 /** Width of `text` at `fontPx` in a proportional sans face, in CSS px. */
-export function estimateTextWidthPx(text: unknown, fontPx: number, bold = false): number {
+export function estimateTextWidthPx(
+  text: unknown, fontPx: number, bold = false, family: string = VEGA_UI_FONT,
+): number {
   const s = String(text ?? '');
   if (!s) return 0;
   const ctx = measureContext();
   if (ctx) {
-    ctx.font = `${bold ? 'bold ' : ''}${fontPx}px sans-serif`;
+    ctx.font = `${bold ? 'bold ' : ''}${fontPx}px ${family}`;
     const w = ctx.measureText(s).width;
     if (Number.isFinite(w) && w > 0) return Math.ceil(w);
   }
@@ -67,16 +76,16 @@ export function estimateTextWidthPx(text: unknown, fontPx: number, bold = false)
  * than `maxPx` stays on its own line rather than being split mid-word.
  */
 export function wrapTextToWidth(
-  text: unknown, maxPx: number, fontPx: number, bold = false,
+  text: unknown, maxPx: number, fontPx: number, bold = false, family: string = VEGA_UI_FONT,
 ): string | string[] | unknown {
   if (typeof text !== 'string' || !(maxPx > 0)) return text;
-  if (estimateTextWidthPx(text, fontPx, bold) <= maxPx) return text;
+  if (estimateTextWidthPx(text, fontPx, bold, family) <= maxPx) return text;
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let cur = '';
   for (const w of words) {
     const cand = cur ? `${cur} ${w}` : w;
-    if (cur && estimateTextWidthPx(cand, fontPx, bold) > maxPx) {
+    if (cur && estimateTextWidthPx(cand, fontPx, bold, family) > maxPx) {
       lines.push(cur);
       cur = w;
     } else {
@@ -95,9 +104,12 @@ export function wrapTextToWidth(
  */
 export function wrapSpecTitles(spec: any, maxPx: number): boolean {
   if (!spec || typeof spec !== 'object' || !(maxPx > 0)) return false;
+  // Measure in the font the chart will render in.
+  const family = typeof spec.config?.font === 'string' && spec.config.font
+    ? spec.config.font : VEGA_UI_FONT;
   const t = spec.title;
   if (typeof t === 'string') {
-    const wrapped = wrapTextToWidth(t, maxPx, VEGA_TITLE_FONT_PX, true);
+    const wrapped = wrapTextToWidth(t, maxPx, VEGA_TITLE_FONT_PX, true, family);
     if (wrapped !== t) { spec.title = wrapped; return true; }
     return false;
   }
@@ -107,11 +119,13 @@ export function wrapSpecTitles(spec: any, maxPx: number): boolean {
   const titlePx = typeof t.fontSize === 'number' && t.fontSize > 0 ? t.fontSize : VEGA_TITLE_FONT_PX;
   const subPx = typeof t.subtitleFontSize === 'number' && t.subtitleFontSize > 0 ? t.subtitleFontSize : VEGA_SUBTITLE_FONT_PX;
   if (typeof t.text === 'string') {
-    const w = wrapTextToWidth(t.text, maxPx, titlePx, true);
+    const titleFamily = typeof t.font === 'string' && t.font ? t.font : family;
+    const w = wrapTextToWidth(t.text, maxPx, titlePx, true, titleFamily);
     if (w !== t.text) { t.text = w; changed = true; }
   }
   if (typeof t.subtitle === 'string') {
-    const w = wrapTextToWidth(t.subtitle, maxPx, subPx, false);
+    const subFamily = typeof t.subtitleFont === 'string' && t.subtitleFont ? t.subtitleFont : family;
+    const w = wrapTextToWidth(t.subtitle, maxPx, subPx, false, subFamily);
     if (w !== t.subtitle) { t.subtitle = w; changed = true; }
   }
   return changed;
@@ -154,4 +168,30 @@ export function computeLegendLabelLimitPx(opts: LegendLabelLimitOptions): number
   const room = legendLabelRoomPx(opts.containerWidthPx, opts.orient, opts.columns);
   const floor = Math.min(opts.floorPx ?? 0, room);
   return Math.max(Math.min(longest, room), floor, 1);
+}
+
+/**
+ * Width to wrap a chart title to: the wider of a MEASURED pane (less its
+ * gutter) and the chart's own width plus its y-axis.  A composite keeps its
+ * authored view widths, so its title spans far more than the pane.  Null
+ * when neither is known: an unmeasured pane's 400px floor is not a width.
+ */
+export function titleWrapWidthPx(
+  paneWidthPx: number | null | undefined, chartWidthPx: number | null | undefined,
+): number | null {
+  const fromPane = typeof paneWidthPx === 'number' && paneWidthPx > 0 ? paneWidthPx - PANE_GUTTER_PX : null;
+  const fromChart = typeof chartWidthPx === 'number' && chartWidthPx > 0 ? chartWidthPx + TITLE_AXIS_ROOM_PX : null;
+  if (fromPane === null) return fromChart;
+  if (fromChart === null) return fromPane;
+  return Math.max(fromPane, fromChart);
+}
+
+/** Set config.font to VEGA_UI_FONT unless the author chose a font.
+ *  Returns whether the spec changed.  Mutates `spec`. */
+export function applyDefaultChartFont(spec: any): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  const cfg = spec.config && typeof spec.config === 'object' ? spec.config : {};
+  if (typeof cfg.font === 'string' && cfg.font) return false;
+  spec.config = { ...cfg, font: VEGA_UI_FONT };
+  return true;
 }

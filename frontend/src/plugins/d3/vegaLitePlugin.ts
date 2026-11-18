@@ -14,10 +14,11 @@ import {
   transposeLongLabelBarChart,
 } from './vegaLayerDefaults';
 import { computeTextOverflow, growPadding } from './vegaTextOverflow';
-import { computeLegendLabelLimitPx, wrapSpecTitles, VEGA_DEFAULT_LEGEND_LABEL_LIMIT } from './vegaTextFit';
+import { applyDefaultChartFont, computeLegendLabelLimitPx, titleWrapWidthPx, wrapSpecTitles, VEGA_DEFAULT_LEGEND_LABEL_LIMIT } from './vegaTextFit';
 import { hoistFacetColumns, sinkFacetCellSize, isFacetedSpec } from './vegaFacetLayout';
 import { applyFacetCellWidth, calibrateFacetView } from './vegaFacetFit';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
+import { lightChartSurface } from './chartTheme';
 import { RENDERER_ENVELOPE_KEYS } from '../../utils/pluginDimensions';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { resolveDatasetRefs } from './datasetRefs';
@@ -5704,8 +5705,22 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // nor shrinks a title, so a long one is clipped at both edges. Wrap an
       // authored string title/subtitle to the pane; an authored array or
       // `limit` is left alone.
-      if (wrapSpecTitles(vegaSpec, fitWidthPx - 40)) {
-        console.info(`🔧 TITLE-FIT: wrapped title to ${fitWidthPx - 40}px`);
+      //
+      // The width is the wider of the MEASURED pane and the chart's own
+      // width: a composite keeps its authored view widths, so its title
+      // spans far more than the pane.  An unmeasured pane (PDF print page,
+      // detached render) is not a width; its 400px floor broke a ~1000px
+      // chart's title at 400px.
+      if (applyDefaultChartFont(vegaSpec)) {
+        console.debug('🔧 VEGA-FONT: no config.font; using the UI font stack');
+      }
+      const paneWidthKnown = typeof spec.containerWidth === 'number' && spec.containerWidth > 0
+        ? spec.containerWidth : null;
+      const titleWidthPx = titleWrapWidthPx(
+        paneWidthKnown, estimateChartWidthPx(vegaSpec, _sizing.width),
+      );
+      if (titleWidthPx !== null && wrapSpecTitles(vegaSpec, titleWidthPx)) {
+        console.info(`🔧 TITLE-FIT: wrapped title to ${titleWidthPx}px`);
       }
 
       // G-72 / D-260, D-265: ensure the categorical colour range is adequate.
