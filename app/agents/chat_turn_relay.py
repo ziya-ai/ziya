@@ -364,7 +364,14 @@ async def _pump(turn: _Turn, source: AsyncIterator[str]) -> None:
         # Do not re-raise: the pump task is the unit being cancelled and
         # its cleanup below is the whole point.  Swallowing here cannot mask
         # anything — nobody awaits the pump task's result.
-    except Exception as exc:  # noqa: BLE001 — wraps the entire chat stream
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    # BaseException, not Exception: some failures are BaseExceptions on
+    # purpose (ServiceInfraError, so memory's ``except Exception`` handlers
+    # cannot guess around an outage).  One reaching here uncaught used to
+    # kill the pump task with nothing published, and the client saw a 200
+    # with an empty event stream.
+    except BaseException as exc:  # noqa: BLE001 — wraps the entire chat stream
         logger.error(f"📡 CHAT_TURN_RELAY: turn for {turn.conversation_id[:8]} raised: {exc!r}",
                      exc_info=True)
         from app.utils.error_handlers import sanitize_client_error

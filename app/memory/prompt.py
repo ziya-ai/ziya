@@ -256,9 +256,18 @@ def _query_vectors(texts: list) -> list:
     turn) from a bounded in-process cache so a turn costs one embedding.
     Empty when the provider is the Noop or every call fails."""
     import hashlib
+    from app.utils.infra_errors import ServiceInfraError
     try:
         from app.services.embedding_service import get_embedding_provider, NoopProvider
         provider = get_embedding_provider()
+    except ServiceInfraError as e:
+        # The first get_embedding_provider() in a process probes Bedrock,
+        # and while that probe fails nothing is cached, so every turn
+        # re-raises from here (a server started with expired credentials).
+        logger.warning(
+            f"Memory relevance ranking skipped this turn: embedding "
+            f"provider probe failed ({e.infra_kind}): {str(e)[:200]}")
+        return []
     except Exception as e:  # noqa: BLE001 -- prompt assembly must not fail on embeddings
         logger.debug(f"core relevance: embedding provider unavailable: {e}")
         return []
@@ -271,6 +280,20 @@ def _query_vectors(texts: list) -> list:
         if v is None:
             try:
                 v = provider.embed_text(t)
+            except ServiceInfraError as e:
+                # A BaseException by design (app/utils/infra_errors), so the
+                # handler below does not see it.  On this path it must not
+                # propagate: it would leave prompt assembly, the turn pool
+                # and the relay pump without being caught, and the turn
+                # would end with an empty stream and no error.  Skip
+                # relevance ranking for this turn; the model call that
+                # follows reports the same outage through the chat error
+                # path.  Stop at the first failure, since each attempt can
+                # block on a credential process.
+                logger.warning(
+                    f"Memory relevance ranking skipped this turn: embedding "
+                    f"call failed ({e.infra_kind}): {str(e)[:200]}")
+                return []
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"core relevance: embed failed: {e}")
                 v = None
