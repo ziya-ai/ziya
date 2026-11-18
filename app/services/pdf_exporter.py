@@ -1588,7 +1588,7 @@ async def export_document_pdf(
     from app.utils.document_print_decor import (
         DEFAULT_DOCUMENT_MARGIN, DOCUMENT_PRINT_CSS, DOCUMENT_SQUEEZE_CSS_STEPS,
         build_document_decorate_js, build_document_footer_template,
-        format_document_date, page_content_box_px,
+        format_document_date, has_runt_section_tail, page_content_box_px,
     )
 
     if markdown is None:
@@ -1679,7 +1679,8 @@ async def export_document_pdf(
     first_words = _pdf_page_words(pdf_bytes, margin)
     cur_words = first_words
     pages_before = len(first_words) if first_words else None
-    if _is_runt_last_page(first_words, sections):
+    if (_is_runt_last_page(first_words, sections)
+            or has_runt_section_tail(first_words, len(sections))):
         for step_no, step_css in enumerate(DOCUMENT_SQUEEZE_CSS_STEPS, start=1):
             candidate = await session.capture_pdf(
                 payload, pre_capture_css=DOCUMENT_PRINT_CSS + step_css,

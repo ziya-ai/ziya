@@ -1426,3 +1426,403 @@ def test_decorate_opts_carry_landscape_and_side_flags():
     _js, opts = build_document_decorate_js(title="T")
     assert opts["landscapeFigures"] is True
     assert opts["sideCaption"] is True
+
+
+# ---------------------------------------------------------------------------
+# Title shrink-to-fit: a long title steps down to one line before it wraps.
+# ---------------------------------------------------------------------------
+
+_TITLE_TEXT = "Queue depth under bursty arrivals: a design review"
+
+# Sets the column to ``frac`` x the title's single-line width at the
+# stylesheet size, so the cases do not depend on which font the host has.
+_TITLE_SET_WIDTH_JS = r"""
+(frac) => {
+  const h = document.querySelector('.print-doc-titleblock h1');
+  // Measure the text, not the box: on the title page the h1 is a flex item
+  // stretched to the column, so its box width is the column's.
+  h.style.whiteSpace = 'nowrap';
+  const r = document.createRange(); r.selectNodeContents(h);
+  const w = r.getBoundingClientRect().width;
+  h.style.whiteSpace = '';
+  document.getElementById('print-render-content').style.width = (w * frac) + 'px';
+  return w;
+}
+"""
+
+_TITLE_STATE_JS = r"""
+() => {
+  const h = document.querySelector('.print-doc-titleblock h1');
+  const cs = getComputedStyle(h);
+  return {
+    pt: Math.round(parseFloat(cs.fontSize) * 72 / 96 * 100) / 100,
+    lines: h.getBoundingClientRect().height / parseFloat(cs.lineHeight),
+    text: h.textContent,
+  };
+}
+"""
+
+
+def _title_run(frac: float, layout: str = "report"):
+    cls = "print-doc-titleblock" + (" print-doc-titlepage" if layout == "titlepage" else "")
+    # The body carries ziya-print-document up front (the pass adds it too) so
+    # the "before" reading and the width calibration see the stylesheet size.
+    html = (f'<body class="ziya-print-mode ziya-print-document">'
+            f'<div id="print-render-root"><div id="print-render-content">'
+            f'<header class="{cls}"><h1>{_TITLE_TEXT}</h1></header>'
+            f'<div class="print-doc-section"><div><h1>Intro</h1><p>Body.</p></div></div>'
+            f'</div></div></body>')
+    js, opts = build_document_decorate_js(title=_TITLE_TEXT, layout=layout,
+                                          page_height_px=994)
+
+    async def steps(page):
+        await page.evaluate(_TITLE_SET_WIDTH_JS, frac)
+        before = await page.evaluate(_TITLE_STATE_JS)
+        s = await page.evaluate(js, opts)
+        after = await page.evaluate(_TITLE_STATE_JS)
+        s2 = await page.evaluate(js, opts)
+        after2 = await page.evaluate(_TITLE_STATE_JS)
+        return before, s, after, s2, after2
+
+    return _run_in_page(html, steps)
+
+
+@browser
+def test_title_that_fits_keeps_stylesheet_size():
+    before, s, after, _s2, _a2 = _title_run(1.2)
+    assert before["pt"] == 23.0 and before["lines"] < 1.5, before
+    assert after["pt"] == 23.0, after
+    assert "titleShrunkPt" not in s, s
+
+
+@browser
+def test_wrapping_title_shrinks_to_one_line():
+    """Column at 0.87x the title's 23pt width: it wraps at 23pt and fits once
+    the size is at or under ~20pt."""
+    before, s, after, s2, after2 = _title_run(0.87)
+    assert before["pt"] == 23.0 and before["lines"] > 1.5, before
+    assert after["lines"] < 1.5, after
+    assert 18.0 <= after["pt"] <= 20.0, after
+    assert s["titleShrunkPt"] == after["pt"], (s, after)
+    assert after["text"] == _TITLE_TEXT
+    # Second pass starts from the stylesheet size and lands in the same place.
+    assert s2["titleShrunkPt"] == s["titleShrunkPt"] and after2 == after, (s2, after2)
+
+
+@browser
+def test_title_too_long_for_floor_stops_at_18pt_and_wraps():
+    before, s, after, _s2, _a2 = _title_run(0.4)
+    assert before["lines"] > 1.5, before
+    assert after["pt"] == 18.0 and s["titleShrunkPt"] == 18.0, (s, after)
+    assert after["lines"] > 1.5, after
+
+
+@browser
+def test_titlepage_title_shrinks_from_30pt_to_22pt_floor():
+    before, s, after, _s2, _a2 = _title_run(0.4, layout="titlepage")
+    assert before["pt"] == 30.0, before
+    assert after["pt"] == 22.0 and s["titleShrunkPt"] == 22.0, (s, after)
+    fit = _title_run(0.8, layout="titlepage")
+    assert fit[2]["lines"] < 1.5 and 22.0 <= fit[2]["pt"] < 30.0, fit[2]
+
+
+_TITLE_STYLE_JS = r"""
+() => {
+  const tb = document.querySelector('.print-doc-titleblock');
+  const h = tb.querySelector('h1');
+  const body = document.querySelector('.print-doc-section p');
+  const by = tb.querySelector('.print-doc-byline');
+  const bar = getComputedStyle(tb, '::before');
+  const sep = getComputedStyle(tb.querySelector('.print-doc-date'), '::before');
+  return {
+    titleFamily: getComputedStyle(h).fontFamily,
+    bodyFamily: getComputedStyle(body).fontFamily,
+    weight: getComputedStyle(h).fontWeight,
+    barW: bar.width, barBg: bar.backgroundColor,
+    ruleW: parseFloat(getComputedStyle(tb).borderBottomWidth),
+    bylineCase: getComputedStyle(by).textTransform,
+    sep: sep.content,
+    sectionH1Pt: parseFloat(getComputedStyle(document.querySelector('.print-doc-section h1')).fontSize) * 0.75,
+    titlePt: parseFloat(getComputedStyle(h).fontSize) * 0.75,
+  };
+}
+"""
+
+
+@browser
+def test_title_block_is_serif_with_accent_bar_and_light_rule():
+    """The title leads by contrast of face (serif over the sans body) and a
+    short accent bar, not by a heavy 2px black rule and a 700-weight 26pt
+    sans.  It still outranks the 17pt section heading."""
+    html = ('<body class="ziya-print-mode" style="font-family:Helvetica,Arial,sans-serif">'
+            '<div id="print-render-root"><div id="print-render-content">'
+            '<header class="print-doc-titleblock"><h1>Shaper Latency</h1>'
+            '<div class="print-doc-author">alice</div>'
+            '<div class="print-doc-date">x</div></header>'
+            '<div class="print-doc-section"><div><h1>Intro</h1><p>Body.</p></div></div>'
+            '</div></div></body>')
+    js, opts = build_document_decorate_js(title="Shaper Latency", author="alice",
+                                          date="November 13, 2026", layout="report")
+
+    async def steps(page):
+        await page.evaluate(js, opts)
+        return await page.evaluate(_TITLE_STYLE_JS)
+
+    st = _run_in_page(html, steps)
+    assert "serif" in st["titleFamily"] and "sans-serif" not in st["titleFamily"], st
+    assert st["titleFamily"] != st["bodyFamily"], st
+    assert st["weight"] == "600", st
+    assert st["barW"] == "44px" and st["barBg"] == "rgb(15, 143, 131)", st
+    assert st["ruleW"] <= 1.0, st
+    assert st["bylineCase"] == "uppercase", st
+    assert "\u00b7" in st["sep"], st          # author · date separator
+    assert abs(st["titlePt"] - 23.0) < 0.01 and st["titlePt"] > st["sectionH1Pt"] + 4, st
+
+
+# ---------------------------------------------------------------------------
+# Corpus-render fixes (tests/export_fidelity/doc_corpus): diffs, footnotes,
+# inline code, code-line hanging indent, lead-ins, table wrappers, long keys.
+# Each DOM below mirrors what the /print page produced for the corpus.
+# ---------------------------------------------------------------------------
+
+def _body_html(inner: str, width: int = 650) -> str:
+    return ('<body class="ziya-print-mode"><div id="print-render-root">'
+            f'<div id="print-render-content" style="width:{width}px">'
+            f'<div class="print-doc-section"><div>{inner}</div></div>'
+            '</div></div></body>')
+
+
+def _decorate_eval(inner: str, state_js: str, width: int = 650):
+    js, opts = build_document_decorate_js(title="T", page_height_px=994)
+
+    async def steps(page):
+        s = await page.evaluate(js, opts)
+        st = await page.evaluate(state_js)
+        s2 = await page.evaluate(js, opts)
+        st2 = await page.evaluate(state_js)
+        return s, st, s2, st2
+
+    return _run_in_page(_body_html(inner, width), steps)
+
+
+_DIFF_DOM = (
+    '<div id="w"><div class="diff-view-controls" style="display:flex;padding:4px 8px">'
+    '<div style="flex:1;font-size:14px">rpc/retry.py</div>'
+    '<button title="Split View">s</button><button title="Raw">r</button></div>'
+    '<div class="diff-container" style="border:1px solid #e8e8e8;padding:0 0 16px">'
+    '<div class="diff-view"><div class="diff-header" style="padding:8px 16px 12px">'
+    '<span class="hunk-status-bar"><div class="hunk-status-indicator">1</div></span></div>'
+    '<div class="hunk-scroll-container" style="border:1px dashed rgba(128,128,128,.3);margin-bottom:14px">'
+    '<table class="diff-table"><tbody>'
+    '<tr><td><div class="diff-line-content" style="white-space:pre;min-width:max-content">'
+    + "x = call(" + "argument, " * 30 + ")</div></td></tr>"
+    '<tr><td><div class="diff-line-content" style="white-space:pre">-old</div></td></tr>'
+    '</tbody></table></div></div></div></div>'
+    '<p>after</p>')
+
+_DIFF_STATE_JS = r"""
+() => {
+  const w = document.getElementById('w');
+  const cs = (s) => getComputedStyle(w.querySelector(s));
+  const content = document.getElementById('print-render-content').getBoundingClientRect();
+  return {
+    cls: w.className,
+    buttons: Array.from(w.querySelectorAll('button')).map(b => getComputedStyle(b).display),
+    header: cs('.diff-header').display,
+    scrollBorder: cs('.hunk-scroll-container').borderTopStyle,
+    containerBorder: cs('.diff-container').borderTopStyle,
+    path: w.querySelector('.diff-view-controls > div').textContent,
+    right: w.querySelector('.diff-line-content').getBoundingClientRect().right,
+    contentRight: content.right,
+    breakInside: getComputedStyle(w).breakInside,
+  };
+}
+"""
+
+
+@browser
+def test_diff_block_loses_chat_chrome_and_stays_in_the_column():
+    s, st, s2, _st2 = _decorate_eval(_DIFF_DOM, _DIFF_STATE_JS)
+    assert s["diffs"] == 1 and s2["diffs"] == 0, (s, s2)
+    assert "print-doc-diff" in st["cls"] and "print-doc-keep" in st["cls"], st
+    assert st["buttons"] == ["none", "none"] and st["header"] == "none", st
+    assert st["scrollBorder"] == "none" and st["containerBorder"] == "none", st
+    assert st["path"] == "rpc/retry.py"                 # the file name is kept
+    assert st["right"] <= st["contentRight"] + 1, st    # long line wraps
+    assert st["breakInside"] == "avoid", st
+
+
+_FOOT_DOM = (
+    '<p>First<sup class="footnote-ref"><a href="#fn-1" id="fnref-1">1</a></sup>.</p>'
+    '<pre><code><section class="footnotes"><hr><ol><li id="fn-1">Note A '
+    '<a href="#fnref-1" class="footnote-backref">\u21a9</a></li></ol></section>\n\nlog line\n</code></pre>'
+    '<p>Second<sup class="footnote-ref"><a href="#fn-1" id="fnref-1">1</a></sup>.</p>'
+    '<section class="footnotes"><hr><ol><li id="fn-1">Note B</li></ol></section>'
+    '<p>Last paragraph.</p>')
+
+_FOOT_STATE_JS = r"""
+() => {
+  const hosts = document.querySelectorAll('.print-doc-footnotes');
+  const h = hosts[0];
+  return {
+    hosts: hosts.length,
+    stray: document.querySelectorAll('section.footnotes').length,
+    items: h ? Array.from(h.querySelectorAll('li')).map(li => li.textContent.trim().slice(0, 6)) : [],
+    refs: Array.from(document.querySelectorAll('sup.footnote-ref a')).map(a => a.textContent),
+    code: document.querySelector('pre code').textContent,
+    lastInSection: h && !h.nextElementSibling && !!h.closest('.print-doc-section'),
+  };
+}
+"""
+
+
+@browser
+def test_footnotes_are_collected_at_document_end_and_renumbered():
+    """The markdown layer emits one footnote section per text segment, which
+    can land INSIDE the following code block; both use id fn-1."""
+    s, st, s2, st2 = _decorate_eval(_FOOT_DOM, _FOOT_STATE_JS)
+    assert s["footnotes"] == 2 and s2["footnotes"] == 0, (s, s2)
+    assert st["hosts"] == 1 and st["stray"] == 0, st
+    assert st["items"] == ["Note A", "Note B"], st
+    assert st["refs"] == ["1", "2"], st
+    assert st["code"].startswith("log line"), repr(st["code"])
+    assert st["lastInSection"] is True, st
+    assert st2 == st
+
+
+_CODE_STATE_JS = r"""
+() => Array.from(document.querySelectorAll('p code')).map(c => {
+  const cs = getComputedStyle(c);
+  return [c.textContent.length, cs.hyphens, cs.whiteSpace.indexOf('nowrap') !== -1];
+})
+"""
+
+
+@browser
+def test_inline_code_is_not_hyphenated_and_short_names_do_not_split():
+    long = "com.example.checkout.payments.internal.gateway.TokenisationService"
+    inner = (f'<p lang="en">Header <code>x-retry-attempt</code> and <code>{long}</code> '
+             'and <code>pip install x</code>.</p>')
+    s, st, _s2, _st2 = _decorate_eval(inner, _CODE_STATE_JS)
+    assert st[0] == [15, "none", True], st       # short identifier: one piece
+    assert st[1][1] == "none" and st[1][2] is False, st   # long one may break
+    assert st[2][2] is False, st                 # has spaces: breaks at them
+    assert s["codeNowrap"] == 1, s
+
+
+_HANG_STATE_JS = r"""
+() => Array.from(document.querySelectorAll('pre')).map(pre => ({
+  hang: pre.getAttribute('data-print-code-hang'),
+  lines: Array.from(pre.querySelectorAll('.print-doc-codeline')).map(
+      l => [l.textContent.slice(0, 12), l.style.paddingLeft, l.style.textIndent]),
+  text: pre.textContent,
+  right: Math.max(...Array.from(pre.querySelectorAll('span')).map(x => x.getBoundingClientRect().right), 0),
+  preRight: pre.getBoundingClientRect().right,
+}))
+"""
+
+
+@browser
+def test_wrapped_code_line_gets_hanging_indent_and_text_is_unchanged():
+    longline = "    raise RetryBudgetExhausted(" + "attempt, " * 14 + "x)"
+    code = ("def f():\n" + longline + "\n\n" + "    return <b>1</b>\n")
+    esc = code.replace("<b>", '<span class="token">').replace("</b>", "</span>")
+    pre = ('<pre style="white-space:pre-wrap;font:12px monospace;padding:8px">'
+           '<code style="font:inherit">{}</code></pre>')
+    inner = pre.format(esc) + pre.format("a = 1\nb = 2\n")
+    s, st, s2, st2 = _decorate_eval(inner, _HANG_STATE_JS, width=420)
+    assert s["codeHang"] == 1 and s2["codeHang"] == 0, (s, s2)
+    a, b = st
+    assert a["hang"] == "1" and len(a["lines"]) == 4, a
+    assert a["lines"][0][1:] == ["2ch", "-2ch"], a          # no leading space
+    assert a["lines"][1][1:] == ["6ch", "-6ch"], a          # 4 spaces + 2
+    assert a["text"] == code.replace("<b>", "").replace("</b>", "").replace("\n", ""), a
+    assert a["right"] <= a["preRight"] + 1, a
+    assert b["hang"] is None and b["lines"] == [] and b["text"] == "a = 1\nb = 2\n", b
+    assert st2 == st
+
+
+_LEADIN_STATE_JS = r"""
+() => Array.from(document.querySelectorAll('.print-doc-section p')).map(p => [
+  p.id, p.classList.contains('print-doc-leadin'), getComputedStyle(p).breakAfter,
+  p.nextElementSibling ? getComputedStyle(p.nextElementSibling).breakBefore : null])
+"""
+
+
+@browser
+def test_lead_in_sentence_is_bound_to_the_block_it_introduces():
+    inner = ('<p id="math">The budget for a string of length n is</p>'
+             '<div class="math-display"><span class="katex-display">w</span></div>'
+             '<p id="colon">For each chunk it:</p><ol><li>Reads.</li></ol>'
+             '<p id="plain">An ordinary paragraph.</p><ul><li>x</li></ul>'
+             '<p id="para">Ends with a colon:</p><p id="last">Next paragraph.</p>'
+             '<p id="head">Ends with a colon:</p><h2>Heading</h2>')
+    s, st, s2, _ = _decorate_eval(inner, _LEADIN_STATE_JS)
+    by = {r[0]: r for r in st}
+    assert by["math"][1:] == [True, "avoid", "avoid"], by
+    assert by["colon"][1:] == [True, "avoid", "avoid"], by
+    for k in ("plain", "para", "last", "head"):
+        assert by[k][1] is False, (k, by)
+    assert s["leadins"] == 2 and s2["leadins"] == 0, (s, s2)
+
+
+_KEY_TABLE = (
+    '<p>Table: Message keys.</p><div class="draggable-table"><table><thead><tr>'
+    '<th>Message key</th><th>Source string</th><th>Problem</th></tr></thead><tbody>'
+    '<tr><td><code>checkout.summary.items_in_basket_with_discount_applied</code></td>'
+    '<td>You have {count} items in your basket and a {percent}% discount has been applied</td>'
+    '<td>Concatenated from three parts</td></tr>'
+    '<tr><td><code>account.security.two_factor.recovery_codes.regenerate_confirmation</code></td>'
+    '<td>Regenerate codes?</td><td>Too short to give translators context</td></tr>'
+    '<tr><td><code>email.receipt.footer.legal</code></td>'
+    '<td>\u00a9 2026 Example Ltd. All rights reserved.</td><td>Hard-coded year</td></tr>'
+    '</tbody></table></div>')
+
+_KEY_TABLE_STATE_JS = r"""
+() => {
+  const t = document.querySelector('table');
+  const lines = (td) => Math.round(td.getBoundingClientRect().height
+      ? (td.clientHeight - parseFloat(getComputedStyle(td).paddingTop) - parseFloat(getComputedStyle(td).paddingBottom))
+        / parseFloat(getComputedStyle(td).lineHeight) : 0);
+  const W = t.getBoundingClientRect().width;
+  const box = document.getElementById('print-render-content').getBoundingClientRect();
+  return {
+    wrapper: document.querySelectorAll('.draggable-table').length,
+    caption: t.querySelector('caption') && t.querySelector('caption').textContent,
+    captionLineGone: !Array.from(document.querySelectorAll('p')).some(p => /^Table:/.test(p.textContent)),
+    keyShare: t.rows[1].cells[0].getBoundingClientRect().width / W,
+    proseLines: lines(t.rows[1].cells[1]),
+    wbr: t.querySelectorAll('td code wbr').length,
+    keyText: t.rows[1].cells[0].textContent,
+    fits: t.getBoundingClientRect().right <= box.right + 1,
+  };
+}
+"""
+
+
+@browser
+def test_long_code_key_column_does_not_starve_prose_and_wrapper_is_lifted():
+    """Corpus 07: the key column took 72% of the table and the prose cell
+    wrapped to 7 lines; the drag-handle wrapper hid the 'Table:' line."""
+    s, st, _s2, st2 = _decorate_eval(_KEY_TABLE, _KEY_TABLE_STATE_JS, width=640)
+    assert st["wrapper"] == 0 and s["unwrappedTables"] == 1, (s, st)
+    assert st["caption"] and "Message keys." in st["caption"] and st["captionLineGone"], st
+    assert st["keyShare"] <= 0.5, st
+    assert st["proseLines"] <= 3, st
+    assert st["wbr"] >= 6, st
+    assert st["keyText"] == "checkout.summary.items_in_basket_with_discount_applied", st
+    assert st["fits"], st
+    assert st2 == st
+
+
+def test_runt_section_tail_detects_near_empty_page_before_forced_break():
+    from app.utils.document_print_decor import has_runt_section_tail
+    # Corpus 06: p5 held one sentence before a ziya:pagebreak.
+    assert has_runt_section_tail([60, 210, 380, 450, 14, 420, 300], 3) is True
+    assert has_runt_section_tail([60, 210, 380, 450, 400, 420, 300], 3) is False
+    # No forced breaks: a short middle page is a big figure's doing.
+    assert has_runt_section_tail([300, 20, 300], 1) is False
+    # First (title page) and last pages are not this check's business.
+    assert has_runt_section_tail([10, 400, 20], 3) is False
+    assert has_runt_section_tail([10, 20], 2) is False
+    assert has_runt_section_tail(None, 3) is False

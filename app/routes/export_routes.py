@@ -541,3 +541,77 @@ async def export_document(request: DocumentExportRequest):
         import json as _json
         headers["X-Ziya-Evidence"] = _json.dumps(meta["evidence"], ensure_ascii=True)[:7000]
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+class HtmlReportRequest(BaseModel):
+    """Request body for POST /api/export/html-report.
+
+    The source is either ``name`` (a file under
+    ``<project>/.ziya/documents/``) or inline ``html``: YAML front-matter
+    followed by an HTML body fragment.  See ``app/utils/html_report.py``.
+    """
+
+    name: Optional[str] = None
+    html: Optional[str] = None
+
+
+@router.post("/html-report")
+async def export_html_report(request: HtmlReportRequest):
+    """Build a self-contained HTML report: fixed stylesheet, no scripts, and
+    every ``<figure data-render="...">`` rendered and embedded as an SVG
+    ``data:`` image.  A figure that fails to render is left as a visible
+    error box and counted in ``X-Ziya-Figures-Failed``."""
+    from fastapi import Response
+    from app.utils.html_report import build_report, load_report_source
+
+    if not request.name and request.html is None:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Provide either 'name' or 'html'", "success": False},
+        )
+    try:
+        meta, body = load_report_source(name=request.name, text=request.html)
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc), "success": False})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc), "success": False})
+
+    renderer = None
+    render_error = ""
+    try:
+        from app.services.diagram_renderer import get_diagram_renderer
+        renderer = await get_diagram_renderer(server_port=ziya_env("ZIYA_PORT"))
+    except Exception as exc:  # noqa: BLE001 -- the report is still built; figures show the reason
+        render_error = str(exc) or type(exc).__name__
+        logger.warning("HTML report: diagram renderer unavailable: %s", render_error)
+
+    async def _render(kind: str, spec: str):
+        if renderer is None:
+            raise RuntimeError(render_error or "diagram renderer unavailable")
+        data = await renderer.render_diagram(
+            {"type": kind, "definition": spec, "theme": "light"}, format="svg",
+        )
+        # Canvas-based renderers fall back to PNG even when SVG is asked for.
+        media = "image/png" if data[:4] == b"\x89PNG" else "image/svg+xml"
+        return data, media
+
+    try:
+        page, info = await build_report(body, meta, _render)
+    except Exception as exc:
+        logger.error("HTML report export failed: %s", exc, exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"HTML report export failed: {exc}", "success": False},
+        )
+
+    logger.info(
+        "HTML report export: %d bytes, %d figure(s), %d failed",
+        info["bytes"], info["figures"], len(info["failed"]),
+    )
+    headers = {
+        "X-Ziya-Figures": str(info["figures"]),
+        "X-Ziya-Figures-Failed": str(len(info["failed"])),
+    }
+    if info["external"]:
+        headers["X-Ziya-External"] = ", ".join(info["external"])[:2000].encode(
+            "ascii", "replace").decode("ascii")
+    return Response(content=page, media_type="text/html; charset=utf-8", headers=headers)

@@ -211,36 +211,61 @@ body.ziya-print-document #print-render-content strong {
 }
 
 /* ── Title block ─────────────────────────────────────────────────────────── */
+/* A serif title over the sans body, a short accent bar above it and a
+   hairline below: the title leads by contrast of face, not by size and
+   weight. */
 body.ziya-print-document .print-doc-titleblock {
-  margin: 0 0 30px !important;
-  padding-bottom: 14px;
-  border-bottom: 2px solid #1f2328;
+  margin: 0 0 26px !important;
+  padding-bottom: 13px;
+  border-bottom: 0.75pt solid #d0d7de;
   break-after: avoid;
 }
+body.ziya-print-document .print-doc-titleblock::before {
+  content: "";
+  display: block;
+  width: 44px;
+  height: 3.5px;
+  margin-bottom: 13px;
+  background: #0f8f83;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
 body.ziya-print-document .print-doc-titleblock h1 {
-  font-size: 26pt !important;
-  line-height: 1.15;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-family: "Iowan Old Style", Charter, "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 23pt !important;
+  line-height: 1.14;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  text-wrap: balance;
   margin: 0 0 6px !important;
   border: 0 !important;
   padding: 0 !important;
 }
 body.ziya-print-document .print-doc-subtitle {
-  font-size: 13pt;
-  line-height: 1.3;
+  font-size: 12pt;
+  line-height: 1.35;
   color: #57606a;
-  margin: 0 0 12px;
+  margin: 0 0 13px;
 }
 body.ziya-print-document .print-doc-byline {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 18px;
-  font-size: 9.5pt !important;
+  gap: 4px 0;
+  font-size: 8.5pt !important;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
   color: #57606a !important;
 }
+body.ziya-print-document .print-doc-titleblock h1 + .print-doc-byline {
+  margin-top: 11px;
+}
+body.ziya-print-document .print-doc-byline .print-doc-author + .print-doc-date::before {
+  content: "\00B7";
+  margin: 0 0.7em;
+  color: #a8aeb8;
+}
 body.ziya-print-document .print-doc-byline .print-doc-author {
-  font-weight: 600;
+  font-weight: 650;
   color: #1f2328 !important;
   font-size: inherit !important;
 }
@@ -259,16 +284,21 @@ body.ziya-print-document .print-doc-titleblock.print-doc-titlepage {
   break-after: page;
   page-break-after: always;
 }
+body.ziya-print-document .print-doc-titleblock.print-doc-titlepage::before {
+  width: 64px;
+  height: 5px;
+  margin-bottom: 22px;
+}
 body.ziya-print-document .print-doc-titleblock.print-doc-titlepage h1 {
-  font-size: 32pt !important;
-  margin-bottom: 12px !important;
+  font-size: 30pt !important;
+  margin-bottom: 10px !important;
 }
 body.ziya-print-document .print-doc-titleblock.print-doc-titlepage .print-doc-subtitle {
-  font-size: 15pt;
+  font-size: 14pt;
   margin-bottom: 28px;
 }
 body.ziya-print-document .print-doc-titleblock.print-doc-titlepage .print-doc-byline {
-  border-top: 1px solid #1f2328;
+  border-top: 0.75pt solid #d0d7de;
   padding-top: 12px;
   width: 60%;
 }
@@ -440,7 +470,8 @@ body.ziya-print-document .print-doc-figure-head > .print-doc-figure-title {
 body.ziya-print-document #print-render-content table:not(.diff-table) {
   width: 100%;
   border-collapse: collapse;
-  margin: 10px 0 18px;
+  /* important: the markdown renderer sets an inline margin-bottom. */
+  margin: 10px 0 18px !important;
   font-size: 9.5pt;
   line-height: 1.35;
   border: 0 !important;
@@ -561,6 +592,109 @@ body.ziya-print-document #print-render-content .math-display,
 body.ziya-print-document #print-render-content .katex-display {
   margin: 10px 0 14px;
 }
+/* Code is never hyphenated: "x-retry-" / "attempt" reads as another name. */
+body.ziya-print-document #print-render-content code,
+body.ziya-print-document #print-render-content pre,
+body.ziya-print-document #print-render-content kbd,
+body.ziya-print-document #print-render-content samp {
+  hyphens: none !important;
+  -webkit-hyphens: none !important;
+}
+/* A wrapped code line continues with a hanging indent (set per line by the
+   decoration pass), so a continuation never looks like a new statement. */
+body.ziya-print-document #print-render-content pre .print-doc-codeline {
+  display: block;
+}
+body.ziya-print-document #print-render-content code.print-doc-nowrap {
+  white-space: nowrap;
+}
+/* Short code blocks and diffs stay on one page (class set by the pass). */
+body.ziya-print-document .print-doc-keep {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+/* A sentence that introduces the block after it ("…is given by:") stays
+   with that block. */
+body.ziya-print-document .print-doc-leadin {
+  break-after: avoid;
+  page-break-after: avoid;
+}
+body.ziya-print-document .print-doc-after-leadin {
+  break-before: avoid;
+  page-break-before: avoid;
+}
+
+/* ── Diffs: the change, without the chat UI around it ────────────────────── */
+body.ziya-print-document .print-doc-diff {
+  margin: 8px 0 14px;
+  border: 1px solid #e1e4e8;
+  border-radius: 4px;
+  overflow: hidden;
+}
+body.ziya-print-document .print-doc-diff .diff-view-controls {
+  background: #f6f8fa !important;
+  border-bottom: 1px solid #e1e4e8 !important;
+  padding: 4px 10px !important;
+  opacity: 1 !important;
+}
+body.ziya-print-document .print-doc-diff .diff-view-controls > div {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 8.6pt !important;
+  font-weight: 600 !important;
+  color: #57606a;
+}
+body.ziya-print-document .print-doc-diff button,
+body.ziya-print-document .print-doc-diff .diff-header,
+body.ziya-print-document .print-doc-diff .hunk-status-bar,
+body.ziya-print-document .print-doc-diff .hunk-status-indicator {
+  display: none !important;
+}
+body.ziya-print-document .print-doc-diff .diff-container {
+  border: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+body.ziya-print-document .print-doc-diff .hunk-scroll-container {
+  border: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+body.ziya-print-document .print-doc-diff .diff-view-controls {
+  min-height: 0 !important;
+  height: auto !important;
+}
+/* A long diff line wraps inside the page instead of running past it. */
+body.ziya-print-document .print-doc-diff .diff-line-content {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  min-width: 0 !important;
+}
+body.ziya-print-document .print-doc-diff table.diff-table {
+  font-size: 8.6pt;
+  width: 100%;
+  table-layout: fixed;
+}
+
+/* ── Footnotes: one list at the end of the document ──────────────────────── */
+body.ziya-print-document .print-doc-footnotes {
+  margin-top: 24px;
+  padding-top: 8px;
+  border-top: 0.75pt solid #d0d7de;
+  font-size: 9pt;
+  line-height: 1.4;
+  color: #57606a;
+  break-inside: avoid;
+}
+body.ziya-print-document .print-doc-footnotes ol {
+  margin: 0 !important;
+  padding-left: 1.6em;
+}
+body.ziya-print-document .print-doc-footnotes .footnote-backref {
+  display: none;
+}
+body.ziya-print-document #print-render-content sup.footnote-ref a {
+  color: inherit;
+}
 """
 
 
@@ -607,6 +741,25 @@ _SQUEEZE_TABLE_FLOW_CSS = (
     + _TBL4 + " > tbody > tr:last-child {\n"
     "  break-before: avoid;\n  page-break-before: avoid;\n}\n"
 )
+def has_runt_section_tail(
+    page_words: Optional[Any], section_count: int, *, runt_words: int = 80,
+) -> bool:
+    """True when a page OTHER than the first and last is near-empty in a
+    document with forced page breaks.
+
+    With ``<!-- ziya:pagebreak -->`` sections, a section whose last sentence
+    spills onto a page of its own leaves that page almost blank; the runt
+    squeeze should be tried for it exactly as for a runt last page.  Without
+    forced breaks a near-empty middle page can only be the page before a
+    large unbreakable block, which tighter spacing does not fix, so nothing
+    is triggered (``section_count <= 1``).  The first page is skipped: with
+    ``layout: titlepage`` it is short on purpose.
+    """
+    if section_count <= 1 or not page_words or len(page_words) < 3:
+        return False
+    return any(w < runt_words for w in list(page_words)[1:-1])
+
+
 DOCUMENT_SQUEEZE_CSS_STEPS: Tuple[str, ...] = (
     _SQUEEZE_SPACING_CSS,
     _SQUEEZE_SPACING_CSS + _SQUEEZE_LEADING_CSS,
@@ -688,6 +841,32 @@ _DECORATE_JS_BODY = r"""
           d.className = 'print-doc-date';
           d.textContent = opts.date;
           by.appendChild(d);
+        }
+      }
+      // Prefer a smaller title over a wrapped one: step the h1 down 1pt at
+      // a time until it sits on one line, stopping at a floor below which
+      // wrapping reads better than shrinking further. The inline size is
+      // cleared first so a second pass starts from the stylesheet size and
+      // lands on the same result.
+      const th = tb.querySelector('h1');
+      if (th && th.textContent.trim()) {
+        th.style.removeProperty('font-size');
+        const basePt = Math.round(
+            parseFloat(getComputedStyle(th).fontSize) * 72 / 96 * 100) / 100;
+        const floorPt = tb.classList.contains('print-doc-titlepage') ? 22 : 18;
+        // Line height scales with the font size, so it is re-read each step.
+        const lineCount = () => {
+          const cs = getComputedStyle(th);
+          const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.15;
+          return th.getBoundingClientRect().height / lh;
+        };
+        if (basePt > 0) {
+          let pt = basePt;
+          while (lineCount() > 1.5 && pt - 1 >= floorPt) {
+            pt -= 1;
+            th.style.setProperty('font-size', pt + 'pt', 'important');
+          }
+          if (pt < basePt) stats.titleShrunkPt = pt;
         }
       }
     }
@@ -1440,7 +1619,11 @@ _DECORATE_JS_BODY = r"""
     const tw = t.getBoundingClientRect().width;
     const W = tw - pad.reduce((a, b) => a + b, 0);
     if (!(W > 0)) return;
-    const w = minWord.map((m, c) => Math.max(Math.ceil(m) + 1, Math.min(Math.round(0.10 * W), Math.ceil(maxOne[c]) + 1)));
+    // A column's floor is its widest unbreakable word, but never more than
+    // 28% of the table: one long identifier (a dotted message key) must not
+    // claim most of the width and starve a prose column (it breaks instead).
+    const wordFloor = (m) => Math.min(Math.ceil(m) + 1, Math.round(0.28 * W));
+    const w = minWord.map((m, c) => Math.max(wordFloor(m), Math.min(Math.round(0.10 * W), Math.ceil(maxOne[c]) + 1)));
     let rest = W - w.reduce((a, b) => a + b, 0);
     if (rest < 0) return;  // unbreakable words already overfill: leave auto layout
     const oneW = words.map((row) => row.map((ws) => ws.reduce((a, q) => a + q[0] + q[1], 0)));
@@ -1455,7 +1638,15 @@ _DECORATE_JS_BODY = r"""
       for (let i = 0; i < ws.length; i++) {
         const need = ws[i][0];
         if (x > 0 && x + need > lim) { n += 1; x = 0; }
-        x += need + ws[i][1];
+        if (need > lim) {
+          // A token wider than the column breaks inside itself (balanced
+          // cells set overflow-wrap: break-word) and costs the extra lines.
+          const k = Math.ceil(need / lim);
+          n += k - 1;
+          x = need - (k - 1) * lim + ws[i][1];
+        } else {
+          x += need + ws[i][1];
+        }
       }
       memo.set(key, n);
       return n;
@@ -1550,6 +1741,31 @@ _DECORATE_JS_BODY = r"""
     }
     stats.colBalanced += 1;
   };
+
+  // Long identifiers in table cells get break opportunities after . _ / : -
+  // so a forced break lands between name parts, not mid-word.
+  for (const code of Array.from(root.querySelectorAll('td code, th code'))) {
+    try {
+      if (code.hasAttribute('data-print-wbr') || code.children.length) continue;
+      const txt = code.textContent || '';
+      if (txt.length < 24 || /\s/.test(txt)) continue;
+      code.innerHTML = esc(txt).replace(/([._\/:-])(?=[A-Za-z0-9])/g, '$1<wbr>');
+      code.setAttribute('data-print-wbr', '1');
+    } catch (e) { /* leave this cell as rendered */ }
+  }
+
+  // The chat renderer wraps each table in a drag handle div, which hides
+  // the table from every sibling test (caption line, heading binding,
+  // lead-in).  On paper the wrapper has no purpose: lift the table out.
+  stats.unwrappedTables = 0;
+  for (const dw of Array.from(root.querySelectorAll('div.draggable-table'))) {
+    try {
+      const only = dw.children.length === 1 && dw.firstElementChild.tagName === 'TABLE';
+      if (!only || !dw.parentElement) continue;
+      dw.parentElement.replaceChild(dw.firstElementChild, dw);
+      stats.unwrappedTables += 1;
+    } catch (e) { /* wrapper stays */ }
+  }
 
   const tables = Array.from(root.querySelectorAll('table'));
   let tblN = 0;
@@ -1667,6 +1883,170 @@ _DECORATE_JS_BODY = r"""
         stats.floated += 1;
       }
     } catch (e) { /* leave this figure where it is */ }
+  }
+
+  // ── 6. Footnotes: one renumbered list at the end of the document ─────
+  // The markdown layer emits a <section class="footnotes"> per text segment
+  // (the text between two code fences), wherever that segment ends — which
+  // can be inside the following code block.  Collect them, in document
+  // order, into a single list after the last section and renumber the
+  // references to match.  Idempotent: moved sections are removed.
+  stats.footnotes = 0;
+  try {
+    const secs = Array.from(root.querySelectorAll('section.footnotes'))
+        .filter((s) => !s.closest('.print-doc-footnotes'));
+    if (secs.length) {
+      let host = root.querySelector('.print-doc-footnotes');
+      if (!host) {
+        host = document.createElement('section');
+        host.className = 'print-doc-footnotes';
+        host.appendChild(document.createElement('ol'));
+        const all = root.querySelectorAll('.print-doc-section');
+        const last = all.length ? all[all.length - 1] : root;
+        const inner = (last.children.length === 1 && last.firstElementChild.tagName === 'DIV')
+            ? last.firstElementChild : last;
+        inner.appendChild(host);
+      }
+      const ol = host.querySelector('ol');
+      const refs = Array.from(root.querySelectorAll('sup.footnote-ref a'));
+      for (const s of secs) {
+        for (const li of Array.from(s.querySelectorAll('li'))) {
+          ol.appendChild(li);
+          const n = ol.children.length;
+          for (const a of refs) {
+            if (a.hasAttribute('data-print-fn')) continue;
+            if (a.getAttribute('href') !== '#' + li.id) continue;
+            if (!(a.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+            a.textContent = String(n);
+            a.setAttribute('data-print-fn', String(n));
+          }
+          stats.footnotes += 1;
+        }
+        const host0 = s.parentElement;
+        s.remove();
+        // A section that sat at the top of a code block leaves blank lines
+        // behind it; a code block never starts with one.
+        if (host0 && /^(CODE|PRE)$/.test(host0.tagName)) {
+          const tw = document.createTreeWalker(host0, NodeFilter.SHOW_TEXT);
+          for (let t0 = tw.nextNode(); t0; t0 = tw.nextNode()) {
+            t0.nodeValue = t0.nodeValue.replace(/^(?:[ \t]*\n)+/, '');
+            if (t0.nodeValue !== '') break;
+          }
+        }
+      }
+    }
+  } catch (e) { /* footnotes stay where the renderer put them */ }
+
+  // ── 7. Code blocks and diffs ─────────────────────────────────────────
+  // (a) A wrapped code line continues with a hanging indent.  Only blocks
+  //     where a line actually wraps are touched: each source line becomes a
+  //     block span indented two characters past its own leading whitespace.
+  //     Reverted if the text changed.
+  stats.codeHang = 0;
+  for (const code of Array.from(root.querySelectorAll('pre > code'))) {
+    try {
+      if (code.closest('.diff-container') || code.querySelector('.print-doc-codeline')) continue;
+      const pre = code.parentElement;
+      const text = code.textContent || '';
+      const src = text.replace(/\n+$/, '');
+      if (!src) continue;
+      const nLines = src.split('\n').length;
+      const pcs = getComputedStyle(pre);
+      const lh = parseFloat(getComputedStyle(code).lineHeight) || parseFloat(pcs.lineHeight)
+              || parseFloat(pcs.fontSize) * 1.45;
+      const inner = pre.clientHeight - (parseFloat(pcs.paddingTop) || 0) - (parseFloat(pcs.paddingBottom) || 0);
+      if (!(lh > 0) || Math.round(inner / lh) <= nLines) continue;   // nothing wraps
+      const before = code.innerHTML;
+      // Isolate every newline as its own text node.
+      const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+      const texts = [];
+      for (let t = walker.nextNode(); t; t = walker.nextNode()) texts.push(t);
+      const nls = [];
+      for (let t of texts) {
+        let i;
+        while ((i = t.nodeValue.indexOf('\n')) !== -1) {
+          const nl = i > 0 ? t.splitText(i) : t;
+          const rest = nl.nodeValue.length > 1 ? nl.splitText(1) : null;
+          nls.push(nl);
+          if (!rest) break;
+          t = rest;
+        }
+      }
+      // Wrap each line, last to first, so earlier boundaries stay valid.
+      for (let k = nls.length; k >= 0; k--) {
+        const r = document.createRange();
+        if (k > 0) r.setStartAfter(nls[k - 1]); else r.setStart(code, 0);
+        if (k < nls.length) r.setEndBefore(nls[k]); else r.setEnd(code, code.childNodes.length);
+        const span = document.createElement('span');
+        span.className = 'print-doc-codeline';
+        span.appendChild(r.extractContents());
+        const lineText = span.textContent;
+        if (k === nls.length && lineText === '') continue;          // trailing newline
+        const indent = (/^[ \t]*/.exec(lineText)[0].replace(/\t/g, '    ')).length + 2;
+        span.style.paddingLeft = indent + 'ch';
+        span.style.textIndent = (-indent) + 'ch';
+        if (lineText === '') span.style.minHeight = lh + 'px';
+        r.insertNode(span);
+      }
+      for (const nl of nls) nl.remove();
+      if ((code.textContent || '').replace(/\n/g, '') !== text.replace(/\n/g, '')) {
+        code.innerHTML = before;
+        continue;
+      }
+      pre.setAttribute('data-print-code-hang', '1');
+      stats.codeHang += 1;
+    } catch (e) { /* leave this block as rendered */ }
+  }
+  // (b) Diffs lose the chat chrome (stylesheet, via .print-doc-diff); short
+  //     code blocks and diffs stay on one page.
+  stats.diffs = 0; stats.keptBlocks = 0;
+  for (const dc of Array.from(root.querySelectorAll('.diff-container'))) {
+    const p = dc.parentElement;
+    const w = (p && p.querySelector(':scope > .diff-view-controls')) ? p : dc;
+    if (w.classList.contains('print-doc-diff')) continue;
+    w.classList.add('print-doc-diff');
+    stats.diffs += 1;
+  }
+  const keepMax = pageH * 0.45;
+  for (const el of Array.from(root.querySelectorAll('pre, .print-doc-diff'))) {
+    try {
+      if (el.classList.contains('print-doc-keep')) continue;
+      if (el.closest('.print-doc-figure, table')) continue;
+      if (el.tagName === 'PRE' && el.closest('.print-doc-diff')) continue;
+      const h = el.getBoundingClientRect().height;
+      if (h > 0 && h <= keepMax) { el.classList.add('print-doc-keep'); stats.keptBlocks += 1; }
+    } catch (e) { /* block may break */ }
+  }
+
+  // (c) A short inline identifier is never split across lines: a break at
+  //     the hyphen of `x-retry-attempt` reads as two names.  Long ones (and
+  //     any inside a table cell) keep their break opportunities.
+  stats.codeNowrap = 0;
+  for (const c of Array.from(root.querySelectorAll('code'))) {
+    if (c.closest('pre, table, .print-doc-diff') || c.classList.contains('print-doc-nowrap')) continue;
+    const txt = c.textContent || '';
+    if (txt.length > 32 || /\s/.test(txt)) continue;
+    c.classList.add('print-doc-nowrap');
+    stats.codeNowrap += 1;
+  }
+
+  // ── 8. Lead-in sentences stay with the block they introduce ──────────
+  // A paragraph directly before display math, or one ending in a colon
+  // before any block, is bound to that block (never to a heading).
+  stats.leadins = 0;
+  for (const p of Array.from(root.querySelectorAll('.print-doc-section p'))) {
+    try {
+      if (p.classList.contains('print-doc-leadin')) continue;
+      if (p.closest('li, blockquote, table, .print-doc-figure, .print-doc-footnotes')) continue;
+      const next = p.nextElementSibling;
+      if (!next || /^(P|H[1-6]|HR)$/.test(next.tagName)) continue;
+      const math = next.classList.contains('math-display') || !!next.querySelector(':scope > .katex-display');
+      const colon = /[:\uFF1A]\s*$/.test(p.textContent || '');
+      if (!math && !colon) continue;
+      p.classList.add('print-doc-leadin');
+      next.classList.add('print-doc-after-leadin');
+      stats.leadins += 1;
+    } catch (e) { /* unbound */ }
   }
 
   root.setAttribute('data-print-doc-decorated', JSON.stringify(stats));

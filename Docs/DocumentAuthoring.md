@@ -71,9 +71,31 @@ choose native mappings per construct.
 The document export is typeset, not a screen dump. Everything below is
 automatic; the front-matter above is the only control surface.
 
-- **Title block** — title, optional subtitle, and a byline (author ·
-  formatted date, e.g. `September 19, 2026`, never a locale-numeric date)
-  under a rule. `layout: titlepage` gives the block its own first page.
+- **Title block** — a short accent bar, the title in a serif face at 23pt
+  (30pt on a title page), an optional subtitle, and a small-caps byline
+  (author · formatted date, e.g. `September 19, 2026`, never a
+  locale-numeric date) over a hairline rule. `layout: titlepage` gives the
+  block its own first page. Write the title as a name of 3-6 words (about
+  40 characters) and put the scope or finding in `subtitle`:
+  `title: "Shaper Latency Under Burst"`,
+  `subtitle: "What the queue does between 80% and 100% load"`. A title
+  too long for one line is shrunk in 1pt steps until it fits, down to a
+  floor of 18pt (22pt); one that still does not fit wraps there, with the
+  lines balanced. That is a safety net for a title that cannot be shorter.
+- **Code** — code is never hyphenated, and a short inline identifier such
+  as `x-retry-attempt` is never split across lines. A code line too long
+  for the column wraps with a hanging indent, so the continuation does not
+  read as a new statement. A code block or diff shorter than about half a
+  page stays on one page.
+- **Diffs** — a `diff` fence prints as the file name over the coloured
+  change, without the chat toolbar.
+- **Footnotes** — `[^1]` references and `[^1]: text` definitions are
+  collected into one numbered list at the end of the document.
+- **Lead-ins** — a sentence that introduces display math, or one ending in
+  a colon before a list, table, code block or figure, stays on the same
+  page as what it introduces.
+- **Sub- and superscripts** — `H~2~O` and `x^2^` are not supported and
+  print literally. Write `$H_2O$`, `$x^2$`, or `<sub>`/`<sup>`.
 - **Heading scale** — body `h1`/`h2`/`h3` step down from the title
   (17/13.5/11.5 pt) so the document title dominates; `h4` is a small-caps
   run-in. With `numbering.sections`, headings carry `1`, `1.1`, `1.1.1`
@@ -297,6 +319,59 @@ short-lived `ZIYA_LEDGER_SCOPE` token in its environment and can use
 The token names the project and the conversation, run and block the command
 came from, so the record's provenance is never typed by hand; outside such a
 shell the command explains that the variables are missing.
+
+## HTML reports
+
+A second output for the same kind of work product: one small, self-contained
+HTML file that displays inline wherever HTML snippets are previewed (a chat
+attachment, mail, a browser). It has no scripts and loads nothing from the
+network, so a sandboxed preview shows all of it.
+
+The source is an HTML body fragment under `.ziya/documents/` with the same
+front-matter as a PDF document (`title`, `subtitle`, `author`, `date`):
+
+```html
+---
+title: "Checkout Outage Review"
+subtitle: "The 9 November payment timeout incident and what changes"
+author: "Site Reliability"
+---
+<div class="summary"><b>Summary.</b> Checkout failed for 41 minutes.</div>
+<h2>Why it spread</h2>
+<figure data-render="mermaid">
+<script type="text/x-diagram">
+flowchart LR
+    A[Expired certificate] --> B[Retries] --> C[Outage]
+</script>
+<figcaption>The causal chain.</figcaption>
+</figure>
+```
+
+```bash
+curl -s -X POST "localhost:$ZIYA_PORT/api/export/html-report" \
+  -H 'Content-Type: application/json' -H "X-Project-Root: $PWD" \
+  -d '{"name": "outage.html"}' -o /tmp/outage.html
+```
+
+- **Styling** is one fixed stylesheet, so every report looks the same: a
+  serif title over a short accent bar, ruled tables, and a small class
+  vocabulary — `summary`, `note`, `warn` (call-out boxes), `sub` (small grey
+  provenance line), `num` (right-aligned numeric cell), `ok` / `mid` / `bad`
+  (status colours), and `bars` (a labelled bar timeline built from `div`s).
+- **Figures**: a `<figure data-render="TYPE">` holding the diagram source in
+  a `<script type="text/x-diagram">` is rendered by the same engine as the
+  chat (mermaid, graphviz, vega-lite, …) and embedded as an SVG `data:`
+  image. A PNG was too small to read in a chat preview; SVG stays sharp at
+  any width. The source is not HTML-escaped.
+- **Failures are visible**: a figure that does not render leaves a red
+  dashed box with the error in its place, and the response header
+  `X-Ziya-Figures-Failed` counts them. `grep -c figure-error` on the output
+  should print 0.
+- Scripts and `on…` handlers in the body are removed. Images loaded from a
+  URL are reported in `X-Ziya-External`, because a sandboxed preview will not
+  show them.
+- Not available in this output: display math and page-oriented features
+  (page breaks, running footer, numbering). Use the PDF export for those.
 
 ## The `document_authoring` skill
 

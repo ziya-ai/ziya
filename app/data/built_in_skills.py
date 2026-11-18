@@ -33,10 +33,10 @@ BUILT_IN_SKILLS: List[Dict[str, Any]] = [
     {
         'id': 'document_authoring',
         'name': 'Document Authoring',
-        'description': 'Author and revise polished work-product documents with PDF export',
+        'description': 'Author and revise polished work-product documents with PDF and HTML export',
         'visibility': MODEL_DISCOVERABLE,
-        'catalog_description': 'Author work-product documents (reports, memos, specs) as markdown IR in .ziya/documents/ and export high-fidelity PDFs',
-        'keywords': ['document', 'report', 'pdf', 'export', 'memo', 'spec', 'work-product'],
+        'catalog_description': 'Author work-product documents (reports, memos, specs) in .ziya/documents/ and export high-fidelity PDFs or self-contained HTML reports that display inline in chat tools',
+        'keywords': ['document', 'report', 'pdf', 'html', 'export', 'memo', 'spec', 'work-product'],
         'prompt': '''You author DOCUMENTS (reports, memos, specs) as markdown IR files in
 `.ziya/documents/` — a writable path. The IR file is the single editing
 surface: create it with file_write, revise it with TARGETED edits, and never
@@ -49,6 +49,8 @@ user wants the artifact.
 ---
 ziya-doc: 1
 title: "Queue Depth Analysis"
+subtitle: "Headroom in the ingest tier at 85% load"   # optional; one line.
+                          # The scope or finding goes here, not in the title.
 author: "Jane Doe"        # optional; a person or team ONLY. Becomes the PDF
                           # /Author and repeats in the running footer of every
                           # page — never append the repo, workspace, project
@@ -189,7 +191,77 @@ than the column or taller than a page.
    no margin is set) give 95-98 characters per line and 18mm still gives
    96 on some pages, past the 95-character readability limit. 19mm keeps
    every page at or under 95. Never narrow the side margins to save
-   pages; cut words instead.''',
+   pages; cut words instead.
+
+## Titles
+1. A title is a name, not a sentence: 3-6 words, about 40 characters at
+   most. Name the subject ("Shaper Latency Under Burst"). No lead-ins
+   such as "An Analysis of", "A Study of", "Overview of" or "Report on",
+   and no colon followed by a clause.
+2. Whatever you cut from the title goes in `subtitle`, as one line: the
+   scope, the question or the finding ("What the queue does between 80%
+   and 100% load"). Dates, versions and author names belong in their own
+   front-matter fields, never in the title.
+3. The title prints at 23pt (30pt with `layout: titlepage`). One too long
+   for a line is shrunk in 1pt steps to a floor of 18pt (22pt) and then
+   wraps. That is a safety net for a title the user insists on, not room
+   to write a longer one.
+
+## Inline markup and footnotes
+1. Footnotes: write `[^1]` in the text and `[^1]: the note` on its own
+   line. They print as one numbered list at the end of the document. Use
+   them for sources and asides, not for anything the reader needs to
+   follow the argument.
+2. Subscripts and superscripts: `H~2~O` and `x^2^` are not supported and
+   print literally. Write inline math (`$H_2O$`, `$x^2$`) or HTML
+   (`H<sub>2</sub>O`, `x<sup>2</sup>`).
+3. A `diff` fence prints as the file name over the coloured change.
+
+## HTML reports
+When the user asks for an HTML report, or for something to post in a chat
+tool or send by mail, produce ONE self-contained HTML file instead of a
+PDF. It has no scripts and loads nothing from the network.
+1. Write the source to `.ziya/documents/NAME.html`: the same front-matter
+   as above (`title`, `subtitle`, `author`, `date`; the Titles rules
+   apply), then an HTML BODY FRAGMENT. No `<html>`, `<head>`, `<style>`,
+   `<script>` or `<h1>`: the export adds the page, the stylesheet and the
+   title block. Use `h2`/`h3`, `p`, `ul`/`ol`, `table`, `code`, `pre`.
+2. Use only these classes; do not add inline colours or fonts:
+   `summary` (a div: the one-paragraph answer, first thing in the body),
+   `note` and `warn` (call-out divs), `sub` (small grey line for
+   provenance and caveats), `num` (right-aligned numeric `td`/`th`),
+   `ok` / `mid` / `bad` (status colour on a cell or span), and `bars`.
+3. Rendered diagrams: put the source, unescaped, in a figure:
+   <figure data-render="mermaid">
+   <script type="text/x-diagram">
+   flowchart LR
+       A --> B
+   </script>
+   <figcaption>One-sentence caption.</figcaption>
+   </figure>
+   `data-render` takes the same types as a code fence (mermaid, graphviz,
+   vega-lite, ...). Each is embedded as an SVG image. Give vega-lite a
+   `width` of 560-640. Display math is not available in this output.
+4. A timeline or bar comparison needs no diagram. Each row is a label and
+   a track; `<b>` is a solid bar, `<i>` a translucent one, positioned by
+   percentage:
+   <div class="bars">
+   <div class="legend"><b></b>burn<i></i>link down</div>
+   <div class="axis"><span style="left:0%">09Z</span><span style="left:50%">15Z</span></div>
+   <div class="row"><div class="lab">sat-505</div><div class="track">
+   <i style="left:7%;width:53%"></i><b style="left:9%;width:11%"></b></div></div>
+   </div>
+   Keep axis labels at or below `left:95%`.
+5. Export with the server that runs this conversation (same port and
+   X-Project-Root rules as the PDF export):
+   curl -s -X POST "localhost:$ZIYA_PORT/api/export/html-report" \\
+     -H 'Content-Type: application/json' \\
+     -H "X-Project-Root: $PWD" \\
+     -d '{"name": "NAME.html"}' -o /tmp/NAME.html
+   Verify: `head -c 15 /tmp/NAME.html` prints `<!DOCTYPE html>`, and
+   `grep -c figure-error /tmp/NAME.html` prints 0. A non-zero count means
+   a figure failed to render; the error text is in the file. Fix the
+   diagram source and export again before reporting success.''',
         'color': '#8b5cf6',
     },
     {

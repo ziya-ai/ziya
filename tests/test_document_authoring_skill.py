@@ -67,6 +67,55 @@ def _docs() -> str:
     return (Path(__file__).resolve().parents[1] / "Docs" / "DocumentAuthoring.md").read_text()
 
 
+def test_prompt_asks_for_short_titles_and_describes_shrink():
+    """Titles came out as sentences ("An Analysis of ... in the ...").  The
+    prompt must ask for a short name with the detail in \`subtitle\`, and
+    describe the renderer's shrink (23pt -> 18pt floor, 30pt -> 22pt on a
+    title page) as a safety net, not a licence for long titles."""
+    p = _prompt()
+    assert "## Titles" in p
+    i = p.index("## Titles")
+    block = p[i:]
+    assert "3-6 words" in block and "40 characters" in block
+    assert "`subtitle`" in block
+    assert "An Analysis of" in block          # the pattern to avoid is named
+    assert "23pt" in block and "18pt" in block and "30pt" in block and "22pt" in block
+    # The front-matter example shows the split, not a title alone.
+    fm = p[p.index("ziya-doc: 1"):p.index("layout: report")]
+    assert "subtitle:" in fm
+
+
+def test_prompt_and_docs_cover_footnotes_and_sub_superscripts():
+    """Corpus render: `H~2~O` / `x^2^` print literally, and footnotes are
+    collected at the document end; the prompt and the docs must say both."""
+    p = _prompt()
+    assert "## Inline markup and footnotes" in p
+    block = p[p.index("## Inline markup and footnotes"):]
+    assert "`[^1]`" in block and "end of the document" in block
+    assert "H~2~O" in block and "<sub>" in block and "$" in block
+    doc = _docs()
+    assert "**Footnotes**" in doc and "**Sub- and superscripts**" in doc
+
+
+def test_exporter_squeezes_runt_page_before_forced_break():
+    src = (Path(__file__).resolve().parents[1] / "app" / "services" / "pdf_exporter.py").read_text()
+    assert "has_runt_section_tail(first_words, len(sections))" in src
+
+
+def test_docs_mirror_title_shrink_and_match_renderer_floors():
+    doc = _docs()
+    i = doc.index("- **Title block**")
+    block = doc[i:i + 900]
+    assert "23pt" in block and "18pt" in block and "30pt" in block and "22pt" in block
+    assert "3-6 words" in block and "subtitle" in block
+    # The numbers quoted to authors are the ones the pass and stylesheet use.
+    from app.utils.document_print_decor import DOCUMENT_PRINT_CSS, build_document_decorate_js
+    js, _ = build_document_decorate_js(title="T")
+    assert "? 22 : 18" in js
+    assert "font-size: 23pt !important" in DOCUMENT_PRINT_CSS
+    assert "font-size: 30pt !important" in DOCUMENT_PRINT_CSS
+
+
 def test_prompt_has_stacked_chart_and_back_to_back_rule():
     """iter_008 (d018): a tall vconcat figure ending a section of figures
     leaves a blank band the PDF cannot fill (no prose to float)."""
