@@ -247,7 +247,14 @@ export function relocateOverflowingSideLegend(
     const room = Math.floor(plotWidthPx / columns) - LEGEND_ENTRY_CHROME_PX;
     const longest = sites.reduce((m, s) => Math.max(m,
       s.labels.reduce((mm, l) => Math.max(mm, estimateTextWidthPx(l, fontPx(spec, s))), 0)), 0);
-    labelLimit = Math.max(1, Math.min(longest + 6, room));
+    // A legend whose labels come from a transform (fold, calculate) has no
+    // enumerable labels, and its "longest label" measures 0.  The config
+    // limit applies to every legend, so it is fitted to the longest label
+    // only when every legend's labels are known; otherwise it keeps at
+    // least Vega's default.
+    const allKnown = sites.every(s => s.labels.length > 0);
+    const wanted = allKnown ? longest + 6 : Math.max(longest + 6, VEGA_DEFAULT_LEGEND_LABEL_LIMIT);
+    labelLimit = Math.max(1, Math.min(wanted, room));
   }
   spec.config = { ...cfg, legend: { ...legendCfg, orient: 'bottom', columns,
     ...(labelLimit !== null ? { labelLimit } : {}) } };
