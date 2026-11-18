@@ -277,6 +277,9 @@ class DirectMCPTool(BaseTool):
         kwargs = coerce_json_string_args(self.tool_instance, kwargs)
         
         # Run the async execute method
+        # ServiceInfraError is a BaseException, so it is named in the
+        # handlers below; ``except Exception`` alone lets it through.
+        from app.utils.infra_errors import ServiceInfraError
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -301,11 +304,11 @@ class DirectMCPTool(BaseTool):
             try:
                 result = asyncio.run(self.tool_instance.execute(**kwargs))
                 logger.debug(f"🔧 Got result from asyncio.run: {type(result)}")
-            except Exception as ex:
+            except (Exception, ServiceInfraError) as ex:
                 error_msg = f"Error executing builtin tool {self.tool_instance.name}: {str(ex)}"
                 logger.error(f"{error_msg}\n{traceback.format_exc()}")
                 return f"❌ {error_msg}"
-        except Exception as e:
+        except (Exception, ServiceInfraError) as e:
             error_msg = f"Error executing builtin tool {self.tool_instance.name}: {str(e)}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
             return f"❌ {error_msg}"
@@ -346,6 +349,7 @@ class DirectMCPTool(BaseTool):
     
     async def _arun(self, **kwargs) -> str:
         """Run the tool asynchronously."""
+        from app.utils.infra_errors import ServiceInfraError
         try:
             kwargs = coerce_json_string_args(self.tool_instance, kwargs)
             # Execute the tool
@@ -379,7 +383,7 @@ class DirectMCPTool(BaseTool):
                     return json.dumps(result, ensure_ascii=False)
             else:
                 return str(result)
-        except Exception as e:  # Intentionally broad: third-party tool code
+        except (Exception, ServiceInfraError) as e:  # Intentionally broad: third-party tool code
             logger.error(f"Error executing direct MCP tool {self.name}: {e}")
             return f"❌ Error executing {self.name}: {str(e)}"
 

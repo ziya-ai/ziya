@@ -318,7 +318,11 @@ async def organize_memories():
             result = await reorganize()
             async with _organize_lock:
                 _organize_task_status.update({"running": False, "result": result, "error": None})
-        except Exception as e:
+        except BaseException as e:  # noqa: BLE001 -- narrowed just below
+            # ServiceInfraError is a BaseException: uncaught, "running"
+            # stayed True and every later request got "already_running".
+            if not isinstance(e, Exception) and not getattr(e, "infra_kind", ""):
+                raise
             logger.error(f"Organization failed: {e}")
             async with _organize_lock:
                 _organize_task_status.update({"running": False, "result": None, "error": str(e)})

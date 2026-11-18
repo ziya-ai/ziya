@@ -1735,6 +1735,13 @@ async def chat_turn_stream(conversation_id: str):
     )
 
 
+# Infrastructure outages -> 503.  Added FIRST so it is the innermost
+# middleware: ServiceInfraError is a BaseException, which no Starlette
+# handler or BaseHTTPMiddleware catches (see the module docstring).
+from app.utils.infra_error_middleware import InfraErrorMiddleware
+app.add_middleware(InfraErrorMiddleware)
+
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -2015,7 +2022,11 @@ async def _keepalive_wrapper(async_gen, interval: float = 15.0):
 
         try:
             result = pending_task.result()
-        except Exception as exc:  # Intentionally broad: wraps entire SSE stream
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        # BaseException: ServiceInfraError is one by design, and reaching
+        # here uncaught ended the response with no error frame.
+        except BaseException as exc:  # Intentionally broad: wraps entire SSE stream
             # Any unhandled error must produce a client-visible error event, not a silent drop
             logger.error(f"_keepalive_wrapper: stream_chunks raised: {exc!r}", exc_info=True)
             yield f"data: {json.dumps({'error': sanitize_client_error(exc), 'error_type': 'stream_error'})}\n\n"

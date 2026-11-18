@@ -998,6 +998,13 @@ class DelegateManager:
             rescued = await self._attempt_rescue(plan_id, spec, accumulated, checkpoints)
             if not rescued:
                 await self.on_delegate_failed(plan_id, did, str(exc))
+        except BaseException as exc:  # noqa: BLE001 — narrowed to infra faults below
+            # ServiceInfraError is a BaseException; without this the delegate
+            # task died and the delegate stayed "running" in the plan.
+            if not getattr(exc, "infra_kind", ""):
+                raise
+            logger.error(f"❌ Delegate outage: {spec.name} — {exc}")
+            await self.on_delegate_failed(plan_id, did, str(exc))
 
     def _build_delegate_messages(
         self, plan_id: str, spec: DelegateSpec

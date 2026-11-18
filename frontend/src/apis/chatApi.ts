@@ -18,6 +18,7 @@ import { markPickedUp, clearPickups } from '../utils/capabilityPickup';
 import { announceReferencesChanged } from './referencesApi';
 import { isModelMemoryError, renderModelMemoryErrorBanner } from '../utils/modelMemoryErrorBanner';
 import { isInstallationChangedError, renderInstallationChangedBanner } from '../utils/installationChangedBanner';
+import { isSilentEmptyStream, SILENT_EMPTY_STREAM_MESSAGE } from '../utils/silentEmptyStream';
 import { appendGroupEnd, groupStartDisplay, memberHeader, opensGroup } from '../utils/toolGroupDisplay';
 import { elideInlineImages } from '../utils/elideInlineImages';
 import {
@@ -825,6 +826,9 @@ export const sendPayload = async (
     let containsDiff = false;
     let errorOccurred = false;
     let errorAlreadyDisplayed = false;  // Track if we've shown an error to prevent duplicates
+    // Data frames processed this turn, heartbeats excluded.  Zero at the end
+    // of the stream means the server reported nothing (silentEmptyStream.ts).
+    let dataFramesSeen = 0;
     // Thinking state for THIS turn.  ``thinkingLocal`` is the synchronous
     // source of truth for index assignment -- deriving indices from React
     // state inside a setState callback let two chunks in one batch read the
@@ -1156,6 +1160,7 @@ export const sendPayload = async (
                 if (data.includes('"heartbeat": true') || data.includes('"type": "heartbeat"')) {
                     return;
                 }
+                dataFramesSeen++;
 
                 // Parse JSON first to check message type
                 jsonData = JSON.parse(data);
@@ -2940,6 +2945,17 @@ export const sendPayload = async (
                                 showError(missedError.detail || 'An error occurred', conversationId, addMessageToConversation, 'error');
                                 errorOccurred = true;
                             }
+                        }
+                        if (isSilentEmptyStream({
+                            dataFrames: dataFramesSeen,
+                            content: currentContent,
+                            errorShown: errorOccurred || errorAlreadyDisplayed,
+                            aborted: isAborted || signal.aborted,
+                            reattach,
+                        })) {
+                            console.error('🚨 EMPTY_STREAM: response ended with no data frames');
+                            showError(SILENT_EMPTY_STREAM_MESSAGE, conversationId, addMessageToConversation, 'error', 'empty_stream');
+                            errorOccurred = true;
                         }
                     }
                 } catch (error) {

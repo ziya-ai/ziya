@@ -808,7 +808,12 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             'content': f"ERROR: {error_msg}. Please try a different approach or fix the command.",
         }
 
-    except Exception as e:  # Intentionally broad: MCP tools are third-party code
+    except BaseException as e:  # Intentionally broad: MCP tools are third-party code
+        # ServiceInfraError (an embedding or service-model outage) is a
+        # BaseException; uncaught here it ended the whole chat turn.
+        # Cancellation, generator close and interpreter exit pass through.
+        if not isinstance(e, Exception) and not getattr(e, "infra_kind", ""):
+            raise
         if 'cannot schedule new futures after shutdown' in str(e):
             error_msg = "Tool execution interrupted (server shutting down)"
         else:

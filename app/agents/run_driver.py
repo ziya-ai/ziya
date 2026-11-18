@@ -278,6 +278,18 @@ async def drive_run(launch: RunLaunch) -> None:
         run_storage.update_status(run_id, st, error=str(e))
         await _emit_run(st, error=str(e))
         logger.error(f"❌ {label} crashed: {run_id[:8]}: {e}", exc_info=True)
+    except BaseException as e:  # noqa: BLE001 — narrowed to infra faults below
+        # ServiceInfraError (app/utils/infra_errors) is a BaseException, so
+        # none of the handlers above see it.  Uncaught, the driver task died
+        # with the run still recorded as "running" and nothing behind it.
+        # Every call site in the task system converts it to TaskInfraError;
+        # this is the backstop for one that does not.
+        kind = getattr(e, "infra_kind", "")
+        if not kind:
+            raise
+        run_storage.mark_held(run_id, reason=kind, block_id="", error=str(e))
+        await _emit_run("held", error=str(e))
+        logger.warning(f"⏸️ {label} held ({kind}): {run_id[:8]} — {e}")
     finally:
         # Managed jobs owned by this run (design/job-runner.md, Ownership):
         # killed when the run ends or is cancelled.  A HELD run keeps them
