@@ -240,29 +240,12 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
         logger.error(f"Error getting accurate token counts: {str(e)}")
         return {"error": str(e), "results": {}}
 
-def _current_tool_definitions():
-    """(mcp_defs, builtin_defs) as name/description/input_schema dicts."""
-    mcp_defs: List[Dict[str, Any]] = []
-    builtin_defs: List[Dict[str, Any]] = []
-    try:
-        from app.mcp.manager import get_mcp_manager
-        mgr = get_mcp_manager()
-        if mgr.is_initialized:
-            for t in mgr.get_all_tools():
-                mcp_defs.append({"name": t.name, "description": t.description,
-                                 "input_schema": t.inputSchema})
-    except Exception as e:
-        logger.debug(f"context-estimate: MCP tools unavailable: {e}")
-    try:
-        from app.mcp.builtin_tools import get_enabled_builtin_tools
-        for t in get_enabled_builtin_tools():
-            schema_cls = getattr(t, "InputSchema", None)
-            schema = schema_cls.model_json_schema() if hasattr(schema_cls, "model_json_schema") else {}
-            builtin_defs.append({"name": t.name, "description": getattr(t, "description", "") or "",
-                                 "input_schema": schema})
-    except Exception as e:
-        logger.debug(f"context-estimate: builtin tools unavailable: {e}")
-    return mcp_defs, builtin_defs
+def _current_tool_definitions(project_root=None, conversation_id=None, model=None):
+    """(in-context MCP defs, in-context builtin defs, all enabled MCP defs)
+    for a request in this project and conversation.  Placement-aware; see
+    app/utils/request_tool_defs.py."""
+    from app.utils.request_tool_defs import request_tool_definitions
+    return request_tool_definitions(project_root, conversation_id, model=model)
 
 
 def _resolve_model_identity(model: Optional[str]):
@@ -300,13 +283,15 @@ async def context_estimate(request: ContextEstimateRequest) -> Dict[str, Any]:
     from app.utils.token_calibrator import get_token_calibrator
     base_dir = get_project_root()
     model_id, family = _resolve_model_identity(request.model)
-    mcp_defs, builtin_defs = _current_tool_definitions()
 
     def _run():
+        mcp_defs, builtin_defs, known_mcp = _current_tool_definitions(
+            base_dir, request.conversation_id, request.model)
         return estimate_context(
             request.files, base_dir, get_token_calibrator(),
             model_family=family, model_id=model_id,
             mcp_tool_defs=mcp_defs, builtin_tool_defs=builtin_defs,
+            known_mcp_tool_defs=known_mcp,
         ).to_dict()
     return await asyncio.to_thread(_run)
 

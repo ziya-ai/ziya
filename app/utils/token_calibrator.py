@@ -112,6 +112,10 @@ class TokenCalibrator:
         # model_family -> MCP tool count at last baseline measurement, used to
         # detect when the registered tool set changes and re-measure.
         self.baseline_tool_counts = {}
+        # model_family -> normalized names of the tools that were in context
+        # when the baseline was measured.  The context estimate prices the
+        # difference for a project or conversation whose tool set differs.
+        self.baseline_tool_names = {}
         self.baselines_measured = set()  # Set of model families with measured baselines
         
         # Persistence strategy
@@ -206,6 +210,7 @@ class TokenCalibrator:
                     self.baseline_overhead_tokens = data.get('baseline_overhead_tokens', {})
                     self.baselines_measured = set(data.get('baselines_measured', []))
                     self.baseline_tool_counts = data.get('baseline_tool_counts', {})
+                    self.baseline_tool_names = data.get('baseline_tool_names', {}) or {}
                 
                     # Count total samples and types
                     total_models = len(self.stats_by_model_and_type)
@@ -247,6 +252,7 @@ class TokenCalibrator:
                 'baseline_overhead_tokens': dict(self.baseline_overhead_tokens),
                 'baselines_measured': set(self.baselines_measured),
                 'baseline_tool_counts': dict(self.baseline_tool_counts),
+                'baseline_tool_names': dict(self.baseline_tool_names),
             })
 
     # ── background writer ────────────────────────────────────────────────
@@ -329,6 +335,7 @@ class TokenCalibrator:
                 on_disk_baselines = {}
                 on_disk_measured = set()
                 on_disk_tool_counts = {}
+                on_disk_tool_names = {}
                 try:
                     if os.path.exists(self.cache_file):
                         with open(self.cache_file, 'r') as existing:
@@ -336,6 +343,7 @@ class TokenCalibrator:
                         on_disk_baselines = existing_data.get('baseline_overhead_tokens', {}) or {}
                         on_disk_measured = set(existing_data.get('baselines_measured', []) or [])
                         on_disk_tool_counts = existing_data.get('baseline_tool_counts', {}) or {}
+                        on_disk_tool_names = existing_data.get('baseline_tool_names', {}) or {}
                 except (json.JSONDecodeError, OSError, ValueError) as merge_err:
                     logger.debug(f"📊 SAVE: Could not read existing baselines for merge: {merge_err}")
                 
@@ -354,6 +362,7 @@ class TokenCalibrator:
                     'baseline_overhead_tokens': merged_baselines,
                     'baselines_measured': list(merged_measured),
                     'baseline_tool_counts': merged_tool_counts,
+                    'baseline_tool_names': {**on_disk_tool_names, **snap['baseline_tool_names']},
                     'last_updated': time.time(),
                     'version': '1.1'
                 }
@@ -446,6 +455,20 @@ class TokenCalibrator:
             Baseline overhead tokens, or 0 if not measured yet
         """
         return self.baseline_overhead_tokens.get(model_family, 0)
+
+    def record_baseline_tool_names(self, model_family: str, tools) -> None:
+        """Remember which tools were in context when ``model_family``'s
+        baseline was measured.  ``tools`` are the request's tool entries;
+        names are stored normalized (no ``mcp_`` prefix), sorted."""
+        from app.utils.task_tool_floor import normalize_tool_name
+        names = {normalize_tool_name(str((t or {}).get("name") or "")) for t in (tools or [])}
+        self.baseline_tool_names[model_family] = sorted(names - {""})
+
+    def get_baseline_tool_names(self, model_family: str):
+        """Normalized tool names the baseline was measured with, or None when
+        none were recorded (a baseline from before names were kept)."""
+        names = self.baseline_tool_names.get(model_family)
+        return list(names) if isinstance(names, list) else None
 
     def estimate_tokens_from_chars(
         self,

@@ -141,27 +141,51 @@ def estimate_files(
 def estimate_overhead(
     calibrator, model_family: str, model_id: Optional[str],
     mcp_tool_defs: List[Dict[str, Any]], builtin_tool_defs: List[Dict[str, Any]],
+    known_mcp_tool_defs: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple:
     """(tokens, source).  Prefers the overhead the calibrator learned from
     real usage (tools + fixed system text, per family); otherwise prices the
     schema JSON by the model's global ratio.  Tool schemas tokenize ~15%
     denser than source (measured: fable 2.58 vs 3.11 chars/token), hence the
-    0.85."""
+    0.85.
+
+    The learned baseline is one figure per family.  When the calibrator
+    recorded which tools it was measured with, MCP tools that have since
+    joined or left context (a different project's placements, a server
+    loaded from within reach) are priced by schema size and applied to it;
+    ``known_mcp_tool_defs`` supplies the definitions of tools that left."""
+    ratio, _ = calibrator.get_display_ratio(None, model_family=model_family, model_id=model_id)
+
+    def _price(defs) -> int:
+        return math.ceil(len(json.dumps(defs)) / (max(ratio, 1.0) * 0.85)) if defs else 0
+
     learned = calibrator.get_baseline_overhead(model_family)
     if learned and learned > 0:
-        return int(learned), "learned_baseline"
+        names_of = getattr(calibrator, "get_baseline_tool_names", None)
+        measured = names_of(model_family) if names_of else None
+        if measured is None:
+            return int(learned), "learned_baseline"
+        from app.utils.task_tool_floor import normalize_tool_name
+        measured = set(measured)
+        current = {normalize_tool_name(d.get("name", "")) for d in mcp_tool_defs}
+        added = [d for d in mcp_tool_defs
+                 if normalize_tool_name(d.get("name", "")) not in measured]
+        removed = [d for d in (known_mcp_tool_defs or [])
+                   if (n := normalize_tool_name(d.get("name", ""))) in measured and n not in current]
+        if not added and not removed:
+            return int(learned), "learned_baseline"
+        return max(0, int(learned) + _price(added) - _price(removed)), "learned_baseline_adjusted"
     defs = list(mcp_tool_defs) + list(builtin_tool_defs)
     if not defs:
         return 0, "none"
-    chars = len(json.dumps(defs))
-    ratio, _ = calibrator.get_display_ratio(None, model_family=model_family, model_id=model_id)
-    return math.ceil(chars / (max(ratio, 1.0) * 0.85)), "schema_chars"
+    return _price(defs), "schema_chars"
 
 
 def estimate_context(
     files: Iterable[str], base_dir: str, calibrator, *,
     model_family: str, model_id: Optional[str],
     mcp_tool_defs: List[Dict[str, Any]], builtin_tool_defs: List[Dict[str, Any]],
+    known_mcp_tool_defs: Optional[List[Dict[str, Any]]] = None,
 ) -> ContextEstimate:
     fes = estimate_files(files, base_dir, calibrator, model_family, model_id)
     file_tokens = sum(f.tokens for f in fes)
@@ -169,7 +193,8 @@ def estimate_context(
     prefix_tokens = sum(
         math.ceil((f.chars - f.raw_chars) / f.ratio) for f in fes if f.status == "ok" and f.ratio > 0
     )
-    overhead, src = estimate_overhead(calibrator, model_family, model_id, mcp_tool_defs, builtin_tool_defs)
+    overhead, src = estimate_overhead(calibrator, model_family, model_id, mcp_tool_defs, builtin_tool_defs,
+                                      known_mcp_tool_defs=known_mcp_tool_defs)
     return ContextEstimate(
         files=fes, file_tokens=file_tokens, prefix_tokens=prefix_tokens,
         overhead_tokens=overhead, overhead_source=src,

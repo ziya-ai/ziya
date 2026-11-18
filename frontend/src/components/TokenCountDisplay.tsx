@@ -16,6 +16,7 @@ import { TokenBreakdownBar, fmtK } from './TokenBreakdownBar';
 import { HANDOFF_WARNING_RATIO, handoffAffordance, handoffPressureTier } from '../utils/handoffPressure';
 import { getHandoffState } from '../api/handoffApi';
 import { elideInlineImages } from '../utils/elideInlineImages';
+import { BENCH_CHANGED_EVENT, MCP_STATUS_CHANGED_EVENT } from '../hooks/useBench';
 // Global request deduplication cache
 const activeRequests = new Map<string, Promise<any>>();
 
@@ -175,6 +176,9 @@ export const TokenCountDisplay = memo(() => {
         unreadable: string[]; model_key: string | null;
     } | null>(null);
     const estimateSeqRef = useRef(0);
+    // Bumped when a placement or server changes: the tools figure moves
+    // without the file selection changing.
+    const [toolsRevision, setToolsRevision] = useState(0);
     const builtinServerNames = ['time', 'shell'];
 
     const lastMuteSignatureRef = useRef<string>('');
@@ -319,7 +323,7 @@ export const TokenCountDisplay = memo(() => {
 
         const checkMcpStatus = async () => {
             try {
-                const response = await fetch('/api/mcp/status');
+                const response = await fetch('/api/mcp/status', { headers: getProjectHeaders() });
                 if (response.ok) {
                     const data = await response.json();
                     if (isMounted) {
@@ -335,7 +339,7 @@ export const TokenCountDisplay = memo(() => {
 
                             // Only show MCP tokens if there are non-builtin servers
                             if (hasNonBuiltinServers) {
-                                setMcpTokenCount(data.token_costs.enabled_tool_tokens || 0);
+                                setMcpTokenCount((data.token_costs.breakdown?.sent_total ?? data.token_costs.enabled_tool_tokens) || 0);
                                 setMcpServerCount(nonBuiltinServers.length);
                             } else {
                                 setMcpTokenCount(0);
@@ -360,7 +364,7 @@ export const TokenCountDisplay = memo(() => {
     useEffect(() => {
         const handleMCPStatusChange = async () => {
             try {
-                const response = await fetch('/api/mcp/status');
+                const response = await fetch('/api/mcp/status', { headers: getProjectHeaders() });
                 if (response.ok) {
                     const data = await response.json();
                     const isEnabled = data.initialized && !data.disabled;
@@ -371,7 +375,7 @@ export const TokenCountDisplay = memo(() => {
                             name => !builtinServerNames.includes(name)
                         );
                         if (nonBuiltinServers.length > 0) {
-                            setMcpTokenCount(data.token_costs.enabled_tool_tokens || 0);
+                            setMcpTokenCount((data.token_costs.breakdown?.sent_total ?? data.token_costs.enabled_tool_tokens) || 0);
                             setMcpServerCount(nonBuiltinServers.length);
                         } else {
                             setMcpTokenCount(0);
@@ -386,6 +390,16 @@ export const TokenCountDisplay = memo(() => {
 
         window.addEventListener('mcpStatusChanged', handleMCPStatusChange);
         return () => window.removeEventListener('mcpStatusChanged', handleMCPStatusChange);
+    }, []);
+
+    useEffect(() => {
+        const bump = () => setToolsRevision(r => r + 1);
+        window.addEventListener(MCP_STATUS_CHANGED_EVENT, bump);
+        window.addEventListener(BENCH_CHANGED_EVENT, bump);
+        return () => {
+            window.removeEventListener(MCP_STATUS_CHANGED_EVENT, bump);
+            window.removeEventListener(BENCH_CHANGED_EVENT, bump);
+        };
     }, []);
 
     const handleAstResolutionChange = useCallback(async (newResolution: string) => {
@@ -746,17 +760,15 @@ export const TokenCountDisplay = memo(() => {
         tokenCalculationEffect();
     }, [tokenCalculationEffect]);
 
-    // Fetch the server estimate, debounced, whenever the selection, tree, or
-    // effective model changes. Stale responses are dropped by sequence number.
+    // Fetch the server estimate, debounced, whenever the selection, tree,
+    // effective model, or tool placement changes. It runs with no files
+    // selected too: the tools figure does not depend on the selection.
+    // Stale responses are dropped by sequence number.
     useEffect(() => {
-        if (!checkedKeys || checkedKeys.length === 0) {
-            setServerEstimate(null);
-            return;
-        }
         const seq = ++estimateSeqRef.current;
         const timer = setTimeout(async () => {
             try {
-                const files = expandCheckedKeysToFiles(checkedKeys.map(String), folders as any);
+                const files = expandCheckedKeysToFiles((checkedKeys || []).map(String), folders as any);
                 const body: Record<string, unknown> = { files };
                 if (activeModelPin?.model) body.model = activeModelPin.model;
                 if (currentConversationId) body.conversation_id = currentConversationId;
@@ -781,7 +793,7 @@ export const TokenCountDisplay = memo(() => {
             }
         }, 800);
         return () => clearTimeout(timer);
-    }, [checkedKeys, folders, activeModelPin?.model, currentConversationId]);
+    }, [checkedKeys, folders, activeModelPin?.model, currentConversationId, toolsRevision]);
 
     // Legend figures are plain bold; the budget zone is shown by the bar's
     // outline and the total row, not by colouring every number.
@@ -966,7 +978,7 @@ export const TokenCountDisplay = memo(() => {
     if (toolTokens > 0) {
         breakdownItems.push(
             <Tooltip key="mcp" title={serverEstimate
-                ? `Tool schema + fixed system overhead (${serverEstimate.overhead_source === 'learned_baseline' ? 'learned from billed usage' : 'estimated from schema size'})`
+                ? `Tool schema + fixed system overhead (${serverEstimate.overhead_source.startsWith('learned_baseline') ? 'learned from billed usage' : 'estimated from schema size'})`
                 : `MCP tool tokens from ${mcpServerCount} server${mcpServerCount !== 1 ? 's' : ''}`}>
                 <span style={{ fontSize: '10px' }}>
                     <i className="sw tools" />{serverEstimate ? 'tools' : 'mcp'} <span style={numStyle}>{toolTokens.toLocaleString()}</span>

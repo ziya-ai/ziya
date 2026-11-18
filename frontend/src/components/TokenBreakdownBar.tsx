@@ -1,6 +1,6 @@
 /**
  * TokenBreakdownBar — the context-budget bar, stacked by what is spending
- * it (files · chat · tools · ast), used by both the sidebar footer
+ * it (files · tools · chat · ast), used by both the sidebar footer
  * (TokenCountDisplay) and the collapsed strip (CollapsedPanelStrip) so the
  * two can never disagree on colour or proportion.  Colours are the
  * --z-tok-* tokens in styles/theme-tokens.css; the track turns red past the
@@ -16,7 +16,9 @@ export interface TokenBreakdown {
     limit: number;
 }
 
-export const TOKEN_SEGMENTS = ['files', 'chat', 'tools', 'ast'] as const;
+// Left-to-right order of the bar and legend.  Matches the footer text under
+// the bar (TokenCountDisplay's breakdownItems: files, tools, chat, ast).
+export const TOKEN_SEGMENTS = ['files', 'tools', 'chat', 'ast'] as const;
 export type TokenSegment = typeof TOKEN_SEGMENTS[number];
 
 export const fmtK = (n: number): string =>
