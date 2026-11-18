@@ -246,6 +246,44 @@ class TestSanitizeForContext:
         assert result == text
 
 
+class TestRequestedBase64Survives:
+    """A base64 run printed by a command the model ran (or a file it read)
+    reaches the model.  Reported 2026-11-11: a model driving a shadow
+    terminal ran ``base64`` on the remote host and saw only
+    ``[binary content removed: N base64 chars]``, so it concluded the host
+    had no base64 support."""
+
+    BLOB = base64.b64encode(bytes(range(256)) * 2).decode()  # 684 chars, one line
+
+    @pytest.mark.parametrize('tool', [
+        'shadow_send', 'shadow_read', 'shadow_wait', 'mcp_shadow_send',
+        'run_shell_command', 'mcp_run_shell_command', 'job_read', 'job_wait',
+        'file_read',
+    ])
+    def test_command_output_keeps_the_blob(self, tool):
+        text = f'$ base64 -w0 cert.der\n{self.BLOB}\n→ exit 0'
+        assert sanitize_for_context(text, tool) == text
+
+    def test_other_tools_still_get_the_placeholder(self):
+        # Positive control: the replacement still runs for attachment-style
+        # results, so the exemption above is what keeps the blob.
+        text = f'attachment: {self.BLOB}'
+        out = sanitize_for_context(text, 'mcp_QuipEditor')
+        assert self.BLOB not in out
+        assert f'[binary content removed: {len(self.BLOB)} base64 chars]' in out
+
+    def test_size_cap_still_applies_to_command_output(self):
+        big = 'A' * (MAX_CONTEXT_RESULT_CHARS + 500)
+        out = sanitize_for_context(big, 'shadow_read')
+        assert '[result truncated' in out and len(out) < len(big)
+
+    def test_executor_passes_the_tool_name_the_exemption_matches(self):
+        # Seam: tool_execution calls the sanitizer with ctx.actual_tool_name.
+        import inspect
+        import app.tool_execution as te
+        assert 'sanitize_for_context(result_text, tool_name=ctx.actual_tool_name' in inspect.getsource(te)
+
+
 class TestStripShellEchoHeader:
     """strip_shell_echo_header — removes only the leading '$ command'
     echo line from run_shell_command results, replacing the executor's

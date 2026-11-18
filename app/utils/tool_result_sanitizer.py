@@ -34,12 +34,33 @@ _OLE2_BASE64_PREFIX = '0M8R4K'
 MAX_CONTEXT_RESULT_CHARS = int(os.environ.get('TOOL_RESULT_MAX_CHARS', '100000'))
 
 
+# Tools whose output is what a command the model chose printed, or a file
+# the model chose to read.  A base64 run there is the answer the model asked
+# for (``base64 -w0 cert.der``, macOS ``base64`` which never wraps), not an
+# attachment riding along, so it is passed through.  The size cap still
+# applies.  Names are compared after stripping ``mcp_`` prefixes.
+_VERBATIM_OUTPUT_TOOLS = frozenset({
+    'run_shell_command',
+    'shadow_send', 'shadow_read', 'shadow_wait',
+    'job_read', 'job_wait',
+    'file_read',
+})
+
+
+def _base_tool_name(tool_name: str) -> str:
+    name = tool_name or ''
+    while name.startswith('mcp_'):
+        name = name[4:].lstrip('$_')
+    return name
+
+
 def sanitize_for_context(result_text: str, tool_name: str = '', args: dict | None = None) -> str:
     """Sanitize a tool result for inclusion in conversation context.
 
     Applies in order:
     1. Plugin filters (site-specific, e.g. Quip sectionId stripping)
-    2. Base64 blob replacement (general-purpose)
+    2. Base64 blob replacement (general-purpose; skipped for the
+       command-output tools in ``_VERBATIM_OUTPUT_TOOLS``)
     3. Hard size cap
 
     Args:
@@ -59,7 +80,8 @@ def sanitize_for_context(result_text: str, tool_name: str = '', args: dict | Non
     text = _apply_plugin_filters(text, tool_name, args)
 
     # Phase 2: General-purpose base64 blob replacement
-    text = _replace_base64_blobs(text, tool_name)
+    if _base_tool_name(tool_name) not in _VERBATIM_OUTPUT_TOOLS:
+        text = _replace_base64_blobs(text, tool_name)
 
     # Phase 3: Hard size cap
     text = _cap_size(text, tool_name)
