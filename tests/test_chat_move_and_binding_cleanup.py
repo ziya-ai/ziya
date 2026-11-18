@@ -103,7 +103,12 @@ def test_move_relocates_chat_file_and_rewrites_ownership_fields(env):
 
     res = _move(client, SRC, chat_id, DST)
     assert res.status_code == 200, res.text
-    assert res.json() == {"moved": True, "chatId": chat_id, "projectId": DST}
+    body = res.json()
+    # The reply also carries the scope note appended to the record
+    # (tests/test_project_change_note.py covers its content).
+    assert {k: body[k] for k in ("moved", "chatId", "projectId")} == {
+        "moved": True, "chatId": chat_id, "projectId": DST}
+    assert body["note"]["projectChange"]["kind"] == "moved"
 
     assert not (src_dir / "chats" / f"{chat_id}.json").exists()
     moved = json.loads((dst_dir / "chats" / f"{chat_id}.json").read_text())
