@@ -118,3 +118,115 @@ def test_a_later_valid_assign_wins_over_a_stale_one(tmp_path, capsys):
 def test_nothing_pending_gives_an_empty_list(tmp_path, capsys):
     _setup(tmp_path, ["a/1.py"], {"batch-q.json": [{"path": "a/1.py", "disposition": "assign"}]})
     assert _run(tmp_path, capsys)["batches"] == []
+
+
+# -- consumed verdicts (runs cli-600cd44c2821 / cli-97476739fd29, 2026-11-18) --
+# batches counted these triaged while the commit plan deferred them, so the
+# sweep stopped at the release gate with the same 11 deferrals every rerun.
+
+import os
+import subprocess
+
+
+def _git(root, *args):
+    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+
+def _repo(tmp_path):
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.email", "t@example.com")
+    _git(tmp_path, "config", "user.name", "t")
+    return tmp_path
+
+
+def _commit(root, path, text, when):
+    p = root / path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+    _git(root, "add", path)
+    env = {**os.environ, "GIT_AUTHOR_DATE": f"@{when} +0000", "GIT_COMMITTER_DATE": f"@{when} +0000"}
+    subprocess.run(["git", "commit", "-q", "-m", path], cwd=root, check=True, capture_output=True, env=env)
+
+
+def _verdicts(root, name, vs, mtime):
+    tri = root / "triage"
+    tri.mkdir(exist_ok=True)
+    f = tri / name
+    f.write_text(json.dumps({"verdicts": vs}))
+    os.utime(f, (mtime, mtime))
+
+
+def test_assign_to_a_committed_entry_is_rebatched(tmp_path, capsys):
+    (tmp_path / "ledger.json").write_text(json.dumps({
+        "groups_done": ["done-entry"],
+        "entry_index": {"unclaimed": ["a/x.py", "a/y.py"], "untracked": [],
+                        "entries": [{"entry_id": "done-entry"}, {"entry_id": "open-entry"}]}}))
+    _verdicts(tmp_path, "batch-1.json", [
+        {"path": "a/x.py", "disposition": "assign", "entry_id": "done-entry"},
+        {"path": "a/y.py", "disposition": "assign", "entry_id": "open-entry"}], 1_000)
+    out = _run(tmp_path, capsys)
+    assert [p for b in out["batches"] for p in b["paths"]] == ["a/x.py"]
+    assert out["stale_assigns"] == ["a/x.py"] and out["triaged"] == 1   # open-entry's stands
+
+
+def test_a_verdict_older_than_the_paths_last_commit_is_rebatched(tmp_path, capsys):
+    root = _repo(tmp_path)
+    _commit(root, "docs/later.md", "v1", 2_000)       # committed after the verdict
+    _commit(root, "docs/earlier.md", "v1", 500)       # committed before it (control)
+    (root / "ledger.json").write_text(json.dumps({"entry_index": {
+        "unclaimed": ["docs/later.md", "docs/earlier.md"], "untracked": [], "entries": []}}))
+    _verdicts(root, "batch-1.json", [
+        {"path": "docs/later.md", "disposition": "new_entry", "draft_entry": "x"},
+        {"path": "docs/earlier.md", "disposition": "new_entry", "draft_entry": "y"}], 1_000)
+    out = _run(root, capsys)
+    assert [p for b in out["batches"] for p in b["paths"]] == ["docs/later.md"]
+    assert out["stale_assigns"] == ["docs/later.md"] and out["triaged"] == 1
+
+
+def test_a_fresh_verdict_after_the_commit_counts_again(tmp_path, capsys):
+    root = _repo(tmp_path)
+    _commit(root, "docs/a.md", "v1", 2_000)
+    (root / "ledger.json").write_text(json.dumps({"entry_index": {
+        "unclaimed": ["docs/a.md"], "untracked": [], "entries": []}}))
+    _verdicts(root, "batch-old.json", [{"path": "docs/a.md", "disposition": "new_entry"}], 1_000)
+    _verdicts(root, "batch-new.json", [{"path": "docs/a.md", "disposition": "new_entry"}], 3_000)
+    out = _run(root, capsys)
+    assert out["batches"] == [] and out["stale_assigns"] == [] and out["triaged"] == 1
+
+
+def test_exclude_on_an_untracked_file_tracked_code_imports_is_rebatched(tmp_path, capsys):
+    root = _repo(tmp_path)
+    _commit(root, "src/components/View.tsx", "import { r } from '../utils/references';\n", 500)
+    for p in ("src/utils/references.ts", "scratch/probe.mjs"):
+        (root / p).parent.mkdir(parents=True, exist_ok=True)
+        (root / p).write_text("x")
+    untracked = ["scratch/probe.mjs", "src/utils/references.ts"]
+    (root / "ledger.json").write_text(json.dumps({"entry_index": {
+        "unclaimed": untracked, "untracked": untracked, "entries": []}}))
+    _verdicts(root, "batch-1.json", [
+        {"path": p, "disposition": "exclude", "reason": "wip"} for p in untracked], 1_000)
+    out = _run(root, capsys)
+    assert [p for b in out["batches"] for p in b["paths"]] == ["src/utils/references.ts"]
+    assert out["rejected_excludes"] == ["src/utils/references.ts"]
+    assert out["triaged"] == 1          # the unreferenced scratch exclude stands
+
+
+def test_reserved_release_metadata_is_never_batched(tmp_path, capsys):
+    _setup(tmp_path, ["CHANGELOG.md", "pyproject.toml", "frontend/package.json", "a/x.py"])
+    assert [p for b in _run(tmp_path, capsys)["batches"] for p in b["paths"]] == ["a/x.py"]
+
+
+def test_a_committed_entrys_citation_no_longer_claims_a_dirty_path(tmp_path):
+    root = _repo(tmp_path)
+    _commit(root, "src/plot.ts", "v1", 500)
+    _commit(root, "src/open.ts", "v1", 500)
+    (root / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [Unreleased]\n\n### Fixed\n"
+        "- **Shipped thing.** Touches `src/plot.ts`.\n"
+        "- **Open thing.** Touches `src/open.ts`.\n\n## [0.1.0]\n")
+    (root / "src/plot.ts").write_text("v2")
+    (root / "src/open.ts").write_text("v2")
+    ix = rp.build_index(str(root), committed=["shipped-thing"])
+    assert "src/plot.ts" in ix["unclaimed"] and "src/plot.ts" not in ix["claimed"]
+    assert ix["claimed"].get("src/open.ts") == "open-thing"      # an open entry still claims
+    assert rp.build_index(str(root))["claimed"].get("src/plot.ts") == "shipped-thing"

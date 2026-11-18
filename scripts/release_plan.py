@@ -169,12 +169,20 @@ def dirty_paths(root):
 
 # ------------------------------------------------------------------- index
 
-def build_index(root):
+def build_index(root, committed=None):
+    """``committed``: entry ids an earlier pass already committed (the
+    ledger's ``groups_done``).  Such an entry's citation no longer claims a
+    path: a file it names that is dirty again carries a later change the
+    entry does not describe, so the path is unclaimed and goes to triage.
+    Counting the claim left the path owned by an entry the commit plan
+    defers as already committed, and nothing re-triaged it (run
+    cli-97476739fd29, 2026-11-18: plotlyPlugin.ts)."""
     changelog = os.path.join(root, "CHANGELOG.md")
     with open(changelog, encoding="utf-8") as fh:
         entries = parse_entries(fh.read())
     tracked, untracked = dirty_paths(root)
     dirty = set(tracked) | set(untracked)
+    done = set(committed or ())
 
     claims = defaultdict(list)
     dropped = []
@@ -183,7 +191,8 @@ def build_index(root):
         for p in e["paths"]:
             if p in dirty:
                 live.append(p)
-                claims[p].append(e["entry_id"])
+                if e["entry_id"] not in done:
+                    claims[p].append(e["entry_id"])
             else:
                 dropped.append({"entry_id": e["entry_id"], "path": p})
         e["live_paths"] = live
@@ -254,8 +263,34 @@ def print_summary(index):
             print(f"      {p}")
 
 
+def referenced_by_tracked(path, root):
+    """Whether a tracked file names this path, the way an import or a
+    script reference would.
+
+    The needle is the file name without its extension -- distinctive enough
+    on its own when it carries a ``_`` or ``-`` or is long -- and otherwise
+    the parent directory plus that stem, so ``frontend/src/utils/references.ts``
+    is looked up as ``utils/references`` (what ``../utils/references`` imports
+    contain) instead of the word "references".  Searches the work tree's
+    tracked files, which is what the next commit will hold."""
+    stem = os.path.splitext(os.path.basename(path.rstrip("/")))[0]
+    if not stem:
+        return False
+    parent = os.path.basename(os.path.dirname(path.rstrip("/")))
+    if not parent:
+        # A top-level file is named with its extension: its bare stem is
+        # often an ordinary word that any file could contain.
+        needle = os.path.basename(path.rstrip("/"))
+    elif "_" in stem or "-" in stem or len(stem) >= 15:
+        needle = stem
+    else:
+        needle = f"{parent}/{stem}"
+    out = git(["grep", "-l", "-F", "-e", needle], root)
+    return any(line.strip() and line.strip() != path for line in out.splitlines())
+
+
 def triaged_paths(triage_dir, untracked=None, rejected=None,
-                  entry_ids=None, stale=None):
+                  entry_ids=None, stale=None, committed=None, root=None):
     """Paths that already carry a verdict in some ``batch-*.json``.
 
     With ``untracked`` (the index's untracked list), an ``exclude`` verdict on
@@ -273,19 +308,58 @@ def triaged_paths(triage_dir, untracked=None, rejected=None,
     or a batch made before CHANGELOG.md was rewritten), and the commit-plan
     builder defers it.  Run cli-188224db41e6 (2026-10-31) deferred 69 paths
     this way because they were never re-batched.  Such paths go to
-    ``stale`` when given.  ``entry_ids=None`` skips the check."""
+    ``stale`` when given.  ``entry_ids=None`` skips the check.
+
+    A verdict is also CONSUMED once the change it judged has been committed,
+    and then it does not count: the path is dirty again, so what is dirty now
+    is a later change no verdict has seen.  Two signs, either sufficient --
+    an 'assign' naming an entry in ``committed`` (the ledger's
+    ``groups_done``), or, with ``root``, a commit touching the path that is
+    newer than the batch file.  Counting consumed verdicts deadlocked the
+    sweep: this function called the paths triaged, the commit plan deferred
+    them as "verdict points at an already-committed entry", and every rerun
+    stopped at the release gate with the same deferrals (runs
+    cli-600cd44c2821 and cli-97476739fd29, 2026-11-18: 9 paths).  They go
+    to ``stale`` as well.
+
+    With ``root``, an 'exclude' on an untracked file that tracked code names
+    (``referenced_by_tracked``) is rejected like an exclude on a tracked
+    modification: the commit plan defers it as an invalid exclusion, and the
+    reference usually landed after the verdict was written."""
     done = set()
     bad = set()
     old = set()
     allowed_exclude = set(untracked) if untracked is not None else None
     current = set(entry_ids) if entry_ids is not None else None
+    committed_ids = set(committed or ())
+    last_commit = {}
+    referenced = {}
+
+    def committed_since(path, when):
+        if root is None:
+            return False
+        if path not in last_commit:
+            out = git(["log", "-1", "--format=%ct", "--", path], root).strip()
+            last_commit[path] = int(out) if out.isdigit() else None
+        t = last_commit[path]
+        return t is not None and t > when
+
+    def is_referenced(path):
+        if root is None:
+            return False
+        if path not in referenced:
+            referenced[path] = referenced_by_tracked(path, root)
+        return referenced[path]
+
     if not os.path.isdir(triage_dir):
         return done
     for name in os.listdir(triage_dir):
         if not (name.startswith("batch-") and name.endswith(".json")):
             continue
+        batch_path = os.path.join(triage_dir, name)
         try:
-            with open(os.path.join(triage_dir, name), encoding="utf-8") as fh:
+            written = os.path.getmtime(batch_path)
+            with open(batch_path, encoding="utf-8") as fh:
                 data = json.load(fh)
         except (OSError, ValueError):
             continue
@@ -293,12 +367,20 @@ def triaged_paths(triage_dir, untracked=None, rejected=None,
         for v in verdicts or []:
             if (isinstance(v, dict) and v.get("path")
                     and v.get("disposition") in ("assign", "new_entry", "exclude")):
-                if (v["disposition"] == "exclude" and allowed_exclude is not None
-                        and v["path"] not in allowed_exclude):
-                    bad.add(v["path"])
-                    continue
+                if v["disposition"] == "exclude":
+                    if allowed_exclude is not None and v["path"] not in allowed_exclude:
+                        bad.add(v["path"])
+                        continue
+                    if is_referenced(v["path"]):
+                        bad.add(v["path"])
+                        continue
                 if (v["disposition"] == "assign" and current is not None
                         and v.get("entry_id") not in current):
+                    old.add(v["path"])
+                    continue
+                if v["disposition"] in ("assign", "new_entry") and (
+                        (v["disposition"] == "assign" and v.get("entry_id") in committed_ids)
+                        or committed_since(v["path"], written)):
                     old.add(v["path"])
                     continue
                 done.add(v["path"])
@@ -310,6 +392,13 @@ def triaged_paths(triage_dir, untracked=None, rejected=None,
     return done
 
 
+# Release metadata the bump stage commits (the sweep card's P4a RESERVED
+# list).  Never triaged: any verdict on one is superseded by that rule, so
+# batching them only spends a triage call.
+RESERVED = frozenset({"CHANGELOG.md", "CHANGELOG.1.md", "pyproject.toml",
+                      "poetry.lock", "setup.py", "frontend/package.json"})
+
+
 def build_batches(unclaimed, triaged, size=15):
     """Batch every unclaimed path that has no verdict yet, exactly once.
 
@@ -318,7 +407,7 @@ def build_batches(unclaimed, triaged, size=15):
     what it holds rather than after its position, and cannot overwrite an
     earlier run's verdicts for different paths."""
     import hashlib
-    pending = sorted({p for p in unclaimed if p not in triaged},
+    pending = sorted({p for p in unclaimed if p not in triaged and p not in RESERVED},
                      key=lambda p: (os.path.dirname(p), p))
     batches = []
     for i in range(0, len(pending), size):
@@ -348,9 +437,11 @@ def main(argv=None):
         absolute = lambda p: p if os.path.isabs(p) else os.path.join(root, p)
         try:
             with open(absolute(args.ledger), encoding="utf-8") as fh:
-                index = (json.load(fh) or {}).get("entry_index")
+                ledger = json.load(fh) or {}
         except (OSError, ValueError):
-            index = None
+            ledger = {}
+        index = ledger.get("entry_index") if isinstance(ledger, dict) else None
+        committed = ledger.get("groups_done") if isinstance(ledger, dict) else None
         if not isinstance(index, dict):
             print(f"PROBLEM: {args.ledger} has no entry_index; run index first")
             return 1
@@ -362,7 +453,9 @@ def main(argv=None):
                      if isinstance(entries, list) else None)
         triaged = triaged_paths(absolute(args.triage_dir),
                                 index.get("untracked"), rejected,
-                                entry_ids=entry_ids, stale=stale)
+                                entry_ids=entry_ids, stale=stale,
+                                committed=committed if isinstance(committed, list) else None,
+                                root=root)
         batches = build_batches(unclaimed, triaged, max(1, args.size))
         json.dump({"batches": batches,
                    "pending": sum(len(b["paths"]) for b in batches),
@@ -376,7 +469,15 @@ def main(argv=None):
                   sys.stdout, indent=1)
         print()
         return 0
-    index = build_index(root)
+    committed = None
+    if args.ledger:
+        try:
+            with open(args.ledger if os.path.isabs(args.ledger)
+                      else os.path.join(root, args.ledger), encoding="utf-8") as fh:
+                committed = (json.load(fh) or {}).get("groups_done")
+        except (OSError, ValueError, AttributeError):
+            committed = None
+    index = build_index(root, committed if isinstance(committed, list) else None)
     if args.ledger:
         merge_into_ledger(args.ledger if os.path.isabs(args.ledger)
                           else os.path.join(root, args.ledger), index)
