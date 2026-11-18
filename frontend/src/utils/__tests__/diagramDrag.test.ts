@@ -8,6 +8,8 @@
  */
 
 import { attachDiagramDrag, serializeSvgForImage, resolveBackground, rasterizeSvgToPng, copyImageToClipboard } from '../diagramDrag';
+import * as drag from '../diagramDrag';
+import * as chartTheme from '../../plugins/d3/chartTheme';
 import { resetNativeDragArm } from '../nativeDragArm';
 
 function makeContainer(withSvg = true): { outer: HTMLElement; container: HTMLElement; svg: SVGSVGElement | null } {
@@ -149,7 +151,8 @@ describe('attachDiagramDrag', () => {
         const pre = document.createElement('pre');
         pre.textContent = 'Mermaid Lexical Error: Unrecognized text';
         container.appendChild(pre);
-        const fetchMock = jest.fn();
+        // armNativeDrag chains .then() on the result, so the mock must return a promise.
+        const fetchMock = jest.fn(() => Promise.resolve({ status: 404, json: async () => null }));
         (globalThis as any).fetch = fetchMock;
         resetNativeDragArm();
         try {
@@ -388,6 +391,81 @@ describe('serializeSvgForImage', () => {
         expect(out.svgString).toContain('fill: rgb(255, 0, 0)');
         expect(out.svgString).toMatch(/style="[^"]*width: 320px/);
         expect(out.svgString).toContain('viewBox=');
+    });
+});
+
+/**
+ * Light-mode diagrams now take the page's paper tone (linen, warm, cool).
+ * An image dragged or copied out must not carry it: dropped into Slack or a
+ * document it would be an off-white rectangle.  In light mode the image is
+ * white behind AND every surface the diagram painted in the paper colour is
+ * white; in dark mode the page colour is kept so light text stays readable.
+ */
+describe('exported images are white in light mode', () => {
+    const LINEN = '#f7f6f3';
+    afterEach(() => {
+        document.body.className = '';
+        chartTheme._resetChartSurfaceForTests();
+    });
+
+    it('exportBackground: white in light mode, the nearest opaque ancestor in dark', () => {
+        const outer = document.createElement('div');
+        outer.style.backgroundColor = 'rgb(247, 246, 243)';
+        const inner = document.createElement('div');
+        outer.appendChild(inner);
+        document.body.appendChild(outer);
+        // Control: the ancestor colour is what the old default returned.
+        expect(resolveBackground(inner)).toBe('rgb(247, 246, 243)');
+        expect(drag.exportBackground(inner)).toBe('#ffffff');
+        document.body.classList.add('dark');
+        expect(drag.exportBackground(inner)).toBe('rgb(247, 246, 243)');
+    });
+
+    it('whitenPaperSurface replaces the paper colour in hex and rgb form, and nothing else', () => {
+        const svg = '<svg><rect fill="#F7F6F3"/><g style="fill: rgb(247, 246, 243); stroke: rgb(247, 246, 24)">'
+            + '<path fill="#f7f6f30a"/><path stroke="#f7f6f4"/><text style="fill:rgba(247,246,243,1)"/></g></svg>';
+        const out = drag.whitenPaperSurface(svg, LINEN);
+        expect(out).toContain('<rect fill="#ffffff"/>');
+        expect(out).toContain('fill: rgb(255, 255, 255); stroke: rgb(247, 246, 24)');
+        expect(out).toContain('fill:rgb(255, 255, 255)');
+        expect(out).toContain('#f7f6f30a');     // 8-digit colour that merely starts with it
+        expect(out).toContain('#f7f6f4');       // a neighbouring colour
+        // White paper, or no usable colour: unchanged.
+        expect(drag.whitenPaperSurface(svg, '#ffffff')).toBe(svg);
+        expect(drag.whitenPaperSurface(svg, '')).toBe(svg);
+    });
+
+    function withPaperRect(): { container: HTMLElement } {
+        const { container, svg } = makeContainer();
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('fill', LINEN);
+        svg!.appendChild(rect);
+        return { container };
+    }
+
+    it('seam: the SVG handed to the rasterizer has the paper surface whitened in light mode', () => {
+        chartTheme.pinLightChartSurface(LINEN);
+        const { container } = withPaperRect();
+        const rasterize = jest.fn().mockResolvedValue('data:image/png;base64,AA');
+        attachDiagramDrag(container, { rasterize });
+        container.dispatchEvent(new Event('pointerenter'));
+        jest.advanceTimersByTime(200);
+        expect(rasterize).toHaveBeenCalledTimes(1);
+        const svgString: string = rasterize.mock.calls[0][0];
+        expect(svgString).toContain('<rect');
+        expect(svgString.toLowerCase()).not.toContain(LINEN);
+        expect(svgString).toContain('#ffffff');
+    });
+
+    it('seam: in dark mode the SVG is passed through untouched', () => {
+        chartTheme.pinLightChartSurface(LINEN);
+        document.body.classList.add('dark');
+        const { container } = withPaperRect();
+        const rasterize = jest.fn().mockResolvedValue('data:image/png;base64,AA');
+        attachDiagramDrag(container, { rasterize });
+        container.dispatchEvent(new Event('pointerenter'));
+        jest.advanceTimersByTime(200);
+        expect(rasterize.mock.calls[0][0].toLowerCase()).toContain(LINEN);
     });
 });
 

@@ -319,15 +319,73 @@ def _stdin_reader(lines: "list[str]", lock: threading.Lock, closed: threading.Ev
     closed.set()
 
 
+class HelperLoop:
+    """State of the helper's poll loop, separated from AppKit so it can be
+    driven with a fake pasteboard in tests.
+
+    ``pb`` needs ``changeCount()``, ``types()`` and ``dataForType_()``;
+    ``write_item(pb, types)`` re-declares it (``_write_item`` in the helper).
+    """
+
+    def __init__(self, scratch: Union[str, Path], write_item=None, now=time.time) -> None:
+        self.scratch = Path(scratch)
+        self.write_item = write_item or _write_item
+        self.now = now
+        self.origins: Set[str] = set()
+        self.armed_until = 0.0
+        # Change count already decided; None forces the next poll to read.
+        self.last: Optional[int] = None
+
+    def handle_line(self, line: str) -> bool:
+        """Apply one stdin command.  False means quit."""
+        cmd, _, arg = line.strip().partition(" ")
+        if cmd == "arm" and arg:
+            origin = arg.strip().rstrip("/")
+            if origin not in self.origins:
+                self.origins.add(origin)
+                # The arm is sent on pointerdown, but the drag can reach the
+                # pasteboard before the arm reaches this process.  That drag
+                # was read and skipped as "not ours" while its origin was
+                # still unknown, and the change count was recorded, so it
+                # was never looked at again: the first drag after a server
+                # start failed to drop and every later one worked.  Read the
+                # current pasteboard again now that the origin is known.
+                self.last = None
+            self.armed_until = self.now() + ARM_WINDOW_S
+            cleanup_stale(self.scratch)
+        elif cmd == "quit":
+            return False
+        return True
+
+    def poll(self, pb) -> Optional[str]:
+        """Rewrite the pasteboard if it changed and holds one of our drags.
+        Returns the written file's name, or None."""
+        count = pb.changeCount()
+        if count == self.last:
+            return None
+        self.last = count
+        types = _read_types(pb)
+        path = dest_path_for(self.scratch, extract_drag_payload(types))
+        plan = plan_rewrite(types, self.origins, path)
+        if not plan:
+            return None
+        path.write_bytes(plan["data"])
+        ok = self.write_item(pb, plan["types"])
+        self.last = pb.changeCount()
+        print(f"rewrote {path.name} ok={ok}", flush=True)
+        return path.name
+
+    def sleep_s(self) -> float:
+        return FAST_POLL_S if self.now() < self.armed_until else IDLE_POLL_S
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Poll the drag pasteboard and rewrite Ziya's own drags.  Exits when
     stdin closes."""
     import AppKit
     pb = AppKit.NSPasteboard.pasteboardWithName_(AppKit.NSPasteboardNameDrag)
-    scratch = drag_dir()
-    origins: Set[str] = set()
-    armed_until = 0.0
-    last = pb.changeCount()
+    loop = HelperLoop(drag_dir())
+    loop.last = pb.changeCount()
 
     lines: List[str] = []
     lock = threading.Lock()
@@ -339,30 +397,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         with lock:
             pending, lines[:] = list(lines), []
         for line in pending:
-            cmd, _, arg = line.strip().partition(" ")
-            if cmd == "arm" and arg:
-                origins.add(arg.strip().rstrip("/"))
-                armed_until = time.time() + ARM_WINDOW_S
-                cleanup_stale(scratch)
-            elif cmd == "quit":
+            if not loop.handle_line(line):
                 return 0
-
-        count = pb.changeCount()
-        if count != last:
-            last = count
-            try:
-                types = _read_types(pb)
-                path = dest_path_for(scratch, extract_drag_payload(types))
-                plan = plan_rewrite(types, origins, path)
-                if plan:
-                    path.write_bytes(plan["data"])
-                    ok = _write_item(pb, plan["types"])
-                    last = pb.changeCount()
-                    print(f"rewrote {path.name} ok={ok}", flush=True)
-            except Exception as e:  # noqa: BLE001 -- never die mid-drag
-                logger.debug(f"drag helper: rewrite failed: {e}")
-
-        time.sleep(FAST_POLL_S if time.time() < armed_until else IDLE_POLL_S)
+        try:
+            loop.poll(pb)
+        except Exception as e:  # noqa: BLE001 -- never die mid-drag
+            logger.debug(f"drag helper: rewrite failed: {e}")
+        time.sleep(loop.sleep_s())
     return 0
 
 

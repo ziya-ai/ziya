@@ -232,3 +232,99 @@ def test_supervisor_does_not_start_when_unsupported(monkeypatch):
     assert sup.start() is False
     assert sup.arm(ORIGIN) is False
     assert sup.running is False
+
+
+# ── poll loop: first drag after start ──────────────────────────────────
+#
+# The arm is sent on pointerdown and travels browser -> server -> helper
+# stdin; the drag can reach the pasteboard first.  The loop used to read
+# that change while the origin was still unknown, skip it, and record its
+# change count, so the first drag after a server start never dropped and
+# every later one (origin already known) did.
+
+class FakePasteboard:
+    def __init__(self):
+        self.count = 0
+        self.items = {}
+
+    def put(self, types):
+        self.items = dict(types)
+        self.count += 1
+
+    def changeCount(self):
+        return self.count
+
+    def types(self):
+        return list(self.items)
+
+    def dataForType_(self, name):
+        return self.items.get(name)
+
+
+def _loop(tmp_path, writes):
+    def write_item(pb, types):
+        writes.append(types)
+        pb.put(types)
+        return True
+    return h.HelperLoop(tmp_path / "scratch", write_item=write_item)
+
+
+def _drag():
+    return ziya_drag(f"<!--ziya-drag-png:{DATA_URL}--><table><td>1</td></table>")
+
+
+def test_drag_seen_before_its_arm_is_rewritten_when_the_arm_arrives(tmp_path):
+    pb, writes = FakePasteboard(), []
+    loop = _loop(tmp_path, writes)
+    loop.last = pb.changeCount()
+    pb.put(_drag())                      # drag hits the pasteboard first
+    assert loop.poll(pb) is None         # origin not known yet: skipped
+    assert writes == []
+    assert loop.handle_line(f"arm {ORIGIN}") is True
+    name = loop.poll(pb)                 # the same drag, re-read
+    assert name and name.endswith(".png")
+    assert h.FILE_URL_TYPE in writes[0]
+    assert not any(k.startswith("org.chromium.") for k in writes[0])
+    # The rewritten item is not rewritten again.
+    assert loop.poll(pb) is None and len(writes) == 1
+
+
+def test_arm_before_drag_rewrites_on_first_poll(tmp_path):
+    pb, writes = FakePasteboard(), []
+    loop = _loop(tmp_path, writes)
+    loop.last = pb.changeCount()
+    loop.handle_line(f"arm {ORIGIN}")
+    pb.put(_drag())
+    assert loop.poll(pb) and len(writes) == 1
+
+
+def test_rearming_a_known_origin_does_not_reread(tmp_path):
+    pb, writes = FakePasteboard(), []
+    loop = _loop(tmp_path, writes)
+    loop.handle_line(f"arm {ORIGIN}")
+    loop.last = pb.changeCount()
+    pb.put(ziya_drag("<table></table>"))   # ours, but no payload: skipped
+    assert loop.poll(pb) is None
+    loop.handle_line(f"arm {ORIGIN}/")      # same origin again
+    assert loop.last == pb.changeCount()    # no forced re-read
+
+
+def test_other_origin_drag_is_still_left_alone_after_arm(tmp_path):
+    pb, writes = FakePasteboard(), []
+    loop = _loop(tmp_path, writes)
+    loop.last = pb.changeCount()
+    pb.put(_drag() | {h.RENDERER_ORIGIN_TYPE: b"https://example.com"})
+    assert loop.poll(pb) is None
+    loop.handle_line(f"arm {ORIGIN}")
+    assert loop.poll(pb) is None and writes == []
+
+
+def test_quit_and_poll_speed(tmp_path):
+    t = [100.0]
+    loop = h.HelperLoop(tmp_path, write_item=lambda pb, ty: True, now=lambda: t[0])
+    assert loop.sleep_s() == h.IDLE_POLL_S
+    loop.handle_line(f"arm {ORIGIN}")
+    assert loop.sleep_s() == h.FAST_POLL_S
+    t[0] += h.ARM_WINDOW_S + 1
+    assert loop.sleep_s() == h.IDLE_POLL_S
+    assert loop.handle_line("quit") is False

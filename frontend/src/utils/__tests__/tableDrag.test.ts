@@ -40,7 +40,7 @@ function dragStart(target: Element, dt: DataTransfer): void {
     target.dispatchEvent(ev);
 }
 
-beforeEach(() => { jest.useFakeTimers(); document.body.innerHTML = ''; });
+beforeEach(() => { jest.useFakeTimers(); document.body.innerHTML = ''; document.body.className = ''; });
 afterEach(() => { jest.useRealTimers(); });
 
 describe('serializeTableForImage', () => {
@@ -143,7 +143,21 @@ describe('isPointOverText', () => {
 });
 
 describe('attachTableDrag', () => {
+    it('in light mode the image background is white, not the colour behind the table', () => {
+        const { wrap, handle } = makeTable();          // ancestor is rgb(31, 31, 31)
+        const rasterize = jest.fn().mockResolvedValue('data:image/png;base64,TBL');
+        attachTableDrag(wrap, { dragSource: handle, rasterize });
+        wrap.dispatchEvent(new Event('pointerenter'));
+        jest.advanceTimersByTime(200);
+        expect(rasterize).toHaveBeenCalledTimes(1);
+        const svgString: string = rasterize.mock.calls[0][0];
+        expect(svgString).toMatch(/background:\s?(#ffffff|rgb\(255, 255, 255\))/);
+        expect(svgString).not.toMatch(/background:\s?rgb\(31, 31, 31\)/);
+    });
+
     it('prepares on hover and publishes PNG + html table + markdown at dragstart from the handle', async () => {
+        // Dark mode: the page colour is kept behind the table.
+        document.body.classList.add('dark');
         const { wrap, handle } = makeTable();
         const rasterize = jest.fn().mockResolvedValue('data:image/png;base64,TBL');
         attachTableDrag(wrap, { dragSource: handle, rasterize, getMarkdown: () => '| Name | Qty |\n|---|---|\n| apple | 3 |' });
