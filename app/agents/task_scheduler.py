@@ -697,7 +697,8 @@ async def _tick_card(target: _ScheduledCard, now_ms: int) -> None:
     without the lock or the sleep.  Writes schedule_state whenever it
     changes the record and does not fire.
     """
-    state = _read_state(target.project_id)
+    # Off the event loop: see the note at the fire pass in _scheduler_loop.
+    state = await asyncio.to_thread(_read_state, target.project_id)
     rec = state.get(target.card_id, {})
     next_fire = rec.get("next_fire_at")
     fires_so_far = int(rec.get("fires_so_far", 0))
@@ -777,7 +778,12 @@ async def _scheduler_loop() -> None:
 
                 # Fire pass
                 now_ms = _now_ms()
-                for target in _enumerate_scheduled_cards():
+                # The enumeration reads every project's registry and cards.
+                # Each read releases the GIL and must win it back; while a
+                # worker thread is CPU-bound (memory organize) that costs
+                # a switch interval per syscall, so a pass that takes
+                # milliseconds on an idle process held the loop for seconds.
+                for target in await asyncio.to_thread(_enumerate_scheduled_cards):
                     await _tick_card(target, now_ms)
 
                 # System-job pass — internal periodic jobs (memory organize,

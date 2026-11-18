@@ -140,6 +140,9 @@ class Job:
     def __init__(self, job_dir: Path, meta: Dict[str, Any]):
         self.dir = job_dir
         self.meta = meta
+        # Resolved once: list() compares it for every job on every sidebar
+        # poll, and realpath is an lstat per path component.
+        self.root_real = os.path.realpath(meta.get("project_root", ""))
         # Final state, once known.  An exited job cannot change again, so the
         # sidebar poll must not re-read status.json for it on every tick.
         self._final: Optional[Dict[str, Any]] = None
@@ -230,13 +233,14 @@ class JobManager:
 
     def list(self, project_root: Optional[str] = None,
              owner: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        want = os.path.realpath(project_root) if project_root else None
         if project_root:
             self._ensure_scanned(project_root)
         with self._lock:
             jobs = list(self._jobs.values())
         out = []
         for j in jobs:
-            if project_root and os.path.realpath(j.meta.get("project_root", "")) != os.path.realpath(project_root):
+            if want is not None and j.root_real != want:
                 continue
             if owner and not _owner_matches(j.meta.get("owner") or {}, owner):
                 continue

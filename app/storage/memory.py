@@ -788,23 +788,16 @@ class MemoryStorage:
         share = sum(1 for p in known if p in mem_projects) / len(known)
         return share >= cls.PLACEMENT_PROVENANCE_MIN_SHARE
 
-    def _rank_placement(self, memory: Memory, nodes: Dict[str, dict],
-                        proj_by_id: Dict[str, str],
-                        coll_of_project: Optional[Dict[str, str]] = None
-                        ) -> List[Tuple[float, bool, str]]:
-        """Candidate nodes for ``memory``, best first, as
-        ``(score, provenance_compatible, node_id)``.
-
-        score = |mem_tags ∩ node_tags| / sqrt(|node_tags|).  Compatible
-        nodes rank ahead of incompatible ones; then higher score; then the
-        node with fewer tags.  Nodes with no tag overlap are omitted.
+    def _placement_index(self, nodes: Dict[str, dict],
+                         proj_by_id: Dict[str, str]) -> List[tuple]:
+        """The inputs of ``_rank_placement`` that do not depend on the
+        memory, per node that has tags: ``(node_id, scoring_tags,
+        sqrt(len(scoring_tags)), members_per_project, members_with_known
+        _project)``.  Valid for as long as ``nodes`` is not modified; a
+        pass that ranks many memories against one snapshot builds it once.
         """
-        mem_tags = set(t.lower() for t in memory.tags)
-        if not mem_tags:
-            return []
-        from app.utils.memory_collections import memory_keys
-        mem_projects = memory_keys(memory.scope.project_paths, coll_of_project or {})
-        cands: List[Tuple[bool, float, int, str]] = []
+        from collections import Counter
+        index: List[tuple] = []
         for nid, ndata in nodes.items():
             node_tags = set(t.lower() for t in ndata.get("tags", []))
             parent = nodes.get(ndata.get("parent") or "")
@@ -816,12 +809,44 @@ class MemoryStorage:
                 own = node_tags - {t.lower() for t in parent.get("tags", [])}
                 if own:
                     node_tags = own
+            if not node_tags:
+                continue
+            known = Counter(proj_by_id[r] for r in ndata.get("memory_refs", [])
+                            if r in proj_by_id)
+            index.append((nid, node_tags, math.sqrt(len(node_tags)),
+                          known, sum(known.values())))
+        return index
+
+    def _rank_placement(self, memory: Memory, nodes: Dict[str, dict],
+                        proj_by_id: Dict[str, str],
+                        coll_of_project: Optional[Dict[str, str]] = None,
+                        _index: Optional[List[tuple]] = None
+                        ) -> List[Tuple[float, bool, str]]:
+        """Candidate nodes for ``memory``, best first, as
+        ``(score, provenance_compatible, node_id)``.
+
+        score = |mem_tags ∩ node_tags| / sqrt(|node_tags|).  Compatible
+        nodes rank ahead of incompatible ones; then higher score; then the
+        node with fewer tags.  Nodes with no tag overlap are omitted.
+        ``_index`` is a ``_placement_index`` of the same ``nodes``.
+        """
+        mem_tags = set(t.lower() for t in memory.tags)
+        if not mem_tags:
+            return []
+        from app.utils.memory_collections import memory_keys
+        mem_projects = memory_keys(memory.scope.project_paths, coll_of_project or {})
+        if _index is None:
+            _index = self._placement_index(nodes, proj_by_id)
+        cands: List[Tuple[bool, float, int, str]] = []
+        for nid, node_tags, root, known, total in _index:
             overlap = len(mem_tags & node_tags)
             if not overlap:
                 continue
-            score = overlap / math.sqrt(len(node_tags))
-            compat = self._provenance_compatible(ndata, mem_projects, proj_by_id)
-            cands.append((compat, score, -len(node_tags), nid))
+            # Same rule as _provenance_compatible, from the counted members.
+            compat = (not mem_projects or not total or
+                      sum(known[p] for p in mem_projects) / total
+                      >= self.PLACEMENT_PROVENANCE_MIN_SHARE)
+            cands.append((compat, overlap / root, -len(node_tags), nid))
         cands.sort(reverse=True)
         return [(score, compat, nid) for compat, score, _neg, nid in cands]
 
@@ -1018,6 +1043,9 @@ class MemoryStorage:
             for r in n.get("memory_refs", []):
                 holders.setdefault(r, []).append(nid)
         moves: List[Tuple[str, str, str]] = []
+        # ``nodes`` is not modified until the moves are applied below, so
+        # one index serves every memory in the pass.
+        index = self._placement_index(nodes, proj_by_id)
         for row in active_rows:
             mid = row.get("id")
             if len(holders.get(mid, [])) != 1:
@@ -1026,7 +1054,8 @@ class MemoryStorage:
             mem = Memory(**row)
             # The catch-all root never receives a memory from a real
             # topic node (see memory_collections.CATCH_ALL_NODE_IDS).
-            ranked = [c for c in self._rank_placement(mem, nodes, proj_by_id, coll)
+            ranked = [c for c in self._rank_placement(mem, nodes, proj_by_id, coll,
+                                                      _index=index)
                       if c[2] == cur or c[2] not in CATCH_ALL_NODE_IDS]
             if not ranked:
                 continue
