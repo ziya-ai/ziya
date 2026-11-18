@@ -70,39 +70,62 @@ export function useScrollManager({
     const lastContentLengthRef = useRef(contentLength ?? 0);
     const observerRef = useRef<IntersectionObserver | null>(null);
     const scrollRafRef = useRef<number | null>(null);
-    // Read inside the ResizeObserver callback below without re-subscribing
-    // it on every render.
+    // Follow mode as the pins see it.  Written synchronously by setFollow,
+    // never from render: a frame runs scroll events, then rAF callbacks,
+    // then ResizeObserver, all before React re-renders, so a ref assigned
+    // during render still said "following" after a scroll away and the view
+    // was pinned back (browser find jumped to its match, then to the end).
     const followModeRef = useRef(true);
     const isStreamingRef = useRef(isStreaming);
     const streamEndedAtRef = useRef(-Infinity);
-    followModeRef.current = followMode;
+    // Where the view was after the last scroll event or pin.  A pin assigns
+    // scrollTop directly, so the scroll handler's baseline must follow it.
+    const lastScrollTopRef = useRef(0);
+    // An explicit scroll-to-end is queued; it pins whatever follow mode says.
+    const forcePinRef = useRef(false);
     isStreamingRef.current = isStreaming;
 
-    // Scroll to the active end (bottom for top-down, top for bottom-up)
-    const scrollToActiveEnd = useCallback(() => {
+    const setFollow = useCallback((follow: boolean) => {
+        followModeRef.current = follow;
+        setFollowMode(follow);
+    }, []);
+
+    const pinNow = useCallback((container: HTMLElement) => {
+        pinToActiveEnd(container, isTopToBottom);
+        lastScrollTopRef.current = container.scrollTop;
+    }, [isTopToBottom]);
+
+    // Queue one pin for the next frame.  A follow pin (force=false) re-checks
+    // follow mode when it runs, so a scroll away between queueing and the
+    // frame cancels it.  A forced pin always runs and resumes following.
+    const queuePin = useCallback((force: boolean) => {
         if (!containerRef.current) return;
-        
-        const container = containerRef.current;
-        
+        if (force) forcePinRef.current = true;
+
         // Coalesce into one scroll per frame to avoid layout thrashing
         if (scrollRafRef.current !== null) {
             cancelAnimationFrame(scrollRafRef.current);
         }
         scrollRafRef.current = requestAnimationFrame(() => {
             scrollRafRef.current = null;
+            const forced = forcePinRef.current;
+            forcePinRef.current = false;
             if (!containerRef.current) return;
-            
-            if (isTopToBottom) {
-                containerRef.current.scrollTop = containerRef.current.scrollHeight - containerRef.current.clientHeight;
-            } else {
-                containerRef.current.scrollTop = 0;
-            }
-            
+            if (!forced && !followModeRef.current) return;
+
+            pinNow(containerRef.current);
+
             setHasNewContentWhileAway(false);
             setStreamCompletedWhileAway(false);
-            setFollowMode(true);
+            setFollow(true);
         });
-    }, [containerRef, isTopToBottom]);
+    }, [containerRef, pinNow, setFollow]);
+
+    // Scroll to the active end (bottom for top-down, top for bottom-up).
+    // Explicit: the jump button, a new user message, a conversation switch.
+    const scrollToActiveEnd = useCallback(() => {
+        queuePin(true);
+    }, [queuePin]);
 
     // Direct edge jumps.  Unlike wheel/trackpad travel these do not pass
     // through every placeholder shell on the way, so they are the fast path
@@ -141,7 +164,7 @@ export function useScrollManager({
                     
                     // If user scrolled to active end, clear indicators
                     if (atEnd) {
-                        setFollowMode(true);
+                        setFollow(true);
                         setHasNewContentWhileAway(false);
                         setStreamCompletedWhileAway(false);
                     }
@@ -161,14 +184,14 @@ export function useScrollManager({
                 observerRef.current.disconnect();
             }
         };
-    }, [containerRef, sentinelRef, isTopToBottom]);
+    }, [containerRef, sentinelRef, isTopToBottom, setFollow]);
 
     // Detect manual scroll away from end (disables follow mode)
     useEffect(() => {
         if (!containerRef.current) return;
 
         const container = containerRef.current;
-        let lastScrollTop = container.scrollTop;
+        lastScrollTopRef.current = container.scrollTop;
 
         // Brighten the scrollbar thumb while the user is actively scrolling.
         // A class (not :hover) is required because wheel/trackpad scrolling
@@ -188,6 +211,7 @@ export function useScrollManager({
 
         const handleScroll = () => {
             const currentScrollTop = container.scrollTop;
+            const lastScrollTop = lastScrollTopRef.current;
             // Movement away from the active end that LANDS away from it.  A
             // scrollTop drop caused by content shrinking (a thinking block
             // collapsing) is clamped by the browser to the new bottom, so
@@ -196,14 +220,19 @@ export function useScrollManager({
                 ? currentScrollTop < lastScrollTop - 10
                 : currentScrollTop > lastScrollTop + 10;
             const isScrollingAway = moved && distanceFromActiveEnd(container, isTopToBottom) > AWAY_SLACK_PX;
-            
-            if (isStreaming && isScrollingAway) {
-                setFollowMode(false);
+
+            // Whoever moved the view (wheel, keyboard, scrollbar, browser
+            // find), stop following now, in this frame.  "Live" matches the
+            // ResizeObserver pin below: streaming, or the grace after it.
+            const live = isStreamingRef.current
+                || Date.now() - streamEndedAtRef.current < FOLLOW_GRACE_MS;
+            if (live && isScrollingAway) {
+                setFollow(false);
             }
 
             activityTracker.notify();
             
-            lastScrollTop = currentScrollTop;
+            lastScrollTopRef.current = currentScrollTop;
         };
 
         container.addEventListener('scroll', handleScroll, { passive: true });
@@ -213,7 +242,7 @@ export function useScrollManager({
             velocityTracker.dispose();
             setSharedScrollVelocityTracker(null);
         };
-    }, [containerRef, isStreaming, isTopToBottom]);
+    }, [containerRef, isTopToBottom, setFollow]);
 
     // Re-pin when the CONTENT grows, not only when the streamed text does.
     // The rAF pin below runs the frame contentLength changes, but a tool
@@ -235,21 +264,21 @@ export function useScrollManager({
             if (!followModeRef.current) return;
             const live = isStreamingRef.current
                 || Date.now() - streamEndedAtRef.current < FOLLOW_GRACE_MS;
-            if (live) pinToActiveEnd(container, isTopToBottom);
+            if (live) pinNow(container);
         });
         ro.observe(content);
         return () => ro.disconnect();
-    }, [containerRef, isTopToBottom]);
+    }, [containerRef, pinNow]);
 
     // A content-length change: follow, and note growth while away.  Reads
-    // streaming/follow state through refs (assigned during render), so it
+    // streaming/follow state through refs, so it
     // is stable and can be called from a child's effect.  While streaming
     // the length ref tracks every value, so a decrease is only ever seen
     // after streaming has stopped.
     const handleContentLength = useCallback((len: number) => {
         const streaming = isStreamingRef.current;
         if (streaming && containerRef.current && followModeRef.current) {
-            scrollToActiveEnd();
+            queuePin(false);
         }
         if (streaming) {
             const contentGrew = len > lastContentLengthRef.current;
@@ -268,13 +297,13 @@ export function useScrollManager({
             // Re-baseline only, so the next turn's first chunk counts as growth.
             lastContentLengthRef.current = len;
         }
-    }, [containerRef, scrollToActiveEnd]);
+    }, [containerRef, queuePin]);
 
     // Follow mode re-engaging, or a stream starting, pins as before.
     useEffect(() => {
         if (!isStreaming || !containerRef.current) return;
-        if (followMode) scrollToActiveEnd();
-    }, [followMode, isStreaming, scrollToActiveEnd, containerRef]);
+        if (followMode) queuePin(false);
+    }, [followMode, isStreaming, queuePin, containerRef]);
 
     // The contentLength option, when a caller still passes one.
     useEffect(() => {
