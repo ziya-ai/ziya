@@ -597,3 +597,59 @@ def load_server(name: str, project_root: Optional[str], conversation_id: Optiona
         f"{scope} tools from {name} are callable from your next step and for the rest "
         "of this conversation:\n" + ("\n".join(lines) or "  (none listed)")
     )}
+
+
+# -- search-block pairing (the API's rule for replayed search turns) ----------
+#
+# A replayed assistant message may hold a ``server_tool_use`` only together
+# with a ``tool_search_tool_result`` carrying its id, in the same message.
+# Otherwise the whole request is a 400: "`tool_search_tool_regex` tool use
+# with id … was found without a corresponding `tool_search_tool_result`
+# block".  Probed live on the Invoke API, 2026-11-16
+# (scripts/probe_tool_search_pairing.py): the result need not be adjacent to
+# the use, and a cache marker on either block is accepted.
+
+def unpaired_searches(messages: Sequence[Any]) -> List[Tuple[int, str, List[str]]]:
+    """``(message index, server_tool_use id, that message's block types)``
+    for every search call whose result is not in the same assistant message."""
+    out: List[Tuple[int, str, List[str]]] = []
+    for mi, msg in enumerate(messages or []):
+        if not isinstance(msg, Mapping) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        blocks = [b for b in content if isinstance(b, Mapping)]
+        answered = {b.get("tool_use_id") for b in blocks
+                    if b.get("type") == "tool_search_tool_result"}
+        for b in blocks:
+            if b.get("type") == "server_tool_use" and b.get("id") not in answered:
+                out.append((mi, str(b.get("id")), [str(x.get("type")) for x in blocks]))
+    return out
+
+
+def drop_unpaired_searches(messages: List[Dict[str, Any]]
+                           ) -> Tuple[List[Dict[str, Any]], List[Tuple[int, str, List[str]]]]:
+    """``messages`` with every unanswered ``server_tool_use`` removed, and the
+    list ``unpaired_searches`` found.  The request would be refused whole
+    with the block in place; without it the turn goes on, and the model
+    searches again if it needs the tool.
+
+    The input and its messages are not modified: an affected message is
+    replaced by a copy.  With nothing to drop the same list comes back.  A
+    message left with no blocks gets a text placeholder (an empty content
+    list is itself a 400)."""
+    faults = unpaired_searches(messages)
+    if not faults:
+        return messages, faults
+    drop: Dict[int, Set[str]] = {}
+    for mi, sid, _types in faults:
+        drop.setdefault(mi, set()).add(sid)
+    out = list(messages)
+    for mi, ids in drop.items():
+        kept = [b for b in messages[mi]["content"]
+                if not (isinstance(b, Mapping) and b.get("type") == "server_tool_use"
+                        and str(b.get("id")) in ids)]
+        out[mi] = {**messages[mi], "content": kept or [
+            {"type": "text", "text": "[a tool search with no recorded result was removed here]"}]}
+    return out, faults

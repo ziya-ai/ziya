@@ -751,6 +751,18 @@ class BedrockProvider(LLMProvider):
         # Coalesce BEFORE cache-control so cache markers are computed on the
         # final, strictly-alternating array.
         messages = self._coalesce_same_role(messages)
+        # A search call replayed without its result is a 400 for the whole
+        # request (design/mcp-on-demand.md, replay rules).  Removed from this
+        # request only; the caller's conversation is not edited.
+        from app.utils.mcp_ondemand import drop_unpaired_searches
+        messages, _unpaired = drop_unpaired_searches(messages)
+        for _mi, _sid, _types in _unpaired:
+            logger.warning(
+                "🔎 TOOL_SEARCH_UNPAIRED: messages.%d: %s has no "
+                "tool_search_tool_result in its message [%s]; removed from "
+                "this request",
+                _mi, _sid, ",".join(_types),
+            )
         body: Dict[str, Any] = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": config.max_output_tokens,
@@ -791,8 +803,10 @@ class BedrockProvider(LLMProvider):
                 if _msgs[_i].get("role") == _msgs[_i-1].get("role"):
                     _alt.append(_i)
             logger.info(
-                "🧪 MSG_STRUCT n=%d seq=%s dangling_tool_use=%s orphan_tool_result=%s same_role_adjacent_idx=%s",
+                "🧪 MSG_STRUCT n=%d seq=%s dangling_tool_use=%s orphan_tool_result=%s "
+                "same_role_adjacent_idx=%s unpaired_search=%s",
                 len(_msgs), " | ".join(_seq), _dangling or "-", _orphan or "-", _alt or "-",
+                [(_u[0], _u[1]) for _u in _unpaired] or "-",
             )
         except Exception as _diag_e:
             logger.warning("🧪 MSG_STRUCT diagnostic failed: %s", _diag_e)
