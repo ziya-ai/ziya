@@ -11,6 +11,7 @@
  * party learns which region was viewed.
  */
 import type { D3RenderPlugin } from '../../types/d3';
+import { lightChartSurface } from './chartTheme';
 import {
   buildOrbitScene,
   describeCellStats,
@@ -107,7 +108,7 @@ export interface OrbitTheme {
 export function orbitTheme(isDarkMode: boolean): OrbitTheme {
   return isDarkMode
     ? { background: '#1e1e1e', ocean: '#16324a', land: '#3b4d3f', border: '#a0a0a0', text: '#e0e0e0', muted: '#a0a0a0', atmosphere: '#4a90d9' }
-    : { background: '#ffffff', ocean: '#cfe2f3', land: '#e9e4d4', border: '#7a7a7a', text: '#333333', muted: '#666666', atmosphere: '#7fb3ff' };
+    : { background: lightChartSurface(), ocean: '#cfe2f3', land: '#e9e4d4', border: '#7a7a7a', text: '#333333', muted: '#666666', atmosphere: '#7fb3ff' };
 }
 
 let countriesPromise: Promise<any[]> | null = null;
