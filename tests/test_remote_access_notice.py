@@ -80,8 +80,8 @@ def test_main_prints_the_notice_at_the_listen_site():
     # run BEFORE uvicorn starts so it lands beside uvicorn's own URL line.
     src = (ROOT / "app" / "main.py").read_text()
     call = src.find("maybe_print_notice(args.port)")
-    run = src.find("uvicorn.run(app, host=bind_host, port=args.port)")
+    run = src.find("server.run()")
     assert call != -1, "main.py never prints the remote-access notice"
     assert run != -1
-    assert call < run, "notice must be printed before uvicorn.run"
+    assert call < run, "notice must be printed before uvicorn starts"
     assert not re.search(r"amazon|dev desktop|ziya-remote", (ROOT / "app" / "utils" / "remote_access.py").read_text(), re.I)
