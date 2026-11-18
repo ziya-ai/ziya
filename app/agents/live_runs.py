@@ -26,7 +26,7 @@ itself carries no such information.
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 _LIVE: Dict[str, "asyncio.Task[object]"] = {}
 _ABORT_REQUESTED: Set[str] = set()
@@ -48,6 +48,12 @@ def get(run_id: str) -> Optional["asyncio.Task[object]"]:
         _LIVE.pop(run_id, None)
         return None
     return task
+
+
+def live_run_ids() -> List[str]:
+    """Runs whose coroutine is still running in this process (the update
+    chip restarts the server only when there are none)."""
+    return [run_id for run_id in list(_LIVE) if get(run_id) is not None]
 
 
 def consume_abort(run_id: str) -> bool:

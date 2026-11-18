@@ -1,0 +1,202 @@
+/* Task Cards dialog: panes, collapse tabs, collapsed strips, run thread.
+ *
+ * Neutral greys are translucent so one rule serves both themes; only the
+ * held accent is a fixed colour, with a light-theme ink override below. */
+
+.tc-deck__work {
+  flex: 1; min-width: 0; display: flex; align-items: stretch;
+}
+
+/* ── Collapse tab (open pane) and strip (collapsed pane) ── */
+.tc-deck__tab,
+.tc-deck__strip {
+  font: inherit; color: inherit; cursor: pointer;
+  background: rgba(128,128,128,0.12);
+  border: 1px solid rgba(128,128,128,0.28);
+}
+.tc-deck__tab {
+  flex: none; padding: 3px 9px; border-radius: 3px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.tc-deck__tab:hover,
+.tc-deck__strip:hover { background: rgba(24,144,255,0.22); border-color: rgba(24,144,255,0.6); }
+.tc-deck__tab:focus-visible,
+.tc-deck__strip:focus-visible { outline: 2px solid #58a6ff; outline-offset: 1px; }
+
+.tc-deck__strip {
+  flex: 0 0 28px; align-self: stretch;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 8px 0; border-radius: 4px;
+}
+.tc-deck__strip-label {
+  writing-mode: vertical-rl;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.6px; white-space: nowrap;
+}
+.tc-deck__strip-badge { font-size: 10px; line-height: 1.2; text-align: center; }
+
+.tc-deck__tab--held,
+.tc-deck__strip--held {
+  background: rgba(137,87,229,0.16);
+  border-color: rgba(137,87,229,0.6);
+  color: #e6d9ff;
+}
+body:not(.dark) .tc-deck__tab--held,
+body:not(.dark) .tc-deck__strip--held { color: #6639ba; }
+
+.tc-deck__pane-head {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  padding-bottom: 6px; border-bottom: 1px solid rgba(128,128,128,0.2);
+}
+.tc-deck__spacer { flex: 1; }
+
+/* ── Divider between definition and run ── */
+.tc-deck__divider {
+  flex: 0 0 9px; align-self: stretch; margin-inline: 4px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: col-resize; border-radius: 3px;
+  background: rgba(128,128,128,0.14);
+}
+.tc-deck__divider::after {
+  content: ''; width: 3px; height: 54px; border-radius: 2px;
+  background: rgba(128,128,128,0.6);
+}
+.tc-deck__divider:hover,
+.tc-deck__divider--dragging { background: rgba(24,144,255,0.4); }
+
+/* ── Run pane ── */
+.tc-deck__run {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;
+}
+.tc-deck__work > .tc-deck__strip--left { margin-right: 8px; }
+.tc-deck__work > .tc-deck__strip--right { margin-left: 8px; }
+.tc-deck__run-picker { min-width: 150px; max-width: 60%; }
+.tc-deck__run-count { font-size: 11px; opacity: 0.55; white-space: nowrap; }
+.tc-deck__btn {
+  flex: none; font: inherit; font-size: 11px; color: inherit; cursor: pointer;
+  background: none; border: 1px solid rgba(128,128,128,0.35);
+  border-radius: 4px; padding: 2px 8px; white-space: nowrap;
+}
+.tc-deck__btn:hover:not(:disabled) { background: rgba(128,128,128,0.16); }
+.tc-deck__btn:disabled { opacity: 0.45; cursor: default; }
+.tc-deck__btn--primary { background: #8957e5; border-color: #8957e5; color: #fff; }
+.tc-deck__btn--primary:hover:not(:disabled) { background: #7a48d8; }
+.tc-deck__btn--danger { border-color: rgba(248,81,73,0.6); color: #f85149; }
+
+/* ── Thread ── */
+.tc-thread {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 6px 4px 6px 2px; font-size: 12.5px;
+}
+.tc-thread__sec { margin-bottom: 6px; }
+.tc-thread__div {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  font: inherit; font-size: 11px; color: inherit; text-align: left;
+  background: none; border: none; padding: 2px 4px; border-radius: 3px;
+  cursor: pointer; opacity: 0.7;
+}
+.tc-thread__div:hover { background: rgba(128,128,128,0.14); opacity: 1; }
+.tc-thread__sec--open > .tc-thread__div,
+.tc-thread__sec--running > .tc-thread__div,
+.tc-thread__sec--held > .tc-thread__div,
+.tc-thread__sec--failed > .tc-thread__div { opacity: 1; }
+.tc-thread__sec--open > .tc-thread__div .tc-thread__label { font-weight: 600; }
+.tc-thread__sec--queued > .tc-thread__div,
+.tc-thread__sec--skipped > .tc-thread__div { opacity: 0.45; }
+.tc-thread__glyph { flex: none; width: 14px; text-align: center; font-weight: 700; }
+.tc-thread__sec--done .tc-thread__glyph { color: #3fb950; }
+.tc-thread__sec--failed .tc-thread__glyph { color: #f85149; }
+.tc-thread__sec--running .tc-thread__glyph { color: #1f6feb; }
+.tc-thread__sec--held .tc-thread__glyph,
+.tc-thread__sec--paused .tc-thread__glyph { color: #8957e5; }
+.tc-thread__sec--cancelled .tc-thread__glyph { color: #d29922; }
+.tc-thread__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-thread__meta { flex: none; font-size: 11px; opacity: 0.6; white-space: nowrap; }
+.tc-thread__rule { flex: 1; min-width: 12px; border-top: 1px solid rgba(128,128,128,0.25); }
+.tc-thread__sec--held .tc-thread__rule { border-top-color: rgba(137,87,229,0.5); }
+.tc-thread__held {
+  flex: none; font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
+  background: #8957e5; color: #fff; padding: 0 5px; border-radius: 3px;
+}
+.tc-thread__dots {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 2px 0 4px 24px;
+}
+/* The strip was styled for a map row, where it is pushed to the right. */
+.tc-thread__dots .tc-map__dots { margin-left: 0; flex-wrap: wrap; }
+.tc-thread__turn { margin: 4px 0 8px 24px; min-width: 0; }
+.tc-thread__tool {
+  border: 1px solid rgba(128,128,128,0.3); border-radius: 6px;
+  padding: 4px 10px; margin-bottom: 6px; font-size: 11px;
+}
+.tc-thread__tool > summary { cursor: pointer; opacity: 0.8; }
+.tc-thread__tool > pre {
+  margin: 6px 0 2px; font-size: 10.5px; white-space: pre-wrap;
+  word-break: break-word; max-height: 220px; overflow: auto; opacity: 0.8;
+}
+.tc-thread__empty {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; opacity: 0.55; padding: 4px;
+}
+.tc-thread__note {
+  border-left: 3px solid #8957e5; background: rgba(137,87,229,0.1);
+  border-radius: 0 6px 6px 0; padding: 6px 10px; margin-bottom: 8px;
+}
+.tc-thread__error {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 11.5px; color: #f85149; padding: 4px; word-break: break-word;
+}
+/* The recovery banner is reused as-is; in the thread it sits under the
+ * block it belongs to. */
+.tc-thread .tc-recover { margin: 4px 0 8px 24px; }
+.tc-thread > .tc-recover { margin-left: 0; }
+
+/* ── Composer ── */
+.tc-deck__composer {
+  flex: none; border-top: 1px solid rgba(128,128,128,0.2); padding-top: 6px;
+}
+.tc-deck__composer-off {
+  font-size: 11px; opacity: 0.55;
+  border: 1px dashed rgba(128,128,128,0.35); border-radius: 8px; padding: 7px 10px;
+}
+.tc-deck__stats { font-size: 10.5px; opacity: 0.55; margin-top: 4px; }
+
+/* ── Title bar ── */
+/* Room on the right for the Modal's own close button. */
+.tc-deck__title {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding-right: 36px; font-size: 14px;
+}
+.tc-deck__card-name {
+  min-width: 0; max-width: 36ch; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tc-deck__title-error {
+  max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 400; color: #f85149;
+}
+.tc-deck__actions { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ── Run markers in the definition outline ── */
+.tc-outline__mark {
+  flex: none; margin-left: auto; font-size: 9px; letter-spacing: 0.4px;
+  padding: 0 5px; border-radius: 3px; white-space: nowrap;
+}
+/* The outline's own tags also push right with margin-left: auto; after a
+ * badge they sit beside it instead of splitting the free space. */
+.tc-outline__mark ~ .tc-outline__tag,
+.tc-outline__mark ~ .tc-outline__hidden { margin-left: 4px; }
+.tc-outline__mark--held { background: #8957e5; color: #fff; font-weight: 700; }
+.tc-outline__mark--holding {
+  color: #b392f0; border: 1px solid rgba(137,87,229,0.45); font-weight: 600;
+}
+.tc-outline__mark--blocked { opacity: 0.7; font-style: italic; }
+/* Not on the selected row: this sheet loads after the editor's, so it
+ * would otherwise replace the selection highlight on the held block. */
+.tc-outline__row--held:not(.tc-outline__row--selected) {
+  background: rgba(137,87,229,0.12); box-shadow: inset 3px 0 0 #8957e5;
+}
+/* In edit mode a block the run has not reached is still being edited;
+ * the grey glyph says "not reached" without dimming the label. */
+.tc-outline--edit .tc-outline__row--queued .tc-outline__label { opacity: 1; }
+body:not(.dark) .tc-outline__mark--holding { color: #6639ba; }

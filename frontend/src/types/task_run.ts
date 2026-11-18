@@ -96,6 +96,12 @@ export interface CalleeContext {
   run_status: RunStatus;
   /** Card that owns the run — not this card. */
   caller_card_id: string;
+  /**
+   * Conversation the caller's run is anchored in, or null for a launch
+   * made without one.  What lets a callee's deck page navigate to the
+   * run's tile, where the resume controls live.
+   */
+  source_conversation_id?: string | null;
   /** The Call block inside the caller that invoked this card. */
   call_block_id: string;
   callee_target?: string | null;

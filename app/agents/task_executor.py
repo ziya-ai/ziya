@@ -658,6 +658,9 @@ async def execute_task_block(
     except Exception as e:  # noqa: BLE001 — metrics must never break a run
         logger.debug("Usage baseline unavailable: %s", e)
     tool_call_count = 0
+    # tool_id -> server time the call started, from the executor's
+    # ``tool_start`` chunk.  Lets ``task_tool_call`` report a duration.
+    _tool_started_at: dict = {}
     collected_text: List[str] = []
     # Tracks whether any text has arrived since the most recent tool call.
     # False at end of stream means the response stopped at a tool boundary
@@ -1343,6 +1346,35 @@ async def execute_task_block(
                                     "ts": time.time(),
                                 })
                                 _heartbeat(_pnote, source="model")
+                elif ctype == "tool_start":
+                    # The call has been dispatched and has not returned.
+                    # ``task_tool_call`` below is emitted only after the
+                    # result, so without this a run view cannot show a call
+                    # in flight or what it was called with.
+                    _ts_id = chunk.get("tool_id")
+                    _ts_args = chunk.get("args")
+                    if not isinstance(_ts_args, dict):
+                        _ts_args = chunk.get("tool_input")
+                    _ts_header = chunk.get("display_header") or ""
+                    if not _ts_header and isinstance(_ts_args, dict):
+                        _ts_header = str(
+                            _ts_args.get("command") or _ts_args.get("path")
+                            or _ts_args.get("query") or ""
+                        )
+                    _ts_now = time.time()
+                    if _ts_id:
+                        _tool_started_at[_ts_id] = _ts_now
+                    await _emit({
+                        "type": "task_tool_start",
+                        "run_id": run_id,
+                        "block_id": delta_block_id,
+                        "index": delta_index,
+                        "tool_name": chunk.get("tool_name"),
+                        "tool_id": _ts_id,
+                        "header": str(_ts_header)[:200],
+                        "ts": _ts_now,
+                    })
+                    _heartbeat()
                 elif ctype == "tool_display":
                     tool_call_count += 1
                     # Close the open text run at the tool boundary.
@@ -1391,6 +1423,15 @@ async def execute_task_block(
                         "tool_name": chunk.get("tool_name"),
                         "tool_id": chunk.get("tool_id"),
                         "result_preview": (_result or "")[:500] if isinstance(_result, str) else "",
+                        # What it was called with, and how it went, so the
+                        # run view's tool chip matches the chat's.
+                        "header": _arg_hint,
+                        "is_error": bool(chunk.get("is_error")),
+                        "duration_ms": (
+                            int((time.time() - _tool_started_at.pop(
+                                chunk.get("tool_id"))) * 1000)
+                            if chunk.get("tool_id") in _tool_started_at else None
+                        ),
                         "ts": time.time(),
                     })
                     await _emit({

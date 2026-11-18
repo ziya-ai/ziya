@@ -107,7 +107,7 @@ be published.
 This table ships with the package and is the **only** price source a normal
 install has — `pricing.json` is an override for internal or negotiated
 rates, not a prerequisite. It carries public on-demand list prices for the
-Claude 3.x–5.5 family including Fable 5 / 5.1 and Mythos 5 / 5.1 (Anthropic
+Claude 3.x–5.5 family including Fable 5 / 5.1 / 5.2 and Mythos 5 / 5.1 / 5.2 (Anthropic
 and Bedrock, same list), Amazon Nova, DeepSeek R1, gpt-oss, Llama 3.3/4 and
 Qwen3-Coder on Bedrock, GPT‑4o/4.1/5 and o‑series on OpenAI, the whole
 Gemini direct line (2.5 Pro/Flash/Flash‑Lite, 3 Flash and 3.1 Pro preview,

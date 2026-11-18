@@ -1,0 +1,131 @@
+/* Run transcript and the inline tile's two-column run pane.
+   Colours follow runStatusVocabulary.ts: foreground "running" is #58a6ff. */
+
+/* ── Transcript: prose and tool chips in order ── */
+.tc-turn { min-width: 0; }
+.tc-turn__tool {
+  border: 1px solid rgba(128, 128, 128, 0.3); border-radius: 6px;
+  margin: 0 0 8px; font-size: 11px;
+}
+.tc-turn__tool--running { border-color: #58a6ff; }
+.tc-turn__tool--failed { border-color: rgba(248, 81, 73, 0.6); }
+.tc-turn__tool-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 4px 10px; border: 0; background: none; color: inherit;
+  font: inherit; text-align: left; cursor: pointer;
+}
+.tc-turn__tool-head:disabled { cursor: default; }
+.tc-turn__glyph { flex: none; width: 12px; text-align: center; font-weight: 700; }
+.tc-turn__tool--done .tc-turn__glyph { color: #3fb950; }
+.tc-turn__tool--running .tc-turn__glyph { color: #58a6ff; }
+.tc-turn__tool--failed .tc-turn__glyph { color: #f85149; }
+.tc-turn__tool--stopped .tc-turn__glyph { color: #d29922; }
+.tc-turn__name { flex: none; font-weight: 600; }
+.tc-turn__args {
+  flex: 1; min-width: 0; opacity: 0.7; background: none; padding: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tc-turn__meta { flex: none; margin-left: auto; opacity: 0.6; white-space: nowrap; }
+.tc-turn__tool--running .tc-turn__meta { color: #58a6ff; opacity: 1; }
+.tc-turn__caret { flex: none; opacity: 0.6; }
+.tc-turn__result {
+  margin: 0; padding: 6px 10px; font-size: 10.5px; opacity: 0.85;
+  border-top: 1px solid rgba(128, 128, 128, 0.25);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow: auto;
+}
+
+/* ── Run pane: card column + transcript ── */
+.tc-run {
+  display: flex; align-items: stretch; margin: 8px 0; min-width: 0;
+  border: 1px solid var(--tc-card-border, #30363d); border-radius: 6px;
+}
+.tc-run__card {
+  flex: 0 0 38%; min-width: 200px; max-width: 360px; padding: 4px 4px 6px;
+  border-right: 1px solid var(--tc-card-border, #30363d); overflow: hidden;
+}
+.tc-run__card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 6px; font-size: 10px; letter-spacing: 0.5px;
+  color: var(--tc-muted, #7d8590);
+}
+.tc-run__toggle {
+  border: 0; background: none; color: var(--tc-muted, #7d8590);
+  font: inherit; font-size: 12px; padding: 0 4px; cursor: pointer;
+}
+.tc-run__toggle:hover { color: var(--tc-fg, #ddd); }
+/* The map was laid out for the tile's full width; in the column its
+   per-row controls wrap under the label instead of overflowing. */
+.tc-run__card .tc-map { margin: 0; }
+.tc-run__card .tc-map__row { flex-wrap: wrap; height: auto; min-height: 24px; }
+
+.tc-run__rail {
+  flex: 0 0 30px; display: flex; flex-direction: column; align-items: center;
+  gap: 4px; padding: 6px 0;
+  border-right: 1px solid var(--tc-card-border, #30363d);
+}
+.tc-run__rail-glyph {
+  width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%;
+  background: none; font: inherit; font-size: 12px; font-weight: 700;
+  line-height: 18px; text-align: center; cursor: pointer;
+  color: var(--tc-muted, #7d8590);
+}
+.tc-run__rail-glyph:hover { background: rgba(128, 128, 128, 0.16); }
+.tc-run__rail-glyph--done { color: #3fb950; }
+.tc-run__rail-glyph--failed { color: #f85149; }
+.tc-run__rail-glyph--cancelled { color: #d29922; }
+.tc-run__rail-glyph--held { color: #8957e5; }
+.tc-run__rail-glyph--running { color: #58a6ff; box-shadow: 0 0 0 1px #58a6ff; }
+.tc-run__rail-glyph--selected { background: rgba(31, 111, 235, 0.2); }
+.tc-run__rail-label {
+  writing-mode: vertical-rl; margin-top: 6px; font-size: 10px;
+  letter-spacing: 0.5px; color: var(--tc-muted, #7d8590);
+}
+
+.tc-run__pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tc-run__pane-head {
+  display: flex; align-items: center; gap: 6px; padding: 5px 12px;
+  font-size: 11px; color: var(--tc-muted, #7d8590);
+  border-bottom: 1px solid var(--tc-card-border, #30363d);
+}
+.tc-run__pane-glyph { flex: none; font-weight: 700; }
+.tc-run__pane-glyph--done { color: #3fb950; }
+.tc-run__pane-glyph--failed { color: #f85149; }
+.tc-run__pane-glyph--running { color: #58a6ff; }
+.tc-run__pane-glyph--held { color: #8957e5; }
+.tc-run__pane-glyph--cancelled { color: #d29922; }
+.tc-run__pane-label {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tc-run__follow {
+  flex: none; border: 1px solid var(--tc-card-border, #30363d); border-radius: 4px;
+  background: none; color: inherit; font: inherit; padding: 0 8px; cursor: pointer;
+}
+.tc-run__follow:hover { color: var(--tc-fg, #ddd); }
+.tc-run__body { flex: 1; min-width: 0; padding: 8px 12px; font-size: 12.5px; }
+.tc-run__empty { font-size: 11px; opacity: 0.55; padding: 4px 0; }
+.tc-run__pane > .tc-steer { border-top: 1px solid var(--tc-card-border, #30363d); }
+
+@media (max-width: 720px) {
+  .tc-run { flex-direction: column; }
+  .tc-run__card {
+    flex: none; max-width: none; border-right: 0;
+    border-bottom: 1px solid var(--tc-card-border, #30363d);
+  }
+}
+
+/* ── Collapsed tile: the running block and its newest lines ── */
+.tc-tile--receipt-live { flex-wrap: wrap; }
+.tc-tail { flex: 0 0 100%; min-width: 0; margin: 2px 0 0 18px; font-size: 11px; }
+.tc-tail__row { display: flex; align-items: center; gap: 6px; }
+.tc-tail__label { flex: none; font-weight: 600; }
+.tc-tail__rule { flex: 1; min-width: 12px; border-top: 1px solid rgba(128, 128, 128, 0.25); }
+.tc-tail__line {
+  display: flex; gap: 6px; margin-left: 20px; min-width: 0;
+}
+.tc-tail__line--text { opacity: 0.6; }
+.tc-tail__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-tail__glyph { flex: none; font-weight: 700; }
+.tc-tail__glyph--running { color: #58a6ff; }
+.tc-tail__glyph--done { color: #3fb950; }
+.tc-tail__glyph--failed { color: #f85149; }

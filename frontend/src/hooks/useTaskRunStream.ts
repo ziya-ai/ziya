@@ -18,6 +18,7 @@ import {
   emptyLagStats, foldSample, formatLagStats, isLagProbeEnabled, LAG_LOG_EVERY,
 } from './streamLagProbe';
 import { bindingsFromEvent, mergeBindings, type TemplateBinding } from '../components/TaskCard/eventLog';
+import { appendTranscriptEvent, type TranscriptSegment } from '../components/TaskCard/runTranscript';
 
 // The run's FINAL word: nothing can supersede one of these for this run
 // object.  Governs the recency exemption in shouldAcceptFetchedRun and
@@ -95,6 +96,12 @@ export interface LiveTaskState {
     blockId?: string;
     streamText: string;
     toolCalls: LiveTaskState['toolCalls'];
+    /**
+     * The same text and tool calls as one list in the order they
+     * happened (runTranscript.ts).  ``streamText`` and ``toolCalls``
+     * cannot give that order back.
+     */
+    segments?: TranscriptSegment[];
     events: LiveTaskState['events'];
     status: 'running' | 'passed' | 'failed';
     durationMs?: number;
@@ -166,7 +173,7 @@ export interface LiveTaskState {
  */
 const TASK_SCOPED_EVENTS: ReadonlySet<string> = new Set([
   'task_started', 'task_text_delta', 'task_text_delta_run',
-  'task_tool_call', 'task_progress', 'task_finished', 'task_bindings',
+  'task_tool_start', 'task_tool_call', 'task_progress', 'task_finished', 'task_bindings',
 ]);
 
 const EMPTY_LIVE: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {}, blockStatuses: {} };
@@ -922,6 +929,7 @@ export function useTaskRunStream(
    let streamText = it.streamText;
    let toolCalls = it.toolCalls;
    let bindings = it.bindings;
+   const segments = appendTranscriptEvent(it.segments ?? [], type, e);
    // Both the live raw delta and the relay's collapsed replay entry
    // carry block-scoped text in ``content``; the per-iteration bucket
    // needs the replayed form too or a reloaded run shows empty
@@ -948,7 +956,7 @@ export function useTaskRunStream(
    }
    return {
      ...it,
-     streamText, toolCalls,
+     streamText, toolCalls, segments,
      ...(bindings ? { bindings } : {}),
      events: [...it.events, e as any],
    };

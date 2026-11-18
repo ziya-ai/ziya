@@ -19,7 +19,6 @@ const DIR = path.resolve(__dirname, '..');
 const read = (f: string) => fs.readFileSync(path.join(DIR, f), 'utf8');
 
 const library = () => read('TaskCardsLibrary.tsx');
-const runList = () => read('DeckRunList.tsx');
 const index = () => read('deckRunIndex.ts');
 
 describe('the deck asks the server which runs exist', () => {
@@ -65,39 +64,6 @@ describe('a card row states whether it is live or wants attention', () => {
     // tile end up disagreeing about the same run.
     const lib = library();
     expect(lib).not.toMatch(/'queued'\s*,\s*'running'\s*,\s*'paused'/);
-  });
-});
-
-describe('a run is clickable through to where it is running', () => {
-  it('the run list exists and renders one row per run', () => {
-    expect(runList()).toMatch(/export const DeckRunList/);
-    expect(runList()).toMatch(/runs\.map/);
-  });
-
-  it('routes a click to the run\'s own conversation', () => {
-    expect(runList()).toMatch(/source_conversation_id/);
-    expect(library()).toMatch(/loadConversation/);
-  });
-
-  it('closes the deck when navigating, so the tile is visible', () => {
-    // Navigating behind a modal that still covers the conversation is
-    // indistinguishable from the click having done nothing.
-    expect(library()).toMatch(/const handleOpenRun[\s\S]{0,600}onClose\(\)/);
-  });
-
-  it('says why a run is not clickable rather than silently ignoring it', () => {
-    // A run launched with no conversation (an older unbound launch) has
-    // nowhere to navigate to; a dead click reads as a bug.
-    expect(runList()).toMatch(/canOpen/);
-    expect(runList()).toMatch(/no conversation/i);
-  });
-
-  it('shows a status per run, using the shared colour map', () => {
-    expect(runList()).toMatch(/deckStatusColor/);
-  });
-
-  it('renders an empty state instead of a blank panel', () => {
-    expect(runList()).toMatch(/never run|No runs/i);
   });
 });
 

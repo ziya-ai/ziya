@@ -34,6 +34,9 @@ import { CommandBlock } from '../CommandBlock';
 import { TaskRunInspector } from './TaskRunInspector';
 import type { SteerTarget } from './SteerComposer';
 import { TaskRunMap } from './TaskRunMap';
+import { RunThreadPane } from './RunThreadPane';
+import { RunTranscriptTail } from './TranscriptView';
+import { liveTail } from './runTranscript';
 import { AskAnswerPanel } from './AskAnswerPanel';
 import { BlockDetailPanel } from './BlockDetailPanel';
 import { BlockOutline } from './BlockOutline';
@@ -41,7 +44,7 @@ import { RunResourcesPanel } from './RunResourcesPanel';
 import { ArtifactViewer } from './ArtifactViewer';
 import { RunRecoveryBanner } from './RunRecoveryBanner';
 import {
-  blockConfigLines, blockLabel, findBlockById, findBlockInRun, resolveBlockStatus,
+  blockConfigLines, blockLabel, findBlockById, findBlockInRun, flattenBlocks, resolveBlockStatus,
 } from './runMapModel';
 import { deriveRunControls, heldLabel, canForceAbort } from './runControls';
 import { RUN_STATUS_FILL, RUN_STATUS_FG } from './runStatusVocabulary';
@@ -1169,11 +1172,23 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
   const title = displayCard?.name || 'Task Run';
   const { wrappers, instructions } = findInstructionsAndWrappers(displayCard?.root);
 
+  // A collapsed tile of a run in flight keeps the running block and its
+  // newest transcript lines in view.
+  const receiptTail = isLive ? liveTail(live.iterations, 2) : null;
+  const receiptTailBlock = receiptTail
+    ? findBlockInRun(displayCard?.root, run.call_snapshots, receiptTail.blockId)
+    : null;
+  const receiptTailLabel = receiptTail
+    ? (receiptTailBlock ? blockLabel(receiptTailBlock) : receiptTail.blockId)
+      + (receiptTailBlock?.block_type === 'repeat' || receiptTailBlock?.block_type === 'until'
+        ? ` · #${receiptTail.index}` : '')
+    : '';
+
   // Collapsed receipt view
   if (!expanded) {
     return (
       <div
-        className={`tc-tile tc-tile--receipt tc-tile--${run.status}`}
+        className={`tc-tile tc-tile--receipt tc-tile--${run.status}${receiptTail ? ' tc-tile--receipt-live' : ''}`}
         onClick={toggleExpand}
         title="Click to expand"
       >
@@ -1220,6 +1235,9 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
         {run.artifact?.duration_ms ? (
           <span className="tc-tile__meta">{formatDuration(run.artifact.duration_ms)}</span>
         ) : null}
+        {receiptTail && (
+          <RunTranscriptTail label={receiptTailLabel} lines={receiptTail.lines} />
+        )}
       </div>
     );
   }
@@ -1516,6 +1534,16 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
         />
 
         {displayCard && (
+          <RunThreadPane
+            projectId={projectId} root={displayCard.root} run={run} live={live}
+            isLive={isLive} focus={focus} onFocus={onFocus} onFollow={clearFocus}
+            storageKey={`ziya.tc.cardAway.${binding.id}`}
+            hasCard={flattenBlocks(displayCard.root, 0, run.call_snapshots).length > 1}
+            steer={isLive ? {
+              targets: steerTargets, notes: run.steer_notes,
+              busy: steering, onSend: handleSteer,
+            } : undefined}
+            card={
           <TaskRunMap
             projectId={projectId} card={displayCard} run={run} live={live}
             focusedId={focus?.blockId ?? null}
@@ -1536,6 +1564,8 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
                 : undefined
             }
             resumingBlockId={resumingBlockId}
+          />
+            }
           />
         )}
 
@@ -1571,7 +1601,6 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
                 status={resolveBlockStatus(fb.id, live.blockStatuses, run)}
                 run={run}
                 blockState={run.block_states?.[fb.id]}
-                liveText={live.text[fb.id]}
                 projectId={projectId}
                 runId={run.id}
                 iterationIndex={focus.index}
@@ -1614,7 +1643,7 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             {steerTargets.length > 0 && (
               <span
                 className={`tc-tile__steer-chip${queuedSteers > 0 ? ' tc-tile__steer-chip--queued' : ''}`}
-                title="Open Inspect → Live output to send a note to a running block"
+                title="Send a note from the composer under the running block's transcript"
               >
                 {queuedSteers > 0
                   ? `💬 ${queuedSteers} queued`
@@ -1789,10 +1818,9 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
         <TaskRunInspector
           live={live}
           onClear={clearLive}
-          // isLive rather than the old isRunning: a held/stepping run is
-          // exactly when the trace matters most, and status reads 'paused'
-          // between steps, which the old predicate excluded.
-          defaultOpen={isLive}
+          // Closed by default: the run pane above carries the live
+          // transcript, so this drawer is the raw tool and event log.
+          defaultOpen={false}
           persistedIterations={iterations}
           runStatus={run.status as RunStatus}
           steer={isLive ? {

@@ -11,6 +11,11 @@
  *   edit — no status; a click selects the block for the definition pane
  *   run  — a status glyph per row from the caller's `statusOf`
  *
+ * Edit mode can also carry a run's markers (`markerOf`): the glyph, and
+ * a badge for a block's position relative to a hold.  The Task Cards
+ * dialog uses this so the card's own outline says where its run is,
+ * instead of a second copy of the tree drawn above the editor.
+ *
  * Invariant (the "no-reflow" rule): the gutter — caret then glyph — is
  * rendered on EVERY row in BOTH modes at a fixed width, even when the
  * caret is a leaf's blank or the glyph is edit-mode's blank.  Folding a
@@ -22,11 +27,16 @@
 import React from 'react';
 import type { Block } from '../../types/task_card';
 import type { CallSnapshot } from '../../types/task_run';
+import type { OutlineMarker } from './deckRunPaneModel';
 import {
   flattenBlocks, foldRows, blockEmoji, blockLabel, STATUS_GLYPHS,
 } from './runMapModel';
 
 export type OutlineMode = 'edit' | 'run';
+
+const MARK_LABELS: Record<NonNullable<OutlineMarker['badge']>, string> = {
+  held: 'HELD HERE', holding: 'holding', blocked: 'blocked',
+};
 
 interface Props {
   root: Block;
@@ -41,11 +51,13 @@ interface Props {
   statusOf?: (blockId: string) => string;
   /** Run mode: callee trees to splice under Call rows (see flattenBlocks). */
   callSnapshots?: Record<string, CallSnapshot>;
+  /** Edit mode: a run marker per block id; absent ids get none. */
+  markerOf?: (blockId: string) => OutlineMarker | null | undefined;
 }
 
 export const BlockOutline: React.FC<Props> = ({
   root, mode, selectedId, onSelect, collapsed, onToggleCollapse,
-  statusOf, callSnapshots,
+  statusOf, callSnapshots, markerOf,
 }) => {
   const rows = React.useMemo(
     () => foldRows(flattenBlocks(root, 0, callSnapshots), collapsed),
@@ -63,9 +75,12 @@ export const BlockOutline: React.FC<Props> = ({
         // An unsaved block has no id to select by; see firstSelectableRow.
         const selectable = id !== '';
         const selected = selectable && id === selectedId;
+        const marker = mode === 'edit' && selectable
+          ? (markerOf?.(id) ?? null)
+          : null;
         const status = mode === 'run' && selectable
           ? (statusOf?.(id) ?? 'queued')
-          : null;
+          : (marker?.status ?? null);
         const className = [
           'tc-outline__row',
           selected && 'tc-outline__row--selected',
@@ -121,6 +136,14 @@ export const BlockOutline: React.FC<Props> = ({
             </span>
             <span className="tc-outline__emoji">{blockEmoji(r.block)}</span>
             <span className="tc-outline__label">{blockLabel(r.block)}</span>
+            {marker?.badge && (
+              <span
+                className={`tc-outline__mark tc-outline__mark--${marker.badge}`}
+                title={marker.title}
+              >
+                {MARK_LABELS[marker.badge]}
+              </span>
+            )}
             {r.viaCall && (
               <span
                 className="tc-outline__tag"
