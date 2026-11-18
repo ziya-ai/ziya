@@ -161,7 +161,7 @@ describe('the data itself can carry the claim', () => {
       encoding: { x: { field: 't', type: 'temporal' }, y: { field: 'v', type: 'quantitative' } },
     };
     const msgs = fixTemporalZoneMismatch(spec);
-    expect(msgs.join('\n')).toMatch(/values state UTC/);
+    expect(msgs.join('\n')).toMatch(/every "t" value states UTC/);
     expect(spec.encoding.x.scale.type).toBe('utc');
   });
   it('date-only values -> utc scale (Date.parse reads them as UTC midnight; local shows the day before west of UTC)', () => {
@@ -237,7 +237,9 @@ const REPORTED_TITLE = {
   text: ['Brewster (cell 776194), 4-s bins, 2026-10-20 18:00Z → 10-21', '06:48Z'],
   subtitle: ['CTs affected per bin by source; red ticks = hard events, orange ticks = soft', 'events'],
 };
-function stackedPanels(title: any, lastTitle: string | undefined = 'UTC'): any {
+// lastTitle: the bottom panel's axis title. Pass null for none; undefined
+// takes the default, as JavaScript applies a default for an explicit undefined.
+function stackedPanels(title: any, lastTitle: string | null = 'UTC'): any {
   const panel = (field: string, xTitle?: string) => ({
     data: { values: [{ [field]: '2026-10-20T11:03:46-07:00', v: 1 }, { [field]: '2026-10-20T23:48:00-07:00', v: 2 }] },
     mark: 'line',
@@ -249,7 +251,7 @@ function stackedPanels(title: any, lastTitle: string | undefined = 'UTC'): any {
   });
   return {
     ...(title !== undefined ? { title } : {}),
-    vconcat: [panel('t0'), panel('bin'), panel('t'), panel('t4'), panel('tb', lastTitle)],
+    vconcat: [panel('t0'), panel('bin'), panel('t'), panel('t4'), panel('tb', lastTitle ?? undefined)],
   };
 }
 const xScales = (spec: any) => spec.vconcat.map((p: any) => p.encoding.x.scale?.type);
@@ -273,7 +275,7 @@ describe('one chart, one clock: concat panels share the zone claim', () => {
     expect(msgs[0]).toMatch(/vconcat\[4\]\.x claims UTC \(axis title "UTC"\)/);
   });
   it('the chart title alone is a claim', () => {
-    const spec = stackedPanels({ text: 'Loss events', subtitle: '18:00Z → 06:48Z' }, undefined);
+    const spec = stackedPanels({ text: 'Loss events', subtitle: '18:00Z → 06:48Z' }, null);
     fixTemporalZoneMismatch(spec);
     expect(xScales(spec)).toEqual(['utc', 'utc', 'utc', 'utc', 'utc']);
   });
@@ -294,7 +296,7 @@ describe('one chart, one clock: concat panels share the zone claim', () => {
     expect(xScales(spec)).toEqual(['utc', 'utc', 'utc', 'utc', 'utc']);
   });
   it('no claim anywhere: nothing changes', () => {
-    const spec = stackedPanels('Brewster loss events', undefined);
+    const spec = stackedPanels('Brewster loss events', null);
     const before = JSON.stringify(spec);
     expect(fixTemporalZoneMismatch(spec)).toEqual([]);
     expect(JSON.stringify(spec)).toBe(before);
@@ -312,7 +314,8 @@ describe('plugin seam', () => {
   it('vegaLitePlugin imports the pass and runs it in the preprocess chain', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'vegaLitePlugin.ts'), 'utf-8');
     expect(src).toMatch(/import \{ fixTemporalZoneMismatch \} from '\.\/vegaTemporalZone'/);
-    expect(src).toMatch(/fixTemporalZoneMismatch\(spec\)\.forEach\(msg => console\.log\(`🔧 VEGA-PREPROCESS: \$\{msg\}`\)\)/);
+    // console.info, not console.log: production builds drop console.log (4cf0634c).
+    expect(src).toMatch(/fixTemporalZoneMismatch\(spec\)\.forEach\(msg => \{ console\.info\(`🔧 VEGA-PREPROCESS: \$\{msg\}`\); \}\)/);
     // Runs after the date-expression repair, which classifies the same fields.
     expect(src.indexOf('fixUnparsedDateFormatting(spec)')).toBeLessThan(src.indexOf('fixTemporalZoneMismatch(spec)'));
   });

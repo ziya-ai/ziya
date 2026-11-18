@@ -6,6 +6,7 @@ import { rerouteSkipEdges, shouldRerouteEdges } from './mermaidEdgeRerouter';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
 import { hexToRgb, enhanceSVGVisibility, calculateContrastRatio } from '../../utils/colorUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
+import { lightChartSurface } from './chartTheme';
 
 /**
  * D-293 / G-787b57 (mermaid-w1-06): the dark-theme post-render recolour pass
@@ -113,7 +114,7 @@ export function buildPieThemeVariables(isDarkMode: boolean): Record<string, stri
     vars.pieOpacity = '1';
     // Page-coloured gap between adjacent slices + a contrasting outer ring, so
     // neighbouring wedges are separable regardless of their fill luminance.
-    vars.pieStrokeColor = isDarkMode ? '#1f1f1f' : '#ffffff';
+    vars.pieStrokeColor = isDarkMode ? '#1f1f1f' : lightChartSurface();
     vars.pieStrokeWidth = '2px';
     vars.pieOuterStrokeColor = isDarkMode ? '#e6e6e6' : '#333333';
     vars.pieOuterStrokeWidth = '2px';
@@ -176,7 +177,7 @@ function hslToHex(h: number, s: number, l: number): string {
  * floor. Guarantees a legible, saturated fill for any hue on either canvas.
  */
 export function pieRampColor(hue: number, isDarkMode: boolean, tier = 0, floor = 3.0): string {
-    const bg = isDarkMode ? '#1f1f1f' : '#ffffff';
+    const bg = isDarkMode ? '#1f1f1f' : lightChartSurface();
     const sat = 0.62;
     // THREE lightness tiers give a SECOND distinguishing axis on top of hue, so
     // two slices that happen to land near each other in hue still separate by

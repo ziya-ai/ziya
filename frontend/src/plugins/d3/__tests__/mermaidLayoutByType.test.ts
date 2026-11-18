@@ -23,11 +23,18 @@ jest.mock('../mermaidEdgeRerouter', () => ({
 }));
 
 const initialize = jest.fn();
-const render = jest.fn(async () => ({
-  svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
-    + '<g class="node"><rect width="10" height="10"></rect></g>'
-    + '<!--' + ' '.repeat(120) + '--></svg>',
-}));
+const SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+  + '<g class="node"><rect width="10" height="10"></rect></g>'
+  + '<!--' + ' '.repeat(120) + '--></svg>';
+const render = jest.fn();
+
+// CRA's resetMocks clears jest.fn implementations before each test, so one
+// given at declaration was gone by the time a test ran: render returned
+// undefined, the plugin drew nothing, and the rerouter was never reached,
+// which made "not consulted for ELK" pass for the wrong reason.
+beforeEach(() => {
+  render.mockImplementation(async () => ({ svg: SVG }));
+});
 
 beforeAll(() => {
   (window as any).mermaid = { initialize, render };
@@ -47,8 +54,9 @@ const layoutFor = async (definition: string) => {
     type: 'mermaid', definition, isMarkdownBlockClosed: true,
   } as any, false);
   expect(initialize).toHaveBeenCalledTimes(1);
-  // Positive control: the render path ran past initialize.
+  // Positive control: the render path ran past initialize and drew an svg.
   expect(render).toHaveBeenCalled();
+  expect(container.querySelector('svg')).not.toBeNull();
   const cfg = initialize.mock.calls[0][0];
   expect(cfg.look).toBe('classic');
   return cfg.layout;

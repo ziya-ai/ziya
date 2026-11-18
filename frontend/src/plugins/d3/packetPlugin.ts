@@ -17,6 +17,7 @@ import {
   sectionContentHeight, SECTION_LABEL_LINE_H,
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
+import { lightChartSurface } from './chartTheme';
 import { addDiagramActions, diagramSourceText } from './diagramActions';
 import JSON5 from 'json5';
 import {
@@ -450,7 +451,7 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
     .style('max-width', '100%').style('height', 'auto')
     .style('font-family', '"Segoe UI", Arial, sans-serif');
 
-  const bgColor = isDarkMode ? '#1e1e1e' : '#ffffff';
+  const bgColor = isDarkMode ? '#1e1e1e' : lightChartSurface();
   const textFill = isDarkMode ? '#e0e0e0' : '#1F2937';
   const dimFill  = isDarkMode ? '#a0a0a0' : '#6B7280';
   const bracketStroke = isDarkMode ? '#888888' : '#6B7280';

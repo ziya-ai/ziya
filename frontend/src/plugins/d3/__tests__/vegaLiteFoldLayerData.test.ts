@@ -103,7 +103,7 @@ describe('layersNeedingPreTransformData', () => {
 
 describe('seam: the post-process block uses the helper', () => {
     const src = fs.readFileSync(path.join(__dirname, '../vegaLitePlugin.ts'), 'utf8');
-    const start = src.indexOf("console.log('🔧 VEGA-POST-PROCESS: Fixing layered chart scales and legends')");
+    const start = src.indexOf("console.info('🔧 VEGA-POST-PROCESS: Fixing layered chart scales and legends')");
     const end = src.indexOf('layer.encoding?.y?.scale?.domain', start);
     const block = src.slice(start, end);
 
