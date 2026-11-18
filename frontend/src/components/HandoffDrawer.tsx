@@ -23,6 +23,7 @@ import type { HandoffState } from '../api/handoffApi';
 import { useHandoffDraftRequest } from '../hooks/useHandoffDraftRequest';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { isContextOverflowError } from '../utils/handoffDrafter';
+import { useDiffWait } from '../utils/diffWaitStore';
 import {
   DRAFT_TIER_LABELS, DRAFT_TIER_ORDER, fetchModelTiers, readDraftTier, writeDraftTier,
   type DraftTierChoice, type TierInfo,
@@ -99,7 +100,13 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
   // in the tab.  A background turn elsewhere kept "Ask the model" disabled
   // with "Wait for the current response to finish" while the current
   // response had been finished for hours.
-  const isStreaming = !!conversationId && streamingConversations.has(conversationId);
+  //
+  // A turn held for its diffs to be applied is in streamingConversations
+  // too, for as long as they stay unapplied, but no model call is running.
+  // The draft request goes beside it as a background turn
+  // (app/utils/background_turn.py), so it does not block.
+  const awaitingApply = !!useDiffWait(conversationId);
+  const isStreaming = !!conversationId && streamingConversations.has(conversationId) && !awaitingApply;
   const canRequestDraft = !!conversationId && conversationId === currentConversationId && !isStreaming;
 
   // The conversation is too large for even the drafting turn.  Hand the job

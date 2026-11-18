@@ -45,7 +45,37 @@ jest.mock('../../context/ProjectContext', () => ({
 jest.mock('../../context/FolderContext', () => ({ useFolderContext: () => ({ checkedKeys: ['a.py'] }) }));
 jest.mock('../useResolvedModelPin', () => ({ useResolvedModelPin: () => ({ resolveFor: () => ({ model: 'pinned', scope: 'conversation', persistent: true }) }) }));
 
+// The response of a turn held for its diffs is not in currentMessages yet;
+// it lives in the streamed-content map until the turn ends.
+const mockStreamed = new Map<string, string>();
+jest.mock('../../context/StreamedContentContext', () => ({
+    useStreamedContentRef: () => ({ current: { streamedContentMap: mockStreamed, reasoningContentMap: new Map() } }),
+}));
+
 import { useHandoffDraftRequest, DRAFT_REQUEST_PROMPT } from '../useHandoffDraftRequest';
+import { applyDiffWaitEvent, clearDiffWait } from '../../utils/diffWaitStore';
+
+afterEach(() => { mockStreamed.clear(); clearDiffWait('c1'); });
+
+test('a turn held for its diffs: the draft is written from history plus the finished response', async () => {
+    mockGetHandoffState.mockResolvedValue({ draft: null });
+    mockStreamed.set('c1', 'Here is the fix, apply both diffs.');
+    applyDiffWaitEvent('c1', { state: 'waiting', total: 2, remaining: 2, remaining_paths: [] });
+    const { result } = renderHook(() => useHandoffDraftRequest());
+    await act(async () => { await result.current('c1'); });
+    const [messages] = mockRunBackgroundTurn.mock.calls[0];
+    expect(messages.map((m: any) => [m.role, m.content])).toEqual([
+        ['human', 'q1'], ['human', 'q2'], ['assistant', 'Here is the fix, apply both diffs.'],
+    ]);
+});
+
+test('streamed text is not appended when the turn is not held (it would be a partial response)', async () => {
+    mockGetHandoffState.mockResolvedValue({ draft: null });
+    mockStreamed.set('c1', 'half a sent');
+    const { result } = renderHook(() => useHandoffDraftRequest());
+    await act(async () => { await result.current('c1'); });
+    expect(mockRunBackgroundTurn.mock.calls[0][0].map((m: any) => m.content)).toEqual(['q1', 'q2']);
+});
 
 beforeEach(() => {
     jest.clearAllMocks();

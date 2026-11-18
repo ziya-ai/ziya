@@ -18,6 +18,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useProject } from '../context/ProjectContext';
 import { useFolderContext } from '../context/FolderContext';
+import { useStreamedContentRef } from '../context/StreamedContentContext';
+import { getDiffWait } from '../utils/diffWaitStore';
 import { useResolvedModelPin } from './useResolvedModelPin';
 import { runBackgroundTurn } from '../apis/chatApi';
 import { convertKeysToStrings } from '../utils/types';
@@ -46,17 +48,27 @@ export function useHandoffDraftRequest():
   const { checkedKeys } = useFolderContext();
   const project = useProject();
   const { resolveFor } = useResolvedModelPin();
-  const ref = useRef({ activeChat, checkedKeys, project, resolveFor });
-  ref.current = { activeChat, checkedKeys, project, resolveFor };
+  const streamed = useStreamedContentRef();
+  const ref = useRef({ activeChat, checkedKeys, project, resolveFor, streamed });
+  ref.current = { activeChat, checkedKeys, project, resolveFor, streamed };
 
   return useCallback(async (conversationId: string, opts: DraftRequestOptions = {}) => {
-    const { activeChat: ac, checkedKeys: ck, project: pj, resolveFor: rmp } = ref.current;
+    const { activeChat: ac, checkedKeys: ck, project: pj, resolveFor: rmp, streamed: sc } = ref.current;
     // Only the ACTIVE conversation's messages are in memory here; the drawer
     // opens on the active one, and the caller disables the action otherwise.
     if (conversationId !== ac.currentConversationId) {
       throw new Error('Open the conversation before asking for a draft.');
     }
     const messages = ac.currentMessages.filter(m => !m.muted);
+    // A turn held for its diffs to be applied has a finished response that
+    // is not a stored message until the turn ends; without it the draft
+    // would miss the newest work.  Only when held: otherwise the streamed
+    // text is a response still being written.
+    const heldResponse = getDiffWait(conversationId)
+      ? (sc.current.streamedContentMap.get(conversationId) ?? '') : '';
+    if (heldResponse.trim()) {
+      messages.push({ role: 'assistant', content: heldResponse, _timestamp: Date.now() } as Message);
+    }
     // Pin the drafting turn to the chosen tier's model.  The conversation's
     // own pin is the fallback: the explicit "conversation model" choice, or a
     // tier table that could not be read.

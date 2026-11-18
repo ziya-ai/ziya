@@ -1601,6 +1601,7 @@ async def chat_endpoint(request: Request):
             logger.info(f"🔍 CHAT_ENDPOINT: Built chat_history with {len(chat_history)} entries")
 
             # Format the data for stream_chunks - LangChain expects files at top level
+            from app.utils import background_turn
             formatted_body = {
                 'question': question,
                 'conversation_id': conversation_id,
@@ -1614,6 +1615,10 @@ async def chat_endpoint(request: Request):
                     'modelOverrides': body.get('modelOverrides', {}),
                     'preferredToolIds': body.get('preferredToolIds', []),
                     'modelSelection': model_selection,
+                    # A background turn (the handoff drawer's draft request)
+                    # runs beside the conversation's own turn: no diff-apply
+                    # hold, and stream_chunks is told (app/utils/background_turn.py).
+                    **background_turn.config_for(body),
                 }
             }
             
@@ -1629,7 +1634,13 @@ async def chat_endpoint(request: Request):
                 "X-Ziya-Model": str(current_model or ""),
                 "X-Ziya-Model-Source": "pin" if pinned_model else "global",
             }
-            if conversation_id:
+            if background_turn.is_background(body):
+                # Not a relay turn: start_turn allows one turn per
+                # conversation and would cancel the one already running
+                # (typically held waiting for its diffs to be applied).
+                _body_stream = background_turn.stream(
+                    stream_chunks(formatted_body), conversation_id)
+            elif conversation_id:
                 from app.agents import chat_turn_relay
                 await chat_turn_relay.start_turn(
                     conversation_id, stream_chunks(formatted_body), headers=_turn_headers)
@@ -2062,11 +2073,15 @@ async def stream_chunks(body):
     
     files = body.get("config", {}).get("files", [])
     conversation_id = body.get("conversation_id")
+    # A background turn shares the conversation with a turn that may still be
+    # running; it must not touch that turn's feedback or diff-apply state.
+    from app.utils import background_turn
+    _background = background_turn.in_config(body)
     # A new turn starts with a clean feedback slate.  Feedback a dead turn
     # left behind was already recovered by the frontend as its own message
     # (FeedbackRecoveryWatcher); re-injecting it here delivered it twice, and
     # after an edit-and-resubmit delivered text the user had truncated away.
-    if conversation_id:
+    if conversation_id and not _background:
         _stale_fb = discard_stale_feedback(conversation_id)
         if _stale_fb:
             logger.info(f"🔄 FEEDBACK: discarded {_stale_fb} stale item(s) from a previous turn of {conversation_id}")
@@ -2287,6 +2302,7 @@ async def stream_chunks(body):
                 # A server-started turn (app/utils/server_turn.py) has nobody
                 # at the buttons and turns the hold off in its body.
                 async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id, project_root=project_root,
+                                                              feedback_key=background_turn.feedback_key(conversation_id) if _background else None,
                                                               hold_for_diff_apply=body.get("config", {}).get("hold_for_diff_apply", True)):
                     chunk_count += 1
                     
@@ -2409,7 +2425,7 @@ async def stream_chunks(body):
                         logger.debug(f"Unknown chunk type: {chunk.get('type')}")
                 
                 # After streaming completes, validate any diffs
-                if accumulated_content and ENABLE_DIFF_VALIDATION:
+                if accumulated_content and ENABLE_DIFF_VALIDATION and not _background:
                     # Track events to yield after validation
                     validation_events = []
                     

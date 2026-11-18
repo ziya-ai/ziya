@@ -3567,7 +3567,7 @@ export async function runBackgroundTurn(
 ): Promise<void> {
     const response = await getApiResponse(
         messages, question, checkedItems, conversationId, opts.signal,
-        opts.currentProject, opts.activeSkillPrompts, undefined, undefined, opts.resolvedModelPin,
+        opts.currentProject, opts.activeSkillPrompts, undefined, undefined, opts.resolvedModelPin, true,
     );
     if (!response.ok || !response.body) {
         let detail = '';
@@ -3598,7 +3598,7 @@ export async function runBackgroundTurn(
     }
 }
 
-async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null, activeSkillPrompts?: string, modelOverrides?: Record<string, any>, preferredToolIds?: string[], resolvedModelPin?: ResolvedModelPin | null) {
+async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null, activeSkillPrompts?: string, modelOverrides?: Record<string, any>, preferredToolIds?: string[], resolvedModelPin?: ResolvedModelPin | null, background?: boolean) {
     const messageTuples: string[][] = [];
 
     // Messages are already filtered in SendChatContainer, no need to filter again
@@ -3672,7 +3672,10 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         conversation_id: conversationId,
         files: checkedItems,
         project_root: currentProject?.path,
-        ...(modelPin ? { modelSelection: { model: modelPin.model } } : {})
+        ...(modelPin ? { modelSelection: { model: modelPin.model } } : {}),
+        // A turn beside the conversation's own: the server does not replace
+        // the running turn with it (app/utils/background_turn.py).
+        ...(background ? { background: true } : {})
     };
 
     return fetch('/api/chat', {
