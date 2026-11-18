@@ -51,7 +51,9 @@ describe('sidebar recency filter wiring', () => {
   it('toolbar button + menu are present, offer every window, and hide while searching', () => {
     const button = slice('data-testid="recency-filter-button"', '<Tooltip title="New folder">');
     expect(button).toContain('RECENCY_WINDOWS.map((w) =>');
-    expect(button).toContain('onClick={() => { setRecencyWindow(w); setRecencyMenuAnchor(null); }}');
+    // Choosing a preset also drops any custom range, or the preset would
+    // be selected in the menu while the custom range still filtered.
+    expect(button).toContain('onClick={() => { setRecencyWindow(w); setRecencyCustom(null); setRecencyMenuAnchor(null); }}');
     // The whole block is gated on !searchQuery.
     const gateAt = code.lastIndexOf('{!searchQuery && (', code.indexOf('data-testid="recency-filter-button"'));
     expect(gateAt).toBeGreaterThan(code.indexOf('placeholder="Search conversations..."'));
@@ -61,5 +63,82 @@ describe('sidebar recency filter wiring', () => {
     const caption = slice('data-testid="recency-filter-caption"', '{/* Search Results or Tree View */}');
     expect(caption).toContain('recencyFiltered.hiddenConversations');
     expect(caption).toContain("setRecencyWindow('all')");
+  });
+});
+
+/**
+ * Custom range (utils/chatTreeRecency.ts resolveCustomRange and friends,
+ * components/RecencyCustomPopover.tsx).  The logic has its own unit test
+ * (chatTreeRecencyCustom.test.ts); these check each hop from the menu to
+ * the filter: state is session-scoped, the applied range reaches
+ * applyRecencyFilter and invalidates its memo, the menu opens the popover,
+ * the popover hands the range back, every way of leaving a custom range
+ * clears it, and the tree cache notices createdAt (which "first activity"
+ * and "lifetime" read).
+ */
+describe('sidebar custom recency range wiring', () => {
+  it('state loads from and saves to the session store, not the window preference', () => {
+    expect(code).toMatch(/import \{[^}]*customRecencyLabel[^}]*loadCustomRecency[^}]*saveCustomRecency[^}]*\} from '..\/utils\/chatTreeRecency'/);
+    expect(code).toContain('useState<CustomRecency | null>(() => loadCustomRecency())');
+    expect(code).toContain('saveCustomRecency(recencyCustom)');
+    // The preset effect must not start persisting the custom value.
+    const presetEffect = slice('localStorage.setItem(RECENCY_STORAGE_KEY', '}, [recencyWindow]);');
+    expect(presetEffect).not.toContain('recencyCustom');
+  });
+
+  it('the applied range reaches the filter and is a dependency of its memo', () => {
+    const memo = slice('const recencyFiltered = useMemo(', 'const treeDataVisible = recencyFiltered.nodes;');
+    expect(memo).toContain('applyRecencyFilter(treeDataRaw,');
+    expect(memo).toContain('custom: recencyCustom');
+    expect(memo).toMatch(/\[treeDataRaw, recencyWindow, recencyCustom, recencyExempt\]/);
+  });
+
+  it('the menu offers Custom, which opens the popover on the toolbar button', () => {
+    const button = slice('data-testid="recency-filter-button"', '<Tooltip title="New folder">');
+    expect(button).toContain('data-testid="recency-custom-item"');
+    expect(button).toContain('setRecencyCustomAnchor(recencyMenuAnchor); setRecencyMenuAnchor(null);');
+    // A preset is not shown as selected while a custom range is filtering.
+    expect(button).toContain('selected={!recencyCustom && recencyWindow === w}');
+  });
+
+  it('the popover is mounted with the applied range and hands a new one back', () => {
+    const popover = slice('<RecencyCustomPopover', '/>');
+    expect(code).toMatch(/import RecencyCustomPopover from '\.\/RecencyCustomPopover'/);
+    expect(popover).toContain('anchorEl={recencyCustomAnchor}');
+    expect(popover).toContain('initial={recencyCustom}');
+    expect(popover).toContain('onApply={(c) => { setRecencyCustom(c); setRecencyCustomAnchor(null); }}');
+    expect(popover).toContain('onClose={() => setRecencyCustomAnchor(null)}');
+  });
+
+  it('button state, tooltip and caption follow the custom range', () => {
+    expect(code).toContain("const recencyActive = recencyCustom !== null || recencyWindow !== 'all';");
+    expect(code).toMatch(/const recencyLabel = recencyCustom\s*\?\s*customRecencyLabel\(recencyCustom, Date\.now\(\)\)/);
+    const button = slice('data-testid="recency-filter-button"', '<HistoryIcon');
+    expect(button).toContain('aria-pressed={recencyActive}');
+    const caption = slice('data-testid="recency-filter-caption"', '{/* Search Results or Tree View */}');
+    expect(caption).toContain('{recencyLabel}');
+    // "show all" has to clear both, or the list stays filtered.
+    expect(caption).toContain("onClick={() => { setRecencyWindow('all'); setRecencyCustom(null); }}");
+    // The caption itself is gated on either filter being active.
+    const gateAt = code.lastIndexOf('{recencyActive && !searchQuery && (', code.indexOf('data-testid="recency-filter-caption"'));
+    expect(gateAt).toBeGreaterThan(-1);
+  });
+
+  it('the tree cache is invalidated when createdAt changes', () => {
+    // Same hazard as lastActiveAt: a sync that fills createdAt without the
+    // hash moving leaves the cached node holding the old conversation
+    // object, and the filter judges the row without its start time.
+    const sortHash = slice('const oh = fnv1a();', 'const sortHash = oh.value();');
+    expect(sortHash).toMatch(/\(?c(?: as any\))?\.createdAt/);
+  });
+
+  it('the popover validates with the same resolver the filter uses', () => {
+    const POPOVER = fs.readFileSync(path.resolve(__dirname, '..', 'RecencyCustomPopover.tsx'), 'utf8');
+    expect(POPOVER).toMatch(/import \{[^}]*resolveCustomRange[^}]*\} from '..\/utils\/chatTreeRecency'/);
+    expect(POPOVER).toContain('resolveCustomRange(draft, Date.now())');
+    expect(POPOVER).toContain('disabled={!range}');
+    expect(POPOVER).toContain('RECENCY_BASES.map(');
+    expect(POPOVER).toContain('RECENCY_UNITS.map(');
+    expect(POPOVER).toContain('data-testid="recency-custom-popover"');
   });
 });
