@@ -97,7 +97,7 @@ The environment variable sets the tier for the whole run. A card can pin one blo
 
 ### Bedrock data retention and Covered Models
 
-Some Bedrock models are gated on an **account-wide** AWS data retention mode. Anthropic's Claude Fable 5 and Fable 5.1 are *Covered Models* and require `aws_review` or higher; requests are blocked with a `ValidationException` until the account is set accordingly. Ziya raises the mode automatically at startup when you select such a model, and prints the reason and the required IAM action (`bedrock:PutAccountDataRetention`) if it cannot.
+Some Bedrock models are gated on an **account-wide** AWS data retention mode. Anthropic's Claude Fable 5, 5.1 and 5.2 are *Covered Models* and require `aws_review` or higher; requests are blocked with a `ValidationException` until the account is set accordingly. Ziya raises the mode automatically at startup when you select such a model, and prints the reason and the required IAM action (`bedrock:PutAccountDataRetention`) if it cannot.
 
 What `aws_review` means, per [AWS's data retention documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html):
 

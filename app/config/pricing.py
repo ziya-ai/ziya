@@ -79,7 +79,7 @@ SERVICE_TIERS: Tuple[str, ...] = ("standard", "priority", "flex", "batch")
 # Revision of the BUILT-IN table below.  Bump when a price changes.  The
 # effective catalog version reported on every priced line combines this
 # with a content hash of the user overlay (see PricingCatalog.version).
-CATALOG_REVISION = "2026-10-13"
+CATALOG_REVISION = "2026-11-10"
 
 PRICING_FILENAME = "pricing.json"
 
@@ -198,6 +198,10 @@ _CLAUDE_CARDS = [
     # entry below keeps a long_context block.  Globs for the "-5" and
     # "-5-5" / "-5-1" generations are kept disjoint on purpose: candidates
     # of equal specificity tie-break on list order, which is fragile.
+    # Fable/Mythos 5.2 (pricing page, read 2026-11-10): $8 / $40, cache
+    # read 0.025x like the 5.1 models.
+    (["*claude-fable-5-2*", "*claude-mythos-5-2*"],
+     _anthropic_card(8.0, 40.0, 0.20, 10.0, 16.0, "cache read 0.025x on the 5.2 models")),
     (["*claude-fable-5-1*", "*claude-mythos-5-1*"],
      _anthropic_card(10.0, 50.0, 0.25, 12.50, 20.0, "cache read 0.025x on the 5.1 models")),
     (["*claude-fable-5", "*claude-fable-5-20*", "*claude-fable-5-v*",

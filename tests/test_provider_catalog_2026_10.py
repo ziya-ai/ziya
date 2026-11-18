@@ -75,6 +75,8 @@ LIVE_IDS = {
         "claude-sonnet-5-5",
         # Released 2026-10-07; added by the 2026-10-09 sweep.
         "claude-haiku-5-5",
+        # Listed 2026-11-09; observed on /v1/models 2026-11-10.
+        "claude-fable-5-2",
     },
     "zai": {
         "glm-4.5", "glm-4.5-air", "glm-4.6", "glm-4.7", "glm-5", "glm-5-turbo",
@@ -89,7 +91,7 @@ LIVE_IDS = {
 
 # Restricted-access models the provider serves but does not list for this
 # account; registered on the strength of the provider's model page.
-RESTRICTED = {"anthropic": {"claude-mythos-5", "claude-mythos-5-1"}}
+RESTRICTED = {"anthropic": {"claude-mythos-5", "claude-mythos-5-1", "claude-mythos-5-2"}}
 
 # Ids with a provider-announced shutdown (or already past it).
 DEPRECATED = {

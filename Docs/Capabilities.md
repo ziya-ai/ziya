@@ -90,7 +90,7 @@ retired or you switch endpoint.
 | `small` | Cheap | Nova Lite | Gemini Flash | GPT-5.5 Mini | Haiku 4.5 | GLM-4.6 |
 | `medium` | **Default** (average) | Sonnet 5 | Gemini 3.1 Pro | GPT-5.5 | Sonnet 5 | GLM-5.2 |
 | `large` | Most capable | Opus 4.8 | Gemini 3.1 Pro | GPT-5.5 Pro | Opus 4.8 | GLM-5.2 |
-| `frontier` | Cutting edge — rare, expensive | Fable 5 | Gemini 3.1 Pro | GPT-5.5 Pro | Fable 5.1 | GLM-5.2 |
+| `frontier` | Cutting edge — rare, expensive | Fable 5 | Gemini 3.1 Pro | GPT-5.5 Pro | Fable 5.2 | GLM-5.2 |
 
 Five rungs, cheapest → most capable. **`medium` is the center: the default,
 "average" model — the same one the top-level conversation uses (Sonnet 5 on

@@ -52,20 +52,22 @@ def test_fable_5_1_entry_exists_with_correct_id():
     models = MODEL_CONFIGS[ENDPOINT]
     assert NEW_KEY in models, f"{NEW_KEY} missing from MODEL_CONFIGS['{ENDPOINT}']"
     assert models[NEW_KEY]["model_id"] == NEW_MODEL_ID
-    assert models[NEW_KEY]["tier"] == "frontier"
     assert models[NEW_KEY]["family"] == "claude"
 
 
-def test_fable_5_1_is_the_frontier_tier():
-    # The portable 'frontier' rung on anthropic must resolve to 5.1, not 5.
-    assert resolve_tier_model(ENDPOINT, "frontier") == NEW_KEY
+def test_frontier_tier_moved_past_5_1():
+    # The portable 'frontier' rung on anthropic resolved to 5.1 while it was
+    # the newest Fable; it moved to claude-fable-5-2 on 2026-11-10 (see
+    # tests/test_fable_5_2_integration.py), so 5.1 is retained untiered.
+    assert MODEL_CONFIGS[ENDPOINT][NEW_KEY].get("tier") is None
+    assert resolve_tier_model(ENDPOINT, "frontier") == "claude-fable-5-2"
 
 
 def test_exactly_one_frontier_holder_on_anthropic():
     holders = [n for n, c in MODEL_CONFIGS[ENDPOINT].items()
                if c.get("tier") == "frontier"]
-    assert holders == [NEW_KEY], (
-        f"anthropic should have exactly one frontier holder ({NEW_KEY}); got {holders}"
+    assert len(holders) == 1, (
+        f"anthropic should have exactly one frontier holder; got {holders}"
     )
 
 

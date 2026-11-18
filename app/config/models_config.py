@@ -1472,6 +1472,50 @@ MODEL_CONFIGS = {
             # depend on the classic switch being raisable.
             "required_data_retention_mode": "aws_review",
         },
+        "fable5.2": {
+            # Same shape as fable5.1.  Verified 2026-11-10 (us-east-1 and
+            # us-west-2): anthropic.claude-fable-5-2 ACTIVE on the control
+            # plane with us./global. profiles, and invoking either profile on
+            # bedrock-runtime returns the retention-mode ValidationException
+            # rather than "model identifier is invalid" — the model is served
+            # there and only the account switch is in the way.  The bare id is
+            # refused ("on-demand throughput isn't supported").  The global.
+            # profile is also listed in eu-west-1/ap-northeast-1 but was not
+            # invoke-probed, so those regions are not claimed here.
+            "model_id": {
+                "us": "us.anthropic.claude-fable-5-2",
+                "global": "global.anthropic.claude-fable-5-2"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 10,
+            "timeout_multiplier": 8,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+            # Within-reach MCP tools are sent deferred and found with the
+            # API's tool search (design/mcp-on-demand.md).  Verified live on
+            # bedrock-runtime us-west-2, 2026-11-14.  False returns the model
+            # to Ziya's own loader path.
+            "supports_tool_search": True,
+            # Mirrors fable5.1's Covered Model declaration.  Whether 5.2's
+            # allowed_modes are identical was NOT verified (that would mean
+            # raising a shared account switch); a mismatch surfaces as the
+            # same retention 400 the heal path already handles.  Untiered for
+            # the same reason fable5.1 is.
+            "required_data_retention_mode": "aws_review",
+        },
         "mythos5": {
             # Mythos 5 is in limited preview for cybersecurity/life sciences.
             # It uses the bedrock-mantle endpoint exclusively (not bedrock-runtime)
@@ -1507,6 +1551,34 @@ MODEL_CONFIGS = {
             "model_id": {
                 "us": "us.anthropic.claude-mythos-5-1",
                 "global": "global.anthropic.claude-mythos-5-1"
+            },
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 10,
+            "timeout_multiplier": 8,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "high",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "preview": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "mythos5.2": {
+            # Restricted access; listed on the Anthropic pricing page
+            # 2026-11-10 alongside Fable 5.2.  Mirrors mythos5.1 — not
+            # invoke-probed, not visible to accounts without access.
+            "model_id": {
+                "us": "us.anthropic.claude-mythos-5-2",
+                "global": "global.anthropic.claude-mythos-5-2"
             },
             "available_regions": ["us-east-1", "us-west-2"],
             "preferred_region": "us-east-1",
@@ -2212,7 +2284,8 @@ MODEL_CONFIGS = {
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "claude-fable-5-1": {
-            "tier": "frontier",
+            # Tier tag moved to claude-fable-5-2 (2026-11-10); entry retained
+            # untiered so explicit --model claude-fable-5-1 keeps working.
             # Verified live 2026-09-01/02: listed and invocable on
             # api.anthropic.com as claude-fable-5-1. NOT served by
             # bedrock-mantle yet (every 5.1 name variant 404s there), which
@@ -2221,6 +2294,25 @@ MODEL_CONFIGS = {
             # for the tripwire to flip when Mantle publishes it.
             # Capability envelope mirrors claude-fable-5 (1M in / 128k out).
             "model_id": "claude-fable-5-1",
+            "family": "claude",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "claude-fable-5-2": {
+            "tier": "frontier",
+            # Verified live 2026-11-10: /v1/models lists claude-fable-5-2
+            # (created 2026-11-09) and a Messages call returns 200.  Thinking
+            # is on by default (usage reported thinking_tokens with no
+            # thinking parameter sent) and temperature is refused as
+            # "deprecated for this model".  Capability envelope mirrors 5.1
+            # (1M in / 128k out).
+            "model_id": "claude-fable-5-2",
             "family": "claude",
             "token_limit": 1000000,
             "max_output_tokens": 128000,
@@ -2248,6 +2340,21 @@ MODEL_CONFIGS = {
             # Restricted access: absent from /v1/models for accounts without
             # it, like claude-mythos-5.  Listed on the pricing page.
             "model_id": "claude-mythos-5-1",
+            "family": "claude",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+            "preview": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "claude-mythos-5-2": {
+            # Restricted access: absent from /v1/models for accounts without
+            # it.  Listed on the pricing page 2026-11-10.
+            "model_id": "claude-mythos-5-2",
             "family": "claude",
             "token_limit": 1000000,
             "max_output_tokens": 128000,
