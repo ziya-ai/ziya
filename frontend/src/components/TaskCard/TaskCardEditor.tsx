@@ -22,6 +22,7 @@ import {
   makeGroupBlock, makeBlock, updateBlockById, removeBlockById, appendChildBlock,
 } from '../../utils/taskCardBlocks';
 import { flattenBlocks, firstSelectableRow } from './runMapModel';
+import type { OutlineMarker } from './deckRunPaneModel';
 import './task-card-editor.css';
 
 // Types offered by the outline's top-level "add".  Group is excluded
@@ -57,11 +58,20 @@ interface Props {
   // for the deck, where a card is revisited and edited rather than read
   // top to bottom.  Same card, same editors; only the arrangement differs.
   layout?: 'tree' | 'outline';
+  // Outline layout only.  Run markers for the outline rows (the Task
+  // Cards dialog passes the run its run pane is showing), a callback
+  // when the user selects a block in the outline, and a request to
+  // select a block from outside.  ``seq`` makes a repeat request for
+  // the same block select it again.
+  outlineMarkerOf?: (blockId: string) => OutlineMarker | null | undefined;
+  onOutlineSelect?: (blockId: string) => void;
+  focusBlockRequest?: { blockId: string; seq: number } | null;
 }
 
 export const TaskCardEditor: React.FC<Props> = ({
   card, onChange, projectId, onSave, onLaunch, saving, onScopeStatusChange,
   previewMode, layout = 'tree',
+  outlineMarkerOf, onOutlineSelect, focusBlockRequest,
 }) => {
   // Escalation-approval status (ASR F-001). A saved card whose blocks request
   // shell/write escalation shows which blocks are unsigned and the exact
@@ -158,6 +168,13 @@ export const TaskCardEditor: React.FC<Props> = ({
     });
   }, []);
   const outlineRows = React.useMemo(() => flattenBlocks(card.root), [card.root]);
+  React.useEffect(() => {
+    if (focusBlockRequest?.blockId) setSelectedId(focusBlockRequest.blockId);
+  }, [focusBlockRequest]);
+  const selectFromOutline = React.useCallback((id: string) => {
+    setSelectedId(id);
+    onOutlineSelect?.(id);
+  }, [onOutlineSelect]);
   // Resolve the selection against the CURRENT tree.  Falls back to the
   // first selectable block when nothing is selected or the selected block
   // was deleted: an empty pane beside a populated outline reads as broken.
@@ -352,9 +369,10 @@ export const TaskCardEditor: React.FC<Props> = ({
               root={card.root}
               mode="edit"
               selectedId={selectedBlock?.id ?? null}
-              onSelect={setSelectedId}
+              onSelect={selectFromOutline}
               collapsed={collapsed}
               onToggleCollapse={toggleCollapse}
+              markerOf={outlineMarkerOf}
             />
             <label className="tc-outline__add">
               ⊕ add
