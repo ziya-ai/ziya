@@ -67,6 +67,9 @@ DRAFT_FIELD = "handoffDraft"
 LINEAGE_KIND_HANDOFF = "handoff"
 
 # Section keys handoff_write(mode='merge') accepts, in render order.
+# On a helper conversation created to draft ANOTHER conversation's handoff:
+# the id of that conversation.  Server-owned; see app/utils/handoff_drafter.py.
+DRAFT_FOR_FIELD = "handoffDraftFor"
 DRAFT_SECTIONS = ("objective", "state", "decisions", "gotchas", "references")
 
 # Late on purpose: users work in the last stretch of the window, and a draft
@@ -594,7 +597,10 @@ def split_handoff_prelude(conversation_id: Optional[str], storage=None,
         has_draft = isinstance(draft, dict) and bool((draft.get("document") or "").strip())
         if has_draft:
             turn_parts.append(render_draft_prelude(draft))
-        else:
+        elif not record.get(DRAFT_FOR_FIELD):
+            # A helper conversation drafting another conversation's handoff
+            # (app/utils/handoff_drafter.py) is never handed off itself;
+            # telling it to draft its OWN handoff would compete with its task.
             if pressure is None:
                 pressure = get_context_pressure(conversation_id)
             if pressure is not None and pressure >= nudge_ratio():

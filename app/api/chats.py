@@ -514,13 +514,22 @@ def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                     for _hk in ('handoffDraft', 'handoff', 'handedOffTo'):
                         if existing_extra.get(_hk) is not None:
                             merged[_hk] = existing_extra[_hk]
+                    # The drafter grant (app/utils/handoff_drafter.py) lets
+                    # one conversation write another's draft: on-disk only,
+                    # never added or removed by a push.
+                    if existing_extra.get('handoffDraftFor') is not None:
+                        merged['handoffDraftFor'] = existing_extra['handoffDraftFor']
+                    else:
+                        merged.pop('handoffDraftFor', None)
                     # Bench fields are SERVER-OWNED: ``placements`` is written
                     # only by bench.place, ``loadedMcp`` only by
                     # mcp_ondemand.record_load.  The browser either omits them
                     # (dumped as None) or holds a stale mirror, so taking the
                     # push wholesale wiped an on-hand skill back to its default
                     # a few turns later.  On-disk always wins on update.
-                    for _sk in ('placements', 'loadedMcp'):
+                    # ``activeAgent`` (agent_overlay.set_active) is the same:
+                    # a push that omits it must not turn the agent off.
+                    for _sk in ('placements', 'loadedMcp', 'activeAgent'):
                         if raw.get(_sk) is not None:
                             merged[_sk] = raw[_sk]
                         else:

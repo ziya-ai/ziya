@@ -90,3 +90,13 @@ export async function commitHandoff(
   return check(await fetch(`${base(chatId, projectId)}/commit`, { method: 'POST', headers: headers(), body: JSON.stringify(body) }),
     'Create continuation');
 }
+
+/** Create a conversation that drafts this one's handoff by reading it in
+ *  windows (for a source too large to draft itself).  The caller sends
+ *  `prompt` as the drafter's first message. */
+export async function createHandoffDrafter(
+  chatId: string, projectId?: string | null,
+): Promise<{ ok: boolean; drafter: Record<string, any> & { id: string; title: string }; prompt: string }> {
+  return check(await fetch(`${base(chatId, projectId)}/drafter`, { method: 'POST', headers: headers() }),
+    'Start handoff drafter');
+}

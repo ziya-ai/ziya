@@ -39,12 +39,43 @@ def _persist(ctx: Dict[str, Any], chat_data: Dict[str, Any]) -> None:
     ctx["storage"]._write_json(ctx["chat_file"], chat_data)
 
 
+def _retarget(ctx: Dict[str, Any], target: Optional[str]) -> Dict[str, Any]:
+    """Swap ``ctx`` to ``target``'s record when the caller may act on it.
+
+    Only a handoff drafter conversation (app/utils/handoff_drafter.py) may
+    name another conversation, and only the one in its server-written
+    ``handoffDraftFor`` field."""
+    if not target or target == ctx["chat_id"]:
+        return ctx
+    from app.utils.handoff_drafter import may_target
+    if not may_target(ctx["chat_data"], target):
+        return {"ok": False, "error": (
+            f"This conversation may not act on the handoff draft of {target}. "
+            "target_conversation_id works only in a handoff drafter conversation, "
+            "for the conversation it was created to draft.")}
+    from app.utils.chat_home import resolve_chat_home
+    from app.utils.paths import get_project_dir
+    home = resolve_chat_home(ctx["project_id"], get_project_dir(ctx["project_id"]), target)
+    if home is None:
+        return {"ok": False, "error": f"Conversation {target} not found."}
+    pid, storage, data = home
+    return {**ctx, "ok": True, "project_id": pid, "chat_id": target,
+            "chat_data": data, "storage": storage,
+            "chat_file": storage._chat_file(target)}
+
+
+_TARGET_FIELD = Field(None, description=(
+    "Only in a handoff drafter conversation: the id of the conversation it "
+    "was created to draft.  Omit to act on this conversation."))
+
+
 # ---------------------------------------------------------------------------
 # handoff_read
 # ---------------------------------------------------------------------------
 
 class HandoffReadInput(BaseModel):
-    """No parameters — reads the current conversation's draft."""
+    """Reads the current conversation's draft (or a drafter's target's)."""
+    target_conversation_id: Optional[str] = _TARGET_FIELD
 
 
 class HandoffReadTool(BaseMCPTool):
@@ -54,13 +85,17 @@ class HandoffReadTool(BaseMCPTool):
         "conversation will receive if the user hands off.  Returns the draft "
         "(or null) and the inherited handoff document if THIS conversation is "
         "itself a continuation.  Read before a merge so you update the right "
-        "sections."
+        "sections.  In a handoff drafter conversation, pass "
+        "target_conversation_id to read the draft of the conversation it drafts."
     )
     InputSchema = HandoffReadInput
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         kwargs.pop("conversation_id", None)
+        target = kwargs.pop("target_conversation_id", None)
         ctx = _resolve_chat_for_request(kwargs)
+        if ctx.get("ok"):
+            ctx = _retarget(ctx, target)
         if not ctx.get("ok"):
             return {"error": True, "message": ctx.get("error")}
         chat = ctx["chat_data"]
@@ -94,6 +129,7 @@ class HandoffWriteInput(BaseModel):
         "'merge' (default): overwrite only the named sections.  'replace': "
         "the document/sections become the whole draft.  Prefer merge for "
         "per-turn updates; do not rewrite wholesale unless it is wrong."))
+    target_conversation_id: Optional[str] = _TARGET_FIELD
 
 
 class HandoffWriteTool(BaseMCPTool):
@@ -106,12 +142,15 @@ class HandoffWriteTool(BaseMCPTool):
         "merge in decisions, state changes, gotchas and "
         "references as they happen (touch only the sections that changed).  "
         "The user can edit the draft at any time and commits the handoff "
-        "themselves — this tool never creates a new conversation."
+        "themselves — this tool never creates a new conversation.  In a "
+        "handoff drafter conversation, pass target_conversation_id to write "
+        "the draft of the conversation it drafts."
     )
     InputSchema = HandoffWriteInput
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         kwargs.pop("conversation_id", None)
+        target = kwargs.pop("target_conversation_id", None)
         sections = kwargs.get("sections")
         document = kwargs.get("document")
         mode = (kwargs.get("mode") or "merge").strip().lower()
@@ -130,6 +169,8 @@ class HandoffWriteTool(BaseMCPTool):
                     "message": "Provide `sections` and/or a non-empty `document`."}
 
         ctx = _resolve_chat_for_request(kwargs)
+        if ctx.get("ok"):
+            ctx = _retarget(ctx, target)
         if not ctx.get("ok"):
             return {"error": True, "message": ctx.get("error")}
         chat = ctx["chat_data"]

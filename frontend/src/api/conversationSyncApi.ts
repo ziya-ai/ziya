@@ -333,25 +333,35 @@ export async function deleteChat(projectId: string, chatId: string): Promise<boo
 
 /**
  * Move a chat to another project in ONE server-side step.
- * Returns 'moved', or 'absent' when the source project has no such chat on
+ * status is 'moved', or 'absent' when the source project has no such chat on
  * the server (it was never synced from there); throws on any other failure.
+ * note is the system message the server appended to the record, naming both
+ * projects and their root directories.
  */
+export interface MoveChatResult {
+  status: 'moved' | 'absent';
+  note?: any;
+}
+
 export async function moveChat(
   sourceProjectId: string, targetProjectId: string, chatId: string,
-): Promise<'moved' | 'absent'> {
-  const res = await timedFetchOk(
-    `${BASE}/${sourceProjectId}/chats/${chatId}/move`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...projectHeaders() },
-      body: JSON.stringify({ targetProjectId }),
-    },
-    MUTATE_TIMEOUT_MS,
-    'moveChat',
-  );
-  if (res.ok) return 'moved';
-  if (res.status === 404) return 'absent';
-  throw new SyncHttpError('moveChat', res.status);
+): Promise<MoveChatResult> {
+  try {
+    const body = await timedFetchJson<{ note?: any } | null>(
+      `${BASE}/${sourceProjectId}/chats/${chatId}/move`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...projectHeaders() },
+        body: JSON.stringify({ targetProjectId }),
+      },
+      MUTATE_TIMEOUT_MS,
+      'moveChat',
+    );
+    return { status: 'moved', note: body?.note };
+  } catch (e) {
+    if (e instanceof SyncHttpError && e.status === 404) return { status: 'absent' };
+    throw e;
+  }
 }
 
 // ── Message-level operations ────────────────────────────────────────
@@ -510,7 +520,7 @@ export function conversationToServerChat(conv: any, projectId: string): ServerCh
   // _beads had, which is why the frontend never carries _beads at all.
   // User edits go through the handoff PATCH endpoints, not bulk-sync.
   // Destructure rather than delete so the rendered object is untouched.
-  const { handoffDraft: _hd, handoff: _h, handedOffTo: _hto, ...pushable } = conv;
+  const { handoffDraft: _hd, handoff: _h, handedOffTo: _hto, handoffDraftFor: _hdf, ...pushable } = conv;
   return {
     ...pushable,
     projectId: ownerProjectId,

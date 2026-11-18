@@ -184,6 +184,9 @@ export interface Conversation {
     // `handoff`), maintained by the model via handoff_write and editable in
     // the drawer.  Read via the handoff API today, not off this object.
     handoffDraft?: Conversation['handoff'];
+    // On a helper conversation drafting ANOTHER conversation's handoff: that
+    // conversation's id.  Server-owned (app/utils/handoff_drafter.py).
+    handoffDraftFor?: string;
     // ── Conversation flags (triage) ──────────────────────────────────────
     // Multi-select label attribute ids from conversationFlags.CONVERSATION_FLAG_LABELS
     // (e.g. "priority", "awaiting-verification"). Purely client-side triage —

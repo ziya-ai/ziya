@@ -21,6 +21,8 @@ import { useTheme } from '../context/ThemeContext';
 import * as handoffApi from '../api/handoffApi';
 import type { HandoffState } from '../api/handoffApi';
 import { useHandoffDraftRequest } from '../hooks/useHandoffDraftRequest';
+import { useSendPayload } from '../hooks/useSendPayload';
+import { isContextOverflowError } from '../utils/handoffDrafter';
 import {
   DRAFT_TIER_LABELS, DRAFT_TIER_ORDER, fetchModelTiers, readDraftTier, writeDraftTier,
   type DraftTierChoice, type TierInfo,
@@ -35,9 +37,13 @@ interface Props {
 
 const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
   const { isDarkMode } = useTheme();
-  const { loadConversation, currentConversationId, streamingConversations, addMessageToConversation } = useActiveChat();
+  const {
+    loadConversation, currentConversationId, streamingConversations, addMessageToConversation,
+    addStreamingConversation, removeStreamingConversation,
+  } = useActiveChat();
   const { conversations, setConversations } = useConversationList();
   const requestDraft = useHandoffDraftRequest();
+  const { send } = useSendPayload();
   const [state, setState] = useState<HandoffState | null>(null);
   const [loading, setLoading] = useState(false);
   const [doc, setDoc] = useState('');
@@ -96,6 +102,37 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
   const isStreaming = !!conversationId && streamingConversations.has(conversationId);
   const canRequestDraft = !!conversationId && conversationId === currentConversationId && !isStreaming;
 
+  // The conversation is too large for even the drafting turn.  Hand the job
+  // to a new, empty conversation that reads this one in windows and writes
+  // its draft (app/utils/handoff_drafter.py).  No checked files: the source's
+  // working set is part of what overflowed.
+  const openDrafter = async (sourceId: string) => {
+    const { drafter, prompt } = await handoffApi.createHandoffDrafter(sourceId, sourceProjectRef.current);
+    const now = Date.now();
+    setConversations(prev => (prev.some(c => c.id === drafter.id) ? prev : prev.concat([{
+      ...drafter, messages: [], lastAccessedAt: now, isActive: true,
+      _isShell: false, hasUnreadResponse: false,
+    } as any])));
+    onClose();
+    loadConversation(drafter.id);
+    const userMessage = { role: 'human' as const, content: prompt, _timestamp: now };
+    addMessageToConversation(userMessage, drafter.id);
+    addStreamingConversation(drafter.id);
+    message.info('This conversation is too large to draft its own handoff. '
+      + `"${drafter.title}" is reading it and will write the draft onto it.`);
+    void send({
+      messages: [userMessage],
+      question: prompt,
+      conversationId: drafter.id,
+      checkedItems: [],
+      isStreamingToCurrentConversation: true,
+      includeReasoning: true,
+    }).catch(err => {
+      console.error('Handoff drafter send failed:', err);
+      removeStreamingConversation(drafter.id);
+    });
+  };
+
   // Background, non-persisted turn on the conversation's full context.  The
   // drawer stays open with a spinner; the draft appears here when it lands
   // and a local (muted) notice is added to the transcript by the hook.
@@ -111,7 +148,15 @@ const HandoffDrawer: React.FC<Props> = ({ conversationId, onClose }) => {
         message.warning('The model finished without saving a draft — try again or write it below.');
       }
     } catch (e: any) {
-      message.error(e?.message || 'Draft request failed');
+      if (isContextOverflowError(e)) {
+        try {
+          await openDrafter(conversationId);
+        } catch (e2: any) {
+          message.error(e2?.message || 'Could not start a drafter conversation');
+        }
+      } else {
+        message.error(e?.message || 'Draft request failed');
+      }
     } finally {
       setBusy(null);
     }

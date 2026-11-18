@@ -270,3 +270,29 @@ def commit_handoff(project_id: str, chat_id: str, body: CommitBody):
         "sourceId": chat_id,
         "handedOffTo": child_id,
     }
+
+
+@router.post("/api/v1/projects/{project_id}/chats/{chat_id}/handoff/drafter")
+def create_drafter(project_id: str, chat_id: str):
+    """Create an empty conversation that drafts THIS one's handoff by reading
+    it in windows (app/utils/handoff_drafter.py).  For a source too large to
+    run the drafting turn itself.  Returns the record and its first prompt;
+    the client sends the prompt.  The source is not modified."""
+    from app.utils.handoff_drafter import drafter_prompt, new_drafter_record
+    storage, project_id, src = _resolve_source(project_id, chat_id)
+    now = int(time.time() * 1000)
+    rec = new_drafter_record(src, chat_id, project_id, now)
+    storage._write_json(storage._chat_file(rec["id"]), rec)
+    try:
+        from app.storage import chat_index
+        chat_index.on_chat_written(rec["id"], project_id)
+    except Exception as e:
+        logger.debug(f"handoff: chat_index update skipped: {e}")
+    msgs = src.get("messages") or []
+    count = len(msgs) if isinstance(msgs, list) else 0
+    logger.info(f"✎ handoff drafter {rec['id'][:8]} for {chat_id[:8]} ({count} msgs)")
+    return {
+        "ok": True,
+        "drafter": {k: v for k, v in rec.items() if k != "messages"},
+        "prompt": drafter_prompt(chat_id, src.get("title") or "", count),
+    }
