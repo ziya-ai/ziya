@@ -8,36 +8,45 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Modal, Input, Button, Tooltip, message, Empty, Popconfirm, Tag, Dropdown, Segmented,
+  Modal, Input, Button, Tooltip, message, Empty, Tag, Dropdown, Segmented, Space,
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, CopyOutlined, SearchOutlined,
   PlayCircleOutlined, StopOutlined, ReloadOutlined, InboxOutlined,
   MoreOutlined, PushpinOutlined, FolderOutlined, FolderAddOutlined,
   DownloadOutlined, UploadOutlined, AppstoreOutlined, ClockCircleOutlined,
+  DownOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
 import { useChatContext } from '../../context/ChatContext';
 import { shouldSeedTitleFromTaskCard } from '../../utils/conversationTitle';
 import type { TaskCard, Block, TaskScope } from '../../types/task_card';
-import type { CalleeContext, TaskRun } from '../../types/task_run';
+import type { TaskRun } from '../../types/task_run';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { TASK_CARD_SAVED_EVENT } from '../../hooks/useTaskBindings';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
-import { cancelTaskRun, getTaskRun, listTaskRuns } from '../../services/taskRunApi';
+import { cancelTaskRun, listTaskRuns } from '../../services/taskRunApi';
 import { createBinding } from '../../services/taskBindingApi';
 import { TaskCardEditor } from './TaskCardEditor';
 import { LessonsPanel } from './LessonsPanel';
 import type { LessonCardSummary } from '../../services/taskCardApi';
 import { BlockScopeButton } from './BlockScopeButton';
 import { ImportCwdMapModal } from './ImportCwdMapModal';
-import { DeckRunList } from './DeckRunList';
 import {
   hasLiveRuns, indexRunsByCard, summarizeCardRuns,
 } from './deckRunIndex';
 import { PROPOSED_TAG } from '../TaskCardLaunchButton';
-import { CalleeHoldPanel } from './CalleeHoldPanel';
 import { SchedulesPanel } from './SchedulesPanel';
+import { DeckRunPane } from './DeckRunPane';
+import { DeckPaneStrip, DeckPaneTab } from './DeckPaneChrome';
+import { useDeckRunEntries } from './useDeckRunEntries';
+import {
+  defaultEntryId, entriesWantEyes, type OutlineMarker,
+} from './deckRunPaneModel';
+import {
+  DEF_MIN_WIDTH, effectivePaneView, loadDeckLayout, saveDeckLayout,
+  settleDivider, viewOnCardOpen, type DeckLayout, type DeckPaneView,
+} from './deckLayout';
 import { SCHEDULES_OPEN_EVENT } from './scheduleCadence';
 import { layoutViewportHeight, layoutViewportWidth, toLayoutPx } from '../../utils/uiScale';
 
@@ -89,10 +98,11 @@ const DIALOG_MIN_HEIGHT = 320;
 const defaultDialogWidth = (): number => Math.round(layoutViewportWidth() * 0.92);
 const defaultDialogHeight = (): number => layoutViewportHeight() - DIALOG_CHROME_HEIGHT;
 
-// Chrome the Modal adds around the body (title bar, paddings) plus its
-// default 100px top offset.  The stored height is the body's inner
-// height, so the viewport cap has to leave room for this.
-const DIALOG_CHROME_HEIGHT = 220;
+// Chrome the Modal adds around the body (title bar, paddings, the resize
+// grip) plus its top offset (DIALOG_TOP).  The stored height is the
+// body's inner height, so the viewport cap has to leave room for this.
+const DIALOG_TOP = 24;
+const DIALOG_CHROME_HEIGHT = 160;
 
 // Dialog geometry is in layout px; window.inner* is unzoomed viewport px and
 // pointer deltas likewise — all go through uiScale.ts conversions.
@@ -836,54 +846,180 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     }
   }, [projectId, activeRun, refreshActiveRun]);
 
-  /**
-   * Navigate to the conversation a run is anchored in.
-   *
-   * The deck closes on the way, deliberately: it is a modal covering the
-   * conversation, so navigating behind it is indistinguishable from the
-   * click having done nothing.  No run id is passed along — the tile in
-   * that conversation already renders the run, and its own attempt rail
-   * resolves which attempt of a lineage to show.
-   */
-  const handleOpenRun = useCallback((run: TaskRun) => {
-    const convId = run.source_conversation_id;
-    if (!convId) return;
+  /** The selected card's runs, newest first.  Empty until fetched. */
+  const draftRuns = useMemo(
+    () => (draft ? runIndex.get(draft.id) ?? [] : []), [draft, runIndex]);
+
+  // ── Panes: card list | definition | run ──────────────────────────
+  // Each collapses to a labelled strip on its own (see deckLayout.ts).
+  // The run pane exists only for a card that has runs, counting the runs
+  // it is being called inside; without one the definition has the width.
+  const runEntries = useDeckRunEntries(projectId, selectedId, draftRuns, runIndex);
+  const hasRunPane = !!draft && runEntries.length > 0;
+  const [layout, setLayout] = useState<DeckLayout>(() => loadDeckLayout());
+  useEffect(() => { saveDeckLayout(layout); }, [layout]);
+  const paneView = effectivePaneView(layout.view, hasRunPane);
+  const setPaneView = useCallback((v: DeckPaneView) =>
+    setLayout(prev => ({ ...prev, view: v })), []);
+  const setListCollapsed = useCallback((c: boolean) =>
+    setLayout(prev => ({ ...prev, listCollapsed: c })), []);
+
+  // A card whose run is held, failed or live opens with the run visible.
+  // Once per card: after that the view is whatever the user left it as,
+  // and the run pane is never closed automatically.
+  const autoOpenedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedId || autoOpenedFor.current === selectedId) return;
+    if (!entriesWantEyes(runEntries)) return;
+    autoOpenedFor.current = selectedId;
+    setLayout(prev => ({ ...prev, view: viewOnCardOpen(prev.view, true) }));
+  }, [selectedId, runEntries]);
+
+  /** Status of the run the pane would open on, for the collapsed strip. */
+  const leadRunStatus = useMemo(() => {
+    const id = defaultEntryId(runEntries);
+    return runEntries.find(e => e.runId === id)?.status ?? null;
+  }, [runEntries]);
+  const cardNames = useMemo(
+    () => Object.fromEntries(cards.map(c => [c.id, c.name])), [cards]);
+  const attentionCards = useMemo(
+    () => cards.filter(c => summarizeCardRuns(runIndex.get(c.id)).attention > 0).length,
+    [cards, runIndex]);
+
+  /** Refetch the run index only; a resume from the run pane adds a run. */
+  const refreshRuns = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      setRunIndex(indexRunsByCard(await listTaskRuns(projectId)));
+    } catch {
+      // Keep the last good index.
+    }
+  }, [projectId]);
+
+  const handleOpenConversation = useCallback((convId: string) => {
     loadConversation(convId);
     onClose();
   }, [loadConversation, onClose]);
 
-  /**
-   * Navigate to the CALLER's run from a callee's hold panel.  The
-   * context carries the conversation id directly; an older server that
-   * does not send it is covered by the run index (every run of the
-   * project is already loaded there) and, failing that, one fetch.
-   */
-  const handleOpenCalleeRun = useCallback(async (ctx: CalleeContext) => {
-    let convId: string | null | undefined = ctx.source_conversation_id;
-    if (!convId) {
-      for (const runs of runIndex.values()) {
-        const hit = runs.find(r => r.id === ctx.run_id);
-        if (hit) { convId = hit.source_conversation_id; break; }
-      }
-    }
-    if (!convId) {
-      try {
-        convId = (await getTaskRun(projectId, ctx.run_id)).source_conversation_id;
-      } catch {
-        // Falls through to the warning below.
-      }
-    }
-    if (!convId) {
-      message.warning('This run has no conversation to open (launched without one)');
-      return;
-    }
-    loadConversation(convId);
-    onClose();
-  }, [runIndex, projectId, loadConversation, onClose]);
+  // Divider between definition and run.  The width follows the pointer
+  // freely while dragging and settles on release: dragged most of the
+  // way to an edge, the pane on that side collapses.
+  const workRef = useRef<HTMLDivElement | null>(null);
+  const PANE_DIVIDER_WIDTH = 17;
+  const paneAvailable = () =>
+    Math.max(0, (workRef.current?.clientWidth ?? 0) - PANE_DIVIDER_WIDTH);
+  const [dragRunWidth, setDragRunWidth] = useState<number | null>(null);
+  const paneDragRef = useRef<
+    { startX: number; startWidth: number; available: number; raw: number } | null
+  >(null);
+  const paneDragging = dragRunWidth != null;
 
-  /** The selected card's runs, newest first.  Empty until fetched. */
-  const draftRuns = useMemo(
-    () => (draft ? runIndex.get(draft.id) ?? [] : []), [draft, runIndex]);
+  const handlePaneDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const available = paneAvailable();
+    const startWidth = Math.min(layout.runWidth, Math.max(0, available - DEF_MIN_WIDTH));
+    paneDragRef.current = { startX: e.clientX, startWidth, available, raw: startWidth };
+    setDragRunWidth(startWidth);
+  }, [layout.runWidth]);
+
+  useEffect(() => {
+    if (!paneDragging) return;
+    const onMove = (e: MouseEvent) => {
+      const d = paneDragRef.current;
+      if (!d) return;
+      // The run pane is on the right: dragging left widens it.
+      d.raw = Math.max(0, Math.min(
+        d.available, d.startWidth - toLayoutPx(e.clientX - d.startX)));
+      setDragRunWidth(d.raw);
+    };
+    const onUp = () => {
+      const d = paneDragRef.current;
+      paneDragRef.current = null;
+      setDragRunWidth(null);
+      if (d) {
+        setLayout(prev => ({
+          ...prev, ...settleDivider(d.raw, d.available, prev.runWidth),
+        }));
+      }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+    };
+  }, [paneDragging]);
+
+  // Definition <-> run linking.  The run pane reports per-block markers
+  // for the outline; selecting a block in either pane selects it in the
+  // other.  Requests carry a sequence number so a repeat selection of
+  // the same block is still delivered.
+  const [outlineMarkersById, setOutlineMarkersById] =
+    useState<Record<string, OutlineMarker> | null>(null);
+  const markerOf = useCallback(
+    (id: string) => outlineMarkersById?.[id] ?? null, [outlineMarkersById]);
+  const linkSeq = useRef(0);
+  const [revealBlock, setRevealBlock] =
+    useState<{ blockId: string; seq: number } | null>(null);
+  const [editorFocus, setEditorFocus] =
+    useState<{ blockId: string; seq: number } | null>(null);
+  const handleOutlineSelect = useCallback((blockId: string) =>
+    setRevealBlock({ blockId, seq: ++linkSeq.current }), []);
+  const handleSectionSelect = useCallback((blockId: string) =>
+    setEditorFocus({ blockId, seq: ++linkSeq.current }), []);
+
+  // Card actions, in the title bar.  Launch runs in the current
+  // conversation when there is one; the caret holds the other targets.
+  const runActive = activeRun?.status === 'running';
+  const launchMenu = {
+    items: [
+      { key: 'launch-current', label: 'Launch in current conversation',
+        icon: <PlayCircleOutlined />, disabled: !chatId || runActive },
+      { key: 'launch-new', label: 'Launch in new conversation',
+        icon: <PlayCircleOutlined />, disabled: runActive },
+      { type: 'divider' as const },
+      { key: 'stage-current', label: 'Copy to current conversation (no run)',
+        icon: <InboxOutlined />, disabled: !chatId },
+      { key: 'stage-new', label: 'Copy to new conversation (no run)',
+        icon: <InboxOutlined /> },
+    ],
+    onClick: ({ key }: { key: string }) => {
+      if (key === 'launch-current') void handleLaunchCurrent();
+      else if (key === 'launch-new') void handleLaunchNew();
+      else if (key === 'stage-current') void handleStageCurrent();
+      else if (key === 'stage-new') void handleStageNew();
+    },
+  };
+  const moreMenu = {
+    items: [
+      ...(draft?.draft
+        ? [{ key: 'add-to-deck', label: 'Add to deck', icon: <InboxOutlined /> }]
+        : []),
+      { key: 'duplicate', label: 'Duplicate', icon: <CopyOutlined /> },
+      { key: 'export', label: 'Export this card', icon: <DownloadOutlined /> },
+      { type: 'divider' as const },
+      { key: 'delete', label: 'Delete…', icon: <DeleteOutlined />, danger: true },
+    ],
+    onClick: ({ key }: { key: string }) => {
+      if (!draft) return;
+      if (key === 'add-to-deck') void handleAddToDeck();
+      else if (key === 'duplicate') void handleDuplicate(draft.id);
+      else if (key === 'export') void handleExport([draft.id]);
+      else if (key === 'delete') {
+        Modal.confirm({
+          title: `Delete "${draft.name}"?`,
+          okText: 'Delete', okButtonProps: { danger: true },
+          onOk: () => handleDelete(draft.id),
+        });
+      }
+    },
+  };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1136,17 +1272,67 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   return (
     <Modal
       title={
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
-          Task Cards
+        <div className="tc-deck__title">
+          <span>Task Cards</span>
           <Segmented size="small" value={view} data-testid="deck-view-switch"
             onChange={v => setView(v as 'cards' | 'schedules')}
             options={[
               { label: 'Cards', value: 'cards', icon: <AppstoreOutlined /> },
               { label: 'Schedules', value: 'schedules', icon: <ClockCircleOutlined /> },
             ]} />
-        </span>
+          {view === 'cards' && draft && (
+            <>
+              <span className="tc-deck__card-name" title={draft.name}>{draft.name}</span>
+              {statusTag}
+              {activeRun?.error && (
+                <span className="tc-deck__title-error" title={activeRun.error}>
+                  {activeRun.error}
+                </span>
+              )}
+            </>
+          )}
+          <span className="tc-deck__spacer" />
+          {view === 'cards' && hasRunPane && (
+            <Segmented size="small" value={paneView} data-testid="deck-pane-switch"
+              onChange={v => setPaneView(v as DeckPaneView)}
+              options={[
+                { label: 'Definition', value: 'definition' },
+                { label: 'Split', value: 'split' },
+                { label: 'Run', value: 'run' },
+              ]} />
+          )}
+          {view === 'cards' && draft && (
+            <span className="tc-deck__actions" data-testid="deck-card-actions">
+              {runActive && (
+                <Button size="small" danger icon={<StopOutlined />} onClick={handleCancel}>
+                  Cancel
+                </Button>
+              )}
+              <Button size="small" onClick={handleSave}>Save</Button>
+              <Space.Compact size="small">
+                <Tooltip title={chatId
+                  ? 'Launch and bind to the current conversation'
+                  : 'No current conversation — launches in a new one'}>
+                  <Button size="small" type="primary" icon={<PlayCircleOutlined />}
+                    disabled={runActive}
+                    onClick={chatId ? handleLaunchCurrent : handleLaunchNew}>
+                    Launch
+                  </Button>
+                </Tooltip>
+                <Dropdown menu={launchMenu} trigger={['click']} placement="bottomRight">
+                  <Button size="small" type="primary" icon={<DownOutlined />}
+                    aria-label="Launch or copy to a conversation" />
+                </Dropdown>
+              </Space.Compact>
+              <Dropdown menu={moreMenu} trigger={['click']} placement="bottomRight">
+                <Button size="small" icon={<MoreOutlined />} aria-label="More card actions" />
+              </Dropdown>
+            </span>
+          )}
+        </div>
       }
       open={visible}
+      style={{ top: DIALOG_TOP }}
       onCancel={onClose}
       width={dialogSize.width}
       footer={null}
@@ -1159,8 +1345,19 @@ export const TaskCardsLibrary: React.FC<Props> = ({
         </div>
       ) : (
       <div style={{ display: 'flex', gap: 12, height: dialogSize.height }}>
+        {layout.listCollapsed ? (
+          <DeckPaneStrip label="CARDS" side="left"
+            onOpen={() => setListCollapsed(false)}
+            title="Show the card list"
+            badge={attentionCards > 0 ? `⏸ ${attentionCards}` : undefined} />
+        ) : (<>
         {/* Left: list */}
         <div style={{ width: effectiveSidebarWidth, flexShrink: 0, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex' }}>
+            <DeckPaneTab label="CARDS" side="left"
+              onCollapse={() => setListCollapsed(true)}
+              title="Collapse the card list" />
+          </div>
           {currentProject && (
             <BlockScopeButton
               scope={deckScope}
@@ -1260,83 +1457,33 @@ export const TaskCardsLibrary: React.FC<Props> = ({
             transition: resizing ? 'none' : 'background 0.15s',
           }}
         />
+        </>)}
+        <div ref={workRef} className="tc-deck__work">
         {/* Right: editor.  overflow auto, not hidden: the status panels
             above the editor have content-driven heights, and when they
             outgrew the pane the editor (flex: 1, min-height 0) collapsed
             to nothing with no way to scroll to it.  The editor now keeps
             a floor and the pane scrolls past what does not fit. */}
+        {paneView === 'run' ? (
+          <DeckPaneStrip label="DEFINITION" side="left"
+            onOpen={() => setPaneView('split')}
+            title="Show the card definition beside the run" />
+        ) : (
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8, overflow: 'auto' }}>
           {draft ? (
             <>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Tooltip title={chatId
-                  ? 'Launch and bind to the current conversation'
-                  : 'No current conversation — use "Launch in new conversation"'}>
-                  {/* span wrapper: Tooltip needs a non-disabled child to show on a disabled Button */}
-                  <span>
-                    <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleLaunchCurrent}
-                      disabled={!chatId || activeRun?.status === 'running'}>
-                      Launch in current conversation
-                    </Button>
-                  </span>
-                </Tooltip>
-                <Tooltip title="Create a new conversation named after this card and launch the task there">
-                  <Button icon={<PlayCircleOutlined />} onClick={handleLaunchNew}
-                    disabled={activeRun?.status === 'running'}>
-                    Launch in new conversation
-                  </Button>
-                </Tooltip>
-                <Tooltip title={chatId
-                  ? 'Copy this card into the current conversation without running it — the tile\u2019s Run button starts it later'
-                  : 'No current conversation — use "Copy to new conversation"'}>
-                  <span>
-                    <Button icon={<InboxOutlined />} onClick={handleStageCurrent}
-                      disabled={!chatId}>
-                      Copy to conversation
-                    </Button>
-                  </span>
-                </Tooltip>
-                <Tooltip title="Create a new conversation named after this card and copy the card in without running it">
-                  <Button icon={<InboxOutlined />} onClick={handleStageNew}>
-                    Copy to new conversation
-                  </Button>
-                </Tooltip>
-                {activeRun?.status === 'running' && (
-                  <Button danger icon={<StopOutlined />} onClick={handleCancel}>Cancel</Button>
-                )}
-                <Button onClick={handleSave}>Save</Button>
-                {draft.draft && (
-                  <Tooltip title="This card lives only in the conversation that staged it. Add it to the deck to keep and reuse it.">
-                    <Button icon={<InboxOutlined />} onClick={handleAddToDeck}>
-                      Add to deck
-                    </Button>
-                  </Tooltip>
-                )}
-                <Tooltip title="Duplicate"><Button icon={<CopyOutlined />} onClick={() => handleDuplicate(draft.id)} /></Tooltip>
-                <Tooltip title="Export this card"><Button icon={<DownloadOutlined />} onClick={() => handleExport([draft.id])} /></Tooltip>
-                <Popconfirm title={`Delete "${draft.name}"?`} onConfirm={() => handleDelete(draft.id)}>
-                  <Button danger icon={<DeleteOutlined />} />
-                </Popconfirm>
-                <div style={{ flex: 1 }} />
-                {statusTag}
-                {activeRun?.error && <span style={{ color: '#ff4d4f', fontSize: 12 }}>{activeRun.error}</span>}
-              </div>
-              {/* This card's position inside somebody else's run.  Sits
-                  above the editor because it is a fact about the card's
-                  CURRENT state, not about its definition — and because a
-                  card called by a held study previously showed no sign of
-                  it anywhere on this pane. */}
-              <CalleeHoldPanel
-                projectId={projectId}
-                cardId={selectedId}
-                root={draft?.root}
-                onOpenRun={handleOpenCalleeRun}
-              />
-              {/* The card's learning history.  Sits with CalleeHoldPanel
-                  above the editor for the same reason: it is a fact about
-                  the card's current state, not its definition — the text
-                  in the editor below may exist BECAUSE of a revision
-                  listed here.  onReverted reloads the card so the editor
+              {hasRunPane && (
+                <div style={{ display: 'flex' }}>
+                  <DeckPaneTab label="DEFINITION" side="left"
+                    onCollapse={() => setPaneView('run')}
+                    title="Collapse the definition — the run takes the space" />
+                </div>
+              )}
+              {/* The card's learning history.  Above the editor because it
+                  is a fact about the card's current state, not its
+                  definition — the text in the editor below may exist
+                  BECAUSE of a revision listed here.  onReverted reloads
+                  the card so the editor
                   shows the restored text, and refreshes the ledger
                   aggregates so the badge count stays honest. */}
               <LessonsPanel
@@ -1355,20 +1502,62 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                   projectId={projectId}
                   onScopeStatusChange={handleScopeStatusChange}
                   layout="outline"
+                  outlineMarkerOf={hasRunPane ? markerOf : undefined}
+                  onOutlineSelect={hasRunPane ? handleOutlineSelect : undefined}
+                  focusBlockRequest={editorFocus}
                 />
               </div>
-              {/* Run history for this card.  Above the editor rather than
-                  inside it: a run in flight is the thing you check before
-                  editing a card, and burying it under the block tree of a
-                  deep card puts it behind a scroll. */}
-              <div style={{ fontSize: 11, opacity: 0.55, fontWeight: 600 }}>
-                RUNS
-              </div>
-              <DeckRunList runs={draftRuns} onOpen={handleOpenRun} />
             </>
           ) : (
             <Empty description="Select or create a card" style={{ marginTop: 80 }} />
           )}
+        </div>
+        )}
+        {hasRunPane && paneView === 'split' && (
+          <div
+            className={'tc-deck__divider' + (paneDragging ? ' tc-deck__divider--dragging' : '')}
+            onMouseDown={handlePaneDragStart}
+            onDoubleClick={() => setLayout(prev => (
+              { ...prev, runWidth: Math.round(paneAvailable() / 2) }))}
+            title="Drag to resize · drag to an edge to collapse that side · double-click for an even split"
+          />
+        )}
+        {hasRunPane && paneView === 'definition' && (
+          <DeckPaneStrip
+            label={leadRunStatus ? `RUN · ${leadRunStatus.toUpperCase()}` : 'RUN'}
+            side="right"
+            tone={leadRunStatus === 'held' ? 'held' : 'plain'}
+            onOpen={() => setPaneView('split')}
+            title="Show the run beside the definition" />
+        )}
+        {/* Mounted while collapsed (hidden), so the outline keeps the
+            run's markers and the pane keeps its selected run and section. */}
+        {hasRunPane && (
+          <div style={paneView === 'definition'
+            ? { display: 'none' }
+            : paneView === 'run'
+            ? { flex: 1, minWidth: 0, display: 'flex' }
+            : {
+              width: dragRunWidth ?? layout.runWidth, flexShrink: 0, display: 'flex',
+              // While dragging the width follows the pointer; at rest the
+              // definition keeps its floor.
+              maxWidth: paneDragging ? undefined : `calc(100% - ${DEF_MIN_WIDTH}px)`,
+            }}>
+            <DeckRunPane
+              projectId={projectId}
+              cardId={selectedId}
+              cardRoot={draft?.root}
+              entries={runEntries}
+              cardNames={cardNames}
+              onCollapse={() => setPaneView('definition')}
+              onOpenConversation={handleOpenConversation}
+              onRunsChanged={refreshRuns}
+              onMarkersChange={setOutlineMarkersById}
+              revealBlock={revealBlock}
+              onSectionSelect={handleSectionSelect}
+            />
+          </div>
+        )}
         </div>
       </div>
       )}
