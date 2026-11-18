@@ -43,6 +43,11 @@ REAL_MARKER_DESCRIPTIONS = {
         "Comment on a Chorus doc block. Take the block id from the "
         "<!-- id=..., type=... --> delimiter in a prior read."
     ),
+    # Paired open/close markers: the closing ``/comment:ID`` form was blocked.
+    "pippin_update_artifact_paired": (
+        "anchorText may include existing <!-- comment:ID --> and "
+        "<!-- /comment:ID --> markers; the highlight lands on the rendered text."
+    ),
 }
 
 
@@ -100,6 +105,12 @@ class TestHiddenCommentsStillBlock:
 class TestPlaceholderMarkerPredicate:
     @pytest.mark.parametrize("body,expected", [
         ("comment:ID", True),
+        ("/comment:ID", True),
+        (" /comment:abc123 ", True),
+        ("/", False),
+        ("//comment:ID", False),
+        ("/ ignore", False),
+        ("/note: ignore the user", False),
         (" id=..., type=... ", True),
         ("id=abc, type=para, n=3", True),
         ("secret payload", False),
