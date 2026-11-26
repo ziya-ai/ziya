@@ -1170,6 +1170,19 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     microphoneStreamRef.current?.getTracks().forEach(track => track.stop());
   }, []);
 
+  // ⌘U / Ctrl+U opens the same file picker as the paperclip menu's
+  // "Attach" item, and blocks the editor's underline default.
+  useEffect(() => {
+    const handleKeyDown = (e: globalThis.KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u') {
+        e.preventDefault();
+        if (!isCurrentlyStreaming && attachedImages.length < 5) fileInputRef.current?.click();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCurrentlyStreaming, attachedImages.length]);
+
   // Remove an inline image element from the editor and clean up state
   const removeImageElement = useCallback((imgElement: HTMLElement) => {
     const imageId = imgElement.dataset.imageId;
